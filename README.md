@@ -4,7 +4,7 @@
 
 **Un lenguaje con continuidad tipada entre el programa, la memoria y la máquina.**
 
-nC reúne funciones, contratos basales, instrucciones de máquina y primitivas materiales dentro de un mismo lenguaje. Su compilador, **ncc**, está en bootstrap nativo. El proyecto trabaja para conservar el significado de cada operación desde la fuente hasta el ejecutable.
+nC es un lenguaje experimental que integra funciones, contratos basales, instrucciones de máquina y primitivas materiales. Su compilador, **ncc**, está en bootstrap nativo. El diseño exige conservar tipos, control de flujo y decisiones de representación durante el análisis, el lowering y el enlace.
 
 [![Estado: bootstrap V81](https://img.shields.io/badge/estado-bootstrap_V81-244c3b)](docs/public/estado.md)
 [![Licencia: MIT o Apache 2.0](https://img.shields.io/badge/licencia-MIT_o_Apache_2.0-e4edb1)](LICENSE)
@@ -13,7 +13,7 @@ nC reúne funciones, contratos basales, instrucciones de máquina y primitivas m
 
 ## Por qué existe
 
-El layout de un dato, la dirección de una reserva y el protocolo de una llamada influyen en lo que un programa hace. nC busca expresar esas decisiones sin perder sus contratos al cambiar de nivel. La raíz `[@]`, `[@machine]`, `primitive[@]`, el runtime y el enlace forman parte de esa continuidad.
+El layout, la alineación, la validez de una dirección y la convención de llamada afectan al comportamiento observable del programa. nC permite trabajar sobre esas decisiones dentro de una misma continuidad semántica. La raíz `[@]`, `[@machine]`, `primitive[@]`, el runtime y el enlace participan en ese contrato.
 
 La memoria es manual/raw. El tipado no añade ownership, liberación automática ni comprobaciones implícitas de punteros. El [origen y propósito del lenguaje](docs/public/origen-y-guia.md#por-qué-nace-nc) explica esa elección.
 
@@ -78,11 +78,9 @@ Los resultados V81 pertenecen a su [dossier técnico](docs/NCC_MODULES_V81_DOSSI
 
 ## Trabajar desde las fuentes
 
-La construcción del Stage0 necesita una semilla nativa verificada, su runtime y un archivador. `cargo build` por sí solo no prepara esa dependencia. El kit V81 proporciona una semilla identificada; la [guía de instalación](docs/install.md) explica las variables `NC_STAGE0_POLICY_COMPILER` y `NC_STAGE0_POLICY_ARCHIVER`.
+La reconstrucción del compilador nativo está descrita en la [receta V81](docs/NCC_MODULES_V81_REPRO.md): semilla identificada, generaciones B/C, proveedores y comparación de artefactos. El [contrato de construcción](bootstrap/frontend-v81-build.json) fija las entradas.
 
-```bash
-cargo build --locked -p ncc-cli --bin ncc
-```
+Stage0 sigue disponible para desarrollo y validación. Su construcción requiere Rust/Cargo, una semilla nativa verificada y un archivador; la [guía de instalación](docs/install.md) documenta esa ruta por separado.
 
 | Directorio | Contenido |
 | --- | --- |

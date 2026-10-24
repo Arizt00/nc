@@ -32,10 +32,11 @@ la receta. Windows importa bibliotecas del sistema y el proveedor incluido.
 
 - `cargo check --locked -p ncc-cli --bin ncc`: correcto con semilla V81 y archivador MSVC configurados; se conservan advertencias de código no utilizado.
 - `cargo test --locked -p ncc-parser --lib -- --nocapture`: 206 pruebas aprobadas, 0 fallos.
+- `cargo test --locked --workspace -- --nocapture`: se detuvo en `ncc-ast` con 117 pruebas aprobadas y 1 fallo. La prueba `stoud_text_string_is_manual_nc_with_explicit_release` espera 26 símbolos de runtime y encuentra 27 (`crates/ncc-ast/src/import_catalog.rs:7669`). Las suites posteriores no llegaron a ejecutarse. Esta publicación no modifica esa prueba ni la implementación de texto.
 - Stage0 retenido: `check` y `emit-ir` de hello y del ejemplo machine de overflow correctos; `machine emit-ir` de `object_elf64.nm` correcto.
 - `cargo fmt --all -- --check`: detecta diferencias previas en fuentes del compilador. No se aplicó un reformateo masivo sobre trabajo ajeno a esta publicación.
 
-La suite completa del workspace no se certifica como aprobada por esta página.
+La suite completa del workspace no está aprobada.
 La entrega mantiene su carácter preliminar y no usa una insignia que afirme un
 cierre global del compilador.
 
@@ -50,7 +51,7 @@ tema persistente, menú móvil, selección de sistema operativo, copia de receta
 navegación por teclado entre fases, preguntas desplegables y último capítulo
 leído. No se detectó desbordamiento horizontal en las rutas comprobadas.
 
-Los PDF tienen 10 y 9 páginas. Se revisaron las 19 páginas renderizadas, con
+Los PDF tienen 9 páginas cada uno. Se revisaron las 18 páginas renderizadas, con
 comprobación adicional del texto y sus límites. Las fuentes editables se
 conservan en Markdown.
 

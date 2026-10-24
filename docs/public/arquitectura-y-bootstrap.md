@@ -10,15 +10,15 @@ nC organiza distintas formas de expresar un programa dentro de una continuidad s
 
 El repositorio contiene la implementación Rust retenida y el trabajo nativo en nC. `crates/` reúne los componentes de la primera; `tools/ncc/nc/src/` contiene fuentes del compilador nativo. `runtime/nc/` conserva cuerpos y proveedores del runtime. Las herramientas de construcción y los contratos bajo `bootstrap/` relacionan generaciones y entradas.
 
-| Fase | Pregunta que debe resolver |
+| Fase | Responsabilidad |
 | --- | --- |
-| Lexer y parser | ¿Qué estructura expresa la fuente? |
-| AST | ¿Qué entidades y relaciones se han declarado? |
-| Semántica | ¿Son coherentes los tipos, símbolos y operaciones? |
-| IR | ¿Qué significado se entrega a las fases siguientes? |
-| MCT y backend | ¿Cómo se representa en el perfil seleccionado? |
-| Enlace | ¿Qué símbolos, objetos y proveedores forman la imagen? |
-| Ejecución | ¿Produce el resultado y los efectos previstos? |
+| Lexer y parser | Tokenización y reconocimiento de la estructura sintáctica |
+| AST | Identidad de declaraciones, tipos, relaciones y superficies |
+| Semántica | Resolución de símbolos y validación de tipos, aridad y flujo |
+| IR | Representación del programa analizado para lowering y transformaciones |
+| MCT y backend | Materialización conforme al layout, la ISA y la ABI del destino |
+| Enlace | Resolución de símbolos, relocaciones y dependencias de la imagen |
+| Ejecución | Comprobación del resultado y de los efectos observables |
 
 La tabla es un mapa de responsabilidades, no una promesa de que cada ruta atraviese exactamente las mismas funciones. Algunas superficies tienen entradas y validaciones propias. Un cambio correcto explica qué ruta modifica y qué información conserva.
 
@@ -36,7 +36,7 @@ El IR conserva el resultado del análisis de forma utilizable por las fases sigu
 
 Un cambio de superficie debería incluir un caso positivo, otro negativo y una observación del IR cuando el contrato pueda alterarse en la traducción. Si llega a generación nativa, debe comprobar además el artefacto y, cuando el entorno lo permita, su ejecución.
 
-No hace falta repetir pruebas que reflejen cada línea del código. Son más útiles los límites del contrato: un salto que resuelve mal, una firma incompatible o una operación cuyo orden de evaluación puede cambiar.
+Las pruebas deben cubrir los puntos donde puede perderse información: resolución del destino de un salto, compatibilidad de firmas y conservación del orden de evaluación. Esas propiedades necesitan casos observables y expectativas independientes de la implementación.
 
 ## Máquina y control de flujo
 
@@ -100,7 +100,7 @@ Stage0 permanece como oráculo de AST en el corpus de esa validación y no como 
 
 Las cifras del dossier describen sus corridas: 147 programas completos y 1472 checks por corrida, 38 contratos de runtime por generación y sistema, y comprobaciones de layout en diez perfiles. Esta publicación cita esos resultados históricos; sus smoke tests de entrega se registran aparte y no sustituyen la reproducción completa.
 
-El criterio para ampliar una afirmación de soporte es añadir evidencia del perfil, programa y ruta que faltan. Un nuevo texto de README no cambia ese criterio.
+El soporte de un perfil se amplía con evidencia de las rutas pendientes: entradas, artefactos emitidos, dependencias y ejecución. La compatibilidad declarada debe corresponder al alcance de esas comprobaciones.
 
 ## Reproducir y revisar evidencia
 

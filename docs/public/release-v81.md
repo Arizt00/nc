@@ -36,7 +36,7 @@ incluido junto al compilador.
 ## Documentación
 
 - [Web y biblioteca](https://nc-language-arizt00.rarepanda1024.chatgpt.site).
-- Guía de origen y uso en PDF: 10 páginas.
+- Guía de origen y uso en PDF: 9 páginas.
 - Arquitectura y bootstrap en PDF: 9 páginas.
 - [Instalación desde fuentes](https://github.com/Arizt00/nc/blob/main/docs/install.md).
 - [Validación de esta publicación](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md).
@@ -55,8 +55,11 @@ mantiene semántica manual/raw.
 
 Se comprobaron los kits en directorios aislados y después de extraer sus archivos.
 La comprobación de compilación con semilla configurada y las 206 pruebas del
-parser pasaron. Hay diferencias de formato previas pendientes y esta Release no
-declara aprobada la suite global del workspace.
+parser pasaron. La suite global se detuvo en `ncc-ast`: 117 pruebas aprobadas y
+un fallo en `stoud_text_string_is_manual_nc_with_explicit_release`, que espera
+26 símbolos y encuentra 27. También quedan diferencias de formato previas.
+El [registro de validación](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md)
+conserva el alcance y el resultado exacto.
 
 Si encuentras un problema, abre un issue con el compilador utilizado, sistema,
 comando, fuente mínima y resultado esperado. Esa reproducción permite convertir

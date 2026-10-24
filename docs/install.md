@@ -61,12 +61,14 @@ Sustituye la ruta de ejemplo por la de tu kit. `lib.exe` es otra opción compati
 para el archivador Windows. El puente nativo compila `bootstrap/nc/stage0_policy.n`
 durante la construcción; omitir la semilla provoca un error explícito.
 
-Los comandos siguientes pertenecen al Stage0:
+Una vez construido, invoca Stage0 directamente. Desde la raíz del repositorio en Linux o WSL:
 
 ```bash
-cargo run --locked -p ncc-cli -- check examples/00_hello/hello.n
-cargo run --locked -p ncc-cli -- emit-ir examples/00_hello/hello.n
+./target/debug/ncc check examples/00_hello/hello.n
+./target/debug/ncc emit-ir examples/00_hello/hello.n
 ```
+
+En PowerShell usa `.\target\debug\ncc.exe` con los mismos argumentos. No necesitas volver a ejecutar Cargo para analizar cada programa.
 
 La [guía de uso](public/origen-y-guia.md) desarrolla la sintaxis y las diferencias
 entre recorridos. El [estado de publicación](public/estado.md) delimita el soporte.

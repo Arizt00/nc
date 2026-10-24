@@ -20,7 +20,7 @@ nC resulta de interés para quien quiera trabajar con compiladores, representaci
 
 El lenguaje se llama **nC**. Su compilador se llama **ncc**. Una fuente normal suele usar la extensión `.n`; los ejemplos de máquina usan también `.nm`, y los de primitivas, `.ncp`.
 
-Hay dos recorridos de herramientas que no deben confundirse. El Stage0 retenido ofrece la CLI histórica de desarrollo. El candidato nativo tiene comandos bajo `compiler` y es el que participa en las reconstrucciones B y C del bootstrap. La ayuda del ejecutable que se está usando es la autoridad para sus opciones.
+El compilador nativo ofrece las operaciones de análisis y emisión bajo `compiler`; es el que participa en las reconstrucciones B y C. Stage0 conserva la CLI de desarrollo y algunas rutas que el candidato todavía no implementa. El kit V81 no dispone de ayuda completa: consulta su README para identificar los comandos disponibles.
 
 | Elemento | Para qué sirve |
 | --- | --- |
@@ -61,31 +61,13 @@ LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 
 La salida esperada es `Hello, nC public beta` y el exit code es 0. Los comandos `check`, `machine` y `--help` de Stage0 no forman parte de la interfaz disponible en este kit.
 
-### Construir el Stage0 desde fuentes
+### Identidad del compilador y del runtime
 
-La construcción actual del Stage0 necesita una semilla nativa de nC. `cargo build` por sí solo no completa esa preparación: el puente `ncc-stage0-bridge` compila la política de Stage0 escrita en nC y exige `NC_STAGE0_POLICY_COMPILER`.
+Conserva el SHA-256 de ambos artefactos. El compilador determina el código emitido; el proveedor resuelve los servicios que ese código importa. Cambiar uno de ellos modifica las condiciones de reproducción, aunque la fuente permanezca intacta.
 
-Para trabajar desde fuentes se necesitan Git, la toolchain Rust declarada en `rust-toolchain.toml`, un archivador compatible y una semilla nativa verificada junto a su proveedor de runtime. Comprueba el SHA-256 del paquete descargado antes de seleccionarlo. Conserva juntos el compilador y las bibliotecas que incluya la distribución.
+En Linux, el compilador del kit lleva RUNPATH `$ORIGIN`. La imagen generada en el ejemplo requiere `LD_LIBRARY_PATH` para localizar el proveedor. En Windows, conserva `ncruntime.dll` junto a los ejecutables. No mezcles bibliotecas de generaciones distintas sin comprobar sus símbolos y ABI.
 
-En Linux o WSL, desde la raíz del repositorio y con la semilla en una ruta propia:
-
-```bash
-export NC_STAGE0_POLICY_COMPILER="$HOME/nc-seed/ncc"
-export NC_STAGE0_POLICY_ARCHIVER=ar
-export CARGO_BUILD_JOBS=1
-cargo build --locked -p ncc-cli --bin ncc
-```
-
-Si el proveedor Linux no está en el RUNPATH del ejecutable, configura `LD_LIBRARY_PATH` con su directorio para esa sesión. En Windows usa una terminal de desarrollo MSVC y establece las mismas variables con rutas absolutas; el archivador debe aceptar `/OUT:`, como `llvm-lib.exe` o `lib.exe`.
-
-```powershell
-$env:NC_STAGE0_POLICY_COMPILER = 'C:\nc-seed\ncc.exe'
-$env:NC_STAGE0_POLICY_ARCHIVER = 'llvm-lib.exe'
-$env:CARGO_BUILD_JOBS = '1'
-cargo build --locked -p ncc-cli --bin ncc
-```
-
-Estas rutas son ejemplos de instalación. Si falta la semilla, la construcción debe detenerse; un binario antiguo encontrado en otro directorio no sustituye su verificación. La página de descargas identifica qué paquetes han superado el smoke test de publicación.
+Para estudiar o modificar Stage0, consulta `docs/install.md`. Su construcción sigue requiriendo Rust, Cargo, una semilla nativa verificada y un archivador compatible. Esa dependencia corresponde al desarrollo de Stage0; el recorrido de esta guía usa directamente el compilador distribuido.
 
 ## El primer programa
 
@@ -106,20 +88,21 @@ helloCompacto {
 
 El import selecciona la salida de `io`. `helloCompacto` nombra el contenedor. `to main` expresa la entrada compacta; `fa:` conserva el final del contenedor. Las llaves delimitan el programa y su bloque de ejecución.
 
-Con el Stage0 construido desde fuentes puedes comprobarlo e inspeccionar su IR:
+En el directorio del kit puedes analizar el programa e inspeccionar su IR. En Linux o WSL:
 
 ```bash
-cargo run --locked -p ncc-cli -- check examples/00_hello/hello.n
-cargo run --locked -p ncc-cli -- emit-ir examples/00_hello/hello.n
+./ncc compiler sema hello.n
+./ncc compiler emit-ir hello.n
 ```
 
-El primer comando debe terminar sin error de análisis. El segundo muestra la representación intermedia; su salida no es el texto que imprime el programa. Para la ruta `run`, el entorno también debe disponer del backend y los proveedores que esa ruta necesite.
+En PowerShell:
 
-```bash
-cargo run --locked -p ncc-cli -- run examples/00_hello/hello.n
+```powershell
+.\ncc.exe compiler sema hello.n
+.\ncc.exe compiler emit-ir hello.n
 ```
 
-La distribución del candidato nativo usa su propia familia de comandos. Sigue la receta que acompaña al paquete para generar y ejecutar la imagen del destino. Conservar esta distinción evita usar una opción de Stage0 con un compilador que ofrece otra CLI.
+`compiler sema` comprueba el programa; `compiler emit-ir` expone su representación intermedia. La ejecución requiere emitir una imagen para el destino, tal como se indica en la instalación. Ambos análisis deben finalizar con código 0. La salida del IR describe el programa y no sustituye su ejecución.
 
 ## Lugares y funciones
 
@@ -174,17 +157,19 @@ La resolución debe conservar la identidad de la unidad y sus dependencias. Evit
 
 La capa `[@machine]` forma parte del mismo sistema tipado. Los registros, las etiquetas, las instrucciones y los finales participan en su contrato. El ejemplo `examples/11_machine/checked_add_overflow_machine.n` permite observar una suma seguida de una rama por overflow.
 
+Este recorrido necesita Stage0. Los comandos siguientes invocan el ejecutable ya construido, desde la raíz del repositorio en Linux o WSL. En Windows usa `.\target\debug\ncc.exe` con los mismos argumentos. El kit nativo V81 no implementa estas entradas.
+
 ```bash
-cargo run --locked -p ncc-cli -- check \
+./target/debug/ncc check \
   examples/11_machine/checked_add_overflow_machine.n
-cargo run --locked -p ncc-cli -- emit-ir \
+./target/debug/ncc emit-ir \
   examples/11_machine/checked_add_overflow_machine.n
 ```
 
 La extensión y la superficie importan. Para un módulo `.nm` con contrato de objeto, usa la ruta de máquina correspondiente:
 
 ```bash
-cargo run --locked -p ncc-cli -- machine emit-ir \
+./target/debug/ncc machine emit-ir \
   examples/11_machine/object_elf64.nm
 ```
 

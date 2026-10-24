@@ -12,13 +12,20 @@ Antes de proponer una sintaxis, explica qué decisión permite expresar y cómo 
 
 Trabaja en una rama y mantén el cambio centrado en un problema. Conserva los diagnósticos existentes salvo que el cambio justifique su revisión. Incluye fixtures positivos y negativos donde el contrato lo necesite. Para ABI, memoria o backend, documenta el perfil y el resultado material que has comprobado.
 
-Tras preparar la semilla como indica [instalación](docs/install.md), las comprobaciones generales desde la raíz son:
+Para comprobar fixtures, invoca el compilador ya construido. Con Stage0 disponible, desde la raíz en Linux o WSL:
+
+```bash
+./target/debug/ncc check examples/00_hello/hello.n
+./target/debug/ncc emit-ir examples/11_machine/checked_add_overflow_machine.n
+```
+
+En Windows usa `.\target\debug\ncc.exe`. Si trabajas con el kit nativo, emplea `compiler sema` y `compiler emit-ir` para las rutas admitidas; no presupongas equivalencia con la CLI de Stage0.
+
+Los cambios en la implementación Rust de Stage0 requieren además sus controles de formato y pruebas. Prepara primero la semilla como indica [instalación](docs/install.md):
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace -- --nocapture
-cargo run --locked -p ncc-cli -- check examples/00_hello/hello.n
-cargo run --locked -p ncc-cli -- emit-ir examples/11_machine/checked_add_overflow_machine.n
+cargo test --locked --workspace -- --nocapture
 ```
 
 Algunas suites requieren herramientas o entornos adicionales. Indica qué ejecutaste y qué no pudiste comprobar; conserva el fallo exacto. No cambies una expectativa para ocultar una regresión.
