@@ -1,9 +1,9 @@
-# Informar de un problema de seguridad
+# Reporting security issues
 
-Las versiones de bootstrap son experimentales. La semántica manual/raw deja la gestión de memoria bajo responsabilidad del programa; no promete protección automática frente a accesos inválidos.
+Bootstrap releases are experimental. Manual/raw semantics place memory management under program control and do not guarantee protection against invalid accesses.
 
-Si encuentras un fallo del compilador, del cargador o del proceso de distribución que pueda afectar a otras personas, prepara una reproducción mínima y conserva el hash del paquete. No publiques credenciales, información personal ni un payload contra un servicio ajeno.
+For a compiler, loader or distribution issue that may affect other users, retain the package digest and prepare a minimal reproduction. Do not publish credentials, personal information or payloads against third-party services.
 
-Usa la opción privada Report a vulnerability en la pestaña Security cuando esté habilitada. Si esa opción no está disponible, abre una incidencia solicitando un canal privado sin incluir los detalles de explotación. No hay un plazo de respuesta garantizado durante el bootstrap.
+Use GitHub's private Report a vulnerability option when enabled. If unavailable, open an issue requesting a private channel without exploit details. Response times are not guaranteed during bootstrap.
 
-Los paquetes publicados incluyen SHA-256 para detectar alteraciones respecto al archivo anunciado. Un hash de integridad no sustituye una firma criptográfica ni una auditoría del compilador.
+Published SHA-256 checksums detect changes relative to the announced artifact. Integrity checksums do not replace cryptographic signatures or a compiler audit.

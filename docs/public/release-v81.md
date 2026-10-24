@@ -1,15 +1,10 @@
-# nC V81 Primer kit nativo público
+# nC V81 - Native bootstrap kit
 
-Esta entrega permite probar nC con un compilador nativo experimental en Windows
-y Linux x86-64. Incluye el proveedor de runtime, un primer programa, un ejemplo
-de aritmética, licencias y hashes de integridad. La primera prueba no necesita
-Rust ni LLVM.
+This prerelease provides an experimental native compiler for Windows and Linux x86-64. It includes the matching runtime provider, hello and arithmetic examples, licenses and SHA-256 checksums. The first program requires no Rust, Cargo or LLVM installation.
 
-## Descargar y ejecutar
+## Download and run
 
-Elige `nc-bootstrap-v81-windows-x86_64.zip` o
-`nc-bootstrap-v81-linux-x86_64.tar.gz`. Compara el hash del archivo descargado
-con `SHA256SUMS.txt` antes de extraerlo.
+Select `nc-bootstrap-v81-windows-x86_64.zip` or `nc-bootstrap-v81-linux-x86_64.tar.gz`. Compare the downloaded archive with `SHA256SUMS.txt` before extraction.
 
 Windows PowerShell:
 
@@ -19,7 +14,7 @@ Windows PowerShell:
 .\hello.exe
 ```
 
-Linux o WSL:
+Linux or WSL:
 
 ```bash
 chmod +x ncc
@@ -29,38 +24,30 @@ chmod +x hello
 LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 ```
 
-Resultado esperado: `Hello, nC public beta`, exit 0. Linux se probó en Ubuntu
-24.04 bajo WSL; sus imports requieren glibc 2.34 o posterior. Conserva el runtime
-incluido junto al compilador.
+Expected output: `Hello, nC public beta`. Exit code: `0`. Linux was tested on Ubuntu 24.04 under WSL; kit imports require glibc 2.34 symbols or later. Keep the included runtime beside the compiler.
 
-## Documentación
+## Documentation
 
-- [Web y biblioteca](https://nc-language-arizt00.rarepanda1024.chatgpt.site).
-- Guía de origen y uso en PDF: 9 páginas.
-- Arquitectura y bootstrap en PDF: 9 páginas.
-- [Instalación desde fuentes](https://github.com/Arizt00/nc/blob/main/docs/install.md).
-- [Validación de esta publicación](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md).
+- [Website and library](https://nc-language-arizt00.rarepanda1024.chatgpt.site).
+- Language Guide PDF: 9 pages.
+- Compiler Architecture and Bootstrap PDF: 9 pages.
+- [Installation and source builds](https://github.com/Arizt00/nc/blob/main/docs/install.md).
+- [Publication validation](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md).
 
-## Alcance
+The website, manuals, download instructions and contribution templates are in English. Previously published chapter URLs redirect to their English equivalents.
 
-El candidato V81 ofrece una CLI parcial de bootstrap. `self-test`,
-`compiler sema`, `compiler emit-ir`, `compiler emit-object` y
-`compiler emit-executable` cubren los recorridos probados. `--help`, `check`
-y `machine` pueden devolver `E_BOOTSTRAP_STAGE0_REQUIRED_001` (salida 69).
+## Source correction
 
-La evidencia V81 documenta generaciones B/C idénticas por anfitrión. Stage0
-permanece y Stage3 global sigue abierto. Esta entrega no sustituye
-automáticamente una instalación existente ni certifica otras ISAs. La memoria
-mantiene semántica manual/raw.
+The `ncc-ast` string-catalog test expected 26 exports after `charFromCode(int) -> str` had already been added. The corrected test compares import-lowering symbols with the typed API catalog, rejects duplicates and explicitly requires `charFromCode`. All 118 `ncc-ast` tests pass. The string fixture also passes direct `ncc` analysis, IR generation and execution; invalid release calls are rejected.
 
-Se comprobaron los kits en directorios aislados y después de extraer sus archivos.
-La comprobación de compilación con semilla configurada y las 206 pruebas del
-parser pasaron. La suite global se detuvo en `ncc-ast`: 117 pruebas aprobadas y
-un fallo en `stoud_text_string_is_manual_nc_with_explicit_release`, que espera
-26 símbolos y encuentra 27. También quedan diferencias de formato previas.
-El [registro de validación](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md)
-conserva el alcance y el resultado exacto.
+This revision updates documentation, package instructions and a source regression test. The kit compiler and runtime retain their V81 B2 binary identities. Updated archive and PDF checksums are published in `SHA256SUMS.txt`; the original release tag remains unchanged.
 
-Si encuentras un problema, abre un issue con el compilador utilizado, sistema,
-comando, fuente mínima y resultado esperado. Esa reproducción permite convertir
-una primera prueba en una mejora concreta.
+## Scope
+
+V81 exposes a partial bootstrap CLI. Tested routes include `self-test`, `compiler sema`, `compiler emit-ir`, `compiler emit-object` and `compiler emit-executable`. `--help`, `check` and `machine` can return `E_BOOTSTRAP_STAGE0_REQUIRED_001` with exit code 69.
+
+V81 evidence records byte-identical B/C compilers within each host. Stage0 is retained and global Stage3 promotion remains open. The kit does not replace an existing installation or certify other ISAs. Memory remains manual/raw.
+
+The [validation record](https://github.com/Arizt00/nc/blob/main/docs/public/validacion.md) distinguishes retained reconstruction evidence from newly executed tests and records outstanding failures. No global pass is implied by the AST correction.
+
+Report issues with compiler and provider identity, host, command, minimal source and expected result.

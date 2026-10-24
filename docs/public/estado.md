@@ -1,22 +1,22 @@
-# Estado de nC
+# nC status
 
-Actualizado el 24 de octubre de 2026. Referencia técnica V81.
+Updated 24 October 2026. Technical reference: V81.
 
-nC está en bootstrap nativo. La distribución inicial permite probar un compilador nativo parcial en Windows y Linux/WSL x86-64. El Stage0 retenido sigue siendo necesario para otras rutas de desarrollo.
+nC is in native bootstrap. The first distribution provides a partial native compiler for Windows and Linux/WSL x86-64. Retained Stage0 is still required for other development routes.
 
-## Evidencia retenida
+## Retained evidence
 
-El dossier V81 documenta reconstrucciones B2/C2 con hashes idénticos por anfitrión, 74 unidades por reconstrucción, 147 programas de corpus y 38 contratos runtime por generación y sistema. La nueva materialización de alineaciones cubre potencias de dos entre 32 bytes y 1 MiB en el perfil indicado. COFF limita la alineación de sección a 8192 bytes.
+The V81 dossier records identical B2/C2 digests within each host, 74 units per reconstruction, 147 corpus programs and 38 runtime contracts per generation and host. Native alignment materialization covers powers of two from 32 bytes to 1 MiB in the documented profile. COFF section alignment is limited to 8192 bytes.
 
-Consulta [dossier](../NCC_MODULES_V81_DOSSIER.md), [reproducción](../NCC_MODULES_V81_REPRO.md) y [ABI](../NCC_MODULES_V81_ABI_LAYOUT.md). La evidencia corresponde a generaciones identificadas; no es una certificación automática de cualquier commit posterior.
+See the [dossier](../NCC_MODULES_V81_DOSSIER.md), [reproduction recipe](../NCC_MODULES_V81_REPRO.md) and [ABI record](../NCC_MODULES_V81_ABI_LAYOUT.md). Evidence applies to identified generations, not automatically to every later commit.
 
-## Límites de la entrega
+## Release limits
 
-- El kit nativo ofrece `self-test`, `compiler sema`, `compiler emit-ir`, `compiler emit-object` y `compiler emit-executable` en los recorridos probados.
-- `--help`, `compiler --help`, `check` y `machine` no tienen la misma disponibilidad que en Stage0; pueden devolver `E_BOOTSTRAP_STAGE0_REQUIRED_001` y salida 69.
-- Linux requiere su proveedor compartido. Los programas generados del tutorial necesitan `LD_LIBRARY_PATH` al directorio que lo contiene.
-- La semántica de memoria es manual/raw; compilar no demuestra seguridad de punteros ni añade limpieza automática.
-- Stage3 global permanece abierto. La entrega no reemplaza la toolchain instalada ni certifica ejecución física de otras ISAs.
-- No se publican comparaciones de rendimiento con otros lenguajes: los tiempos del dossier son observaciones de construcción.
+- The native kit supports tested `self-test`, `compiler sema`, `compiler emit-ir`, `compiler emit-object` and `compiler emit-executable` routes.
+- `--help`, `compiler --help`, `check` and `machine` can return `E_BOOTSTRAP_STAGE0_REQUIRED_001` with exit code 69.
+- Linux requires its shared provider. Tutorial executables need `LD_LIBRARY_PATH` pointing to that provider's directory.
+- Memory semantics remain manual/raw. Compilation does not establish pointer safety or insert automatic cleanup.
+- Global Stage3 promotion remains open. This release does not replace the installed toolchain or certify physical execution of other ISAs.
+- No cross-language performance comparisons are claimed. Dossier timings describe observed builds.
 
-Los [smoke tests de la publicación](validacion.md) se registran por separado. Toda ampliación de soporte necesita su caso, entorno, artefactos y resultado reproducible.
+[Publication validation](validacion.md) records subsequent checks separately. Broader support requires a reproducible case, environment, artifacts and result.

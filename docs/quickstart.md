@@ -1,43 +1,37 @@
 # Quickstart
 
-Crea `hello.n`:
+Extract the [native V81 kit](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) and run commands from its directory. The kit already contains `hello.n`:
 
-```nC
+```nc
 use <io:output>;
 
-hello {
-    to main {
-        println("Hello, nC");
-    }
-
+helloCompacto {
+    to main { println("Hello, nC public beta"); }
     fa:
         return true;
 }
 ```
 
-Comprueba, compila y ejecuta:
+On Linux or WSL:
 
 ```bash
-ncc check hello.n
-ncc build hello.n
-ncc run hello.n
+chmod +x ncc
+./ncc compiler sema hello.n
+./ncc compiler emit-ir hello.n
+./ncc compiler emit-executable hello.n --target x86_64-unknown-linux-gnu --out hello
+chmod +x hello
+LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 ```
 
-La ruta normal es manual/raw y genera artefactos propios del fuente bajo
-`.ncc/`: `.nm`, objeto, ejecutable y manifiesto. Para funciones con una entrada
-nombrada usa `fn:` y `ref main`:
+On Windows:
 
-```nC
-hello {
-    fn:
-        public:
-            run() -> bool { return true; }
-
-    ref main ->> run;
-
-    fa:
-        return true;
-}
+```powershell
+.\ncc.exe compiler sema hello.n
+.\ncc.exe compiler emit-ir hello.n
+.\ncc.exe compiler emit-executable hello.n --target x86_64-pc-windows-msvc --out hello.exe
+.\hello.exe
 ```
 
-Formatea o migra con `nfmt hello.n --compact --in-place`.
+The program prints `Hello, nC public beta` and exits with code 0. Keep the matching runtime provider beside the executables.
+
+The native kit and Stage0 have different CLIs. Stage0 routes such as `check`, `build`, `run` and `machine` must not be substituted into this recipe. See [installation](install.md), [syntax](syntax.md) and the [language guide](public/origen-y-guia.md) for details.

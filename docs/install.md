@@ -1,13 +1,10 @@
-# Instalar y probar nC
+# Install and run nC
 
-## Kit nativo V81
+## Native V81 kit
 
-Descarga el paquete para Windows x86-64 o Linux x86-64 de
-[Releases](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81).
-Comprueba su digest en `SHA256SUMS.txt` y extráelo en un directorio nuevo.
-No hace falta instalar Rust ni LLVM para ejecutar este recorrido.
+Download the Windows x86-64 or Linux x86-64 package from [Releases](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81). Verify its digest against `SHA256SUMS.txt` and extract it into a new directory. This workflow requires no Rust, Cargo or LLVM installation.
 
-En Windows, el directorio debe conservar `ncc.exe`, `ncruntime.dll` y `hello.n`:
+On Windows, keep `ncc.exe`, `ncruntime.dll` and `hello.n` together:
 
 ```powershell
 .\ncc.exe self-test
@@ -15,7 +12,7 @@ En Windows, el directorio debe conservar `ncc.exe`, `ncruntime.dll` y `hello.n`:
 .\hello.exe
 ```
 
-En Linux o WSL x86-64 conserva `ncc`, `libncruntime.so.2` y `hello.n`:
+On Linux or WSL x86-64, keep `ncc`, `libncruntime.so.2` and `hello.n` together:
 
 ```bash
 chmod +x ncc
@@ -25,21 +22,17 @@ chmod +x hello
 LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 ```
 
-Salida esperada: `Hello, nC public beta`. Exit code: 0.
+Expected output: `Hello, nC public beta`. Exit code: `0`.
 
-Linux se ha probado en Ubuntu 24.04 bajo WSL con glibc 2.39; los imports del kit
-requieren símbolos de glibc 2.34 o posterior. Esa condición binaria no certifica
-todas las distribuciones. El compilador lleva RUNPATH `$ORIGIN`; el programa
-generado del ejemplo necesita la ruta explícita al proveedor.
+Linux was tested on Ubuntu 24.04 under WSL with glibc 2.39. Kit imports require glibc 2.34 symbols or later; this binary condition does not certify every distribution. The compiler carries RUNPATH `$ORIGIN`. The generated example needs the explicit provider search path.
 
-La CLI del kit es parcial: usa `self-test`, `compiler sema`, `compiler emit-ir`,
-`compiler emit-object` y `compiler emit-executable`. `--help`, `check` y `machine`
-todavía pueden devolver `E_BOOTSTRAP_STAGE0_REQUIRED_001` (salida 69).
+Use `compiler sema hello.n` to analyze the program and `compiler emit-ir hello.n` to inspect its IR. The partial native CLI also supports tested `compiler emit-object` and `compiler emit-executable` routes. `--help`, `check` and `machine` can return `E_BOOTSTRAP_STAGE0_REQUIRED_001` with exit code 69.
 
-## Construir el Stage0 desde fuentes
+## Stage0 development build
 
-Necesitas Git, Rust estable con los componentes de `rust-toolchain.toml`,
-un archivador compatible y el kit nativo verificado como semilla. En WSL:
+This section applies to contributors building the retained Rust implementation. It is not required to run the native kit. Install Git, the Rust components declared in `rust-toolchain.toml`, a compatible archiver and a verified native seed with its provider.
+
+From the repository root on Linux or WSL:
 
 ```bash
 export NC_STAGE0_POLICY_COMPILER="$HOME/nc-seed/ncc"
@@ -48,7 +41,7 @@ export CARGO_BUILD_JOBS=1
 cargo build --locked -p ncc-cli --bin ncc
 ```
 
-En Windows usa una terminal de desarrollo MSVC:
+In a Windows MSVC developer terminal:
 
 ```powershell
 $env:NC_STAGE0_POLICY_COMPILER = 'C:\nc-seed\ncc.exe'
@@ -57,18 +50,15 @@ $env:CARGO_BUILD_JOBS = '1'
 cargo build --locked -p ncc-cli --bin ncc
 ```
 
-Sustituye la ruta de ejemplo por la de tu kit. `lib.exe` es otra opción compatible
-para el archivador Windows. El puente nativo compila `bootstrap/nc/stage0_policy.n`
-durante la construcción; omitir la semilla provoca un error explícito.
+Replace the seed path with your verified kit. MSVC `lib.exe` is another compatible Windows archiver. The native bridge compiles `bootstrap/nc/stage0_policy.n` during the build. Missing seed configuration causes an explicit error.
 
-Una vez construido, invoca Stage0 directamente. Desde la raíz del repositorio en Linux o WSL:
+Once built, invoke Stage0 directly:
 
 ```bash
 ./target/debug/ncc check examples/00_hello/hello.n
 ./target/debug/ncc emit-ir examples/00_hello/hello.n
 ```
 
-En PowerShell usa `.\target\debug\ncc.exe` con los mismos argumentos. No necesitas volver a ejecutar Cargo para analizar cada programa.
+In PowerShell, use `.\target\debug\ncc.exe` with the same arguments. Cargo is not needed for each language-level check.
 
-La [guía de uso](public/origen-y-guia.md) desarrolla la sintaxis y las diferencias
-entre recorridos. El [estado de publicación](public/estado.md) delimita el soporte.
+See the [language guide](public/origen-y-guia.md) for syntax and the [release status](public/estado.md) for supported routes.

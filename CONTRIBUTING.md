@@ -1,48 +1,48 @@
-# Contribuir a nC
+# Contributing to nC
 
-Empieza por un comportamiento que otra persona pueda reproducir. Puede ser un error del compilador, un diagnóstico poco claro, una explicación incorrecta o un ejemplo que no coincide con las instrucciones.
+Start with behavior another developer can reproduce: a compiler failure, incorrect diagnostic, broken example or inaccurate contract.
 
-## Preparar una reproducción
+## Reproductions
 
-Incluye sistema y arquitectura, hash o versión del compilador, proveedor utilizado, comando completo, fuente mínima, salida obtenida y resultado esperado. Distingue el kit nativo de la CLI Stage0. El [estado actual](docs/public/estado.md) describe sus diferencias.
+Include host and architecture, compiler version or SHA-256, runtime provider, exact command, minimal source, observed output and expected result. Distinguish the native kit from Stage0. [Current status](docs/public/estado.md) describes the supported routes.
 
-Antes de proponer una sintaxis, explica qué decisión permite expresar y cómo se conservará en parser, AST, análisis semántico, IR y materialización. Las fases se cierran con un comportamiento coherente, no solo porque un texto ya se analice.
+Syntax proposals must explain the decision they express and its representation in parser, AST, semantic analysis, IR and materialization. Parser acceptance alone does not close a phase.
 
-## Cambios de código
+## Code changes
 
-Trabaja en una rama y mantén el cambio centrado en un problema. Conserva los diagnósticos existentes salvo que el cambio justifique su revisión. Incluye fixtures positivos y negativos donde el contrato lo necesite. Para ABI, memoria o backend, documenta el perfil y el resultado material que has comprobado.
+Keep each change focused on a concrete problem. Preserve established diagnostics unless their revision is part of the change. Add positive and negative fixtures at contract boundaries. ABI, memory and backend changes must identify the profile and emitted behavior being checked.
 
-Para comprobar fixtures, invoca el compilador ya construido. Con Stage0 disponible, desde la raíz en Linux o WSL:
+Invoke an already-built compiler for language fixtures. With Stage0 available, run from the repository root on Linux or WSL:
 
 ```bash
 ./target/debug/ncc check examples/00_hello/hello.n
 ./target/debug/ncc emit-ir examples/11_machine/checked_add_overflow_machine.n
 ```
 
-En Windows usa `.\target\debug\ncc.exe`. Si trabajas con el kit nativo, emplea `compiler sema` y `compiler emit-ir` para las rutas admitidas; no presupongas equivalencia con la CLI de Stage0.
+On Windows, use `.\target\debug\ncc.exe`. For supported native-kit routes, use `compiler sema` and `compiler emit-ir`. These are distinct interfaces.
 
-Los cambios en la implementación Rust de Stage0 requieren además sus controles de formato y pruebas. Prepara primero la semilla como indica [instalación](docs/install.md):
+Rust implementation changes also require Rust formatting and tests. Configure the seed as described in [installation](docs/install.md):
 
 ```bash
 cargo fmt --all -- --check
-cargo test --locked --workspace -- --nocapture
+cargo test --locked --workspace --no-fail-fast -- --nocapture
 ```
 
-Algunas suites requieren herramientas o entornos adicionales. Indica qué ejecutaste y qué no pudiste comprobar; conserva el fallo exacto. No cambies una expectativa para ocultar una regresión.
+Some suites need additional tools or environments. Report executed checks, untested routes and exact failures. Do not weaken expectations to conceal a regression.
 
-## Documentación y web
+## Documentation and website
 
-Las guías editables están en `docs/public/`. La web se genera desde esas fuentes:
+Editable manuals are in `docs/public/`. Generate and check the static website with:
 
 ```bash
 node tools/publishing/build-site.mjs
 node tools/publishing/check-public.mjs
 ```
 
-El generador web usa solo Node. Los PDF se generan aparte con `build-manuals.mjs` y Playwright. Esas dependencias pertenecen a la edición de documentación y no al runtime del lenguaje. Comprueba los enlaces, la búsqueda, el tamaño móvil y los ejemplos después de editar.
+The website generator needs only Node. PDF generation uses `build-manuals.mjs` and Playwright. These are documentation dependencies, not language runtime dependencies. Check links, search, mobile layout and examples after an edit. Public documentation and contribution discussions use English.
 
-## Enviar una propuesta
+## Submitting a change
 
-Explica el problema concreto, el comportamiento anterior y posterior, las pruebas y los límites pendientes. Una propuesta pequeña con evidencia se revisa mejor que una reescritura sin un caso que la motive.
+Describe the concrete problem, before-and-after behavior, affected contract, validation and remaining limits. Keep changes reviewable and preserve source provenance.
 
-Discute las decisiones técnicas con respeto. No incluyas credenciales, archivos personales, cachés o informes con rutas privadas en issues y pull requests.
+Discuss technical decisions respectfully. Do not include credentials, personal data, caches or reports containing private paths in issues or pull requests.

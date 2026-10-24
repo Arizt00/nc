@@ -1,45 +1,45 @@
-# nC Origen y guía de uso
+# nC Language Guide
 
-Edición de bootstrap V81 · 24 de octubre de 2026
+Bootstrap edition V81 · 24 October 2026
 
-nC nace de una decisión de diseño: conservar el significado de un programa cuando se pasa de sus tipos y funciones a memoria, instrucciones, objetos y ejecutables. Este documento explica esa decisión y permite recorrer el lenguaje con ejemplos pequeños. La referencia de arquitectura acompaña a esta guía para quien quiera estudiar el compilador o contribuir a su desarrollo.
+nC is built around a specific constraint: a program must retain its meaning as types and functions become memory accesses, instructions, objects and executable images. This guide explains that design and introduces the native toolchain. The companion architecture reference covers compiler internals and bootstrap evidence.
 
-## Por qué nace nC
+## Why nC exists
 
-Un programa termina ejecutándose sobre una máquina concreta. Entre el código que escribe su autor y esa ejecución aparecen decisiones sobre representación, llamadas, memoria, enlace y servicios del sistema. nC quiere que esas decisiones puedan expresarse y seguirse dentro de un mismo lenguaje.
+A program runs on a concrete machine. Between source and execution, the toolchain chooses data layouts, calling conventions, memory operations, linkage and operating-system services. nC aims to make those decisions expressible within one language and traceable through its compiler.
 
-De ahí procede su organización por niveles. Un programa normal describe funciones, datos y flujo. La raíz `[@]` expresa contratos basales. `[@machine]` hace explícitas instrucciones y transiciones de control. `primitive[@]` describe materialidad de bajo nivel. El propósito es que los pasos entre esas superficies conserven información tipada y permitan comprobar qué significa cada operación.
+The language exposes several levels. Ordinary source describes functions, data and control flow. The root `[@]` establishes foundational contracts. `[@machine]` exposes typed instructions and control transfers. `primitive[@]` specifies lower-level material operations. Transitions between these surfaces must retain the information needed to validate each operation.
 
-La soberanía del proyecto se refiere a poder estudiar y construir su propia cadena de herramientas. El compilador escrito en nC y la reconstrucción entre generaciones forman parte de ese propósito. Las semillas, los proveedores del sistema y las herramientas externas deben seguir identificados mientras sean necesarios.
+Toolchain sovereignty means being able to inspect and build the compiler and its dependencies. The compiler written in nC and its successive bootstrap generations serve that objective. Seeds, runtime providers and external tools remain explicit inputs while the build depends on them.
 
-La edición V81 documenta reconstrucciones y ejecución en perfiles x86-64 concretos. El cierre global de Stage3 continúa pendiente. Cada avance se incorpora con su alcance y sus pruebas para poder revisar cuánto de ese propósito ya se ha materializado.
+V81 records reconstruction and execution on specific x86-64 profiles. Global Stage3 promotion remains open. Each support claim is limited to its inputs, target and recorded checks.
 
-nC resulta de interés para quien quiera trabajar con compiladores, representación de datos, ABI o generación nativa. Durante el bootstrap conviene empezar por programas pequeños, conservar la versión del compilador y leer los límites del destino elegido. La semántica manual de memoria exige que el programa controle sus reservas, direcciones y liberaciones.
+nC is currently relevant to compiler development, data representation, ABI work and native code generation. Start with small programs and retain the compiler digest used to build them. Memory has manual/raw semantics: the program controls allocation, address validity and release.
 
-## Cómo leer el proyecto
+## Reading the project
 
-El lenguaje se llama **nC**. Su compilador se llama **ncc**. Una fuente normal suele usar la extensión `.n`; los ejemplos de máquina usan también `.nm`, y los de primitivas, `.ncp`.
+The language is **nC**; the compiler is **ncc**. Ordinary source uses `.n`. Machine modules also use `.nm`, and primitive examples use `.ncp`.
 
-El compilador nativo ofrece las operaciones de análisis y emisión bajo `compiler`; es el que participa en las reconstrucciones B y C. Stage0 conserva la CLI de desarrollo y algunas rutas que el candidato todavía no implementa. El kit V81 no dispone de ayuda completa: consulta su README para identificar los comandos disponibles.
+The native compiler exposes analysis and emission operations under `compiler`. It participates in bootstrap generations B and C. The retained Stage0 provides the development CLI and routes that the candidate does not yet implement. V81 has incomplete command-line help; use the kit README to identify supported commands.
 
-| Elemento | Para qué sirve |
+| Component | Responsibility |
 | --- | --- |
-| Programa `.n` | Funciones, lugares tipados, control de flujo e imports |
-| Raíz `[@]` | Contratos basales y continuidad con las capas materiales |
-| `[@machine]` | Instrucciones, registros, etiquetas y finales tipados |
-| `primitive[@]` | Contratos materiales de bajo nivel |
-| Runtime | Servicios y proveedores que necesita un programa |
-| MCT y backend | Materialización, formatos, ABI y destinos |
+| .n source | Functions, typed places, control flow and imports |
+| Root [@] | Foundational contracts and continuity with material layers |
+| [@machine] | Typed instructions, registers, labels and terminators |
+| primitive[@] | Lower-level material contracts |
+| Runtime | Services and providers required by a program |
+| MCT and backend | Materialization, object formats, ABI and targets |
 
-El recorrido inicial recomendado es leer un programa completo, comprobarlo y consultar su representación intermedia. La ejecución nativa añade la selección de destino y los proveedores correspondientes. Un ejemplo de hardware puede servir para análisis sin ser ejecutable en el ordenador del lector.
+Begin with a complete program, run semantic analysis, then inspect its IR. Native execution additionally requires a target and the corresponding providers. A hardware example may be valid for analysis without being executable on the host machine.
 
-Los directorios `examples/00_hello`, `examples/01_basics`, `examples/11_machine` y `examples/12_primitive` agrupan ejemplos por tema. Los nombres de hitos como V81 identifican el trabajo de ingeniería; no son números de una versión estable del lenguaje.
+The directories `examples/00_hello`, `examples/01_basics`, `examples/11_machine` and `examples/12_primitive` group examples by subject. Milestones such as V81 identify engineering work; they are not stable language-version numbers.
 
-## Preparar las herramientas
+## Setting up the toolchain
 
-Para una primera prueba, descarga el kit nativo V81 de las Releases del repositorio. Incluye compilador, proveedor, un ejemplo y hashes SHA-256. Ese recorrido no necesita Rust ni LLVM. El kit tiene una CLI parcial de bootstrap; usa los comandos de su README.
+Download the V81 native kit from the repository's Releases page. It contains the compiler, runtime provider, examples and SHA-256 checksums. This workflow does not require Rust, Cargo or LLVM.
 
-En Windows, desde el directorio extraído:
+In PowerShell, from the extracted Windows kit:
 
 ```powershell
 .\ncc.exe self-test
@@ -48,7 +48,7 @@ En Windows, desde el directorio extraído:
 .\hello.exe
 ```
 
-En Linux x86-64, conserva el proveedor junto al compilador. El kit fue probado en Ubuntu 24.04 bajo WSL; sus imports requieren glibc 2.34 o posterior.
+On Linux x86-64, keep the provider beside the compiler. The kit was tested on Ubuntu 24.04 under WSL. Its imports require glibc 2.34 or later.
 
 ```bash
 chmod +x ncc
@@ -59,19 +59,19 @@ chmod +x hello
 LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 ```
 
-La salida esperada es `Hello, nC public beta` y el exit code es 0. Los comandos `check`, `machine` y `--help` de Stage0 no forman parte de la interfaz disponible en este kit.
+Expected output: `Hello, nC public beta`. Expected exit code: `0`. The Stage0 commands `check`, `machine` and `--help` are not available through the same interfaces in this kit.
 
-### Identidad del compilador y del runtime
+### Compiler and runtime identity
 
-Conserva el SHA-256 de ambos artefactos. El compilador determina el código emitido; el proveedor resuelve los servicios que ese código importa. Cambiar uno de ellos modifica las condiciones de reproducción, aunque la fuente permanezca intacta.
+Retain the SHA-256 digest of both artifacts. The compiler determines emitted code; the provider resolves services imported by that code. Replacing either changes the reproduction conditions even when the source is unchanged.
 
-En Linux, el compilador del kit lleva RUNPATH `$ORIGIN`. La imagen generada en el ejemplo requiere `LD_LIBRARY_PATH` para localizar el proveedor. En Windows, conserva `ncruntime.dll` junto a los ejecutables. No mezcles bibliotecas de generaciones distintas sin comprobar sus símbolos y ABI.
+The Linux compiler has RUNPATH `$ORIGIN`. The generated example needs `LD_LIBRARY_PATH` to locate its provider. On Windows, keep `ncruntime.dll` beside the executables. Check exported symbols and ABI before mixing providers from different generations.
 
-Para estudiar o modificar Stage0, consulta `docs/install.md`. Su construcción sigue requiriendo Rust, Cargo, una semilla nativa verificada y un archivador compatible. Esa dependencia corresponde al desarrollo de Stage0; el recorrido de esta guía usa directamente el compilador distribuido.
+Stage0 development is documented in `docs/install.md`. Building it still requires Rust/Cargo, a verified native seed and a compatible archiver. The examples in this guide invoke distributed executables directly.
 
-## El primer programa
+## The first program
 
-Este es el ejemplo conservado en `examples/00_hello/hello.n`:
+The repository retains this source in `examples/00_hello/hello.n`:
 
 ```nc
 use <io:output>;
@@ -86,38 +86,38 @@ helloCompacto {
 }
 ```
 
-El import selecciona la salida de `io`. `helloCompacto` nombra el contenedor. `to main` expresa la entrada compacta; `fa:` conserva el final del contenedor. Las llaves delimitan el programa y su bloque de ejecución.
+The import selects the `io` output service. `helloCompacto` names the container. `to main` declares the compact entry point; `fa:` supplies the container final. Braces delimit the container and execution block.
 
-En el directorio del kit puedes analizar el programa e inspeccionar su IR. En Linux o WSL:
+From the extracted Linux or WSL kit:
 
 ```bash
 ./ncc compiler sema hello.n
 ./ncc compiler emit-ir hello.n
 ```
 
-En PowerShell:
+In PowerShell:
 
 ```powershell
 .\ncc.exe compiler sema hello.n
 .\ncc.exe compiler emit-ir hello.n
 ```
 
-`compiler sema` comprueba el programa; `compiler emit-ir` expone su representación intermedia. La ejecución requiere emitir una imagen para el destino, tal como se indica en la instalación. Ambos análisis deben finalizar con código 0. La salida del IR describe el programa y no sustituye su ejecución.
+`compiler sema` checks the program. `compiler emit-ir` exposes its intermediate representation. Both commands should exit with code 0. IR output describes the program; execution requires emitting and launching a target image as shown in the toolchain setup.
 
-## Lugares y funciones
+## Places and functions
 
-Una declaración como `contador >> int <- 0;` crea un lugar tipado e inicializa sus bits. `>>` separa nombre y tipo; `<-` escribe. Un lugar sin inicializador no promete memoria inicializada.
+`value >> int <- 0;` declares a typed place and initializes its bits. `>>` separates the name and type; `<-` writes a value. A declaration without an initializer does not guarantee initialized memory.
 
 ```nc
-contador {
+counter {
     fn:
         public:
             run() -> bool {
-                valor >> int <- 0;
-                while (valor < 3) {
-                    valor <- valor + 1;
+                value >> int <- 0;
+                while (value < 3) {
+                    value <- value + 1;
                 }
-                return valor == 3;
+                return value == 3;
             }
 
     ref main ->> run;
@@ -127,37 +127,37 @@ contador {
 }
 ```
 
-En esta forma, `fn:` agrupa funciones, `public:` indica visibilidad y `ref main ->> run;` selecciona la entrada. El nombre `run` no tiene un privilegio implícito. Su tipo de retorno es `bool` y la comparación final produce ese valor.
+`fn:` groups functions. `public:` controls visibility, and `ref main ->> run;` selects the entry point. The name `run` has no implicit entry-point privilege. Its `bool` result is produced by the final comparison.
 
-Las funciones reciben parámetros como `valor >> int`. Los bloques `if`, `else` y `while` expresan control de flujo. El lenguaje conserva el orden de evaluación definido por la fuente; la optimización debe respetarlo.
+Parameters use declarations such as `value >> int`. Blocks and `if`, `else` and `while` express control flow. Transformations must preserve the evaluation order defined by the source.
 
-Conviene aprender con ejemplos que devuelvan un resultado fácil de comprobar. Añade después una condición, otra función o un import. Cuando aparezca un diagnóstico, conserva primero el caso mínimo que lo reproduce.
+Keep examples small enough to verify their result. Add a condition, function or import only after the preceding program works. When a diagnostic appears, retain the smallest source that reproduces it.
 
-La sintaxis compacta vigente aparece en el parser y en los ejemplos actuales. Las formas históricas pueden permanecer en documentos antiguos o en herramientas de migración. Que un texto antiguo exista en el repositorio no significa que el compilador actual lo acepte.
+The current parser and fixtures define the accepted compact syntax. Older documents and migration tools may retain historical forms; their presence in the repository does not establish current compiler support.
 
-## Memoria y servicios
+## Memory and services
 
-La superficie normal de nC tiene semántica manual/raw. La comprobación de tipos no añade liberación automática, ownership ni seguimiento de vida de los punteros. El programador debe respetar las condiciones materiales de cada operación.
+Ordinary nC source has manual/raw memory semantics. Type checking does not add automatic release, ownership tracking or pointer-lifetime validation. The program must satisfy the material preconditions of each operation.
 
-Las grafías `T*`, `p<T>` y `ptr<T>` convergen en la representación tipada de punteros. `rd`, `wr` y `off` aparecen en ejemplos de acceso a memoria. Antes de utilizarlas, comprueba el contrato de la API, el tamaño de la reserva, la alineación y cuánto tiempo sigue siendo válida la dirección.
+The spellings `T*`, `p<T>` and `ptr<T>` converge on typed pointer representations. Memory examples use operations such as `rd`, `wr` and `off`. Check allocation size, alignment, access type and address lifetime before dereferencing or computing an offset.
 
-Una función que acepta un puntero no recibe por ello la longitud de su reserva. Una llamada que devuelve memoria tampoco implica que el compilador vaya a liberarla. Los imports de memoria deben leerse junto a los ejemplos de su familia y el proveedor del destino.
+A pointer parameter does not implicitly carry allocation length. A function returning allocated storage does not arrange its eventual release. Read each memory API together with its examples and target provider.
 
-El runtime proporciona servicios como salida, archivos, cadenas o interacción con el sistema. Su disponibilidad depende del compilador, el proveedor y el perfil. Una firma reconocida por el frontend no demuestra que su símbolo esté disponible al enlazar.
+The runtime supplies services such as output, files, strings and operating-system access. Availability depends on the compiler, provider and profile. Frontend recognition of a signature does not establish that its symbol can be resolved during linking.
 
-Para dividir un proyecto, el import compacto de módulos usa una forma como:
+Project modules use compact imports such as:
 
 ```nc
 use <project:worker>;
 ```
 
-La resolución debe conservar la identidad de la unidad y sus dependencias. Evita copiar funciones entre archivos para eludir un problema de enlace: reduce el caso y comprueba el grafo del proyecto. Los objetos y las cachés bajo `.ncc` son resultados de trabajo, no fuentes que deban copiarse al repositorio público.
+Resolution must preserve unit identity and dependencies. Diagnose linkage failures through the project graph and a minimal reproduction. Objects and caches under `.ncc` are derived artifacts, not source files for publication.
 
-## Leer la capa de máquina
+## The machine layer
 
-La capa `[@machine]` forma parte del mismo sistema tipado. Los registros, las etiquetas, las instrucciones y los finales participan en su contrato. El ejemplo `examples/11_machine/checked_add_overflow_machine.n` permite observar una suma seguida de una rama por overflow.
+`[@machine]` participates in the same typed system. Registers, labels, instructions and terminators carry contracts that must remain coherent through analysis and IR. `examples/11_machine/checked_add_overflow_machine.n` demonstrates addition followed by an overflow branch.
 
-Este recorrido necesita Stage0. Los comandos siguientes invocan el ejecutable ya construido, desde la raíz del repositorio en Linux o WSL. En Windows usa `.\target\debug\ncc.exe` con los mismos argumentos. El kit nativo V81 no implementa estas entradas.
+This route requires Stage0. From the repository root on Linux or WSL, invoke the already-built executable directly. On Windows, use `.\target\debug\ncc.exe` with the same arguments. These entry points are not implemented by the V81 native kit.
 
 ```bash
 ./target/debug/ncc check \
@@ -166,35 +166,35 @@ Este recorrido necesita Stage0. Los comandos siguientes invocan el ejecutable ya
   examples/11_machine/checked_add_overflow_machine.n
 ```
 
-La extensión y la superficie importan. Para un módulo `.nm` con contrato de objeto, usa la ruta de máquina correspondiente:
+Object-contract `.nm` modules require the machine CLI:
 
 ```bash
 ./target/debug/ncc machine emit-ir \
   examples/11_machine/object_elf64.nm
 ```
 
-Una instrucción de salto necesita un destino coherente. Un terminador cierra un camino de ejecución; no es un adorno del texto. Un bloque que requiere terminar debe hacerlo según su contrato, y el IR tiene que conservar esa decisión.
+A branch needs a valid destination. A terminator closes an execution path, and the IR must retain that control-flow decision. Accepting an unterminated block where the contract requires termination moves an inconsistency into the backend.
 
-Los ejemplos con `halt`, registros privilegiados o instrucciones dependientes de ISA se estudian primero con `check` y la salida intermedia. Para ejecutarlos hay que disponer de un destino compatible y conocer su contexto material. La aceptación sintáctica no autoriza a suponer que cualquier máquina anfitriona pueda ejecutarlos.
+Inspect examples containing `halt`, privileged registers or ISA-specific instructions before attempting execution. They require a compatible target and execution context. Parser acceptance alone does not establish host executability.
 
-`primitive[@]` cubre otro nivel de materialidad. Su relación con máquina, memoria y enlace debe mantenerse explícita. Duplicar una semántica en dos superficies crea resultados difíciles de verificar; por eso la continuidad tipada es una regla central del proyecto.
+`primitive[@]` exposes a different material level. Its relationship to machine instructions, memory and linkage must remain explicit. Duplicating semantics across surfaces makes those contracts harder to verify.
 
-## Trabajar durante el bootstrap
+## Working during bootstrap
 
-Guarda junto a cada reproducción el comando completo, el sistema, el perfil, la versión o hash del ejecutable, la fuente mínima y el diagnóstico. Si comparas generaciones, conserva también los proveedores. Una diferencia de runtime puede parecer un error del compilador.
+Record the complete command, host, target, executable digest, provider, minimal source and diagnostic for each reproduction. When comparing generations, retain their providers too: a runtime difference can resemble a compiler regression.
 
-Las pruebas positivas muestran qué se acepta y qué resultado produce. Las negativas fijan qué debe rechazarse y con qué diagnóstico. Cuando una modificación cambia la superficie o su significado, parser, AST, semántica, IR, fixtures y documentación deben quedar de acuerdo.
+Positive fixtures establish accepted behavior and results. Negative fixtures establish rejection and diagnostics. A surface or semantic change must keep parser, AST, semantic analysis, IR, fixtures and documentation aligned.
 
-El dossier V81 registra reconstrucciones B2 y C2 con identidad del compilador por anfitrión en Windows y Linux/WSL x86-64. También registra programas ejecutados, contratos de runtime y controles adversos. Esos resultados pertenecen al perfil y a la evidencia descritos allí; no convierten todas las arquitecturas declaradas en destinos cerrados.
+The V81 dossier records byte-identical B2/C2 compilers within each Windows and Linux/WSL x86-64 host, alongside executed programs, runtime contracts and adversarial checks. Those results apply to the documented profiles; they do not close execution support for every declared architecture.
 
-Para contribuir, elige un comportamiento pequeño: una explicación confusa, un ejemplo que falla con la versión documentada, un diagnóstico incompleto o una regresión reproducible. Abre un issue con el caso mínimo y explica el resultado esperado. Las propuestas de sintaxis requieren justificar cómo se conservará su significado en las capas siguientes.
+A useful contribution identifies one behavior: an incorrect example, a missing diagnostic, an unclear contract or a reproducible regression. Include the expected result and the smallest source that demonstrates the issue. Syntax proposals must explain how their meaning survives subsequent compiler phases.
 
-### Fuentes de esta guía
+### Source references
 
-- `AGENTS.md`, reglas de continuidad y criterio de cierre.
-- `docs/syntax.md`, superficie compacta y memoria manual.
-- `crates/ncc-stage0-bridge/build.rs`, requisito de semilla.
-- `examples/00_hello/hello.n` y `examples/11_machine`.
-- `docs/NCC_MODULES_V81_DOSSIER.md` y `docs/NCC_MODULES_V81_REPRO.md`.
+- `AGENTS.md`: continuity rules and completion criteria.
+- `docs/syntax.md`: compact syntax and manual memory.
+- `crates/ncc-stage0-bridge/build.rs`: seed requirements.
+- `examples/00_hello/hello.n` and `examples/11_machine`.
+- `docs/NCC_MODULES_V81_DOSSIER.md` and `docs/NCC_MODULES_V81_REPRO.md`.
 
-La referencia de arquitectura explica el pipeline y la lectura de esa evidencia. Los documentos de instalación y descargas del repositorio contienen las instrucciones operativas actualizadas de cada publicación.
+The architecture reference describes the pipeline and interpretation of bootstrap evidence. Release notes and installation documentation carry the operational instructions for each published kit.

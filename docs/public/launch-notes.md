@@ -1,19 +1,21 @@
-# Presentación pública de nC
+# Launch material
 
-## Texto breve para presentar el proyecto
+## Announcement draft
 
-nC es un lenguaje experimental que conecta funciones, memoria, instrucciones de máquina y primitivas materiales con contratos tipados. Su compilador está en bootstrap nativo. La primera entrega pública incluye un kit para Windows y Linux x86-64 que compila y ejecuta un programa sin instalar Rust ni LLVM. El repositorio contiene fuentes, ejemplos y dos manuales breves. Buscamos reproducciones de errores y comentarios sobre la primera experiencia de uso.
+nC is an experimental language connecting functions, explicit memory and machine instructions through typed contracts. Its compiler is in native bootstrap. The first public kit targets Windows and Linux x86-64 and compiles a program without a Rust or LLVM installation. Source, executable examples and two short manuals are available. Reproducible failures and feedback on the first-use workflow are welcome.
 
-Repositorio: https://github.com/Arizt00/nc
+Website: https://nc-language-arizt00.rarepanda1024.chatgpt.site
+Source: https://github.com/Arizt00/nc
+Downloads: https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81
 
-Biblioteca: https://nc-language-arizt00.rarepanda1024.chatgpt.site
+## Demonstration outline
 
-## Demostración breve
+1. Show the source and the specific design problem it addresses.
+2. Extract the native kit and run its self-test.
+3. Run semantic analysis, inspect IR, emit the executable and show its output.
+4. Explain manual memory and the current CLI limits.
+5. Point to a small contribution with a reproducible expected result.
 
-Mostrar `hello.n`, ejecutar self-test, generar el ejecutable y enseñar la salida real. Después abrir el capítulo de arquitectura y explicar una decisión concreta del lenguaje. Cerrar con los límites de la CLI del kit y el enlace para informar de errores.
+## Adoption work
 
-## Después de la publicación
-
-La adopción se puede observar en instalaciones reproducidas, issues con casos mínimos, lectores que completan el tutorial y contribuciones aceptadas. Las estrellas ayudan a descubrir el proyecto, pero no demuestran que una instalación funcione.
-
-Una vez publicado, el autor puede compartir la demostración en comunidades de compiladores y programación de sistemas cuyos temas encajen. Conviene responder a las primeras reproducciones antes de añadir más mensajes de promoción. Este documento prepara el texto; no envía mensajes ni fija publicaciones automáticas.
+Keep download instructions working, answer concrete reports and turn first-use failures into regression fixtures. Track whether users can complete the tutorial before expanding promotion. Publish measured changes and known limits in each release. This file prepares launch copy; it does not record messages sent to any community.

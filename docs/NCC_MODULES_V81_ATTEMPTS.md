@@ -1,77 +1,45 @@
-# Intentos y controles V81
+# V81 attempts and controls
+
+English edition of the retained attempt log. Failures and final runs remain distinct.
 
 ## Baseline
 
-V80 C7 rechaza el programa sobrealineado en los dos sistemas en la
-materializacion del primer global. Se conserva el error y se comprueba
-que no aparece el objeto solicitado.
+V80 C7 rejects the overaligned program on both hosts while materializing the first global. The error is retained, and absence of the requested object is verified.
 
-## Preparacion de fixtures
+## Fixture preparation
 
-El primer preflight del fixture unwind uso `local` como identificador,
-que es una palabra reservada. Se cambio a `frameValue` en la fuente de
-prueba; no se relajo el parser.
+The first unwind-fixture preflight used the reserved word local as an identifier. It was changed to frameValue in the fixture; the parser was not relaxed.
 
-Las funciones del hijo leaf quedaron inicialmente bajo la seccion stc
-en vez de fn/public. El resolver rechazo sus tres referencias sin permiso.
-Se corrigio la fuente del fixture, sin cambiar reglas de visibilidad.
+Leaf-child functions initially appeared under stc rather than fn/public. The resolver rejected their three inaccessible references. The fixture was corrected without changing visibility rules.
 
-Una consulta del estado de cache uso una ruta de informe incorrecta.
-La compilacion fria ya habia terminado correctamente; se conservo su
-informe original desde `.ncc/incremental/project-cache.json` antes de
-ejecutar la pasada caliente.
+A cache-status query used an incorrect report path. The cold build had already succeeded; its original `.ncc/incremental/project-cache.json` report was retained before the warm pass.
 
-## Reconstrucciones preliminares
+## Preliminary reconstructions
 
-El intento Windows B1 perdio su proceso con 70 de 74 objetos y sin imagen
-ni recibo de cierre. Su causa no se certifica. No se cuenta como build limpio.
-Se obtuvo una semilla provisional enlazando esos objetos con cuatro objetos
-nC V80 de fuentes verificadas como identicas y un entry nC retenido.
-El recibo declara expresamente esa retencion. No es B2 ni C2.
+Windows B1 lost its process after 70 of 74 objects, without an image or completion receipt. The cause is not certified, and the attempt is not counted as a clean build. A provisional seed linked those objects with four V80 nC objects whose sources were verified identical and a retained nC entry. Its receipt explicitly declares retained inputs. It is neither B2 nor C2.
 
-El intento provisional A2 se cancelo cuando esa semilla permitio comenzar
-B2 desde un directorio completamente nuevo. Se conservaron sus materiales
-y el registro de cancelacion. B2 y C2 finales no reutilizan sus objetos.
+The provisional A2 attempt was cancelled once that seed allowed B2 to start in a completely new directory. Its materials and cancellation record were retained. Final B2/C2 do not reuse its objects.
 
-Linux B1 termino como semilla preliminar; B2/C2 usan el snapshot final,
-con la identidad de cache y validacion MCT V81.
+Linux B1 completed as a preliminary seed. B2/C2 use the final snapshot with V81 cache identity and MCT validation.
 
 ## Linkers
 
-MSVC rechazo el COFF de 8192 bytes con LNK1164 al no declararse
-`/ALIGN:8192`. El enlace explicito con esa opcion produjo una imagen
-que se ejecuto correctamente. El warning LNK4108 se conserva; no se
-suprime ni se presenta como una certificacion de driver.
+MSVC rejected 8192-aligned COFF with LNK1164 when `/ALIGN:8192` was absent. Explicit linking with the option produced a runnable image. LNK4108 is retained, not suppressed or presented as driver certification.
 
-Los fixtures globales superiores a 8192 bytes se rechazan para COFF,
-pero sus IR/MCT y ejecutables PE directos se conservan. Es un limite del
-formato de objeto, no un truncamiento aceptado.
+COFF rejects global fixtures aligned above 8192 bytes, while their IR/MCT and direct PE executables are retained. This is an object-format limit, not accepted truncation.
 
-## Runtime y corpus
+## Runtime and corpus
 
-La primera ejecucion Linux B2 de los 38 contratos carecia de los
-directorios names, empty y stress. Fallaron tres contratos de filesystem.
-Se conservaron ese informe y sus fixtures; el reintento usa
-`fixtures-r2` y `processes-r2.json`, con la preparacion completa.
-Windows B2/C2 y Linux C2 recibieron esa preparacion antes de su primera
-corrida y pasaron sus 38 contratos.
+The first Linux B2 run of 38 contracts lacked the names, empty and stress directories. Three filesystem contracts failed. The report and fixtures were retained; the retry uses fixtures-r2 and processes-r2.json with complete preparation. Windows B2/C2 and Linux C2 received that preparation before their first runs and passed all 38 contracts.
 
-El corpus Windows B2 inicial no tenia ncruntime.dll junto a los programas
-generados. Los 55 casos dependientes del proveedor fueron rechazados por
-el loader con 0xc0000135. No fue una correccion de codigo generado.
-Se conserva la corrida y se ejecutan B2/C2 en directorios nuevos
-`windows-r2`, con el proveedor propio declarado. Las cuatro corridas
-finales del corpus pasan.
+The initial Windows B2 corpus lacked ncruntime.dll beside generated programs. The loader rejected 55 provider-dependent cases with 0xc0000135. Generated code was not changed to resolve this. That run is retained; B2/C2 were repeated in fresh windows-r2 directories with the identified native provider. All four final corpus runs pass.
 
-## Controles negativos intencionales
+## Intentional negative controls
 
-- align(24) y align(2097152) no producen imagen ni objeto valido.
-- COFF no trunca los globales alineados por encima de 8192 bytes.
-- Un byte de datos cambiado hace fallar el verificador golden.
-- Cabecera MCT no potencia de dos, alineacion declarada insuficiente y
-  offset global desalineado se rechazan con digests de cache coincidentes.
-- El verificador de equivalencia detecta exactamente el byte 31 alterado.
-  Esa imagen no se ejecuta.
+- align(24) and align(2097152) produce no valid image or object.
+- COFF does not truncate globals aligned above 8192 bytes.
+- Changing one data byte causes golden verification to fail.
+- A non-power-of-two MCT header, insufficient declared alignment and a misaligned global offset are rejected despite matching cache digests.
+- Equivalence verification identifies the altered byte at offset 31 exactly. That image is not executed.
 
-Los FAIL de esos controles y los intentos retenidos no se confunden con
-los informes finales positivos ni se eliminan para obtener una suite verde.
+FAIL results from intentional controls and retained attempts remain separate from final positive reports. They are not deleted to obtain a passing suite.

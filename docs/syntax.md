@@ -1,8 +1,8 @@
 # nC Syntax
 
-La superficie publica `.n` es compacta, seccionada y manual/raw. El
-compilador analiza, tipa, optimiza sin cambiar semantica y materializa bytes;
-no introduce seguridad, ownership, limpieza o planificacion ocultos.
+The public `.n` surface is compact, sectioned and manual/raw. The compiler
+parses, checks types, preserves semantics during optimization and materializes
+bytes. It does not add hidden ownership, cleanup or scheduling.
 
 ## Imports
 
@@ -11,10 +11,10 @@ use <io:input, output, render>;
 use <memory:region, heap>;
 ```
 
-`<...>` selecciona la biblioteca, `io` el modulo, `:` sus elementos y `,` los
-separa. Los imports expandidos solo son representacion compatible.
+`<...>` selects the library, `io` identifies the module, `:` introduces its
+items and `,` separates them. Expanded imports are compatibility representations.
 
-## Contenedor y secciones
+## Containers and sections
 
 ```nC
 counter {
@@ -55,40 +55,40 @@ counter {
 }
 ```
 
-El contenedor normal solo lleva nombre. `:: kernel`, `:: machine`,
-`:: primitive`, `:: runtime` y otros roles aparecen cuando cambian el contrato
-material. Solo se permite un `stc:`. `run` no es especial: `ref main` lo
-convierte en entrada.
+An ordinary container is named without a role suffix. `:: kernel`, `:: machine`,
+`:: primitive`, `:: runtime` and other roles select distinct material contracts.
+Only one `stc:` section is allowed. `run` has no special status; `ref main`
+selects it as the entry point.
 
-La visibilidad forma parte del simbolo material:
+Visibility is part of the material symbol:
 
-- `public`: API exportada; LLVM usa visibilidad normal y el objeto un simbolo global.
-- `internal`: visible entre unidades del paquete; LLVM usa `hidden` y el objeto conserva un simbolo global enlazable.
-- `private`: visible solo en su contenedor; LLVM usa `private` y el objeto un simbolo local.
+- `public`: exported API; LLVM uses default visibility and the object exposes a global symbol.
+- `internal`: visible across package units; LLVM uses `hidden` while the object retains a linkable global symbol.
+- `private`: visible only within its container; LLVM uses `private` and the object contains a local symbol.
 
-Las mismas reglas se aplican a funciones, datos y campos cuando su contrato
-admite visibilidad. Ninguna de ellas agrega dispatch o wrappers ocultos.
+The same rules apply to functions, data and fields where the contract admits
+visibility. They do not introduce hidden dispatch or wrappers.
 
-Los parametros se declaran con `nombre >> tipo`. En `constructure:` la forma
-oficial es `static(...) -> Tipo;`; `nfmt` migra `static :: in(...)` y
-`static :: fn(...)` sin cambiar el contrato tipado.
+Parameters use `name >> type`. In `constructure:`, the canonical form is
+`static(...) -> Type;`. `nfmt` migrates `static :: in(...)` and
+`static :: fn(...)` without changing the typed contract.
 
-Para una entrada basica de hasta 30 sentencias logicas se puede usar:
+For a basic entry point of up to 30 logical statements, use:
 
 ```nC
 hello {
-    to main { println("Hola"); }
+    to main { println("Hello"); }
     fa:
         return true;
 }
 ```
 
-## Tipos y memoria
+## Types and memory
 
-`>> T <- value` declara un lugar tipado y escribe sus bits iniciales. La misma
-flecha escribe lugares existentes. `=` se acepta solo como compatibilidad de
-fuentes historicas y `nfmt` lo convierte a `<-`; `:=` ha sido retirado. Una
-declaracion sin inicializador no promete bytes inicializados.
+`>> T <- value` declares a typed place and writes its initial bits. The same
+arrow writes existing places. `=` remains a historical compatibility form
+that `nfmt` converts to `<-`; `:=` has been removed. A declaration without
+an initializer does not promise initialized bytes.
 
 ```nC
 raw >> byte* <- cast(alloc(64));
@@ -99,29 +99,29 @@ value >> int <- rd(numbers);
 free(numbers);
 ```
 
-`T*`, `p<T>` y `ptr<T>` llegan al mismo AST tipado. Se permiten null,
-desalineacion, aliasing, overflow, fuera de rango, UAF y double free. Compilar
-no garantiza un resultado estable para comportamiento indefinido.
+`T*`, `p<T>` and `ptr<T>` reach the same typed AST. Raw semantics permit null,
+misalignment, aliasing, overflow, out-of-bounds access, use-after-free and
+double free. Compilation does not guarantee stable results for undefined behavior.
 
 ## Strings
 
 ```nC
-message >> str <- "resultado: " + (ok ? "true" : "false");
+message >> str <- "result: " + (ok ? "true" : "false");
 println(message);
 ```
 
-`str + str` baja a la operacion nativa de concatenacion. El puntero resultante
-queda bajo control manual del programador. `cat(dst, cap, left, right)` permite
-aportar el buffer cuando se necesita controlar direccion y capacidad.
+`str + str` lowers to the native concatenation operation. The resulting pointer
+remains under manual program control. `cat(dst, cap, left, right)` accepts
+caller-provided storage when address and capacity must be controlled.
 
-## ABI y layout
+## ABI and layout
 
-Los contratos `repr(C)`, `packed`, `align`, unions, bitfields, arrays flexibles,
-TLS, per-CPU, varargs, retornos agregados y punteros de funcion se conservan en
-AST, IR, machine, objeto y enlace. Las declaraciones `abi` y `bind` siguen
-disponibles para seleccionar registros, stack, preservados y retorno.
+Contracts for `repr(C)`, `packed`, `align`, unions, bitfields, flexible arrays,
+TLS, per-CPU data, varargs, aggregate returns and function pointers are retained
+through AST, IR, machine, object and linking representations. `abi` and `bind`
+remain available to specify registers, stack, preserved state and returns.
 
-## Control de flujo
+## Control flow
 
 ```nC
 if (ready) { consume(); }
@@ -132,12 +132,11 @@ while (active) { step(); }
 guard valid else return false;
 ```
 
-`&&`, `||`, `!`, comparaciones, aritmetica, escrituras compuestas y el operador
-condicional conservan orden de evaluacion de fuente.
+`&&`, `||`, `!`, comparisons, arithmetic, compound writes and the conditional
+operator preserve source evaluation order.
 
-## Formato
+## Formatting
 
-`nfmt --compact` preserva comentarios y las secciones `const/type/stc/local/fn/fa`.
-No elimina visibilidad ni convierte funciones agrupadas en declaraciones
-directas. `state {}` migra a `stc:` y el final generado `shutdown` migra a
-`fa:`.
+`nfmt --compact` preserves comments and `const/type/stc/local/fn/fa` sections.
+It retains visibility and grouped functions. `state {}` migrates to `stc:`;
+the generated `shutdown` final migrates to `fa:`.

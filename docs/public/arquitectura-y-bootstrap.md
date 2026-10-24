@@ -1,90 +1,90 @@
-# nC Arquitectura y bootstrap
+# nC Compiler Architecture and Bootstrap
 
-Edición técnica V81 · 24 de octubre de 2026
+Technical edition V81 · 24 October 2026
 
-Esta referencia describe cómo se relacionan las superficies de nC con el compilador, el runtime y la generación de artefactos. Está dirigida a quien vaya a revisar código, reproducir un resultado o modificar una fase del compilador. La unidad de trabajo es un comportamiento completo: fuente, análisis, representación, materialización y prueba.
+This reference describes the relationship between nC surfaces, compiler phases, runtime providers and emitted artifacts. It is intended for source review, reproduction and compiler development. The unit of work is a complete behavior: source, analysis, representation, materialization and validation.
 
-## El contrato entre niveles
+## Contracts between levels
 
-nC organiza distintas formas de expresar un programa dentro de una continuidad semántica. La fuente normal, la raíz basal, la capa de máquina y las primitivas tienen responsabilidades diferentes. Una operación debe conservar la información necesaria al atravesar esos niveles.
+nC exposes several ways to express a program within one semantic model. Ordinary source, the foundational root, machine code and primitives have distinct responsibilities. An operation must retain the information required as it crosses these levels.
 
-El repositorio contiene la implementación Rust retenida y el trabajo nativo en nC. `crates/` reúne los componentes de la primera; `tools/ncc/nc/src/` contiene fuentes del compilador nativo. `runtime/nc/` conserva cuerpos y proveedores del runtime. Las herramientas de construcción y los contratos bajo `bootstrap/` relacionan generaciones y entradas.
+`tools/ncc/nc/src/` contains the native compiler written in nC. `crates/` contains the retained Rust implementation and development tools. `runtime/nc/` contains runtime bodies and providers. Build tools and contracts under `bootstrap/` connect inputs and generations.
 
-| Fase | Responsabilidad |
+| Phase | Responsibility |
 | --- | --- |
-| Lexer y parser | Tokenización y reconocimiento de la estructura sintáctica |
-| AST | Identidad de declaraciones, tipos, relaciones y superficies |
-| Semántica | Resolución de símbolos y validación de tipos, aridad y flujo |
-| IR | Representación del programa analizado para lowering y transformaciones |
-| MCT y backend | Materialización conforme al layout, la ISA y la ABI del destino |
-| Enlace | Resolución de símbolos, relocaciones y dependencias de la imagen |
-| Ejecución | Comprobación del resultado y de los efectos observables |
+| Lexer and parser | Tokenization and syntactic structure |
+| AST | Identity of declarations, types, relationships and surfaces |
+| Semantic analysis | Symbol resolution and validation of types, arity and control flow |
+| IR | Representation of the analyzed program for lowering and transformations |
+| MCT and backend | Materialization according to target layout, ISA and ABI |
+| Linking | Symbol resolution, relocations and image dependencies |
+| Execution | Verification of results and observable effects |
 
-La tabla es un mapa de responsabilidades, no una promesa de que cada ruta atraviese exactamente las mismas funciones. Algunas superficies tienen entradas y validaciones propias. Un cambio correcto explica qué ruta modifica y qué información conserva.
+This is a responsibility map. Some surfaces have their own entry points and validation paths. A change must identify the affected route and the information it preserves.
 
-La documentación de diseño y la evidencia de una versión cumplen funciones distintas. La primera define el contrato; la segunda demuestra resultados para unas entradas, un compilador y un entorno concretos. Las dos deben poder cotejarse con el código.
+Design documentation specifies the contract. Version evidence records results for particular inputs, compiler artifacts and environments. Both must be traceable to implementation and fixtures.
 
-## Parser AST semántica e IR
+## Parser AST semantics and IR
 
-El parser actual reconoce imports compactos como `use <io:output>;`, contenedores con nombre, secciones y funciones agrupadas. Las pruebas de Material V2 en `crates/ncc-parser/src/lib.rs` fijan comportamientos de esa superficie. La denominación histórica de una prueba no debe usarse para deducir una gramática distinta de la que comprueba.
+The parser recognizes compact imports such as `use <io:output>;`, named containers, sections and grouped functions. Material V2 tests in `crates/ncc-parser/src/lib.rs` cover this surface. A historical test name does not override the grammar that the test actually exercises.
 
-El AST debe mantener la identidad de los elementos que luego necesita el análisis: lugares, funciones, tipos, visibilidad, flujo, contratos de layout y superficies materiales. Si un dato ya tiene una representación tipada, sustituirlo por una cadena de texto trasladaría errores a fases posteriores.
+The AST preserves the entities needed by analysis: places, functions, types, visibility, flow, layout contracts and material surfaces. Replacing an existing typed representation with an unstructured string defers errors to later phases.
 
-La semántica comprueba las relaciones aceptadas por el lenguaje. Una firma debe tener aridad y tipos coherentes; las referencias deben resolver al símbolo correcto; las operaciones de control deben respetar su contexto. Un diagnóstico consolidado es parte del comportamiento observable de las herramientas.
+Semantic analysis checks relationships accepted by the language. Signatures require consistent arity and types; references must resolve to the intended symbols; control operations must satisfy their context. Established diagnostics are observable tool behavior.
 
-El IR conserva el resultado del análisis de forma utilizable por las fases siguientes. No basta con que un nodo exista en el AST: hay que comprobar que su significado sobreviva al lowering y a las transformaciones. Las pruebas deben inspeccionar las propiedades que podrían perderse.
+The IR carries analyzed meaning into later phases. An AST node alone is insufficient: lowering and transformations must preserve its semantics. Tests should inspect the properties that could be lost at those boundaries.
 
-Un cambio de superficie debería incluir un caso positivo, otro negativo y una observación del IR cuando el contrato pueda alterarse en la traducción. Si llega a generación nativa, debe comprobar además el artefacto y, cuando el entorno lo permita, su ejecución.
+A surface change should include positive and negative fixtures, plus an IR observation when translation can alter the contract. Native-generation changes also require artifact checks and execution where the environment supports it.
 
-Las pruebas deben cubrir los puntos donde puede perderse información: resolución del destino de un salto, compatibilidad de firmas y conservación del orden de evaluación. Esas propiedades necesitan casos observables y expectativas independientes de la implementación.
+Tests should cover destination resolution, signature compatibility and evaluation order using expectations independent of the implementation. Catalog consistency tests should compare declared symbol sets and reject duplicates rather than relying only on a fixed count.
 
-## Máquina y control de flujo
+## Machine code and control flow
 
-`[@machine]` expresa instrucciones con estructura tipada. Los operandos, registros, etiquetas y finales deben ser coherentes desde el parser hasta el IR. La prioridad del proyecto exige mantener esa relación cuando se amplía la materialización.
+`[@machine]` represents instructions with typed structure. Operands, registers, labels and terminators must remain coherent from parsing through IR. Extending materialization must preserve those relationships.
 
-Una etiqueta identifica una posición o bloque conforme al modelo admitido. Un salto enlaza caminos de control. Las condiciones de salto conservan el significado de los flags u operaciones que consumen. Al emitir instrucciones reales, no puede perderse la dependencia que hacía correcta la rama en la representación anterior.
+A label identifies a position or block in the supported model. A branch connects control-flow paths. Conditional transfers preserve the meaning of the flags or operations they consume. Native emission must retain the dependency that made the branch valid in the earlier representation.
 
-Los terminadores delimitan qué puede ejecutarse después de un bloque. Introducir una instrucción tras un final sin definir cómo se alcanza cambia el grafo. Del mismo modo, aceptar un bloque sin el cierre que necesita su contrato desplaza una inconsistencia hacia el backend.
+Terminators delimit what can execute after a block. An instruction placed after a final needs defined reachability. Accepting a block without its required terminator shifts a control-flow inconsistency into the backend.
 
-El archivo `checked_add_overflow_machine.n` permite comprobar una rama relacionada con overflow sin presentar el overflow como una protección automática de toda la aritmética del lenguaje. El caso expresa su propia decisión de control.
+`checked_add_overflow_machine.n` checks an explicit overflow branch. It does not imply automatic overflow protection for every arithmetic operation in the language.
 
-Los módulos `.nm` de objeto usan la CLI de máquina. En el Stage0 retenido, `machine emit-ir` es la entrada apropiada para `object_elf64.nm`. La ruta general `emit-ir` no debe anunciarse como intercambiable con ella.
+Object `.nm` modules use the machine CLI. In retained Stage0, `machine emit-ir` is the correct entry point for `object_elf64.nm`; general `emit-ir` is not interchangeable with it.
 
-Una extensión de ISA exige identificar operaciones, tipos de operandos, restricciones, emisión y pruebas. La presencia de un nombre de destino o de una tabla de instrucciones no demuestra ejecución en hardware. Esa afirmación necesita evidencia separada del perfil correspondiente.
+An ISA extension requires operations, operand types, restrictions, emission rules and tests. A target name or instruction table is not evidence of execution on hardware. Physical support requires separate evidence for that profile.
 
-## Memoria y representación
+## Memory and representation
 
-La fuente normal mantiene un contrato manual/raw. El compilador no introduce ownership, validación automática de vida de punteros, comprobaciones generales de límites ni liberación oculta. Las propiedades de tipado deben describirse sin convertirlas en garantías de seguridad de memoria.
+Ordinary source retains a manual/raw contract. The compiler does not introduce ownership, general bounds checks, automatic pointer-lifetime validation or hidden release. Type properties must be distinguished from memory-safety guarantees.
 
-La representación incluye tamaño, alineación, offsets, padding y ABI. Un tipo agregado puede tener una representación válida y, aun así, requerir reglas distintas al pasarse como argumento o devolverse desde una función. El layout del dato y el protocolo de llamada deben comprobarse juntos.
+Representation covers size, alignment, offsets, padding and ABI. An aggregate may have a valid in-memory layout while requiring additional rules for argument passing or return values. Data layout and calling convention must be checked together.
 
-V81 materializa alineaciones superiores a 16 bytes en el perfil nativo x86-64 de Windows y Linux/WSL. La evidencia recorre potencias de dos entre 32 bytes y 1 MiB. COFF representa como máximo 8192 bytes de alineación de sección en ese trabajo; PE directo y ELF admiten alineaciones mayores dentro del perfil documentado.
+V81 materializes alignments above 16 bytes on the documented native Windows and Linux/WSL x86-64 profiles. Evidence covers powers of two from 32 bytes to 1 MiB. COFF section alignment is limited to 8192 bytes in this work; direct PE and ELF paths support larger alignments within the documented profile.
 
-Una solicitud que no cabe en el formato debe rechazarse. Truncarla silenciosamente conservaría la apariencia de éxito y cambiaría la dirección real que observa el programa. El verificador de materiales comprueba rangos, potencias de dos y offsets antes de consumirlos.
+A request that the format cannot represent must be rejected. Silent truncation changes the actual address while reporting apparent success. Material verification checks ranges, powers of two and offsets before consuming the artifact.
 
-La pila también tiene un límite material. Las pruebas grandes de Windows declaran una reserva de 16 MiB y las de ABI Linux ajustan el límite de pila según la receta. El emisor toca páginas de pila en el perfil descrito; esto no añade un heap implícito ni elimina los límites del sistema.
+The stack is also a material constraint. Large Windows tests declare a 16 MiB reserve; Linux ABI tests adjust the stack limit according to the reproduction recipe. The emitter touches stack pages in the documented profile. This does not add an implicit heap or remove system limits.
 
-Las pruebas de layout en diez perfiles son cálculos de representación. La ejecución física documentada en V81 se refiere a los anfitriones x86-64 indicados. Mantener separadas esas afirmaciones evita confundir portabilidad de un contrato con cierre de todas sus implementaciones.
+Layout checks across ten profiles are representation calculations. V81 physical execution evidence applies to the stated x86-64 hosts. These establish different kinds of support and should be reported separately.
 
-## Materialización ABI y enlace
+## Materialization ABI and linking
 
-MCT participa en el camino hacia objetos e imágenes. El backend debe trasladar las decisiones del programa a bytes y metadatos compatibles con el destino. El enlace debe resolver símbolos y relocaciones sin depender por accidente de artefactos retenidos de una construcción anterior.
+MCT participates in object and image generation. The backend translates program decisions into target-compatible bytes and metadata. Linking must resolve symbols and relocations without accidentally relying on retained artifacts from an earlier build.
 
-V81 modifica autoridades nC como `native_body.n`, `mct.n`, `mct_object.n`, `mct_link.n` y `mct_image_elf.n`. Sus responsabilidades incluyen intervalos de pila, temporales, argumentos, retornos, alineación de símbolos y la alineación respecto a direcciones virtuales finales.
+V81 changes native sources including `native_body.n`, `mct.n`, `mct_object.n`, `mct_link.n` and `mct_image_elf.n`. Their responsibilities include stack intervals, temporaries, arguments, returns, symbol alignment and alignment against final virtual addresses.
 
-Los detalles de ABI importan incluso cuando el programa fuente es el mismo. Los agregados pueden viajar por referencia en Win64 o en un área realineada de argumentos en SysV. Las pruebas incluyen llamadas directas e indirectas, retornos agregados, anidamiento y recursión.
+ABI details remain significant when the source is unchanged. Aggregates may travel by reference on Win64 or through a realigned argument area on SysV. Validation includes direct and indirect calls, aggregate returns, nesting and recursion.
 
-El runtime enlazado debe corresponder a los símbolos que el compilador emite. Un programa que pasa análisis pero no encuentra una exportación sigue sin estar completo. El proveedor, sus dependencias y el mecanismo de búsqueda de bibliotecas pertenecen a la reproducción.
+The linked runtime must match the symbols emitted by the compiler. Successful analysis does not resolve a missing export. Provider identity, dependencies and library search rules are part of the reproduction.
 
-La caché conserva materiales derivados. Su identidad debe cambiar cuando cambia el contrato del emisor. V81 rechaza materiales corruptos incluso cuando se recalcula el digest del manifiesto; verificar solo que el hash coincida con un archivo alterado no valida la estructura de ese archivo.
+Caches contain derived materials. Cache identity must change when the emitter contract changes. V81 rejects corrupt materials even after their manifest digests are recomputed: a matching digest does not validate an altered artifact's internal structure.
 
-Para revisar una regresión, conserva por separado fuente, IR o material, objeto, imagen y salida del proceso. Comparar únicamente el texto impreso puede ocultar diferencias en layout, enlace o secciones que reaparecen en otro programa.
+Retain source, IR or material, object, image and process output separately when investigating regressions. Printed output alone can conceal differences in layout, linkage and sections that surface in another program.
 
-## Qué demuestra el bootstrap V81
+## What bootstrap V81 demonstrates
 
-El dossier V81 registra cuatro reconstrucciones finales: B2 y C2 en Windows, y B2 y C2 en Linux/WSL. Cada una reconstruye 74 unidades desde un directorio nuevo mediante `project objects --no-incremental`, sin LTO ni objetos de proyecto retenidos.
+The V81 dossier records four final reconstructions: B2 and C2 on Windows, and B2 and C2 on Linux/WSL. Each rebuilds 74 units in a new directory using `project objects --no-incremental`, without LTO or retained project objects.
 
-Las generaciones reconstruyen además sus proveedores: 36 en Windows y 35 en Linux. La identidad de los compiladores B2 y C2 es exacta dentro de cada anfitrión. Los hashes publicados en el dossier son:
+The generations also rebuild their providers: 36 on Windows and 35 on Linux. Compiler B2 and C2 are byte-identical within each host. Their recorded digests are:
 
 ```text
 Windows x86-64
@@ -94,51 +94,51 @@ Linux x86-64
 e3d6fc744f0768d19a3f44ca93eddcb90cc3f89caee536f68f8f5ce486eae1e7
 ```
 
-La igualdad es por sistema: no se afirma que un PE Windows tenga los mismos bytes que un ELF Linux. Los manifiestos conservan cada digest junto a la identidad del artefacto.
+Identity is established within each operating system. A Windows PE and a Linux ELF are not claimed to have identical bytes. Manifests associate each digest with its artifact.
 
-Stage0 permanece como oráculo de AST en el corpus de esa validación y no como constructor de B y C. Esto es un avance verificable hacia la construcción propia. El dossier mantiene explícitamente abierto Stage3 global y conserva la toolchain instalada.
+Stage0 remains an AST oracle for that validation corpus, rather than the constructor of B and C. Global Stage3 promotion is explicitly open, and the installed toolchain is retained.
 
-Las cifras del dossier describen sus corridas: 147 programas completos y 1472 checks por corrida, 38 contratos de runtime por generación y sistema, y comprobaciones de layout en diez perfiles. Esta publicación cita esos resultados históricos; sus smoke tests de entrega se registran aparte y no sustituyen la reproducción completa.
+The dossier reports 147 complete programs and 1472 checks per run, 38 runtime contracts per generation and host, and layout checks across ten profiles. These are retained V81 results. Publication smoke tests are recorded separately and do not replace full reconstruction.
 
-El soporte de un perfil se amplía con evidencia de las rutas pendientes: entradas, artefactos emitidos, dependencias y ejecución. La compatibilidad declarada debe corresponder al alcance de esas comprobaciones.
+Support expands through evidence for missing routes: inputs, emitted artifacts, dependencies and execution. Compatibility claims must match the scope of those checks.
 
-## Reproducir y revisar evidencia
+## Reproducing and reviewing evidence
 
-`bootstrap/frontend-v81-build.json` fija las fuentes de la reconstrucción. Los constructores comprueban SHA-256 al copiar y rechazan destinos que contienen `.ncc`. Esa condición evita confundir una generación limpia con la reutilización de objetos previos.
+`bootstrap/frontend-v81-build.json` fixes reconstruction sources. Builders verify SHA-256 during copying and reject destinations containing `.ncc`. This distinguishes a clean generation from reuse of previous objects.
 
-La secuencia conceptual es construir B con la semilla, construir el runtime con B, construir C con B y sus proveedores, y repetir los controles sobre C. Los comandos completos y argumentos de cada constructor se documentan en `docs/NCC_MODULES_V81_REPRO.md`.
+The sequence is to build B with the seed, build its runtime, build C with B and its providers, then repeat the checks on C. `docs/NCC_MODULES_V81_REPRO.md` records complete builder commands and arguments.
 
 ```text
-semilla -> compilador B -> runtime B
-compilador B + runtime B -> compilador C -> runtime C
-comparación de artefactos y ejecución de contratos
+seed -> compiler B -> runtime B
+compiler B + runtime B -> compiler C -> runtime C
+artifact comparison and contract execution
 ```
 
-Los informes deben conservar el exit code y la salida esperados, los objetos utilizados y las diferencias exactas. V81 conserva intentos fallidos separados de las corridas finales; un reintento exitoso no debe borrar la explicación del fallo previo.
+Reports retain expected output, exit codes, objects used and exact differences. Failed attempts remain separate from final runs. A successful retry should not erase the cause of the previous failure.
 
-Una prueba adversa demuestra que el verificador puede rechazar entradas alteradas. Los controles descritos incluyen materiales con alineaciones no válidas, offsets incoherentes e imágenes modificadas. Una imagen cuyo control falla no debe ejecutarse para intentar compensar el rechazo.
+Adversarial tests establish rejection of altered inputs. Recorded cases cover invalid alignments, inconsistent offsets and modified images. An image rejected by validation must not be executed as a substitute for resolving the rejection.
 
-Los ensayos de unwind documentados aplican APIs reales de Windows sobre metadatos y un contexto de prueba. No equivalen a provocar una excepción real en cada instrucción del prólogo. Esa limitación pertenece a la afirmación técnica y debe permanecer visible.
+The documented unwind tests apply real Windows APIs to metadata and a test context. They do not inject a real exception at every prologue instruction. That limitation belongs to the technical claim.
 
-Las recetas de reproducción pueden requerir herramientas del sistema, reservas de pila y runners externos. Registra esas condiciones antes de comparar un resultado propio con el dossier.
+Reproduction can require system tools, stack settings and external runners. Record these conditions before comparing a local result with the dossier.
 
-## Publicación y contribuciones
+## Releases and contributions
 
-Una publicación útil ofrece un camino de entrada pequeño y comprobable. El lector debe encontrar el propósito del lenguaje, los requisitos, un ejemplo, el resultado esperado y un lugar para informar de problemas. Los paquetes deben identificar versión, destino, hashes y runtime incluido.
+A release needs an executable entry path: purpose, requirements, a program, expected output and an issue channel. Packages identify their edition, target, hashes and included runtime.
 
-El repositorio de desarrollo contiene material que no pertenece a una distribución: cachés, informes locales, archivos temporales y artefactos de construcción. La preparación pública usa una selección explícita de archivos y conserva un manifiesto de hashes. Los binarios se entregan como activos de versión para mantener liviano el árbol fuente.
+Development caches, local reports, temporary files and build outputs do not belong in the source distribution. Public export uses an explicit file selection and a hash manifest. Native kits are distributed as Release assets.
 
-Una versión de bootstrap puede publicarse como preliminar con límites claros. No debe tener insignias de pruebas que no se han ejecutado, una descarga que apunte a un archivo inexistente ni comparativas de rendimiento sin medición reproducible.
+Bootstrap releases remain prereleases with explicit limits. Test badges require executed checks. Download links must resolve, and performance claims require reproducible measurements.
 
-La contribución técnica debe describir el problema, el contrato que cambia, el comportamiento anterior y posterior y la validación realizada. Si toca parser, AST, semántica o IR, explica su continuidad. Si toca ABI o memoria, incluye límites y casos negativos. Si solo mejora documentación, comprueba sus enlaces y ejemplos.
+A technical contribution explains the problem, affected contract, before-and-after behavior and validation. Parser, AST, semantics and IR changes must preserve continuity. ABI and memory work needs boundary cases and rejection tests. Documentation changes require working links and accurate examples.
 
-### Fuentes técnicas
+### Technical references
 
-- `AGENTS.md` y `docs/syntax.md`.
-- `crates/ncc-parser/src/lib.rs` y `crates/ncc-stage0-bridge/build.rs`.
+- `AGENTS.md` and `docs/syntax.md`.
+- `crates/ncc-parser/src/lib.rs` and `crates/ncc-stage0-bridge/build.rs`.
 - `docs/NCC_MODULES_V81_DOSSIER.md`.
-- `docs/NCC_MODULES_V81_ABI_LAYOUT.md` y `docs/NCC_MODULES_V81_REPRO.md`.
+- `docs/NCC_MODULES_V81_ABI_LAYOUT.md` and `docs/NCC_MODULES_V81_REPRO.md`.
 - `docs/NCC_MODULES_V81_ATTEMPTS.md`.
-- `bootstrap/frontend-v81-build.json` y `bootstrap/frontend-v81-contracts.json`.
+- `bootstrap/frontend-v81-build.json` and `bootstrap/frontend-v81-contracts.json`.
 
-Estas referencias fijan el alcance de esta edición. La evolución posterior debe actualizar los contratos, sus pruebas y la documentación pública en la misma entrega.
+These references define this edition's scope. Subsequent work must update contracts, tests and public documentation together.

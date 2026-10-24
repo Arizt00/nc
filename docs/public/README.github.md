@@ -2,24 +2,24 @@
 
 # nC
 
-**Un lenguaje con continuidad tipada entre el programa, la memoria y la máquina.**
+**Typed continuity between the program, memory and machine.**
 
-nC es un lenguaje experimental que integra funciones, contratos basales, instrucciones de máquina y primitivas materiales. Su compilador, **ncc**, está en bootstrap nativo. El diseño exige conservar tipos, control de flujo y decisiones de representación durante el análisis, el lowering y el enlace.
+nC is an experimental language that integrates functions, foundational contracts, machine instructions and material primitives. Its compiler, **ncc**, is in native bootstrap. The design requires types, control flow and representation decisions to remain coherent through analysis, lowering and linking.
 
-[![Estado: bootstrap V81](https://img.shields.io/badge/estado-bootstrap_V81-244c3b)](docs/public/estado.md)
-[![Licencia: MIT o Apache 2.0](https://img.shields.io/badge/licencia-MIT_o_Apache_2.0-e4edb1)](LICENSE)
+[![Status: bootstrap V81](https://img.shields.io/badge/status-bootstrap_V81-244c3b)](docs/public/estado.md)
+[![License: MIT or Apache 2.0](https://img.shields.io/badge/license-MIT_or_Apache_2.0-e4edb1)](LICENSE)
 
-[**Web y biblioteca**](https://nc-language-arizt00.rarepanda1024.chatgpt.site) · [**Descargar el kit nativo**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Guía de uso**](docs/public/origen-y-guia.md) · [**Arquitectura**](docs/public/arquitectura-y-bootstrap.md) · [**Contribuir**](CONTRIBUTING.md)
+[**Website and library**](https://nc-language-arizt00.rarepanda1024.chatgpt.site) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
 
-## Por qué existe
+## Why it exists
 
-El layout, la alineación, la validez de una dirección y la convención de llamada afectan al comportamiento observable del programa. nC permite trabajar sobre esas decisiones dentro de una misma continuidad semántica. La raíz `[@]`, `[@machine]`, `primitive[@]`, el runtime y el enlace participan en ese contrato.
+Layout, alignment, address validity and calling conventions affect observable program behavior. nC addresses these decisions within one semantic model. The root `[@]`, `[@machine]`, `primitive[@]`, runtime and linker participate in that contract.
 
-La memoria es manual/raw. El tipado no añade ownership, liberación automática ni comprobaciones implícitas de punteros. El [origen y propósito del lenguaje](docs/public/origen-y-guia.md#por-qué-nace-nc) explica esa elección.
+Memory is manual/raw. Type checking does not add ownership, automatic release or implicit pointer validation. The [language guide](docs/public/origen-y-guia.md#why-nc-exists) explains the design.
 
-## Prueba un programa
+## Run a program
 
-Descarga el paquete de tu plataforma en [Releases](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81), verifica su SHA-256 y extráelo. El kit incluye el compilador, su runtime y `hello.n`. La primera prueba no necesita Rust ni LLVM.
+Download your platform's kit from [Releases](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81), verify its SHA-256 digest and extract it. The kit includes the compiler, runtime and `hello.n`. This workflow requires no Rust, Cargo or LLVM installation.
 
 ```nc
 use <io:output>;
@@ -34,7 +34,7 @@ helloCompacto {
 }
 ```
 
-En Windows x86-64, desde PowerShell en el directorio extraído:
+On Windows x86-64, run PowerShell from the extracted directory:
 
 ```powershell
 .\ncc.exe self-test
@@ -42,7 +42,7 @@ En Windows x86-64, desde PowerShell en el directorio extraído:
 .\hello.exe
 ```
 
-En Linux x86-64 o WSL:
+On Linux x86-64 or WSL:
 
 ```bash
 chmod +x ncc
@@ -52,52 +52,52 @@ chmod +x hello
 LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./hello
 ```
 
-Salida esperada: `Hello, nC public beta`. Código de salida: `0`.
+Expected output: `Hello, nC public beta`. Exit code: `0`.
 
-El paquete Linux se probó en Ubuntu 24.04 bajo WSL y requiere símbolos de glibc 2.34 o posterior. Conserva el proveedor junto al compilador. Los comandos del kit son una parte de la CLI: `--help`, `check` y `machine` todavía requieren Stage0. Consulta [instalación](docs/install.md) antes de usar otros recorridos.
+The Linux kit was tested on Ubuntu 24.04 under WSL and requires glibc 2.34 symbols or later. Keep its provider beside the compiler. The native CLI is partial: `--help`, `check` and `machine` still require Stage0. Read [installation](docs/install.md) before using other routes.
 
-## Qué está demostrado
+## Verified scope
 
-| Área | Alcance de esta edición |
+| Area | Scope of this edition |
 | --- | --- |
-| Primer uso | Kit aislado, self-test, hello y aritmética ejecutados en Windows y Linux/WSL x86-64 |
-| Reconstrucción V81 | B2/C2 idénticos por anfitrión; 74 unidades por reconstrucción según el dossier |
-| Evidencia V81 | 147 programas y 38 contratos de runtime por generación y sistema documentados |
-| Memoria y ABI | Alineaciones nativas de 32 bytes a 1 MiB en el perfil descrito; límites por formato |
-| Pendiente | Stage3 global, CLI nativa completa y cierre de ejecución de otras ISAs |
+| First use | Isolated kits, self-test, hello and arithmetic executed on Windows and Linux/WSL x86-64 |
+| V81 reconstruction | Byte-identical B2/C2 within each host; 74 units per reconstruction in the dossier |
+| V81 evidence | 147 corpus programs and 38 runtime contracts per generation and host |
+| Memory and ABI | Native alignments from 32 bytes to 1 MiB in the documented profile, subject to format limits |
+| Open work | Global Stage3 promotion, full native CLI and physical execution of other ISAs |
 
-Los resultados V81 pertenecen a su [dossier técnico](docs/NCC_MODULES_V81_DOSSIER.md). La publicación registra sus [pruebas de entrega](docs/public/validacion.md) por separado. No se presenta como una versión estable para producción.
+V81 reconstruction results belong to the [technical dossier](docs/NCC_MODULES_V81_DOSSIER.md). [Publication validation](docs/public/validacion.md) records subsequent checks separately. This is an experimental prerelease.
 
-## Documentación
+## Documentation
 
-- [Origen y guía de uso](docs/public/origen-y-guia.md) · [PDF](docs/public/origen-y-guia.pdf).
-- [Arquitectura y bootstrap](docs/public/arquitectura-y-bootstrap.md) · [PDF](docs/public/arquitectura-y-bootstrap.pdf).
-- [Sintaxis](docs/syntax.md), [runtime](docs/runtime.md), [máquina](docs/machine.md), [primitivas](docs/primitive.md) y [FFI](docs/ffi.md).
-- [Reproducción V81](docs/NCC_MODULES_V81_REPRO.md), [ABI y layout](docs/NCC_MODULES_V81_ABI_LAYOUT.md) y [límites](docs/public/estado.md).
-- [Próximos pasos](ROADMAP.md) y [guía de contribución](CONTRIBUTING.md).
+- [Language guide](docs/public/origen-y-guia.md) · [PDF](docs/public/origen-y-guia.pdf).
+- [Compiler architecture and bootstrap](docs/public/arquitectura-y-bootstrap.md) · [PDF](docs/public/arquitectura-y-bootstrap.pdf).
+- [Syntax](docs/syntax.md), [runtime](docs/runtime.md), [machine](docs/machine.md), [primitives](docs/primitive.md) and [FFI](docs/ffi.md).
+- [V81 reproduction](docs/NCC_MODULES_V81_REPRO.md), [ABI and layout](docs/NCC_MODULES_V81_ABI_LAYOUT.md) and [current limits](docs/public/estado.md).
+- [Roadmap](ROADMAP.md) and [contribution guide](CONTRIBUTING.md).
 
-## Trabajar desde las fuentes
+## Working from source
 
-La reconstrucción del compilador nativo está descrita en la [receta V81](docs/NCC_MODULES_V81_REPRO.md): semilla identificada, generaciones B/C, proveedores y comparación de artefactos. El [contrato de construcción](bootstrap/frontend-v81-build.json) fija las entradas.
+The [V81 reconstruction recipe](docs/NCC_MODULES_V81_REPRO.md) identifies the seed, B/C generations, providers and artifact comparisons. The [build contract](bootstrap/frontend-v81-build.json) fixes its inputs.
 
-Stage0 sigue disponible para desarrollo y validación. Su construcción requiere Rust/Cargo, una semilla nativa verificada y un archivador; la [guía de instalación](docs/install.md) documenta esa ruta por separado.
+Stage0 remains available for development and validation. Building it requires Rust/Cargo, a verified native seed and an archiver. The [installation guide](docs/install.md) documents that route separately. Invoke the built `ncc` executable directly for language checks.
 
-| Directorio | Contenido |
+| Directory | Contents |
 | --- | --- |
-| `tools/ncc/nc/src` | Compilador escrito en nC |
-| `crates` | Implementación y herramientas Stage0 retenidas |
-| `runtime/nc` | Runtime y proveedores |
-| `examples` | Ejemplos por tema |
-| `bootstrap` | Contratos y recetas de construcción |
-| `docs` | Guías y referencias técnicas |
-| `sites/nc-language/dist` | Web estática, sin dependencias de servidor |
+| `tools/ncc/nc/src` | Compiler written in nC |
+| `crates` | Retained Stage0 implementation and tools |
+| `runtime/nc` | Runtime and providers |
+| `examples` | Examples by subject |
+| `bootstrap` | Build contracts and recipes |
+| `docs` | Guides and technical references |
+| `sites/nc-language/dist` | Static website |
 
-## Participar
+## Contributing
 
-Un ejemplo mínimo que falla es una contribución útil. Incluye el hash del compilador, tu sistema, el comando y el resultado esperado. Las [plantillas de issues](https://github.com/Arizt00/nc/issues/new/choose) ayudan a preparar una reproducción.
+A minimal failing program is useful evidence. Include the compiler digest, host, command, provider and expected result. [Issue templates](https://github.com/Arizt00/nc/issues/new/choose) identify the required details.
 
-Las propuestas de lenguaje deben explicar cómo se conserva su significado en parser, AST, semántica e IR. Para una primera contribución, empieza por una explicación confusa, un ejemplo comprobable o un diagnóstico concreto.
+Language proposals must explain continuity through parser, AST, semantics and IR. Start with a reproducible behavior, a diagnostic or a documentation correction.
 
-## Licencia
+## License
 
-El código se distribuye bajo [MIT](LICENSE-MIT) o [Apache 2.0](LICENSE-APACHE), a elección del usuario. Los avisos de terceros conservan sus propias condiciones.
+The code is available under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your choice. Third-party notices retain their own terms.

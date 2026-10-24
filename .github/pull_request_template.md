@@ -1,11 +1,11 @@
-## Problema y comportamiento resultante
+## Problem and resulting behavior
 
-Describe el caso concreto y qué cambia para quien usa nC.
+Describe the concrete trigger and what changes for nC users.
 
-## Contrato afectado
+## Affected contract
 
-Indica la relación con parser, AST, semántica, IR, máquina o runtime cuando corresponda.
+Explain the relationship to parser, AST, semantics, IR, machine code or runtime where applicable.
 
-## Validación
+## Validation
 
-Comandos, fixtures, resultados y límites pendientes. Distingue pruebas nuevas de evidencia retenida.
+Commands, fixtures, results and remaining limits. Distinguish newly executed tests from retained evidence.

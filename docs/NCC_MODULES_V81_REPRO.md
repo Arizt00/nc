@@ -1,110 +1,72 @@
-# Reproduccion V81
+# Reproducing V81
 
-## Snapshot y generaciones
+English edition of the retained reconstruction procedure. This recipe describes the V81 verification environment and its prerequisites.
 
-`bootstrap/frontend-v81-build.json` fija las 74 fuentes del compilador
-y las fuentes de validacion. Cada constructor verifica SHA-256 al copiar.
-Se conservan los snapshots usados por las generaciones en el directorio
-de trabajo de evidencia. El constructor rechaza destinos con .ncc.
+## Snapshot and generations
 
-Compilar `build_native_compiler81.n` con los hijos sha256, elf_entry79 y
-coff_entry79 bajo `src/sha256.n`, `src/elf_entry.n`, `src/coff_entry.n`.
-El constructor de runtime usa sha256 y el publisher nC
-`link_native_providers73.n`.
+`bootstrap/frontend-v81-build.json` identifies 74 compiler sources and validation sources. Each builder verifies SHA-256 while copying. Generation snapshots are retained in the evidence workspace. The builder rejects destinations containing `.ncc`.
+
+Compile `build_native_compiler81.n` with sha256, elf_entry79 and coff_entry79 children at `src/sha256.n`, `src/elf_entry.n` and `src/coff_entry.n`. The runtime builder uses sha256 and the native publisher `link_native_providers73.n`.
 
 ```text
-compiler-builder REPO SEMILLA DIRECTORIO-B PROVEEDOR-SEMILLA
+compiler-builder REPO SEED DIRECTORY-B SEED-PROVIDER
 B/ncc self-test
-runtime-builder REPO B/ncc PROYECTO-RUNTIME-B PUBLICACION-B PUBLISHER
-compiler-builder REPO B/ncc DIRECTORIO-C PUBLICACION-B
+runtime-builder REPO B/ncc RUNTIME-PROJECT-B PUBLICATION-B PUBLISHER
+compiler-builder REPO B/ncc DIRECTORY-C PUBLICATION-B
 C/ncc self-test
-runtime-builder REPO C/ncc PROYECTO-RUNTIME-C PUBLICACION-C PUBLISHER
+runtime-builder REPO C/ncc RUNTIME-PROJECT-C PUBLICATION-C PUBLISHER
 ```
 
-Declarar los proveedores junto a los ejecutables Windows. En Linux,
-usar LD_LIBRARY_PATH para los consumidores sin RUNPATH. El compilador
-enlazado por unidades usa el RUNPATH $ORIGIN. Las dependencias de sistema
-y los linkers son explicitos; no se compila ninguna fuente C auxiliar.
+Place providers beside Windows executables. On Linux, use `LD_LIBRARY_PATH` for consumers without RUNPATH. The unit-linked compiler uses RUNPATH `$ORIGIN`. System dependencies and linkers are explicit; no helper C source is compiled.
 
-## Programas de alineacion
+## Alignment programs
 
 ```text
-ncc compiler emit-mct tools/tests/native_overalignment81.n --target TARGET --out caso.ncmct
-ncc compiler emit-object tools/tests/native_overalignment81.n --target TARGET --out caso.obj
-ncc compiler emit-executable tools/tests/native_overalignment81.n --target TARGET --out caso.exe
+ncc compiler emit-mct tools/tests/native_overalignment81.n --target TARGET --out case.ncmct
+ncc compiler emit-object tools/tests/native_overalignment81.n --target TARGET --out case.obj
+ncc compiler emit-executable tools/tests/native_overalignment81.n --target TARGET --out case.exe
 ```
 
-Windows usa `x86_64-pc-windows-msvc`; Linux usa
-`x86_64-unknown-linux-gnu`, objeto .o y permiso de ejecucion del ELF.
-Ejecutar y comprobar stdout y exit exactos. Para los tres archivos del
-fixture transitivo copiar calls como main.n y api/leaf en src/.
+Windows uses `x86_64-pc-windows-msvc`. Linux uses `x86_64-unknown-linux-gnu`, .o objects and executable permission on the ELF. Execute and compare exact stdout and exit codes. For the transitive fixture, copy calls as main.n and place api/leaf in src/.
 
-Los fixtures powers_globals y powers_locals recorren las dieciseis
-potencias de dos de 32 a 1048576. Los globales mayores a 8192 no caben
-en COFF: exigir rechazo del objeto y ejecutar PE directo. Los locales
-grandes si caben en COFF; enlazar con reserva de pila suficiente.
+The powers_globals and powers_locals fixtures cover sixteen powers of two from 32 to 1048576. Globals aligned above 8192 cannot be represented in COFF: require object rejection and execute direct PE output. Large locals remain representable in COFF; link with sufficient stack reserve.
 
-Ejemplo de opciones de link.exe para el fixture global COFF de 8192:
+Example link.exe options for the 8192-byte COFF global fixture:
 
 ```text
 /nodefaultlib /entry:nc_start /subsystem:console /machine:x64
 /align:8192 /Brepro /incremental:no
 ```
 
-Para powers_locals y max_local en Windows agregar
-`/stack:16777216,65536`. El entry nC llama a main y finaliza mediante
-ExitProcess; no usar /entry:main. Linux enlaza con entry _start,
-GNU ld, -z noexecstack, -z separate-code y --build-id=none.
-La prueba max_abi declara `ulimit -s 32768` en su shell Linux antes de
-ejecutar el programa y usa la reserva Windows de 16 MiB.
+For powers_locals and max_local on Windows, add `/stack:16777216,65536`. The nC entry calls main and exits through ExitProcess; do not use /entry:main. Linux links with _start, GNU ld, -z noexecstack, -z separate-code and --build-id=none. The max_abi test declares `ulimit -s 32768` before execution on Linux and uses the 16 MiB Windows reserve.
 
-El verificador `native_overalignment_verify81.n` recibe objeto o imagen
-y ruta JSON de informe. Lee COFF/PE/ELF y comprueba secciones, padding,
-direcciones y los tres punteros del fixture. Conservar tambien el
-desensamblado y la inspeccion de secciones con LLVM/GNU.
+`native_overalignment_verify81.n` accepts an object/image and a JSON report path. It reads COFF/PE/ELF and checks sections, padding, addresses and the fixture's three pointers. Retain LLVM/GNU disassembly and section inspection as well.
 
-## Cache y pruebas adversas
+## Cache and adversarial checks
 
-En el proyecto wide ejecutar project link en frio y en caliente, sin
---no-incremental. Guardar `.ncc/incremental/project-cache.json` de cada
-pasada: un AST y dos materiales deben restaurarse en caliente.
+Run project link cold and warm in the wide project, without --no-incremental. Save `.ncc/incremental/project-cache.json` from each pass: one AST and two materials should be restored warm.
 
-Los controles MCT copian el cache a proyectos nuevos, alteran solamente
-el material derivado y recalculan su digest en el manifiesto. Declarar
-alignment=24, alignment=16 con simbolos de 8192, o un offset de global=1.
-El emisor debe rechazar los tres sin escribir la imagen final.
-No modificar fuentes o binarios positivos para hacerlos coincidir.
+MCT controls copy the cache into new projects, alter only derived material and recompute its manifest digest. Use alignment=24, alignment=16 with 8192-aligned symbols, or global offset=1. The emitter must reject all three without writing a final image. Do not alter positive sources or binaries to accommodate a failed check.
 
-## Corpus y runtime
+## Corpus and runtime
 
 ```text
 runner verify-programs --root REPO --candidate B --baseline C --stage0 STAGE0
-    --out DIRECTORIO-NUEVO --corpus bootstrap/frontend-v69-native-programs.json
+    --out NEW-DIRECTORY --corpus bootstrap/frontend-v69-native-programs.json
 ```
 
-Repetir C/B y ambos sistemas, serialmente. En Windows preparar el
-directorio de salida con ncruntime.dll antes de invocar al runner.
-El runner necesita un directorio de captura nuevo, pero no publica
-automaticamente ese proveedor.
+Repeat C/B on both hosts serially. On Windows, prepare the output directory with ncruntime.dll before invoking the runner. It requires a new capture directory but does not automatically publish that provider.
 
-Los 38 contratos usan runtime_processes_verify76.n. Preparar file.dat
-con cinco bytes, contenido bytes, mtime Unix 1700000000 y modo Linux 0644;
-names con first.dat/segundo.dat, empty/stress vacios, y create/missing
-ausentes. No reutilizar fixtures mutados para ocultar un fallo.
+The 38 contracts use runtime_processes_verify76.n. Prepare file.dat with the five-byte content bytes, Unix mtime 1700000000 and Linux mode 0644; names containing first.dat/segundo.dat; empty/stress directories empty; create/missing absent. These literal fixture names are retained. Do not reuse mutated fixtures to conceal failures.
 
-## Equivalencia y custodia
+## Equivalence and custody
 
-runtime_artifacts_verify76.n, con su hijo sha256, recibe:
+runtime_artifacts_verify76.n, with its sha256 child, accepts:
 
 ```json
-{"artifacts":[{"name":"caso","reference":"ruta-B","candidate":"ruta-C","normalization":"none"}]}
+{"artifacts":[{"name":"case","reference":"path-B","candidate":"path-C","normalization":"none"}]}
 ```
 
-Comparar archivos distintos, no vacios. Conservar el informe con SHA-256,
-bytes comparados y first_difference=-1. Separar los JSON con tiempos/rutas
-de los materiales binarios; no normalizar estos ultimos.
+Compare distinct, nonempty files. Retain reports with SHA-256, compared byte counts and first_difference=-1. Keep JSON containing timings/paths separate from binary materials; do not normalize the latter.
 
-El ZIP conserva payloads deduplicados por hash, manifiesto y lectura
-completa posterior de cada entrada. El sello exterior contiene los hashes
-del ZIP y del manifiesto. La certificacion es local Windows/WSL x86-64,
-no de placas fisicas, otros hosts o la promocion global de Stage3.
+The evidence ZIP retains deduplicated payloads, a manifest and complete subsequent reads of every entry. The outer seal contains ZIP and manifest hashes. Certification is local Windows/WSL x86-64, not other hardware, hosts or global Stage3 promotion. The source distribution does not include the complete evidence payload archive.

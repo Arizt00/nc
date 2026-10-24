@@ -1,31 +1,31 @@
-# Próximos pasos de nC
+# nC roadmap
 
-El trabajo se ordena por contratos que puedan comprobarse. Las fechas se fijarán cuando exista una entrega acotada y reproducible.
+Work is organized around verifiable contracts. Dates will be assigned when a bounded, reproducible delivery exists.
 
-## Primera experiencia de uso
+## First-use experience
 
-- Mantener paquetes nativos por anfitrión con hashes, runtime y un primer programa probado.
-- Completar la ayuda de la CLI nativa y explicar sus diferencias con Stage0.
-- Reducir los pasos de búsqueda de proveedores sin ocultar sus dependencias.
-- Incorporar reproducciones de los primeros usuarios a un corpus pequeño y estable.
+- Maintain native packages with hashes, matching runtimes and a tested first program.
+- Complete native CLI help and document its differences from Stage0.
+- Reduce provider-discovery steps while retaining explicit dependencies.
+- Turn user reproductions into a small, stable regression corpus.
 
-## Continuidad material
+## Material continuity
 
-- Consolidar instrucciones, finales y flujo tipado de `[@machine]`.
-- Mantener pruebas de ABI, layout, enlace y caché junto a los cambios del backend.
-- Extender perfiles con evidencia de ejecución; distinguirlos de los que solo validan layout.
-- Documentar memoria, punteros y regiones según el contrato manual vigente.
+- Consolidate typed instructions, terminators and control flow in `[@machine]`.
+- Keep ABI, layout, linking and cache checks aligned with backend changes.
+- Extend profiles through execution evidence, distinguishing them from layout-only validation.
+- Document memory, pointers and regions according to the current manual contract.
 
 ## Bootstrap
 
-- Mantener la identidad entre generaciones con fuentes y proveedores identificados.
-- Reducir las rutas que requieren Stage0 sin introducir reemplazos ocultos.
-- Establecer las condiciones restantes de promoción global de Stage3 y comprobarlas antes de declararlo cerrado.
+- Preserve generation identity with identified sources and providers.
+- Reduce Stage0-dependent routes without hidden substitutes.
+- Define and verify the remaining global Stage3 promotion conditions.
 
-## Comunidad y documentación
+## Community and documentation
 
-- Mantener los manuales breves y los ejemplos ejecutables.
-- Convertir preguntas repetidas en explicaciones y diagnósticos concretos.
-- Publicar notas de cada entrega con cambios, límites y reproducción.
+- Keep manuals concise and examples executable.
+- Turn recurring questions into precise documentation and diagnostics.
+- Publish release notes with changes, limits and reproduction steps.
 
-El estado V81, documentado en `docs/public/estado.md`, describe lo demostrado hasta esta edición. La promoción de un hito exige evidencia nueva; esta lista no equivale a una promesa de soporte.
+The [V81 status](docs/public/estado.md) records established scope. This roadmap describes planned work, not a support guarantee.

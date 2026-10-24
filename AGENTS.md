@@ -1,105 +1,74 @@
-# AGENTS.md — Guía operativa para agentes sobre el proyecto nC
+# AGENTS.md - Operating guide for the nC project
 
-## 1. Qué es este repositorio
+## Repository
 
-Este repositorio contiene el compilador experimental de nC y su material de contexto para handoff técnico.
+This repository contains the experimental nC compiler and its technical context.
+nC is a sovereign, multi-level, semantically continuous language. Treat major
+changes as contracts across levels, rather than isolated syntax features.
+Preserve continuity between:
 
-nC es un lenguaje soberano, multi-nivel y semánticamente continuo.
-No debe tratarse como un lenguaje convencional con “features” aisladas.
-Toda modificación importante debe respetar la continuidad entre:
+- `[@]`;
+- `[@machine]`;
+- `primitive[@]`;
+- linking;
+- memory, pointers and regions;
+- runtime;
+- future modal-system layers.
 
-- `[@]`
-- `[@machine]`
-- `primitive[@]`
-- linking
-- memoria/punteros/regiones
-- runtime
-- capas futuras del sistema modal
+## Central rule
 
----
+Parser acceptance alone does not close a phase. Parser, AST, semantic analysis,
+IR, tests and documentation must agree.
 
-## 2. Regla central
+## Current priority
 
-No cierres una fase por sintaxis.
-Una fase solo se considera bien trabajada cuando parser, AST, sema, IR, pruebas y documentación están alineados.
+Consolidate `[@machine]` as a stable, typed and coherent layer prepared for
+material continuity. Preserve instruction typing, terminator typing, control
+flow, the parser/sema/IR relationship and established diagnostics.
 
----
+## Scope
 
-## 3. Prioridad actual del proyecto
+Compiler infrastructure, the base root, base primitives, machine surface/sema/IR,
+important linking paths and language documentation are advanced. Full backend
+closure, deep runtime coverage, complete memory/pointer/region/aliasing
+materialization and higher modal layers remain open beyond the profiles whose
+evidence is explicitly recorded.
 
-La prioridad activa inmediata es:
+## Change rules
 
-### consolidar `[@machine]` como capa tipada, estable, coherente y preparada para continuidad material.
+Make coherent typed changes. Reduce debt between parser, semantics and IR.
+Add positive and negative fixtures where the contract requires them. Preserve
+clear diagnostics, documentation aligned with implementation and commands
+reproducible from WSL.
 
-Eso implica no introducir soluciones “rápidas” que rompan:
+Do not add syntax without semantic justification, duplicate semantics between
+machine and primitive layers, replace established typed paths with unstructured
+strings, change canonical meaning without documentation, or break existing tests
+to claim progress.
 
-- tipado de instrucciones;
-- tipado de finales;
-- control-flow;
-- terminadores;
-- relación entre parser, sema e IR;
-- diagnósticos ya consolidados.
+## Completion criteria
 
----
+A change is not complete merely because it compiles. As applicable, verify
+parser, AST, semantics, IR, tests and fixtures, the CLI, and documentation of any
+surface or semantic decision.
 
-## 4. Estado actual resumido
-
-### Ya muy avanzado
-- infraestructura general del compilador;
-- root `[@]` base;
-- primitive base;
-- `[@machine]` en superficie/sema/IR;
-- linking en caminos importantes;
-- documentación del lenguaje.
-
-### Aún no cerrado de verdad
-- lowering/backend real;
-- runtime profundo completo;
-- memoria/punteros/regiones/aliasing plenamente materializados;
-- varias capas modales altas.
-
----
-
-## 5. Reglas de modificación
-
-### Sí hacer
-- cambios coherentes y tipados;
-- refactors que reduzcan deuda entre parser/sema/IR;
-- fixtures positivos y negativos;
-- diagnósticos claros;
-- documentación alineada con código;
-- comandos reproducibles desde WSL.
-
-### No hacer
-- meter sintaxis porque “queda bien”;
-- duplicar semántica entre `[@machine]` y `primitive[@]`;
-- introducir atajos stringly-typed donde ya existe camino tipado;
-- cambiar significado canónico sin dejarlo documentado;
-- romper tests existentes para “avanzar más rápido”.
-
----
-
-## 6. Qué significa “done”
-
-Una tarea no está realmente terminada si solo compila.
-Debe cumplir, según el caso:
-
-- parser correcto;
-- AST correcto;
-- sema correcto;
-- IR correcto;
-- tests y fixtures;
-- CLI funcional si aplica;
-- documentación mínima de la decisión si cambia superficie o semántica.
-
----
-
-## 7. Comandos base de validación
-
-Ejecutar normalmente desde la raíz del repo:
+Use `ncc` directly for supported language checks. With the retained Stage0 built,
+run from the repository root on Linux or WSL:
 
 ```bash
-cargo fmt
-cargo test --workspace -- --nocapture
-cargo run -- check examples/machine_at/machine_at_nop_wait_halt_ok.n
-cargo run -- emit-ir examples/machine_at/machine_at_nop_wait_halt_ok.n
+./target/debug/ncc check examples/11_machine/checked_add_overflow_machine.n
+./target/debug/ncc emit-ir examples/11_machine/checked_add_overflow_machine.n
+```
+
+On Windows, use `.\target\debug\ncc.exe`. The native kit uses its own
+`compiler sema` and `compiler emit-ir` routes; do not assume CLI equivalence.
+
+Rust implementation changes still require the Rust workspace checks after seed
+configuration described in `docs/install.md`:
+
+```bash
+cargo fmt --all -- --check
+cargo test --locked --workspace --no-fail-fast -- --nocapture
+```
+
+Keep public documentation and contribution-facing text in English.

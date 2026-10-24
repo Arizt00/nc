@@ -8,13 +8,13 @@ ABI without hidden ownership, bounds or lifetime work.
 
 The public runtime documentation tracks supported import families:
 
-- `use stoud.io { input, output, render, random };`
-- `use stoud.memory { ptr, heap, region };`
-- `use stoud.collections { array, list, result };`
-- `use stoud.net { tcp };`
-- `use auth.system { process, thread, time };`
+- `use <io:input, output, render, random>;`
+- `use <memory:ptr, heap, region>;`
+- `use <collections:array, list, result>;`
+- `use <net:tcp>;`
+- `use <auth.system:process, thread>;`
 
-`print` and `println` require `use stoud.io { output };`. String, terminal, time,
+`print` and `println` require `use <io:output>;`. String, terminal, time,
 mobile, network/system backend services and the direct filesystem operations
 declared as prelude symbols do not require source imports.
 

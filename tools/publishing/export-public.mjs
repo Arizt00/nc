@@ -30,6 +30,10 @@ else if(!dry){
  const extra=(relative,data)=>{const to=path.join(out,relative);fs.mkdirSync(path.dirname(to),{recursive:true});fs.writeFileSync(to,data);records.push({path:relative,bytes:Buffer.byteLength(data),sha256:crypto.createHash('sha256').update(data).digest('hex')});};
  extra('tests/fixtures/old_examples/performance/native_fast/benchmark_contracts.json',fs.readFileSync(path.join(root,'_archive/old_examples/performance/native_fast/benchmark_contracts.json')));
  extra('ROADMAP.md',fs.readFileSync(path.join(root,'docs/public/ROADMAP.github.md')));
+ const agentText=fs.readFileSync(path.join(root,'docs/public/AGENTS.github.md'));
+ fs.writeFileSync(path.join(out,'AGENTS.md'),agentText);
+ const agentRecord=records.find(r=>r.path==='AGENTS.md');
+ Object.assign(agentRecord,{bytes:agentText.length,sha256:crypto.createHash('sha256').update(agentText).digest('hex')});
  extra('.gitignore','/target/\n/dist/\n/_tmp/\n/reports/\n**/.ncc/\n**/.ghor/\nnode_modules/\n.env\n.env.*\n*.log\n*.exe\n*.dll\n*.so\n*.o\n*.obj\n*.zip\n*.tar.gz\n');
  // Preserve source bytes so bootstrap provenance and the publication digests survive cloning.
  extra('.gitattributes','* -text\n*.pdf binary\n*.png binary\n');
