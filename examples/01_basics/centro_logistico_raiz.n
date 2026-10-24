@@ -1,0 +1,191 @@
+use <io:output, render>;
+centroLogisticoRaiz {
+    Pedido :: type {
+            id >> int;
+            cpu >> int;
+            gpu >> int;
+            ram >> int;
+            credito >> int;
+            riesgo >> int;
+    }
+    EstadoCentro :: type {
+            stockCpu >> int;
+            stockGpu >> int;
+            stockRam >> int;
+            energia >> int;
+            cargaRed >> int;
+            saldo >> int;
+    }
+    stc:
+        stockCpu >> int;
+        stockGpu >> int;
+        stockRam >> int;
+        energia >> int;
+        cargaRed >> int;
+        pedidosOk >> int;
+        pedidosReject >> int;
+        alertas >> int;
+        ingresos >> int;
+        coste >> int;
+        saldo >> int;
+        checksum >> int;
+        auditoria >> bool;
+        nombreNodo >> str;
+        ultimoEstado >> str;
+        ultimoPedido >> int;
+        ultimoRiesgo >> int;
+        etiquetaResumen >> str;
+    fn:
+        reiniciar() -> bool {
+            stockCpu >> int <- 40;
+            stockGpu >> int <- 18;
+            stockRam >> int <- 120;
+            energia >> int <- 100;
+            cargaRed >> int <- 15;
+            pedidosOk >> int <- 0;
+            pedidosReject >> int <- 0;
+            alertas >> int <- 0;
+            ingresos >> int <- 0;
+            coste >> int <- 0;
+            saldo >> int <- 0;
+            checksum >> int <- 0;
+            auditoria >> bool <- true;
+            nombreNodo >> str <- "atlas.root.01";
+            ultimoEstado >> str <- "cold";
+            ultimoPedido >> int <- 0;
+            ultimoRiesgo >> int <- 0;
+            return true;
+        }
+        precioRecurso(tipo >> int, prioridad >> int) -> int {
+            if (tipo == 0) {
+                if (prioridad >= 8) { return 170; }
+                if (prioridad >= 5) { return 150; }
+                return 130;
+            }
+            if (tipo == 1) {
+                if (prioridad >= 8) { return 420; }
+                if (prioridad >= 5) { return 390; }
+                return 350;
+            }
+            if (prioridad >= 8) { return 26; }
+            if (prioridad >= 5) { return 22; }
+            return 18;
+        }
+        estimarCosto(cpu >> int, gpu >> int, ram >> int, prioridad >> int) -> int {
+            return (cpu * precioRecurso(0, prioridad)) +
+                (gpu * precioRecurso(1, prioridad)) +
+                (ram * precioRecurso(2, prioridad));
+        }
+        costeInterno(cpu >> int, gpu >> int, ram >> int) -> int {
+            return (cpu * 90) + (gpu * 250) + (ram * 10);
+        }
+        validarPedido(cpu >> int, gpu >> int, ram >> int, credito >> int, riesgo >> int) -> bool {
+            if (cpu < 0 || gpu < 0 || ram < 0) { return false; }
+            if (credito <= 0 || riesgo < 0 || riesgo > 8) { return false; }
+            if (stockCpu < cpu || stockGpu < gpu || stockRam < ram) { return false; }
+            if (credito < estimarCosto(cpu, gpu, ram, riesgo)) { return false; }
+            return true;
+        }
+        rechazarPedido(id >> int, riesgo >> int) -> int {
+            pedidosReject >> int <- pedidosReject + 1;
+            ultimoEstado >> str <- "reject";
+            println(colorBold("pedido.rechazado id=" + renderInt(id) + " riesgo=" + renderInt(riesgo), "red"));
+            return -1;
+        }
+        consumirRecursos(cpu >> int, gpu >> int, ram >> int) -> bool {
+            stockCpu >> int <- stockCpu - cpu;
+            stockGpu >> int <- stockGpu - gpu;
+            stockRam >> int <- stockRam - ram;
+            energia >> int <- energia - ((cpu * 2) + (gpu * 5) + (ram / 4));
+            cargaRed >> int <- cargaRed + cpu + gpu + (ram / 8);
+            return true;
+        }
+        registrarBalance(subtotal >> int, costeInternoPedido >> int) -> bool {
+            pedidosOk >> int <- pedidosOk + 1;
+            ingresos >> int <- ingresos + subtotal;
+            coste >> int <- coste + costeInternoPedido;
+            saldo >> int <- ingresos - coste;
+            return true;
+        }
+        revisarAlertas(id >> int, riesgo >> int) -> bool {
+            if (riesgo >= 7) { alerta("pedido.riesgo.alto", id); }
+            if (energia < 20) { alerta("energia.baja", energia); }
+            if (cargaRed > 80) { alerta("carga.red.alta", cargaRed); }
+            return true;
+        }
+        alerta(nombre >> str, valor >> int) -> bool {
+            alertas >> int <- alertas + 1;
+            println(colorBold(nombre + "=" + renderInt(valor), "yellow"));
+            return true;
+        }
+        actualizarChecksum() -> bool {
+            checksum >> int <- (stockCpu * 3) + (stockGpu * 5) + (stockRam * 7) + pedidosOk + pedidosReject;
+            return true;
+        }
+        aplicarPedido(id >> int, cpu >> int, gpu >> int, ram >> int, credito >> int, riesgo >> int) -> int {
+            ultimoPedido >> int <- id;
+            ultimoRiesgo >> int <- riesgo;
+            pedidoValido >> bool <- validarPedido(cpu, gpu, ram, credito, riesgo);
+            if (!pedidoValido) { return rechazarPedido(id, riesgo); }
+            pedidoSubtotal >> int <- estimarCosto(cpu, gpu, ram, riesgo);
+            pedidoCoste >> int <- costeInterno(cpu, gpu, ram);
+            consumirRecursos(cpu, gpu, ram);
+            registrarBalance(pedidoSubtotal, pedidoCoste);
+            revisarAlertas(id, riesgo);
+            actualizarChecksum();
+            ultimoEstado >> str <- "ok";
+            println(color("pedido.ok#" + renderInt(id) + " subtotal=" + renderInt(pedidoSubtotal) +
+                " margen=" + renderInt(pedidoSubtotal - pedidoCoste) + " checksum=" + renderInt(checksum), "green"));
+            return pedidoSubtotal;
+        }
+        cierreAuditoria() -> bool {
+            if (stockCpu < 0 || stockGpu < 0 || stockRam < 0) { return false; }
+            if (pedidosOk < 0 || pedidosReject < 0) { return false; }
+            if (saldo != (ingresos - coste)) { return false; }
+            if (energia < 0) { return false; }
+            if (alertas > (pedidosOk + pedidosReject + 5)) { return false; }
+            return true;
+        }
+        imprimirLinea(nombre >> str, valor >> int, tono >> str) -> bool {
+            println(color(nombre + "=" + renderInt(valor), tono));
+            return true;
+        }
+        resumen() -> int {
+            println("");
+            println(colorBold("centroLogisticoRaiz.resumen nodo=" + nombreNodo, "cyan"));
+            imprimirLinea("stockCpu", stockCpu, "blue");
+            imprimirLinea("stockGpu", stockGpu, "blue");
+            imprimirLinea("stockRam", stockRam, "blue");
+            imprimirLinea("pedidosOk", pedidosOk, "green");
+            imprimirLinea("pedidosReject", pedidosReject, "red");
+            imprimirLinea("alertas", alertas, "yellow");
+            imprimirLinea("ingresos", ingresos, "green");
+            imprimirLinea("coste", coste, "yellow");
+            imprimirLinea("saldo", saldo, "cyan");
+            imprimirLinea("energia", energia, "blue");
+            imprimirLinea("cargaRed", cargaRed, "blue");
+            println(color("ultimoPedido=" + renderInt(ultimoPedido) + " riesgo=" + renderInt(ultimoRiesgo) +
+                " estado=" + ultimoEstado, "gray"));
+            return saldo;
+        }
+        boot() -> int {
+            reiniciar();
+            println(colorBold("centroLogisticoRaiz.boot nodo=" + nombreNodo, "cyan"));
+            aplicarPedido(1001, 3, 1, 12, 2000, 4);
+            aplicarPedido(1002, 2, 2, 16, 2600, 7);
+            aplicarPedido(1003, 8, 4, 40, 900, 9);
+            aplicarPedido(1004, 1, 0, 8, 400, 3);
+            aplicarPedido(1005, 5, 1, 24, 2400, 6);
+            auditoria >> bool <- cierreAuditoria();
+            if (auditoria) {
+                println(colorBold("auditoria.ok", "green"));
+            } else {
+                println(colorBold("auditoria.fail", "red"));
+            }
+            return resumen();
+        }
+    ref main ->> boot;
+    fa:
+        return true;
+
+}

@@ -1,0 +1,131 @@
+use <data:json>;
+use <project:release_io>;
+
+certJson {
+    fn:
+        private:
+            escape(data >> p<byte>, at >> int, value >> int) -> int {
+                wr(off(data,at),92); wr(off(data,at+1),117);
+                index >> int <- 0;
+                while (index < 4) {
+                    digit >> int <- (value >>> (12-index*4)) & 15;
+                    wr(off(data,at+2+index),digit < 10 ? 48+digit : 87+digit);
+                    index += 1;
+                }
+                return at+6;
+            }
+            encode(value >> int, depth >> int) -> str {
+                if (depth > 64) return "";
+                kind >> int <- jsonKind(value);
+                if (kind == 4) return quote(jsonStringView(value,""));
+                if (kind != 5 && kind != 6) {
+                    owned >> str <- jsonStringify(value);
+                    copy >> str <- strSubstring(owned,0,strByteLen(owned));
+                    if (owned != "") free(cast<byte>(owned));
+                    return copy;
+                }
+                result >> str <- kind == 5 ? "[" : "{";
+                count >> int <- kind == 5 ? jsonArrayLen(value) : jsonObjectLen(value);
+                index >> int <- 0;
+                while (index < count) {
+                    if (index > 0) result <- append(result,",");
+                    child >> int <- 0;
+                    if (kind == 6) {
+                        name >> str <- jsonObjectKeyAt(value,index);
+                        key >> str <- quote(name);
+                        child <- jsonObjectBorrow(value,name);
+                        free(cast<byte>(name));
+                        if (key == "") { jsonRelease(child); strRelease(result); return ""; }
+                        result <- append(result,key); result <- append(result,":"); strRelease(key);
+                    } else child <- jsonArrayBorrow(value,index);
+                    text >> str <- encode(child,depth+1);
+                    jsonRelease(child);
+                    if (text == "") { strRelease(result); return ""; }
+                    result <- append(result,text); strRelease(text); index += 1;
+                }
+                return append(result,kind == 5 ? "]" : "}");
+            }
+        public:
+            append(first >> str, suffix >> str) -> str {
+                result >> str <- first+suffix;
+                strRelease(first);
+                return result;
+            }
+            field(object >> int, name >> str) -> str {
+                child >> int <- jsonObjectBorrow(object,name);
+                view >> str <- jsonStringView(child,"");
+                copy >> str <- strSubstring(view,0,strByteLen(view));
+                jsonRelease(child);
+                return copy;
+            }
+            // JSON set/push clone their input; these helpers consume the temporary handle.
+            put(object >> int, name >> str, value >> int) -> void {
+                jsonObjectSet(object,name,value); jsonRelease(value);
+            }
+            push(array >> int, value >> int) -> void {
+                jsonArrayPush(array,value); jsonRelease(value);
+            }
+            insert(array >> int, index >> int, value >> int) -> void {
+                jsonArrayInsert(array,index,value); jsonRelease(value);
+            }
+            quote(text >> str) -> str {
+                // Local compatibility writer: the retained runtime sign-extends high UTF-8
+                // bytes when escaping JSON. Decode validated scalars before emitting ASCII.
+                bytes >> p<byte> <- cast(text);
+                length >> int <- strByteLen(text);
+                data >> p<byte> <- cast(alloc(length*6+3));
+                guard data != null else return "";
+                index >> int <- 0;
+                written >> int <- 1;
+                wr(data,34);
+                while (index < length) {
+                    first >> int <- rd(off(bytes,index)) & 255;
+                    scalar >> int <- first;
+                    width >> int <- 1;
+                    if (first >= 128) {
+                        if (first >= 194 && first <= 223) { width <- 2; scalar <- first & 31; }
+                        else if (first >= 224 && first <= 239) { width <- 3; scalar <- first & 15; }
+                        else if (first >= 240 && first <= 244) { width <- 4; scalar <- first & 7; }
+                        else { free(data); return ""; }
+                        if (index+width > length) { free(data); return ""; }
+                        cursor >> int <- 1;
+                        while (cursor < width) {
+                            next >> int <- rd(off(bytes,index+cursor)) & 255;
+                            if ((next & 192) != 128) { free(data); return ""; }
+                            scalar <- scalar*64+(next & 63); cursor += 1;
+                        }
+                        if ((width == 2 && scalar < 128) || (width == 3 && scalar < 2048) ||
+                            (width == 4 && scalar < 65536) || scalar > 1114111 ||
+                            (scalar >= 55296 && scalar <= 57343)) { free(data); return ""; }
+                    }
+                    if (scalar == 34 || scalar == 92) {
+                        wr(off(data,written),92); wr(off(data,written+1),scalar); written += 2;
+                    }
+                    else if (scalar < 32 || scalar >= 128) {
+                        if (scalar <= 65535) written <- escape(data,written,scalar);
+                        else {
+                            shifted >> int <- scalar-65536;
+                            written <- escape(data,written,55296+(shifted >>> 10));
+                            written <- escape(data,written,56320+(shifted & 1023));
+                        }
+                    } else { wr(off(data,written),scalar); written += 1; }
+                    index += width;
+                }
+                wr(off(data,written),34); wr(off(data,written+1),0);
+                view >> str <- cast(data);
+                result >> str <- strSubstring(view,0,written+1);
+                free(data);
+                return result;
+            }
+            stringify(model >> int) -> str { return encode(model,0); }
+            save(path >> str, model >> int) -> bool {
+                text >> str <- stringify(model);
+                if (text == "") return false;
+                content >> str <- text+"\n";
+                result >> bool <- release_io.releaseIo.atomicWrite(path,content);
+                strRelease(content);
+                strRelease(text);
+                return result;
+            }
+    fa: return true;
+}

@@ -1,0 +1,793 @@
+use <io:output, render>;
+use <project:parser_ast, generic_abi, diagnostics>;
+
+nccPatternAsyncResource {
+    const:
+        CONTEXT_BYTES >> int <- 192;
+
+        C_MATERIAL >> int <- 0;
+        C_KEYS >> int <- 8;
+        C_MOVED >> int <- 16;
+        C_MATCHES >> int <- 24;
+        C_ARMS >> int <- 28;
+        C_PATTERNS >> int <- 32;
+        C_WILDCARDS >> int <- 36;
+        C_BINDINGS >> int <- 40;
+        C_VARIANTS >> int <- 44;
+        C_STRUCTS >> int <- 48;
+        C_ARRAYS >> int <- 52;
+        C_RANGES >> int <- 56;
+        C_EXHAUSTIVE >> int <- 60;
+        C_UNREACHABLE_CHECKS >> int <- 64;
+        C_CLOSURES >> int <- 68;
+        C_ASYNC_CLOSURES >> int <- 72;
+        C_CAPTURES >> int <- 76;
+        C_MOVE_CAPTURES >> int <- 80;
+        C_REF_CAPTURES >> int <- 84;
+        C_MUT_CAPTURES >> int <- 88;
+        C_AWAITS >> int <- 92;
+        C_YIELDS >> int <- 96;
+        C_SPAWNS >> int <- 100;
+        C_DEFERS >> int <- 104;
+        C_TRIES >> int <- 108;
+        C_CLEANUPS >> int <- 112;
+        C_MOVE_OPS >> int <- 116;
+        C_COPY_OPS >> int <- 120;
+        C_ASYNC_CONTEXTS >> int <- 124;
+        C_GENERATOR_CONTEXTS >> int <- 128;
+        C_KERNEL_HIDDEN_ALLOC >> int <- 132;
+        C_KERNEL_HIDDEN_SCHED >> int <- 136;
+        C_KEY_COUNT >> int <- 140;
+        C_MOVED_COUNT >> int <- 144;
+        C_ERROR >> int <- 148;
+        C_ERROR_TOKEN >> int <- 152;
+        C_FINGERPRINT >> int <- 156;
+
+        AST_VALUE_DECL >> int <- 12;
+        AST_FUNCTION_DECL >> int <- 15;
+        AST_PARAMETER_DECL >> int <- 16;
+        AST_EXPR_LITERAL >> int <- 25;
+        AST_EXPR_NAME >> int <- 26;
+        AST_BLOCK >> int <- 34;
+        AST_STMT_RETURN >> int <- 37;
+        AST_STMT_DEFER >> int <- 42;
+        AST_STMT_BREAK >> int <- 43;
+        AST_STMT_CONTINUE >> int <- 44;
+        AST_EXPR_CLOSURE >> int <- 47;
+        AST_EXPR_TRY >> int <- 48;
+        AST_EXPR_PREFIX >> int <- 49;
+        AST_STMT_MATCH >> int <- 51;
+        AST_MATCH_ARM >> int <- 52;
+        AST_STMT_YIELD >> int <- 59;
+        AST_PATTERN_WILDCARD >> int <- 60;
+        AST_PATTERN_LITERAL >> int <- 61;
+        AST_PATTERN_BINDING >> int <- 62;
+        AST_PATTERN_VARIANT >> int <- 63;
+        AST_PATTERN_STRUCT >> int <- 64;
+        AST_PATTERN_FIELD >> int <- 65;
+        AST_PATTERN_ARRAY >> int <- 66;
+        AST_PATTERN_RANGE >> int <- 67;
+        AST_PATTERN_REST >> int <- 68;
+        AST_CLOSURE_CAPTURE >> int <- 70;
+
+        T_IDENTIFIER >> int <- 1;
+        T_NUMBER >> int <- 2;
+        T_STRING >> int <- 3;
+        T_CHAR >> int <- 4;
+        T_LPAREN >> int <- 7;
+        T_RPAREN >> int <- 8;
+        T_LBRACE >> int <- 5;
+        T_RBRACE >> int <- 6;
+        T_COMMA >> int <- 15;
+        T_DOT >> int <- 16;
+        T_LESS_DASH >> int <- 24;
+        T_EQ >> int <- 30;
+        T_PLUS_EQ >> int <- 37;
+        T_MINUS_EQ >> int <- 40;
+        T_KEYWORD_TRUE >> int <- 76;
+        T_KEYWORD_FALSE >> int <- 77;
+
+        PROTOCOL_OTHER >> int <- 0;
+        PROTOCOL_BOOL >> int <- 1;
+        PROTOCOL_RESULT >> int <- 2;
+        PROTOCOL_OPTION >> int <- 3;
+
+    type:
+        PhaseContract {
+            public:
+                matches >> int;
+                patterns >> int;
+                coroutines >> int;
+                resources >> int;
+                fingerprint >> int;
+        }
+
+    stc:
+        analyses >> u64 <- 0;
+
+    local:
+        lastFingerprint >> int <- 0;
+        lastStatus >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            pointer(base >> p<byte>, at >> int) -> p<byte> {
+                return from<byte>(rd<addr>(off(base, at)));
+            }
+
+            putPointer(base >> p<byte>, at >> int, value >> p<byte>) -> void {
+                wr<addr>(off(base, at), adr(value));
+            }
+
+            material(context >> p<byte>) -> p<byte> {
+                return pointer(context, C_MATERIAL);
+            }
+
+            nodeCount(context >> p<byte>) -> int {
+                return parser_ast.nccParserAst.materialNodeCount(material(context));
+            }
+
+            tokenCount(context >> p<byte>) -> int {
+                return parser_ast.nccParserAst.materialTokenCount(material(context));
+            }
+
+            nodeKind(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeKind(material(context), node);
+            }
+
+            nodeParent(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeParent(material(context), node);
+            }
+
+            nodeFirst(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeFirstToken(material(context), node);
+            }
+
+            nodeEnd(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeEndToken(material(context), node);
+            }
+
+            nodeChild(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeFirstChild(material(context), node);
+            }
+
+            nodeNext(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeNextSibling(material(context), node);
+            }
+
+            nodeName(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeNameHash(material(context), node);
+            }
+
+            nodeRole(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeRoleHash(material(context), node);
+            }
+
+            nodeFlags(context >> p<byte>, node >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeFlags(material(context), node);
+            }
+
+            tokenKind(context >> p<byte>, token >> int) -> int {
+                if (token < 0 || token >= tokenCount(context)) return 101;
+                return parser_ast.nccParserAst.materialTokenKind(material(context), token);
+            }
+
+            tokenSame(context >> p<byte>, token >> int, word >> str) -> bool {
+                if (token < 0 || token >= tokenCount(context)) return false;
+                return parser_ast.nccParserAst.materialTokenSame(material(context), token, word);
+            }
+
+            tokenHash(context >> p<byte>, token >> int) -> int {
+                if (token < 0 || token >= tokenCount(context)) return 0;
+                return parser_ast.nccParserAst.materialTokenHash(material(context), token);
+            }
+
+            add(context >> p<byte>, field >> int, amount >> int) -> int {
+                value >> int <- integer(context, field) + amount;
+                putInteger(context, field, value);
+                return value;
+            }
+
+            mix(context >> p<byte>, value >> int) -> bool {
+                positive >> int <- value < 0 ? -value : value;
+                next >> int <- (integer(context, C_FINGERPRINT) * 33 + positive + 1) % 16777213;
+                putInteger(context, C_FINGERPRINT, next);
+                return true;
+            }
+
+            fail(context >> p<byte>, error >> int, token >> int) -> bool {
+                if (integer(context, C_ERROR) == 0) {
+                    putInteger(context, C_ERROR, error);
+                    putInteger(context, C_ERROR_TOKEN, token);
+                }
+                return false;
+            }
+
+            descendant(context >> p<byte>, node >> int, owner >> int) -> bool {
+                current >> int <- node;
+                while (current >= 0) {
+                    if (current == owner) return true;
+                    current <- nodeParent(context, current);
+                }
+                return false;
+            }
+
+            directChildKind(context >> p<byte>, owner >> int, wanted >> int) -> int {
+                child >> int <- nodeChild(context, owner);
+                while (child >= 0) {
+                    if (nodeKind(context, child) == wanted) return child;
+                    child <- nodeNext(context, child);
+                }
+                return -1;
+            }
+
+            rangeHas(context >> p<byte>, start >> int, end >> int, word >> str) -> bool {
+                at >> int <- start;
+                while (at <= end && at < tokenCount(context)) {
+                    if (tokenSame(context, at, word)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            rangeHasPair(context >> p<byte>, start >> int, end >> int,
+                left >> str, right >> str) -> bool {
+                at >> int <- start;
+                while (at < end && at + 1 < tokenCount(context)) {
+                    if (tokenSame(context, at, left) && tokenSame(context, at + 1, right)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            number(context >> p<byte>, token >> int) -> int {
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(material(context), token);
+                bytes >> int <- parser_ast.nccParserAst.materialTokenBytes(material(context), token);
+                value >> int <- 0;
+                sign >> int <- 1;
+                at >> int <- 0;
+                if (bytes > 0 && rd<byte>(data) == 45) { sign <- -1; at <- 1; }
+                while (at < bytes) {
+                    item >> byte <- rd<byte>(off(data, at));
+                    if (item >= 48 && item <= 57) value <- value * 10 + item - 48;
+                    at += 1;
+                }
+                return value * sign;
+            }
+
+            patternKey(context >> p<byte>, pattern >> int) -> int {
+                key >> int <- nodeKind(context, pattern) * 131 + nodeName(context, pattern) * 17 +
+                    nodeRole(context, pattern) * 7 + nodeFlags(context, pattern);
+                child >> int <- nodeChild(context, pattern);
+                while (child >= 0) {
+                    key <- (key * 31 + patternKey(context, child)) % 16777213;
+                    child <- nodeNext(context, child);
+                }
+                return key < 0 ? -key : key;
+            }
+
+            seenKey(context >> p<byte>, key >> int) -> bool {
+                at >> int <- 0;
+                keys >> p<byte> <- pointer(context, C_KEYS);
+                while (at < integer(context, C_KEY_COUNT)) {
+                    if (rd<int>(off(keys, at * 4)) == key) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            rememberKey(context >> p<byte>, key >> int) -> bool {
+                at >> int <- integer(context, C_KEY_COUNT);
+                wr<int>(off(pointer(context, C_KEYS), at * 4), key);
+                putInteger(context, C_KEY_COUNT, at + 1);
+                return true;
+            }
+
+            movedSeen(context >> p<byte>, nameHash >> int) -> bool {
+                at >> int <- 0;
+                while (at < integer(context, C_MOVED_COUNT)) {
+                    if (rd<int>(off(pointer(context, C_MOVED), at * 8)) == nameHash) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            rememberMoved(context >> p<byte>, nameHash >> int,
+                endToken >> int, ownerEnd >> int) -> bool {
+                at >> int <- integer(context, C_MOVED_COUNT);
+                slot >> p<byte> <- off(pointer(context, C_MOVED), at * 12);
+                wr<int>(slot, nameHash);
+                wr<int>(off(slot, 4), endToken);
+                wr<int>(off(slot, 8), ownerEnd);
+                putInteger(context, C_MOVED_COUNT, at + 1);
+                return true;
+            }
+
+            symbolBefore(context >> p<byte>, closure >> int, nameHash >> int) -> bool {
+                at >> int <- 0;
+                first >> int <- nodeFirst(context, closure);
+                while (at < nodeCount(context)) {
+                    kind >> int <- nodeKind(context, at);
+                    if ((kind == AST_VALUE_DECL || kind == AST_PARAMETER_DECL) &&
+                        nodeName(context, at) == nameHash && nodeFirst(context, at) < first) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            captureWritten(context >> p<byte>, closure >> int, nameHash >> int) -> bool {
+                at >> int <- nodeFirst(context, closure);
+                end >> int <- nodeEnd(context, closure);
+                while (at < end) {
+                    if (tokenHash(context, at) == nameHash) {
+                        next >> int <- tokenKind(context, at + 1);
+                        if (next == T_LESS_DASH || next == T_EQ ||
+                            next == T_PLUS_EQ || next == T_MINUS_EQ) return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            validateClosure(context >> p<byte>, closure >> int) -> bool {
+                add(context, C_CLOSURES, 1);
+                flags >> int <- nodeFlags(context, closure);
+                if ((flags & 1) != 0) add(context, C_ASYNC_CLOSURES, 1);
+                if ((flags & 2) != 0) add(context, C_MOVE_OPS, 1);
+
+                capture >> int <- nodeChild(context, closure);
+                while (capture >= 0) {
+                    if (nodeKind(context, capture) == AST_CLOSURE_CAPTURE) {
+                        add(context, C_CAPTURES, 1);
+                        nameHash >> int <- nodeName(context, capture);
+                        mode >> int <- nodeRole(context, capture);
+                        other >> int <- nodeChild(context, closure);
+                        while (other >= 0 && other != capture) {
+                            if (nodeKind(context, other) == AST_CLOSURE_CAPTURE &&
+                                nodeName(context, other) == nameHash) {
+                                return fail(context, 6, nodeFirst(context, capture));
+                            }
+                            other <- nodeNext(context, other);
+                        }
+                        if (!symbolBefore(context, closure, nameHash)) {
+                            return fail(context, 7, nodeFirst(context, capture));
+                        }
+                        if (mode == 1) {
+                            add(context, C_MOVE_CAPTURES, 1);
+                            if (movedSeen(context, nameHash)) {
+                                return fail(context, 8, nodeFirst(context, capture));
+                            }
+                            owner >> int <- containingFunction(context, nodeFirst(context, closure));
+                            ownerEnd >> int <- owner >= 0 ? nodeEnd(context, owner) : tokenCount(context) - 1;
+                            rememberMoved(context, nameHash, nodeEnd(context, closure), ownerEnd);
+                        } else if (mode == 2) add(context, C_REF_CAPTURES, 1);
+                        else if (mode == 3) add(context, C_MUT_CAPTURES, 1);
+                        if (captureWritten(context, closure, nameHash) && mode != 3) {
+                            return fail(context, 9, nodeFirst(context, capture));
+                        }
+                        mix(context, nameHash + mode);
+                    }
+                    capture <- nodeNext(context, capture);
+                }
+                return true;
+            }
+
+            movedUsedAfter(context >> p<byte>) -> bool {
+                movedAt >> int <- 0;
+                while (movedAt < integer(context, C_MOVED_COUNT)) {
+                    slot >> p<byte> <- off(pointer(context, C_MOVED), movedAt * 12);
+                    nameHash >> int <- rd<int>(slot);
+                    at >> int <- rd<int>(off(slot, 4)) + 1;
+                    end >> int <- rd<int>(off(slot, 8));
+                    while (at <= end && at < tokenCount(context)) {
+                        if (tokenHash(context, at) == nameHash && tokenKind(context, at) == T_IDENTIFIER) {
+                            return fail(context, 8, at);
+                        }
+                        at += 1;
+                    }
+                    movedAt += 1;
+                }
+                return true;
+            }
+
+            deferEscapes(context >> p<byte>, deferred >> int) -> bool {
+                at >> int <- 0;
+                while (at < nodeCount(context)) {
+                    kind >> int <- nodeKind(context, at);
+                    if (at != deferred && descendant(context, at, deferred) &&
+                        (kind == AST_STMT_RETURN || kind == AST_STMT_BREAK ||
+                        kind == AST_STMT_CONTINUE)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            patternWord(context >> p<byte>, pattern >> int, word >> str) -> bool {
+                return rangeHas(context, nodeFirst(context, pattern), nodeEnd(context, pattern), word);
+            }
+
+            scrutineeProtocol(context >> p<byte>, matchNode >> int) -> int {
+                expression >> int <- nodeChild(context, matchNode);
+                guard expression >= 0 else return PROTOCOL_OTHER;
+                if (nodeKind(context, expression) == AST_EXPR_LITERAL) {
+                    token >> int <- nodeFirst(context, expression);
+                    if (tokenKind(context, token) == T_KEYWORD_TRUE ||
+                        tokenKind(context, token) == T_KEYWORD_FALSE) return PROTOCOL_BOOL;
+                }
+                if (nodeKind(context, expression) == AST_EXPR_NAME) {
+                    nameHash >> int <- nodeName(context, expression);
+                    at >> int <- 0;
+                    while (at < nodeCount(context)) {
+                        if (nodeKind(context, at) == AST_VALUE_DECL &&
+                            nodeName(context, at) == nameHash && nodeFirst(context, at) < nodeFirst(context, matchNode)) {
+                            typeNode >> int <- nodeChild(context, at);
+                            if (typeNode >= 0) {
+                                typeToken >> int <- nodeFirst(context, typeNode);
+                                if (tokenSame(context, typeToken, "bool")) return PROTOCOL_BOOL;
+                                if (tokenSame(context, typeToken, "Result")) return PROTOCOL_RESULT;
+                                if (tokenSame(context, typeToken, "Option")) return PROTOCOL_OPTION;
+                            }
+                        }
+                        at += 1;
+                    }
+                }
+                return PROTOCOL_OTHER;
+            }
+
+            validateRange(context >> p<byte>, pattern >> int) -> bool {
+                first >> int <- nodeChild(context, pattern);
+                last >> int <- first >= 0 ? nodeNext(context, first) : -1;
+                if (first < 0 || last < 0) return fail(context, 5, nodeFirst(context, pattern));
+                leftToken >> int <- nodeFirst(context, first);
+                rightToken >> int <- nodeFirst(context, last);
+                if (tokenKind(context, leftToken) == T_NUMBER && tokenKind(context, rightToken) == T_NUMBER &&
+                    number(context, leftToken) > number(context, rightToken)) {
+                    return fail(context, 5, leftToken);
+                }
+                return true;
+            }
+
+            validateMatch(context >> p<byte>, matchNode >> int) -> bool {
+                add(context, C_MATCHES, 1);
+                putInteger(context, C_KEY_COUNT, 0);
+                child >> int <- nodeChild(context, matchNode);
+                arm >> int <- child >= 0 ? nodeNext(context, child) : -1;
+                if (arm < 0) return fail(context, 1, nodeFirst(context, matchNode));
+                wildcard >> bool <- false;
+                trueSeen >> bool <- false;
+                falseSeen >> bool <- false;
+                okSeen >> bool <- false;
+                errSeen >> bool <- false;
+                someSeen >> bool <- false;
+                noneSeen >> bool <- false;
+                while (arm >= 0) {
+                    if (nodeKind(context, arm) == AST_MATCH_ARM) {
+                        add(context, C_ARMS, 1);
+                        pattern >> int <- nodeChild(context, arm);
+                        guard pattern >= 0 else return fail(context, 1, nodeFirst(context, arm));
+                        add(context, C_PATTERNS, 1);
+                        if (wildcard) return fail(context, 3, nodeFirst(context, arm));
+                        key >> int <- patternKey(context, pattern);
+                        guardNode >> int <- nodeNext(context, pattern);
+                        guarded >> bool <- tokenSame(context, nodeEnd(context, pattern) + 1, "if");
+                        if (!guarded && seenKey(context, key)) {
+                            return fail(context, 3, nodeFirst(context, pattern));
+                        }
+                        if (guarded && nodeKind(context, guardNode) == AST_EXPR_LITERAL) {
+                            guardToken >> int <- nodeFirst(context, guardNode);
+                            if (tokenKind(context, guardToken) != T_KEYWORD_TRUE &&
+                                tokenKind(context, guardToken) != T_KEYWORD_FALSE) {
+                                return fail(context, 4, guardToken);
+                            }
+                            if (tokenKind(context, guardToken) == T_KEYWORD_FALSE) {
+                                return fail(context, 3, guardToken);
+                            }
+                        }
+                        if (!guarded) rememberKey(context, key);
+                        patternKind >> int <- nodeKind(context, pattern);
+                        if (patternKind == AST_PATTERN_WILDCARD ||
+                            patternKind == AST_PATTERN_BINDING) {
+                            wildcard <- !guarded;
+                            if (patternKind == AST_PATTERN_WILDCARD) add(context, C_WILDCARDS, 1);
+                            else add(context, C_BINDINGS, 1);
+                        } else if (patternKind == AST_PATTERN_LITERAL) {
+                            token >> int <- nodeFirst(context, pattern);
+                            if (!guarded && tokenKind(context, token) == T_KEYWORD_TRUE) trueSeen <- true;
+                            if (!guarded && tokenKind(context, token) == T_KEYWORD_FALSE) falseSeen <- true;
+                        } else if (patternKind == AST_PATTERN_VARIANT) {
+                            add(context, C_VARIANTS, 1);
+                            if (!guarded && patternWord(context, pattern, "Ok")) okSeen <- true;
+                            if (!guarded && patternWord(context, pattern, "Err")) errSeen <- true;
+                            if (!guarded && patternWord(context, pattern, "Some")) someSeen <- true;
+                            if (!guarded && patternWord(context, pattern, "None")) noneSeen <- true;
+                        } else if (patternKind == AST_PATTERN_STRUCT) add(context, C_STRUCTS, 1);
+                        else if (patternKind == AST_PATTERN_ARRAY) add(context, C_ARRAYS, 1);
+                        else if (patternKind == AST_PATTERN_RANGE) {
+                            add(context, C_RANGES, 1);
+                            if (!validateRange(context, pattern)) return false;
+                        }
+                        add(context, C_UNREACHABLE_CHECKS, 1);
+                        mix(context, key + (guarded ? 1 : 0));
+                    }
+                    arm <- nodeNext(context, arm);
+                }
+                protocol >> int <- scrutineeProtocol(context, matchNode);
+                complete >> bool <- wildcard ||
+                    (protocol == PROTOCOL_BOOL && trueSeen && falseSeen) ||
+                    (protocol == PROTOCOL_RESULT && okSeen && errSeen) ||
+                    (protocol == PROTOCOL_OPTION && someSeen && noneSeen);
+                if (!complete) return fail(context, 2, nodeFirst(context, matchNode));
+                add(context, C_EXHAUSTIVE, 1);
+                return true;
+            }
+
+            containingClosure(context >> p<byte>, token >> int) -> int {
+                at >> int <- 0;
+                found >> int <- -1;
+                while (at < nodeCount(context)) {
+                    if (nodeKind(context, at) == AST_EXPR_CLOSURE &&
+                        nodeFirst(context, at) <= token && nodeEnd(context, at) >= token) found <- at;
+                    at += 1;
+                }
+                return found;
+            }
+
+            containingFunction(context >> p<byte>, token >> int) -> int {
+                at >> int <- 0;
+                found >> int <- -1;
+                while (at < nodeCount(context)) {
+                    if (nodeKind(context, at) == AST_FUNCTION_DECL &&
+                        nodeFirst(context, at) <= token && nodeEnd(context, at) >= token) found <- at;
+                    at += 1;
+                }
+                return found;
+            }
+
+            functionAsync(context >> p<byte>, function >> int) -> bool {
+                first >> int <- nodeFirst(context, function);
+                if (tokenSame(context, first - 1, "async")) return true;
+                return rangeHasPair(context, first, nodeEnd(context, function), "async", "await");
+            }
+
+            functionGenerator(context >> p<byte>, function >> int) -> bool {
+                first >> int <- nodeFirst(context, function);
+                end >> int <- nodeEnd(context, function);
+                return rangeHas(context, first, end, "Generator") ||
+                    rangeHas(context, first, end, "Stream") ||
+                    rangeHas(context, first, end, "AsyncStream");
+            }
+
+            asyncContext(context >> p<byte>, token >> int) -> bool {
+                closure >> int <- containingClosure(context, token);
+                if (closure >= 0 && (nodeFlags(context, closure) & 1) != 0) return true;
+                function >> int <- containingFunction(context, token);
+                return function >= 0 && functionAsync(context, function);
+            }
+
+            generatorContext(context >> p<byte>, token >> int) -> bool {
+                closure >> int <- containingClosure(context, token);
+                if (closure >= 0) return rangeHas(context, nodeFirst(context, closure),
+                    nodeEnd(context, closure), "Generator") ||
+                    rangeHas(context, nodeFirst(context, closure), nodeEnd(context, closure), "Stream") ||
+                    rangeHas(context, nodeFirst(context, closure), nodeEnd(context, closure), "AsyncStream");
+                function >> int <- containingFunction(context, token);
+                return function >= 0 && functionGenerator(context, function);
+            }
+
+            awaitLooksMaterial(context >> p<byte>, token >> int) -> bool {
+                next >> int <- token + 1;
+                if (tokenKind(context, next) == T_LPAREN) next += 1;
+                kind >> int <- tokenKind(context, next);
+                if (kind == T_NUMBER || kind == T_STRING || kind == T_CHAR ||
+                    kind == T_KEYWORD_TRUE || kind == T_KEYWORD_FALSE) return false;
+                return true;
+            }
+
+            validateTokenContracts(context >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < nodeCount(context)) {
+                    token >> int <- nodeFirst(context,at);
+                    k >> int <- nodeKind(context,at);
+                    if (k == AST_EXPR_PREFIX && tokenSame(context, token, "await")) {
+                        add(context, C_AWAITS, 1);
+                        if (!asyncContext(context, token)) return fail(context, 11, token);
+                        if (!awaitLooksMaterial(context, token)) return fail(context, 12, token);
+                        mix(context, 1100 + token);
+                    } else if (k == AST_EXPR_PREFIX && tokenSame(context, token, "spawn")) {
+                        add(context, C_SPAWNS, 1);
+                        mix(context, 1200 + token);
+                    } else if (k == AST_EXPR_PREFIX && tokenSame(context, token, "move")) {
+                        add(context, C_MOVE_OPS, 1);
+                    } else if ((k == AST_EXPR_PREFIX || k == AST_EXPR_NAME) &&
+                        (tokenSame(context, token, "copy") || tokenSame(context, token, "clone") || tokenSame(context, token, "cp"))) {
+                        add(context, C_COPY_OPS, 1);
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            scanNodes(context >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < nodeCount(context)) {
+                    kind >> int <- nodeKind(context, at);
+                    if (kind == AST_STMT_MATCH) {
+                        if (!validateMatch(context, at)) return false;
+                    }
+                    if (kind == AST_EXPR_CLOSURE) {
+                        if (!validateClosure(context, at)) return false;
+                    }
+                    if (kind == AST_STMT_DEFER) {
+                        add(context, C_DEFERS, 1);
+                        add(context, C_CLEANUPS, 1);
+                        if (deferEscapes(context, at)) return fail(context, 10, nodeFirst(context, at));
+                        mix(context, 1300 + nodeFirst(context, at));
+                    }
+                    if (kind == AST_EXPR_TRY) add(context, C_TRIES, 1);
+                    if (kind == AST_STMT_YIELD) {
+                        add(context, C_YIELDS, 1);
+                        if (!generatorContext(context, nodeFirst(context, at))) {
+                            return fail(context, 13, nodeFirst(context, at));
+                        }
+                        mix(context, 1400 + nodeFirst(context, at));
+                    }
+                    if (kind == AST_FUNCTION_DECL) {
+                        if (functionAsync(context, at)) add(context, C_ASYNC_CONTEXTS, 1);
+                        if (functionGenerator(context, at)) add(context, C_GENERATOR_CONTEXTS, 1);
+                    }
+                    at += 1;
+                }
+                return movedUsedAfter(context);
+            }
+
+            makeContext(materialValue >> p<byte>) -> p<byte> {
+                context >> p<byte> <- cast<byte>(alloc(CONTEXT_BYTES));
+                guard context != null else return null;
+                at >> int <- 0;
+                while (at < CONTEXT_BYTES) { wr<byte>(off(context, at), 0); at += 1; }
+                keys >> p<byte> <- cast<byte>(alloc((parser_ast.nccParserAst.materialNodeCount(materialValue) + 8) * 4));
+                moved >> p<byte> <- cast<byte>(alloc((parser_ast.nccParserAst.materialNodeCount(materialValue) + 8) * 12));
+                guard keys != null && moved != null else {
+                    free(keys); free(moved); free(context); return null;
+                }
+                putPointer(context, C_MATERIAL, materialValue);
+                putPointer(context, C_KEYS, keys);
+                putPointer(context, C_MOVED, moved);
+                putInteger(context, C_ERROR_TOKEN, -1);
+                return context;
+            }
+
+            releaseContext(context >> p<byte>) -> bool {
+                if (context != null) {
+                    free(pointer(context, C_KEYS));
+                    free(pointer(context, C_MOVED));
+                    free(context);
+                }
+                return true;
+            }
+
+            emitSummary(context >> p<byte>) -> bool {
+                print("{\"schema\":\"nc.bootstrap.sema.pattern-async-resource.v1\"");
+                print(",\"matches\":"); print(renderInt(integer(context, C_MATCHES)));
+                print(",\"arms\":"); print(renderInt(integer(context, C_ARMS)));
+                print(",\"patterns\":"); print(renderInt(integer(context, C_PATTERNS)));
+                print(",\"wildcards\":"); print(renderInt(integer(context, C_WILDCARDS)));
+                print(",\"bindings\":"); print(renderInt(integer(context, C_BINDINGS)));
+                print(",\"variants\":"); print(renderInt(integer(context, C_VARIANTS)));
+                print(",\"struct_patterns\":"); print(renderInt(integer(context, C_STRUCTS)));
+                print(",\"array_patterns\":"); print(renderInt(integer(context, C_ARRAYS)));
+                print(",\"range_patterns\":"); print(renderInt(integer(context, C_RANGES)));
+                print(",\"exhaustive_matches\":"); print(renderInt(integer(context, C_EXHAUSTIVE)));
+                print(",\"unreachable_checks\":"); print(renderInt(integer(context, C_UNREACHABLE_CHECKS)));
+                print(",\"closures\":"); print(renderInt(integer(context, C_CLOSURES)));
+                print(",\"async_closures\":"); print(renderInt(integer(context, C_ASYNC_CLOSURES)));
+                print(",\"captures\":"); print(renderInt(integer(context, C_CAPTURES)));
+                print(",\"move_captures\":"); print(renderInt(integer(context, C_MOVE_CAPTURES)));
+                print(",\"ref_captures\":"); print(renderInt(integer(context, C_REF_CAPTURES)));
+                print(",\"mut_captures\":"); print(renderInt(integer(context, C_MUT_CAPTURES)));
+                print(",\"awaits\":"); print(renderInt(integer(context, C_AWAITS)));
+                print(",\"yields\":"); print(renderInt(integer(context, C_YIELDS)));
+                print(",\"spawns\":"); print(renderInt(integer(context, C_SPAWNS)));
+                print(",\"defers\":"); print(renderInt(integer(context, C_DEFERS)));
+                print(",\"try_propagations\":"); print(renderInt(integer(context, C_TRIES)));
+                print(",\"cleanup_actions\":"); print(renderInt(integer(context, C_CLEANUPS)));
+                print(",\"move_operations\":"); print(renderInt(integer(context, C_MOVE_OPS)));
+                print(",\"copy_operations\":"); print(renderInt(integer(context, C_COPY_OPS)));
+                print(",\"async_contexts\":"); print(renderInt(integer(context, C_ASYNC_CONTEXTS)));
+                print(",\"generator_contexts\":"); print(renderInt(integer(context, C_GENERATOR_CONTEXTS)));
+                print(",\"kernel_hidden_allocations\":"); print(renderInt(integer(context, C_KERNEL_HIDDEN_ALLOC)));
+                print(",\"kernel_hidden_schedulers\":"); print(renderInt(integer(context, C_KERNEL_HIDDEN_SCHED)));
+                print(",\"fingerprint\":"); print(renderInt(integer(context, C_FINGERPRINT)));
+                println("}");
+                return true;
+            }
+
+            emitError(context >> p<byte>, path >> str) -> int {
+                token >> int <- integer(context, C_ERROR_TOKEN);
+                return diagnostics.nccDiagnostics.emitPatternAsyncResource(
+                    integer(context, C_ERROR),
+                    parser_ast.nccParserAst.materialTokenLine(material(context), token),
+                    parser_ast.nccParserAst.materialTokenColumn(material(context), token), path);
+            }
+
+        public:
+            contains(materialValue >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(materialValue)) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(materialValue, at);
+                    if (kind == AST_STMT_MATCH || kind == AST_EXPR_CLOSURE ||
+                        kind == AST_STMT_DEFER || kind == AST_STMT_YIELD ||
+                        kind == AST_EXPR_TRY) return true;
+                    if (kind == AST_EXPR_PREFIX) {
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(materialValue,at);
+                        if (parser_ast.nccParserAst.materialTokenSame(materialValue,token,"await") ||
+                            parser_ast.nccParserAst.materialTokenSame(materialValue,token,"spawn")) return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            analyzeMaterial(materialValue >> p<byte>, path >> str,
+                json >> bool, quiet >> bool) -> int {
+                if (generic_abi.nccGenericAbi.contains(materialValue)) {
+                    genericCode >> int <- generic_abi.nccGenericAbi.analyzeMaterial(
+                        materialValue, path, false, true);
+                    if (genericCode != 0) return genericCode;
+                }
+                context >> p<byte> <- makeContext(materialValue);
+                guard context != null else return 70;
+                ok >> bool <- scanNodes(context);
+                if (ok) ok <- validateTokenContracts(context);
+                code >> int <- 0;
+                if (integer(context, C_ERROR) != 0) code <- emitError(context, path);
+                else if (!ok) code <- 70;
+                if (code == 0 && !quiet) emitSummary(context);
+                analyses += 1;
+                lastFingerprint <- integer(context, C_FINGERPRINT);
+                lastStatus <- code;
+                releaseContext(context);
+                return code;
+            }
+
+            analyzeFile(path >> str, json >> bool, quiet >> bool) -> int {
+                materialValue >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard materialValue != null else return 66;
+                if (parser_ast.nccParserAst.materialLexerError(materialValue) != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitDiagnostic(
+                        parser_ast.nccParserAst.materialLexerError(materialValue),
+                        parser_ast.nccParserAst.materialErrorLine(materialValue),
+                        parser_ast.nccParserAst.materialErrorColumn(materialValue), path);
+                    parser_ast.nccParserAst.closeMaterial(materialValue);
+                    return code;
+                }
+                if (parser_ast.nccParserAst.materialParserError(materialValue) != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitParser(
+                        parser_ast.nccParserAst.materialParserError(materialValue),
+                        parser_ast.nccParserAst.materialErrorLine(materialValue),
+                        parser_ast.nccParserAst.materialErrorColumn(materialValue), path);
+                    parser_ast.nccParserAst.closeMaterial(materialValue);
+                    return code;
+                }
+                code >> int <- analyzeMaterial(materialValue, path, json, quiet);
+                parser_ast.nccParserAst.closeMaterial(materialValue);
+                return code;
+            }
+
+            selfTest() -> bool {
+                return CONTEXT_BYTES == 192 && PROTOCOL_BOOL == 1 &&
+                    AST_STMT_MATCH == 51 && AST_EXPR_CLOSURE == 47 &&
+                    C_KERNEL_HIDDEN_ALLOC != C_KERNEL_HIDDEN_SCHED;
+            }
+
+    fa:
+        return true;
+}

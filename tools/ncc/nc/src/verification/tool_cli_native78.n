@@ -1,0 +1,78 @@
+use <data:json>;
+use <process:args, env>;
+use <project:release_io, process_capture>;
+
+toolCli {
+    fn:
+        public:
+            parse(arguments >> addr, values >> str, flags >> str) -> int {
+                result >> int <- jsonNewObject();
+                index >> int <- 2;
+                while (index < argsCount(arguments)) {
+                    name >> str <- argsAt(arguments,index);
+                    if (strContains(name,"|")) { jsonRelease(result); return 0; }
+                    if (strContains(flags,"|"+name+"|")) {
+                        jsonObjectSet(result,name,jsonNewBool(true));
+                        index += 1;
+                        continue;
+                    }
+                    if (!strContains(values,"|"+name+"|")) { jsonRelease(result); return 0; }
+                    if (index+1 >= argsCount(arguments)) { jsonRelease(result); return 0; }
+                    value >> str <- argsAt(arguments,index+1);
+                    if (strStartsWith(value,"--")) { jsonRelease(result); return 0; }
+                    jsonObjectSet(result,name,jsonNewString(value));
+                    index += 2;
+                }
+                return result;
+            }
+            hasFlag(options >> int, name >> str) -> bool {
+                field >> int <- jsonObjectGet(options,name);
+                found >> bool <- jsonGetBoolOr(field,false);
+                jsonRelease(field);
+                return found;
+            }
+            value(options >> int, name >> str, fallback >> str) -> str {
+                if (!jsonObjectHas(options,name)) return fallback;
+                return release_io.releaseIo.field(options,name);
+            }
+            absolute(path >> str) -> str {
+                count >> int <- strByteLen(path);
+                // This verifier accepts absolute runner inputs, not implicit cwd resolution.
+                rooted >> bool <- count > 0 && rd(cast<byte>(path)) == 47;
+                if (envHas("WINDIR")) {
+                    rooted <- count >= 3 && rd(off(cast<byte>(path),1)) == 58 &&
+                        (rd(off(cast<byte>(path),2)) == 47 || rd(off(cast<byte>(path),2)) == 92);
+                    if (count >= 2 && ((rd(cast<byte>(path)) == 92 && rd(off(cast<byte>(path),1)) == 92) ||
+                        (rd(cast<byte>(path)) == 47 && rd(off(cast<byte>(path),1)) == 47))) rooted <- true;
+                }
+                return rooted ? strSubstring(path,0,count) : "";
+            }
+            arrayLine(arguments >> int) -> str {
+                result >> str <- "";
+                index >> int <- 0;
+                while (index < jsonArrayLen(arguments)) {
+                    item >> int <- jsonArrayGet(arguments,index);
+                    word >> str <- process_capture.processCapture.quoted(jsonGetString(item));
+                    if (index > 0) result <- result+" ";
+                    result <- result+word;
+                    strRelease(word); jsonRelease(item);
+                    index += 1;
+                }
+                return result;
+            }
+            append(arguments >> int, value >> str) -> void {
+                jsonArrayPush(arguments,jsonNewString(value));
+            }
+            clean(row >> int) -> bool {
+                return hasFlag(row,"capture_ok");
+            }
+            execute(arguments >> int, cwd >> str, timeout >> int) -> int {
+                line >> str <- arrayLine(arguments);
+                result >> int <- process_capture.processCapture.capture(line,cwd,timeout,16777216);
+                strRelease(line);
+                return result;
+            }
+    fa:
+        return true;
+}
+

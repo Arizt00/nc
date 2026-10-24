@@ -1,0 +1,40 @@
+filesystemMetadataPermissionsManual :: runtime {
+    const:
+        PATH >> str <- ".ncc-filesystem-metadata-permissions.bin";
+
+    fn:
+        run() -> bool {
+            delete_file(PATH);
+            data >> p<byte> <- from(adr(b"meta"));
+            written >> int <- fsWriteFrom(PATH, data, 4, false);
+
+            mark >> p<byte> <- stackMark();
+            metadataBuffer >> p<byte> <- stackAlloc(256, 8);
+            permissionsBuffer >> p<byte> <- stackAlloc(256, 8);
+            metadataBytes >> int <- fsMetadataInto(PATH, metadataBuffer, 256);
+            permissionsBytes >> int <- fsPermissionsInto(PATH, permissionsBuffer, 256);
+
+            readonlySet >> bool <- fsSetReadonly(PATH, true);
+            readonlyPermissions >> int <- fsPermissionsInto(PATH, permissionsBuffer, 256);
+            readonlyCleared >> bool <- fsSetReadonly(PATH, false);
+
+            metadataResult >> Result<str, FsError> <- metadata(PATH);
+            permissionsResult >> Result<str, FsError> <- permissions(PATH);
+            readonlyResult >> Result<bool, FsError> <- setReadonly(PATH, false);
+            metadataReleased >> bool <- fsTextRelease(metadataResult);
+            permissionsReleased >> bool <- fsTextRelease(permissionsResult);
+
+            stackRestore(mark);
+            removed >> bool <- delete_file(PATH);
+            return written == 4 && metadataBytes > 0 && permissionsBytes > 0 &&
+                readonlySet && readonlyPermissions > 0 && readonlyCleared &&
+                metadataReleased && permissionsReleased && removed;
+        }
+
+    ref main ->> run;
+
+    fa:
+        fsSetReadonly(PATH, false);
+        delete_file(PATH);
+        return true;
+}

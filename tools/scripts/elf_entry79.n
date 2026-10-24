@@ -1,0 +1,43 @@
+elfEntry79 {
+    fn:
+        private:
+            u16At(data >> p<byte>, at >> int, value >> u16) -> void { wr<u16>(cast<u16>(off(data,at)),value); }
+            u32At(data >> p<byte>, at >> int, value >> u32) -> void { wr<u32>(cast<u32>(off(data,at)),value); }
+            u64At(data >> p<byte>, at >> int, value >> u64) -> void { wr<u64>(cast<u64>(off(data,at)),value); }
+            section(data >> p<byte>, index >> int, name >> int, kind >> int, flags >> u64,
+                offset >> int, bytes >> int, link >> int, info >> int, align >> int, entry >> int) -> void {
+                at >> int <- 248+index*64;
+                u32At(data,at,name); u32At(data,at+4,kind); u64At(data,at+8,flags);
+                u64At(data,at+24,offset); u64At(data,at+32,bytes);
+                u32At(data,at+40,link); u32At(data,at+44,info);
+                u64At(data,at+48,align); u64At(data,at+56,entry);
+            }
+        public:
+            write(path >> str) -> bool {
+                data >> p<byte> <- calloc(1,632);
+                if (data == null) return false;
+                wr(data,127); cp(off(data,1),cast<byte>("ELF"),3);
+                wr(off(data,4),2); wr(off(data,5),1); wr(off(data,6),1);
+                u16At(data,16,1); u16At(data,18,62); u32At(data,20,1);
+                u64At(data,40,248); u16At(data,52,64); u16At(data,58,64);
+                u16At(data,60,6); u16At(data,62,5);
+                // _start: align the OS stack, call main, exit_group(EAX), then UD2.
+                text >> array<byte,20> <- [72,131,228,240,232,0,0,0,0,137,199,184,231,0,0,0,15,5,15,11];
+                cp(off(data,64),cast<byte>(&text),20);
+                u64At(data,88,5); u64At(data,96,0x100000004); u64At(data,104,0xFFFFFFFFFFFFFFFC);
+                u32At(data,136,1); wr(off(data,140),18);
+                u32At(data,160,6); wr(off(data,164),18); u16At(data,166,1); u64At(data,176,20);
+                cp(off(data,185),cast<byte>("main"),4); cp(off(data,190),cast<byte>("_start"),6);
+                cp(off(data,198),cast<byte>(".text"),5); cp(off(data,204),cast<byte>(".rela.text"),10);
+                cp(off(data,215),cast<byte>(".symtab"),7); cp(off(data,223),cast<byte>(".strtab"),7);
+                cp(off(data,231),cast<byte>(".shstrtab"),9);
+                section(data,1,1,1,6,64,20,0,0,16,0);
+                section(data,2,7,4,0,88,24,3,1,8,24);
+                section(data,3,18,2,0,112,72,4,1,8,24);
+                section(data,4,26,3,0,184,13,0,0,1,0);
+                section(data,5,34,3,0,197,44,0,0,1,0);
+                valid >> bool <- fsWriteFrom(path,data,632,false) == 632;
+                free(data); return valid;
+            }
+    fa: return true;
+}

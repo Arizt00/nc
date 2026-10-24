@@ -1,0 +1,35 @@
+outputHost {
+    stc:
+        storage >> array<byte,4096>;
+        used >> int <- 0;
+        mode >> int <- 0;
+        invoked >> int <- 0;
+    fn:
+        public:
+            begin(selected >> int) -> void { mode <- selected; used <- 0; invoked <- 0; }
+            calls() -> int { return invoked; }
+            writeOnce(data >> p<byte>, bytes >> u64) -> i64 {
+                invoked += 1;
+                if (mode == 1) return 0;
+                if (mode == 2) return -1;
+                if (mode == 3) return bytes+1;
+                count >> int <- bytes > 3 ? 3 : bytes;
+                if (used+count > 4096) return -1;
+                out >> p<byte> <- cast<byte>(&storage);
+                at >> int <- 0;
+                while (at < count) { wr(off(out,used+at),rd(off(data,at))); at += 1; }
+                used += count; return count;
+            }
+            matches(text >> str, count >> int) -> bool {
+                if (used != count) return false;
+                expected >> p<byte> <- cast<byte>(text);
+                actual >> p<byte> <- cast<byte>(&storage);
+                at >> int <- 0;
+                while (at < count) {
+                    if (rd(off(actual,at)) != rd(off(expected,at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+    fa: return true;
+}

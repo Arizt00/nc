@@ -1,0 +1,132 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:closure43_core, closure43_documents, closure43_markers, closure43_gates, closure43_options, release_io, tool_cli, sha256, editor_json>;
+
+closure43Compiler {
+    fn:
+        private:
+            summarize(relative >> str) -> int {
+                result >> int <- jsonNewObject(); closure43_core.closure43Core.set(result,"path",closure43_core.closure43Core.environment("WINDIR","") != "" ? closure43_core.closure43Core.replace(relative,"/","\\") : relative);
+                size >> int <- fsSize(closure43_core.closure43Core.path(relative)); closure43_core.closure43Core.put(result,"exists",jsonNewBool(size >= 0));
+                if (size < 0) return result;
+                closure43_core.closure43Core.put(result,"bytes",jsonNewInt(size)); closure43_core.closure43Core.set(result,"sha256",sha256.nccSha256.file(closure43_core.closure43Core.path(relative)));
+                contents >> str <- release_io.releaseIo.text(closure43_core.closure43Core.path(relative)); value >> int <- editor_json.editorJson.parse(contents); strRelease(contents);
+                if (value == 0) return result;
+                kind >> int <- jsonKind(value); types >> int <- jsonParse("[\"NoneType\",\"NoneType\",\"bool\",\"int\",\"str\",\"list\",\"dict\"]"); typeValue >> int <- jsonArrayGet(types,kind); closure43_core.closure43Core.put(result,"json_type",typeValue);
+                if (kind == 6) { closure43_core.closure43Core.copyField(result,value,"status"); closure43_core.closure43Core.copyField(result,value,"count"); closure43_core.closure43Core.put(result,"keys",closure43_core.closure43Core.keys(value)); }
+                if (kind == 5) closure43_core.closure43Core.put(result,"count",jsonNewInt(jsonArrayLen(value)));
+                jsonRelease(value); jsonRelease(types); return result;
+            }
+            normalizePoint(point >> int) -> void {
+                commands >> int <- jsonObjectGet(point,"commands"); index >> int <- 0;
+                while (index < jsonArrayLen(commands)) {
+                    words >> int <- jsonArrayGet(commands,index); changed >> int <- jsonNewArray(); at >> int <- 0;
+                    while (at < jsonArrayLen(words)) {
+                        word >> int <- jsonArrayGet(words,at); text >> str <- jsonGetString(word);
+                        if (text == "@ncc") text <- closure43_core.closure43Core.ncc();
+                        if (closure43_core.closure43Core.field(point,"id") == "I.2" && strStartsWith(text,"examples/")) text <- closure43_core.closure43Core.resolveCommand(text);
+                        closure43_core.closure43Core.push(changed,jsonNewString(text)); jsonRelease(word); at += 1;
+                    }
+                    removed >> int <- jsonArrayRemove(commands,index); jsonRelease(removed); jsonArrayInsert(commands,index,changed); jsonRelease(changed); jsonRelease(words); index += 1;
+                }
+                closure43_core.closure43Core.put(point,"commands",commands);
+            }
+            validateFinal(settings >> int, data >> int) -> int {
+                summary >> int <- jsonObjectGet(data,"summary"); cargo >> int <- closure43_gates.closure43Gates.cargo(settings,false);
+                jsonObjectSet(summary,"cargo",cargo); closure43_gates.closure43Gates.configure(summary,settings);
+                commands >> int <- jsonObjectGet(data,"compiler_commands"); outputs >> int <- jsonNewObject(); index >> int <- 0;
+                while (index < jsonArrayLen(commands) && closure43_core.closure43Core.ok()) {
+                    entry >> int <- jsonArrayGet(commands,index); nameValue >> int <- jsonArrayGet(entry,0); words >> int <- jsonArrayGet(entry,1); name >> str <- jsonGetString(nameValue);
+                    record >> int <- closure43_core.closure43Core.command(words,true,true,false); if (!closure43_core.closure43Core.ok()) return summary; payload >> int <- closure43_core.closure43Core.payload(record,false);
+                    closure43_core.closure43Core.write("reports/compiler_closure/final_validation/"+name+".json",closure43_core.closure43Core.field(record,"stdout"));
+                    row >> int <- jsonNewObject(); closure43_core.closure43Core.copyField(row,record,"cmd"); closure43_core.closure43Core.copyField(row,record,"sha256");
+                    closure43_core.closure43Core.put(row,"keys",jsonKind(payload) == 6 ? closure43_core.closure43Core.keys(payload) : jsonNewArray());
+                    closure43_core.closure43Core.copyField(row,payload,"status"); closure43_core.closure43Core.copyField(row,payload,"count"); closure43_core.closure43Core.put(outputs,name,row);
+                    jsonRelease(entry); jsonRelease(nameValue); jsonRelease(words); jsonRelease(record); jsonRelease(payload); index += 1;
+                }
+                closure43_core.closure43Core.put(summary,"compiler_commands",outputs);
+                if (!closure43_core.closure43Core.ok()) return summary;
+                record >> int <- closure43_core.closure43Core.run("[\"@ncc\",\"compiler\",\"report\",\"examples/helloWorld.n\",\"--md\"]",true,true,false);
+                if (!closure43_core.closure43Core.ok()) return summary;
+                closure43_core.closure43Core.write("reports/compiler_closure/final_validation/compiler_report_helloWorld.md",closure43_core.closure43Core.field(record,"stdout"));
+                anti >> int <- closure43_markers.closure43Markers.execute(false); closure43_markers.closure43Markers.write(anti,false);
+                if (closure43_core.closure43Core.field(anti,"status") != "ok") closure43_core.closure43Core.fail("anti-marker gate blocked F.1 compiler closure");
+                closure43_core.closure43Core.put(summary,"anti_marker_gate",closure43_gates.closure43Gates.markerSummary(anti));
+                closure43_core.closure43Core.stamp(summary,"evidence_hash"); jsonRelease(record); jsonRelease(anti); jsonRelease(commands); jsonRelease(cargo); return summary;
+            }
+        public:
+            execute(args >> addr) -> int {
+                closure43_core.closure43Core.init(); settings >> int <- closure43_gates.closure43Gates.options(args);
+                if (settings == 0) return 2;
+                if (closure43_options.closure43Options.help(settings,"compiler")) return 0;
+                if (!closure43_core.closure43Core.ok()) return 1;
+                data >> int <- closure43_core.closure43Core.load("compiler"); if (!closure43_core.closure43Core.ok()) return 1;
+                if (!release_io.releaseIo.makeDirectories(closure43_core.closure43Core.diskPath(closure43_core.closure43Core.path("reports/compiler_closure")))) return 1;
+                build >> int <- closure43_core.closure43Core.run("[\"cargo\",\"build\",\"-p\",\"ncc-cli\",\"--bin\",\"ncc\"]",true,true,false); jsonRelease(build);
+                if (release_io.releaseIo.fileType(closure43_core.closure43Core.ncc()) != 1) closure43_core.closure43Core.fail("missing binary: "+closure43_core.closure43Core.ncc());
+                if (!closure43_core.closure43Core.ok()) return 1;
+                timestamp >> str <- closure43_core.closure43Core.iso(); points >> int <- jsonObjectGet(data,"POINTS"); all >> int <- jsonNewArray(); documents >> int <- jsonObjectGet(data,"documents"); index >> int <- 0;
+                if (!release_io.releaseIo.makeDirectories(closure43_core.closure43Core.diskPath(closure43_core.closure43Core.path("reports/compiler_closure/raw")))) return 1;
+                while (index < jsonArrayLen(points) && closure43_core.closure43Core.ok()) {
+                    point >> int <- jsonArrayGet(points,index); normalizePoint(point); slug >> str <- closure43_core.closure43Core.field(point,"slug");
+                    commandRecords >> int <- jsonNewArray(); artifacts >> int <- jsonNewArray(); commands >> int <- jsonObjectGet(point,"commands"); at >> int <- 0;
+                    while (at < jsonArrayLen(commands) && closure43_core.closure43Core.ok()) {
+                        words >> int <- jsonArrayGet(commands,at); record >> int <- closure43_core.closure43Core.command(words,true,true,false); if (!closure43_core.closure43Core.ok()) return 1;
+                        suffix >> str <- "json";
+                        if (release_io.releaseIo.contains(words,"--md") || release_io.releaseIo.contains(words,"--md-out")) suffix <- "md";
+                        else { mode >> int <- jsonArrayGet(words,1); if (jsonGetString(mode) == "emit-ir") suffix <- "txt"; jsonRelease(mode); }
+                        relative >> str <- "reports/compiler_closure/raw/"+slug+"_"+renderInt(at+1)+"."+suffix;
+                        closure43_core.closure43Core.write(relative,closure43_core.closure43Core.field(record,"stdout"));
+                        closure43_core.closure43Core.push(artifacts,summarize(relative)); closure43_core.closure43Core.push(commandRecords,record); jsonRelease(words); at += 1;
+                    }
+                    tests >> int <- jsonObjectGet(point,"tests"); testRecords >> int <- jsonNewArray(); at <- 0;
+                    while (at < jsonArrayLen(tests) && closure43_core.closure43Core.ok()) {
+                        words >> int <- jsonArrayGet(tests,at); record >> int <- closure43_core.closure43Core.command(words,true,true,false);
+                        if (!closure43_core.closure43Core.ok()) return 1;
+                        passed >> int <- closure43_core.closure43Core.passed(closure43_core.closure43Core.field(record,"stdout")+closure43_core.closure43Core.field(record,"stderr"));
+                        if (passed <= 0) closure43_core.closure43Core.fail("test filter matched zero tests: "+closure43_core.closure43Core.field(record,"cmd"));
+                        closure43_core.closure43Core.put(record,"passed_tests",jsonNewInt(passed)); closure43_core.closure43Core.push(testRecords,record); jsonRelease(words); at += 1;
+                    }
+                    if (!closure43_core.closure43Core.ok()) return 1;
+                    row >> int <- jsonNewObject(); closure43_core.closure43Core.copyField(row,point,"id"); closure43_core.closure43Core.copyField(row,point,"slug"); closure43_core.closure43Core.copyField(row,point,"title"); closure43_core.closure43Core.copyField(row,point,"scope");
+                    closure43_core.closure43Core.set(row,"release_status","closed"); jsonObjectSet(row,"commands",commandRecords); jsonObjectSet(row,"tests",testRecords); jsonObjectSet(row,"artifacts",artifacts);
+                    closure43_core.closure43Core.stamp(row,"evidence_hash"); closure43_core.closure43Core.save("reports/compiler_closure/"+slug+".json",row);
+                    hashModel >> int <- jsonNewObject(); jsonObjectSet(hashModel,"point",point); jsonObjectSet(hashModel,"commands",commandRecords); jsonObjectSet(hashModel,"tests",testRecords); jsonObjectSet(hashModel,"artifacts",artifacts);
+                    docHash >> str <- closure43_core.closure43Core.hash(closure43_core.closure43Core.dumps(hashModel));
+                    context >> int <- jsonNewObject(); jsonObjectSet(context,"point",point); jsonObjectSet(context,"commands",commandRecords); jsonObjectSet(context,"tests",testRecords); jsonObjectSet(context,"artifacts",artifacts); closure43_core.closure43Core.set(context,"evidence_hash",docHash);
+                    template >> int <- jsonObjectGet(documents,"point"); markdown >> str <- closure43_documents.closure43Documents.render(template,context);
+                    closure43_core.closure43Core.write("reports/compiler_closure/"+slug+".md",strSubstring(markdown,0,strByteLen(markdown)-1));
+                    closure43_core.closure43Core.push(all,row); jsonRelease(point); jsonRelease(commands); jsonRelease(commandRecords); jsonRelease(artifacts); jsonRelease(tests); jsonRelease(testRecords); jsonRelease(context); jsonRelease(template); jsonRelease(hashModel); index += 1;
+                }
+                rawDoctor >> str <- "reports/compiler_closure/raw/01_compiler_doctor_industrial_1.json";
+                doctorText >> str <- release_io.releaseIo.text(closure43_core.closure43Core.path(rawDoctor));
+                // read_text normalizes newlines before write_text, as in the oracle.
+                doctorText <- closure43_core.closure43Core.replace(doctorText,"\r\n","\n"); closure43_core.closure43Core.write("reports/compiler_closure/compiler_doctor_industrial.json",doctorText);
+                context >> int <- jsonNewObject(); closure43_core.closure43Core.set(context,"timestamp",timestamp); closure43_core.closure43Core.set(context,"doctor_raw_relative",closure43_core.closure43Core.environment("WINDIR","") != "" ? closure43_core.closure43Core.replace(rawDoctor,"/","\\") : rawDoctor); closure43_core.closure43Core.set(context,"doctor_raw_hash",sha256.nccSha256.file(closure43_core.closure43Core.path(rawDoctor)));
+                template >> int <- jsonObjectGet(documents,"compiler_doctor_industrial.md"); closure43_core.closure43Core.write("reports/compiler_closure/compiler_doctor_industrial.md",closure43_documents.closure43Documents.content(template,context)); jsonRelease(template);
+                summary >> int <- validateFinal(settings,data); if (!closure43_core.closure43Core.ok()) return 1;
+                closure43_core.closure43Core.put(summary,"points_closed",jsonNewInt(jsonArrayLen(all))); closure43_core.closure43Core.put(summary,"points_total",jsonNewInt(jsonArrayLen(all)));
+                closure43_core.closure43Core.save("reports/compiler_closure/final_validation/f1_final_validation_summary.json",summary);
+                jsonObjectSet(context,"final_summary",summary); jsonObjectSet(context,"all_points",all);
+                template <- jsonObjectGet(documents,"f1_final_validation_summary.md"); closure43_core.closure43Core.write("reports/compiler_closure/final_validation/f1_final_validation_summary.md",closure43_documents.closure43Documents.content(template,context)); jsonRelease(template);
+                aggregate >> int <- jsonParse("{\"schema\":\"ncc.compiler_closure.f1.v1\",\"status\":\"closed\",\"final_validation\":\"reports/compiler_closure/final_validation/f1_final_validation_summary.json\",\"external_release_evidence_status\":\"pending_ci_artifacts\"}");
+                closure43_core.closure43Core.set(aggregate,"generated_at",timestamp); closure43_core.closure43Core.set(aggregate,"workspace",closure43_core.closure43Core.workspace()); closure43_core.closure43Core.put(aggregate,"points_total",jsonNewInt(jsonArrayLen(all))); closure43_core.closure43Core.put(aggregate,"points_closed",jsonNewInt(jsonArrayLen(all)));
+                shortPoints >> int <- jsonNewArray(); rows >> str <- ""; index <- 0;
+                while (index < jsonArrayLen(all)) {
+                    point >> int <- jsonArrayGet(all,index); row >> int <- jsonNewObject(); slug >> str <- closure43_core.closure43Core.field(point,"slug"); names >> int <- jsonParse("[\"id\",\"slug\",\"title\",\"release_status\",\"evidence_hash\"]"); at >> int <- 0;
+                    while (at < 5) { name >> int <- jsonArrayGet(names,at); closure43_core.closure43Core.copyField(row,point,jsonGetString(name)); jsonRelease(name); at += 1; }
+                    closure43_core.closure43Core.set(row,"md","reports/compiler_closure/"+slug+".md"); closure43_core.closure43Core.set(row,"json","reports/compiler_closure/"+slug+".json"); closure43_core.closure43Core.push(shortPoints,row);
+                    if (index > 0) rows <- rows+"\n";
+                    rows <- rows+"| "+closure43_core.closure43Core.field(point,"id")+" | "+closure43_core.closure43Core.field(point,"title")+" | closed | `"+closure43_core.closure43Core.field(point,"evidence_hash")+"` | [md]("+slug+".md) |";
+                    jsonRelease(point); jsonRelease(names); index += 1;
+                }
+                closure43_core.closure43Core.put(aggregate,"points",shortPoints); closure43_core.closure43Core.save("reports/compiler_closure/compiler_industrial_evidence.json",aggregate);
+                jsonObjectSet(context,"aggregate",aggregate); closure43_core.closure43Core.set(context,"rows",rows);
+                template <- jsonObjectGet(documents,"compiler_industrial_evidence.md"); closure43_core.closure43Core.write("reports/compiler_closure/compiler_industrial_evidence.md",closure43_documents.closure43Documents.content(template,context)); jsonRelease(template);
+                template <- jsonObjectGet(documents,"STATUS_compiler_industrial_release.md"); closure43_core.closure43Core.write("docs/status/STATUS_compiler_industrial_release.md",closure43_documents.closure43Documents.content(template,context)); jsonRelease(template);
+                output >> int <- jsonNewObject(); closure43_core.closure43Core.set(output,"status","closed"); closure43_core.closure43Core.put(output,"points",jsonNewInt(jsonArrayLen(all))); closure43_core.closure43Core.set(output,"out",closure43_core.closure43Core.path("reports/compiler_closure"));
+                println(closure43_core.closure43Core.encode(output,true,false,0)); return closure43_core.closure43Core.ok() ? 0 : 1;
+            }
+    fa: return true;
+}

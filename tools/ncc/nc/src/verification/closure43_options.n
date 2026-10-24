@@ -1,0 +1,77 @@
+use <process:args>;
+use <data:json>;
+use <io:output, errorOutput>;
+use <project:closure43_core, release_io>;
+
+closure43Options {
+    fn:
+        private:
+            numeric(value >> str) -> bool {
+                if (!strStartsWith(value,"-")) return false;
+                bytes >> p<byte> <- cast(value); index >> int <- 1; digits >> int <- 0; dots >> int <- 0;
+                while (index < strByteLen(value)) { byte >> int <- rd(off(bytes,index)); if (byte == 46) dots += 1; else if (byte >= 48 && byte <= 57) digits += 1; else return false; index += 1; }
+                return digits > 0 && dots <= 1 && (dots == 0 || rd(off(bytes,strByteLen(value)-1)) != 46);
+            }
+            invalid(result >> int, family >> str, text >> str) -> int {
+                data >> int <- closure43_core.closure43Core.load("options"); helpText >> str <- closure43_core.closure43Core.field(data,family); end >> int <- strIndexOf(helpText,"\n\n");
+                if (end >= 0) eprintln(strSubstring(helpText,0,end));
+                eprintln("generate_"+family+"_closure.py: error: "+text); jsonRelease(data); jsonRelease(result); return 0;
+            }
+        public:
+            help(settings >> int, family >> str) -> bool {
+                value >> int <- jsonObjectGet(settings,"--help"); requested >> bool <- jsonGetBoolOr(value,false); jsonRelease(value);
+                if (!requested) return false;
+                data >> int <- closure43_core.closure43Core.load("options"); print(closure43_core.closure43Core.field(data,family)); jsonRelease(data); return true;
+            }
+            parse(args >> addr, machine >> bool) -> int {
+                definitions >> int <- jsonParse(machine ? "[\"--full-gates\",\"--strict-local-link\",\"--ci-host\",\"--ci-arch\",\"--ci-toolchain\",\"--ci-evidence-id\",\"--strict-target\",\"--strict-system-loader-target\",\"--help\"]" : "[\"--full-gates\",\"--release-scoped-gates\",\"--help\"]");
+                result >> int <- jsonNewObject(); index >> int <- 2; unknown >> str <- "";
+                family >> str <- machine ? "machine" : (argsAt(args,1) == "generate-runtime-closure" ? "runtime" : "compiler");
+                if (machine) {
+                    closure43_core.closure43Core.set(result,"--ci-host",closure43_core.closure43Core.environment("NCC_MATRIX_HOST","local"));
+                    closure43_core.closure43Core.set(result,"--ci-arch",closure43_core.closure43Core.environment("NCC_MATRIX_ARCH","x86_64"));
+                    closure43_core.closure43Core.set(result,"--ci-toolchain",closure43_core.closure43Core.environment("NCC_MATRIX_TOOLCHAIN","local"));
+                    closure43_core.closure43Core.set(result,"--ci-evidence-id",closure43_core.closure43Core.environment("NCC_MATRIX_ID","local"));
+                    closure43_core.closure43Core.put(result,"--strict-target",jsonNewArray()); closure43_core.closure43Core.put(result,"--strict-system-loader-target",jsonNewArray());
+                }
+                while (index < argsCount(args)) {
+                    token >> str <- argsAt(args,index); equals >> int <- strIndexOf(token,"="); key >> str <- equals < 0 ? token : strSubstring(token,0,equals);
+                    if (key == "--") {
+                        if (index+1 == argsCount(args)) break;
+                        while (index < argsCount(args)) { unknown <- unknown+(unknown == "" ? "" : " ")+argsAt(args,index); index += 1; }
+                        break;
+                    }
+                    if (key == "-h") key <- "--help";
+                    else if (strStartsWith(key,"-h") && !strStartsWith(key,"--") && equals < 0) key <- "--help";
+                    canonical >> str <- ""; matches >> int <- 0; at >> int <- 0; alternatives >> str <- "";
+                    while (at < jsonArrayLen(definitions)) {
+                        definition >> int <- jsonArrayGet(definitions,at); name >> str <- jsonGetString(definition);
+                        if (name == key) { canonical <- name; matches <- 1; jsonRelease(definition); break; }
+                        if (strStartsWith(key,"--") && strStartsWith(name,key)) { canonical <- name; alternatives <- alternatives+(alternatives == "" ? "" : ", ")+name; matches += 1; }
+                        jsonRelease(definition); at += 1;
+                    }
+                    if (matches > 1) { jsonRelease(definitions); return invalid(result,family,"ambiguous option: "+key+" could match "+alternatives); }
+                    if (matches == 0) { unknown <- unknown+(unknown == "" ? "" : " ")+token; index += 1; continue; }
+                    flag >> bool <- canonical == "--full-gates" || canonical == "--release-scoped-gates" || canonical == "--strict-local-link" || canonical == "--help";
+                    if (flag) {
+                        if (equals >= 0) { jsonRelease(definitions); explicit >> str <- strSubstring(token,equals+1,strByteLen(token)-equals-1); return invalid(result,family,"argument "+(canonical == "--help" ? "-h/--help" : canonical)+": ignored explicit argument '"+explicit+"'"); }
+                        closure43_core.closure43Core.put(result,canonical,jsonNewBool(true)); index += 1;
+                        if (canonical == "--help") { unknown <- ""; break; }
+                        continue;
+                    }
+                    value >> str <- equals < 0 ? "" : strSubstring(token,equals+1,strByteLen(token)-equals-1);
+                    if (equals < 0) {
+                        if (index+1 >= argsCount(args)) { jsonRelease(definitions); return invalid(result,family,"argument "+canonical+": expected one argument"); }
+                        value <- argsAt(args,index+1);
+                        if (strStartsWith(value,"-") && value != "-" && !numeric(value)) { jsonRelease(definitions); return invalid(result,family,"argument "+canonical+": expected one argument"); }
+                        index += 1;
+                    }
+                    if (canonical == "--strict-target" || canonical == "--strict-system-loader-target") {
+                        values >> int <- jsonObjectGet(result,canonical); closure43_core.closure43Core.push(values,jsonNewString(value)); closure43_core.closure43Core.put(result,canonical,values);
+                    } else closure43_core.closure43Core.set(result,canonical,value);
+                    index += 1;
+                }
+                jsonRelease(definitions); if (unknown != "") return invalid(result,family,"unrecognized arguments: "+unknown); return result;
+            }
+    fa: return true;
+}

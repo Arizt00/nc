@@ -1,0 +1,39 @@
+use <process:args>;
+use <data:json>;
+use <io:output, render>;
+use <project:release43_common, release43_host, release43_archive>;
+
+release43Zip64Suite {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, passed >> bool) -> void { println((passed ? "PASS " : "FAIL ")+name); if (!passed) failures += 1; }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- jsonNewObject(); release43_common.release43Common.put(options,"--root",jsonNewString(argsCount(args) > 1 ? argsAt(args,1) : "."));
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options); work >> str <- release43_common.release43Common.workPath(); println("work="+work);
+                if (argsCount(args) > 2 && argsAt(args,2) == "member") {
+                    source >> str <- work+"/member"; expect("member-dir",release43_common.release43Common.makeDirectories(source));
+                    path >> str <- source+"/large.bin"; expect("member-create",release43_common.release43Common.writeBytes(path,cast<byte>(""),0,false) == 0);
+                    expect("member-resize-i64",release43_host.release43Host.resize(path,2147483648));
+                    marker >> str <- "ZIP64-tail-marker"; expect("member-append",release43_common.release43Common.writeBytes(path,cast<byte>(marker),strByteLen(marker),true) == strByteLen(marker));
+                    expect("member-size-i64",release43_common.release43Common.fileSize64(path) == 2147483665);
+                    data >> p<byte> <- cast(alloc(18)); expect("member-seek-i64",release43_host.release43Host.readRange(path,data,17,2147483648) == 17); wr<byte>(off<byte>(data,17),0); text >> str <- cast(data); expect("member-tail-i64",text == marker); free(data);
+                    expect("member-zip64-write",release43_archive.release43Archive.zip(source,work+"/member.zip","ncc"));
+                    println("zip="+work+"/member.zip sha256="+release43_common.release43Common.hashFile(work+"/member.zip"));
+                } else {
+                    source >> str <- work+"/count"; expect("count-dir",release43_common.release43Common.makeDirectories(source)); index >> int <- 0; good >> bool <- true;
+                    while (index < 65535 && good) { name >> str <- renderInt(index); while (strByteLen(name) < 5) { name <- "0"+name; } good <- release43_common.release43Common.writeBytes(source+"/"+name,cast<byte>(""),0,false) == 0; index += 1; }
+                    expect("count-65535-fixture",good && index == 65535); expect("count-65535-zip",release43_archive.release43Archive.zip(source,work+"/count-65535.zip","ncc"));
+                    expect("count-65536-fixture",release43_common.release43Common.writeBytes(source+"/65535",cast<byte>(""),0,false) == 0); expect("count-65536-zip64",release43_archive.release43Archive.zip(source,work+"/count-65536.zip","ncc"));
+                    end >> p<byte> <- cast(alloc(98)); size >> i64 <- release43_common.release43Common.fileSize64(work+"/count-65536.zip");
+                    expect("count-zip64-tail-read",release43_host.release43Host.readRange(work+"/count-65536.zip",end,98,size-98) == 98);
+                    expect("count-zip64-end-signature",rd<u32>(cast<u32>(end)) == 101075792); expect("count-zip64-entry-count",rd<i64>(cast<i64>(off<byte>(end,24))) == 65536 && rd<i64>(cast<i64>(off<byte>(end,32))) == 65536);
+                    expect("count-zip64-locator",rd<u32>(cast<u32>(off<byte>(end,56))) == 117853008); expect("count-zip64-classic-cap",rd<u16>(cast<u16>(off<byte>(end,84))) == 65535 && rd<u16>(cast<u16>(off<byte>(end,86))) == 65535); free(end);
+                    println("zip="+work+"/count-65536.zip sha256="+release43_common.release43Common.hashFile(work+"/count-65536.zip"));
+                }
+                println("failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

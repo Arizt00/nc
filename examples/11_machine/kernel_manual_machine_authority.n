@@ -1,0 +1,35 @@
+kernelManualMachineAuthority :: kernel {
+    fn:
+        configure() -> bool {
+            lapic  at 0xFEE00000;
+            state  at 0x70000;
+            source at 0x71000;
+            destination at 0x72000;
+            page   at 0x400000;
+
+            guard interrupt_disable() else return false;
+
+            route <- load32(lapic + 0x320);
+            *32(lapic + 0x320, route);
+
+            *64(source, 0x1122334455667788);
+            *128(state, source);
+            guard load128(state, destination) else return false;
+
+            guard atomic32_store(state, 1) &&
+                  atomic32_compare_exchange(state, 1, 2) == 1 &&
+                  atomic_fence_seq_cst() else return false;
+
+            cr3 <- cpu_read_cr3();
+            guard cpu_write_cr3(cr3) &&
+                  tlb_invalidate(page, 4096, 0) &&
+                  memory_barrier() &&
+                  instruction_barrier() &&
+                  cpu_relax() else return false;
+
+            port_write8(0x80, port_read8(0x80));
+            return interrupt_enable();
+        }
+
+    ref main ->> configure;
+}

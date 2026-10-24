@@ -1,0 +1,152 @@
+use <io:output, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildStringProvider53 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == name) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return fallback;
+            }
+            directory(path >> str) -> str {
+                index >> int <- strByteLen(path)-1;
+                data >> p<byte> <- cast<byte>(path);
+                while (index >= 0) {
+                    value >> byte <- rd(off(data,index));
+                    if (value == 47 || value == 92) return index == 0 ? "/" : strSubstring(path,0,index);
+                    index -= 1;
+                }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent == path || !mkdir(parent)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            write(path >> str, text >> str) -> bool {
+                bytes >> int <- strByteLen(text);
+                return fsWriteFrom(path,cast<byte>(text),bytes,false) == bytes;
+            }
+            copyFile(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source);
+                if (bytes <= 0 || bytes > 1048576) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes));
+                if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes &&
+                    fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+                    windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child);
+                waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child);
+                commandRelease(child);
+                if (!started || waited != 0 || code != 0) {
+                    println("output provider build failed: "+line); return false;
+                }
+                return true;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                root >> str <- option(arguments,"--root",".");
+                out >> str <- option(arguments,"--out","target/frontend53/providers");
+                ncc >> str <- option(arguments,"--ncc",windows ? "target/debug/ncc.exe" : "ncc");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                kernel32 >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                heap >> str <- option(arguments,"--heap",root+(windows ?
+                    "/docs/evidence/frontend48/providers/windows/heap.exports.obj" :
+                    "/docs/evidence/frontend48/providers/linux/heap.exports.o"));
+                if (quote(root) == "" || quote(out) == "" || quote(ncc) == "" || quote(objcopy) == "" ||
+                    quote(linker) == "" || quote(kernel32) == "" || quote(heap) == "") return 64;
+                if (!mkdir(out+"/project/src")) return 73;
+                project >> str <- out+"/project";
+                if (!copyFile(root+"/tools/tests/string_provider_probe53.n",project+"/main.n") ||
+                    !copyFile(root+"/runtime/nc/string_length_provider.n",project+"/src/string_length.n") ||
+                    !copyFile(root+"/runtime/nc/output_provider.n",project+"/src/output.n") ||
+                    !copyFile(root+"/runtime/nc/render_provider.n",project+"/src/render.n") ||
+                    !copyFile(root+(windows ? "/runtime/nc/output_host_windows.n" : "/runtime/nc/output_host_linux.n"),
+                        project+"/src/output_host.n")) return 74;
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                if (!invoke(quote(ncc)+" project sync "+quote(project)+" --main main.n --target "+target,windows) ||
+                    !invoke(quote(ncc)+" project graph "+quote(project)+" --main main.n --target "+target,windows)) return 1;
+                objects >> str <- project+"/.ncc/obj/"+(windows ? "x86_64_pc_windows_msvc" : "x86_64_unknown_linux_gnu");
+                object >> str <- objects+(windows ? "/output.obj" : "/output.o");
+                host >> str <- objects+(windows ? "/output_host.obj" : "/output_host.o");
+                exported >> str <- out+(windows ? "/output.exports.obj" : "/output.exports.o");
+                render >> str <- objects+(windows ? "/render.obj" : "/render.o");
+                renderExported >> str <- out+(windows ? "/render.exports.obj" : "/render.exports.o");
+                string >> str <- objects+(windows ? "/string_length.obj" : "/string_length.o");
+                nativeString >> str <- option(arguments,"--native-string-object","");
+                if (nativeString != "") {
+                    if (quote(nativeString) == "" || fsSize(nativeString) <= 0) return 74;
+                    string <- nativeString;
+                }
+                stringExported >> str <- out+(windows ? "/string_length.exports.obj" : "/string_length.exports.o");
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                rename >> str <- " --redefine-sym outputProvider_provider_output_print=nC.runtime.output.print"+
+                    " --redefine-sym outputProvider_provider_output_println=nC.runtime.output.println"+
+                    " --redefine-sym outputProvider_provider_output_flush=nC.runtime.output.flush"+
+                    " --redefine-sym outputProvider_provider_output_writeBytes=nC.runtime.output.writeBytes ";
+                if (!invoke(quote(objcopy)+rename+quote(object)+" "+quote(exported),windows)) return 1;
+                rename <- " --redefine-sym renderProvider_provider_render_renderInt=nC.runtime.render.renderInt"+
+                    " --redefine-sym renderProvider_provider_render_renderBool=nC.runtime.render.renderBool"+
+                    " --redefine-sym renderProvider_provider_render_renderChar=nC.runtime.render.renderChar"+
+                    " --redefine-sym renderProvider_provider_render_renderStr=nC.runtime.render.renderStr"+
+                    " --redefine-sym heapProvider_provider_heap_alloc=nC.runtime.heap.alloc ";
+                if (!invoke(quote(objcopy)+rename+quote(render)+" "+quote(renderExported),windows)) return 1;
+                rename <- " --redefine-sym stringLengthProvider_provider_string_strByteLen=nC.runtime.string.strByteLen"+
+                    " --redefine-sym stringLengthProvider_provider_string_strLen=nC.runtime.string.strLen"+
+                    " --redefine-sym stringLengthProvider_provider_string_len=nC.runtime.string.len ";
+                if (nativeString != "") rename <-
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$26$provider_string_strByteLen=nC.runtime.string.strByteLen"+
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$22$provider_string_strLen=nC.runtime.string.strLen"+
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$19$provider_string_len=nC.runtime.string.len ";
+                if (!invoke(quote(objcopy)+rename+quote(string)+" "+quote(stringExported),windows)) return 1;
+                if (windows) {
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64"+
+                        " /export:nC.runtime.heap.alloc /export:nC.runtime.heap.calloc /export:nC.runtime.heap.realloc"+
+                        " /export:nC.runtime.heap.free /export:nC.runtime.output.print /export:nC.runtime.output.println"+
+                        " /export:nC.runtime.output.flush /export:nC.runtime.output.writeBytes /out:"+quote(artifact)+
+                        " /export:nC.runtime.render.renderInt /export:nC.runtime.render.renderBool"+
+                        " /export:nC.runtime.render.renderChar /export:nC.runtime.render.renderStr"+
+                        " /export:nC.runtime.string.strByteLen /export:nC.runtime.string.strLen /export:nC.runtime.string.len"+
+                        " "+quote(exported)+" "+quote(renderExported)+" "+quote(stringExported)+" "+quote(host)+" "+quote(heap)+" "+quote(kernel32),windows)) return 1;
+                } else {
+                    exports >> str <- out+"/runtime.exports.map";
+                    if (!write(exports,"NC_RUNTIME_51 { global: \"nC.runtime.heap.alloc\"; \"nC.runtime.heap.calloc\"; "+
+                        "\"nC.runtime.heap.realloc\"; \"nC.runtime.heap.free\"; \"nC.runtime.output.print\"; "+
+                        "\"nC.runtime.output.println\"; \"nC.runtime.output.flush\"; \"nC.runtime.output.writeBytes\"; "+
+                        "\"nC.runtime.render.renderInt\"; \"nC.runtime.render.renderBool\"; \"nC.runtime.render.renderChar\"; "+
+                        "\"nC.runtime.render.renderStr\"; local: *; };\n"+
+                        "NC_RUNTIME_53 { global: \"nC.runtime.string.strByteLen\"; \"nC.runtime.string.strLen\"; "+
+                        "\"nC.runtime.string.len\"; } NC_RUNTIME_51;\n")) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+
+                        quote(exports)+" -o "+quote(artifact)+" "+quote(exported)+" "+quote(renderExported)+" "+quote(stringExported)+" "+quote(host)+" "+quote(heap)+" -lc",windows)) return 1;
+                }
+                if (fsSize(artifact) <= 0) return 74;
+                println("length, output and heap providers built from nC: "+artifact);
+                return 0;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

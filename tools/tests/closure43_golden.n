@@ -1,0 +1,96 @@
+use <process:args>;
+use <fs:dir>;
+use <data:json>;
+use <io:output, render>;
+use <project:closure43_core, release_io, tool_cli, sha256, editor_json>;
+
+closure43Golden {
+    fn:
+        private:
+            visit(root >> str, relative >> str, files >> int, directories >> int) -> void {
+                path >> str <- release_io.releaseIo.path(root,relative);
+                kind >> int <- release_io.releaseIo.fileType(path);
+                if (kind == 1) {
+                    row >> int <- jsonNewObject();
+                    closure43_core.closure43Core.put(row,"bytes",jsonNewInt(fsSize(path)));
+                    closure43_core.closure43Core.set(row,"sha256",sha256.nccSha256.file(path));
+                    closure43_core.closure43Core.put(files,relative,row); return;
+                }
+                if (kind != 2) return;
+                closure43_core.closure43Core.put(directories,relative,jsonNewBool(true));
+                names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayGet(names,index);
+                    visit(root,relative == "" ? jsonGetString(name) : relative+"/"+jsonGetString(name),files,directories);
+                    jsonRelease(name); index += 1;
+                }
+                jsonRelease(names);
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) < 3 || argsCount(args) > 5) return 2;
+                text >> str <- release_io.releaseIo.text(argsAt(args,1));
+                plan >> int <- editor_json.editorJson.parse(text); strRelease(text);
+                if (plan == 0 || jsonKind(plan) != 6) return 3;
+                command >> int <- jsonObjectGet(plan,"command");
+                if (argsCount(args) >= 4) {
+                    removed >> int <- jsonArrayRemove(command,1); jsonRelease(removed);
+                    jsonArrayInsert(command,1,jsonNewString(argsAt(args,3)));
+                }
+                binaryNode >> int <- jsonArrayGet(command,1); binary >> str <- jsonGetString(binaryNode);
+                binaryHash >> str <- sha256.nccSha256.file(binary);
+                if (binaryHash == "") return 5;
+                if (argsCount(args) == 5) {
+                    if (argsAt(args,4) != "--archive-private-lab") return 6;
+                    labNode >> int <- jsonArrayGet(command,5); lab >> str <- tool_cli.toolCli.absolute(jsonGetString(labNode));
+                    host >> str <- closure43_core.closure43Core.field(plan,"host");
+                    expectedLab >> str <- host == "windows" ? closure43_core.closure43Core.environment("TEMP","")+"/closure43-failures-windows-v7" : "/tmp/closure43-failures-linux-v6";
+                    if (closure43_core.closure43Core.replace(lab,"\\","/") != closure43_core.closure43Core.replace(tool_cli.toolCli.absolute(expectedLab),"\\","/")) return 7;
+                    if (release_io.releaseIo.fileType(lab) != 0) {
+                        archive >> str <- lab+".selftest-"+strSubstring(binaryHash,0,12)+"-"+renderInt(timestamp());
+                        if (release_io.releaseIo.fileType(archive) != 0 || !rename_file(lab,archive)) return 8;
+                    }
+                    jsonRelease(labNode);
+                }
+                roots >> int <- jsonObjectGet(plan,"roots"); index >> int <- 0;
+                // Refuse reused labs: runtime scans its own earlier reports.
+                while (index < jsonArrayLen(roots)) {
+                    row >> int <- jsonArrayGet(roots,index);
+                    if (release_io.releaseIo.fileType(closure43_core.closure43Core.field(row,"path")) != 0) return 4;
+                    jsonRelease(row); index += 1;
+                }
+                result >> int <- tool_cli.toolCli.execute(command,"",3600000);
+                passed >> bool <- tool_cli.toolCli.clean(result) && release_io.releaseIo.number(result,"code",-1) == 0;
+                checks >> int <- jsonNewArray(); index <- 0;
+                while (index < jsonArrayLen(roots)) {
+                    row >> int <- jsonArrayGet(roots,index); files >> int <- jsonNewObject(); directories >> int <- jsonNewObject();
+                    visit(closure43_core.closure43Core.field(row,"path"),"",files,directories);
+                    expectedFiles >> int <- jsonObjectGet(row,"files"); expectedDirectories >> int <- jsonObjectGet(row,"directories");
+                    actual >> str <- closure43_core.closure43Core.dumps(files); expected >> str <- closure43_core.closure43Core.dumps(expectedFiles);
+                    fileEqual >> bool <- actual == expected; strRelease(actual); strRelease(expected);
+                    actual <- closure43_core.closure43Core.dumps(directories); expected <- closure43_core.closure43Core.dumps(expectedDirectories);
+                    directoryEqual >> bool <- actual == expected; strRelease(actual); strRelease(expected);
+                    if (!fileEqual || !directoryEqual) passed <- false;
+                    check >> int <- jsonNewObject(); closure43_core.closure43Core.set(check,"name",closure43_core.closure43Core.field(row,"name")); closure43_core.closure43Core.set(check,"path",closure43_core.closure43Core.field(row,"path"));
+                    closure43_core.closure43Core.put(check,"files",jsonNewInt(jsonObjectLen(files)));
+                    closure43_core.closure43Core.put(check,"file_bytes_and_sha256_equal",jsonNewBool(fileEqual));
+                    closure43_core.closure43Core.put(check,"directories_equal",jsonNewBool(directoryEqual));
+                    closure43_core.closure43Core.put(check,"passed",jsonNewBool(fileEqual && directoryEqual));
+                    closure43_core.closure43Core.push(checks,check);
+                    println(closure43_core.closure43Core.field(row,"name")+(fileEqual && directoryEqual ? ": golden passed" : ": GOLDEN FAILED"));
+                    jsonRelease(files); jsonRelease(directories); jsonRelease(expectedFiles); jsonRelease(expectedDirectories); jsonRelease(row); index += 1;
+                }
+                report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.native-golden.v1");
+                closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed));
+                closure43_core.closure43Core.put(report,"cases",checks);
+                closure43_core.closure43Core.set(report,"driver_stderr",closure43_core.closure43Core.field(result,"stderr"));
+                candidate >> int <- jsonNewObject(); closure43_core.closure43Core.set(candidate,"path",binary);
+                closure43_core.closure43Core.set(candidate,"sha256",binaryHash); closure43_core.closure43Core.put(report,"candidate",candidate);
+                if (sha256.nccSha256.file(binary) != binaryHash) passed <- false;
+                closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed));
+                if (!release_io.releaseIo.write(argsAt(args,2),closure43_core.closure43Core.pretty(report)+"\n")) passed <- false;
+                jsonRelease(binaryNode); jsonRelease(report); jsonRelease(result); jsonRelease(command); jsonRelease(roots); jsonRelease(plan); argsRelease(args); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,268 @@
+/*
+ * Material text escaping and sanitizing provider.
+ *
+ * The caller requests every transformation explicitly. Returned text is raw
+ * storage with the standard text header and must be released explicitly.
+ */
+nccTextEscapeRuntime :: runtime {
+    const:
+        HEADER_BYTES >> int <- 16;
+        HEADER_MAGIC >> u64 <- 0x4E4346544D543031;
+        ESCAPE_ANSI >> int <- 1;
+        ESCAPE_JSON >> int <- 2;
+        ESCAPE_CONTROL >> int <- 3;
+        SANITIZE_TERMINAL >> int <- 4;
+        SANITIZE_LOG >> int <- 5;
+
+    fn:
+        private:
+            textLen(value >> p<byte>) -> int {
+                guard value != null else return 0;
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) {
+                    count += 1;
+                }
+                return count;
+            }
+
+            textAlloc(sourceBytes >> int) -> p<byte> {
+                capacity >> int <- sourceBytes * 6 + 1;
+                total >> int <- capacity + HEADER_BYTES;
+                base >> p<byte> <- vmReserve(null, total, 0);
+                guard base != null else return null;
+                guard vmCommit(base, total, 4) else {
+                    vmRelease(base, total);
+                    return null;
+                }
+                wr<u64>(base, HEADER_MAGIC);
+                wr<int>(off(base, 8), total);
+                return off(base, HEADER_BYTES);
+            }
+
+            continuation(value >> byte) -> bool {
+                return value >= 0x80 && value <= 0xBF;
+            }
+
+            utf8Span(bytes >> p<byte>, len >> int, at >> int) -> int {
+                guard at < len else return 0;
+                lead >> byte <- rd(off(bytes, at));
+                if (lead >= 0xC2 && lead <= 0xDF && at + 1 < len &&
+                    continuation(rd(off(bytes, at + 1)))) {
+                    return 2;
+                }
+                if (lead == 0xE0 && at + 2 < len &&
+                    rd(off(bytes, at + 1)) >= 0xA0 && rd(off(bytes, at + 1)) <= 0xBF &&
+                    continuation(rd(off(bytes, at + 2)))) {
+                    return 3;
+                }
+                if (((lead >= 0xE1 && lead <= 0xEC) || (lead >= 0xEE && lead <= 0xEF)) &&
+                    at + 2 < len && continuation(rd(off(bytes, at + 1))) &&
+                    continuation(rd(off(bytes, at + 2)))) {
+                    return 3;
+                }
+                if (lead == 0xED && at + 2 < len &&
+                    rd(off(bytes, at + 1)) >= 0x80 && rd(off(bytes, at + 1)) <= 0x9F &&
+                    continuation(rd(off(bytes, at + 2)))) {
+                    return 3;
+                }
+                if (lead == 0xF0 && at + 3 < len &&
+                    rd(off(bytes, at + 1)) >= 0x90 && rd(off(bytes, at + 1)) <= 0xBF &&
+                    continuation(rd(off(bytes, at + 2))) &&
+                    continuation(rd(off(bytes, at + 3)))) {
+                    return 4;
+                }
+                if (lead >= 0xF1 && lead <= 0xF3 && at + 3 < len &&
+                    continuation(rd(off(bytes, at + 1))) &&
+                    continuation(rd(off(bytes, at + 2))) &&
+                    continuation(rd(off(bytes, at + 3)))) {
+                    return 4;
+                }
+                if (lead == 0xF4 && at + 3 < len &&
+                    rd(off(bytes, at + 1)) >= 0x80 && rd(off(bytes, at + 1)) <= 0x8F &&
+                    continuation(rd(off(bytes, at + 2))) &&
+                    continuation(rd(off(bytes, at + 3)))) {
+                    return 4;
+                }
+                return 1;
+            }
+
+            scanCsi(bytes >> p<byte>, len >> int, at >> int) -> int {
+                cursor >> int <- at;
+                while (cursor < len) {
+                    value >> byte <- rd(off(bytes, cursor));
+                    cursor += 1;
+                    if (value >= 0x40 && value <= 0x7E) {
+                        return cursor;
+                    }
+                }
+                return cursor;
+            }
+
+            scanControl(bytes >> p<byte>, len >> int, at >> int, allowBell >> bool) -> int {
+                cursor >> int <- at;
+                while (cursor < len) {
+                    if (allowBell && rd(off(bytes, cursor)) == 0x07) {
+                        return cursor + 1;
+                    }
+                    if (rd(off(bytes, cursor)) == 0x1B && cursor + 1 < len &&
+                        rd(off(bytes, cursor + 1)) == 0x5C) {
+                        return cursor + 2;
+                    }
+                    cursor += 1;
+                }
+                return cursor;
+            }
+
+            ansiEnd(bytes >> p<byte>, len >> int, at >> int) -> int {
+                guard at < len else return -1;
+                lead >> byte <- rd(off(bytes, at));
+                cursor >> int <- at + 1;
+                if (lead == 0x1B) {
+                    guard cursor < len else return len;
+                    next >> byte <- rd(off(bytes, cursor));
+                    cursor += 1;
+                    if (next == 0x5B) return scanCsi(bytes, len, cursor);
+                    if (next == 0x5D) return scanControl(bytes, len, cursor, true);
+                    if (next == 0x50 || next == 0x58 || next == 0x5E || next == 0x5F) {
+                        return scanControl(bytes, len, cursor, false);
+                    }
+                    if (next >= 0x20 && next <= 0x2F) {
+                        while (cursor < len && rd(off(bytes, cursor)) >= 0x20 &&
+                            rd(off(bytes, cursor)) <= 0x2F) {
+                            cursor += 1;
+                        }
+                        if (cursor < len && rd(off(bytes, cursor)) >= 0x30 &&
+                            rd(off(bytes, cursor)) <= 0x7E) {
+                            cursor += 1;
+                        }
+                    }
+                    return cursor;
+                }
+                if (lead == 0x9B) return scanCsi(bytes, len, cursor);
+                if (lead == 0x9D) return scanControl(bytes, len, cursor, true);
+                if (lead == 0x90 || lead == 0x98 || lead == 0x9E || lead == 0x9F) {
+                    return scanControl(bytes, len, cursor, false);
+                }
+                return -1;
+            }
+
+            hexDigit(value >> byte) -> byte {
+                guard value < 10 else return value - 10 + 0x61;
+                return value + 0x30;
+            }
+
+            appendHex(out >> p<byte>, at >> int, value >> byte) -> int {
+                wr(off(out, at), 0x5C);
+                wr(off(out, at + 1), 0x78);
+                wr(off(out, at + 2), hexDigit(value / 16));
+                wr(off(out, at + 3), hexDigit(value % 16));
+                return at + 4;
+            }
+
+            appendJsonUnicode(out >> p<byte>, at >> int, value >> byte) -> int {
+                wr(off(out, at), 0x5C);
+                wr(off(out, at + 1), 0x75);
+                wr(off(out, at + 2), 0x30);
+                wr(off(out, at + 3), 0x30);
+                wr(off(out, at + 4), hexDigit(value / 16));
+                wr(off(out, at + 5), hexDigit(value % 16));
+                return at + 6;
+            }
+
+            transform(value >> str, mode >> int) -> str {
+                bytes >> p<byte> <- cast(value);
+                len >> int <- textLen(bytes);
+                out >> p<byte> <- textAlloc(len);
+                guard out != null else return cast(null);
+                source >> int <- 0;
+                target >> int <- 0;
+
+                while (source < len) {
+                    if (mode == SANITIZE_TERMINAL || mode == SANITIZE_LOG) {
+                        end >> int <- ansiEnd(bytes, len, source);
+                        if (end >= 0) {
+                            source <- end;
+                            continue;
+                        }
+                    }
+
+                    span >> int <- utf8Span(bytes, len, source);
+                    if (span > 1) {
+                        copied >> int <- 0;
+                        while (copied < span) {
+                            wr(off(out, target), rd(off(bytes, source + copied)));
+                            target += 1;
+                            copied += 1;
+                        }
+                        source += span;
+                        continue;
+                    }
+
+                    current >> byte <- rd(off(bytes, source));
+                    source += 1;
+                    if (mode == ESCAPE_JSON) {
+                        if (current == 0x22 || current == 0x5C) {
+                            wr(off(out, target), 0x5C);
+                            wr(off(out, target + 1), current);
+                            target += 2;
+                        } else if (current == 0x08 || current == 0x0C) {
+                            wr(off(out, target), 0x5C);
+                            wr(off(out, target + 1), current == 0x08 ? 0x62 : 0x66);
+                            target += 2;
+                        } else if (current == 0x0A || current == 0x0D || current == 0x09) {
+                            wr(off(out, target), 0x5C);
+                            wr(off(out, target + 1), current == 0x0A ? 0x6E : (current == 0x0D ? 0x72 : 0x74));
+                            target += 2;
+                        } else if (current < 0x20) {
+                            target <- appendJsonUnicode(out, target, current);
+                        } else {
+                            wr(off(out, target), current);
+                            target += 1;
+                        }
+                    } else if (mode == ESCAPE_ANSI &&
+                        (current == 0x1B || (current >= 0x80 && current <= 0x9F))) {
+                        target <- appendHex(out, target, current);
+                    } else if ((mode == ESCAPE_CONTROL || mode == SANITIZE_LOG) &&
+                        (current <= 0x1F || (current >= 0x7F && current <= 0x9F))) {
+                        if (current == 0x0A || current == 0x0D || current == 0x09) {
+                            wr(off(out, target), 0x5C);
+                            wr(off(out, target + 1), current == 0x0A ? 0x6E : (current == 0x0D ? 0x72 : 0x74));
+                            target += 2;
+                        } else {
+                            target <- appendHex(out, target, current);
+                        }
+                    } else if (mode == SANITIZE_TERMINAL &&
+                        (current <= 0x08 || (current >= 0x0B && current <= 0x0C) ||
+                        (current >= 0x0E && current <= 0x1F) ||
+                        (current >= 0x7F && current <= 0x9F))) {
+                        target <- target;
+                    } else {
+                        wr(off(out, target), current);
+                        target += 1;
+                    }
+                }
+                wr(off(out, target), 0);
+                return cast(out);
+            }
+
+        public:
+            escapeAnsiRaw(value >> str) -> str {
+                return transform(value, ESCAPE_ANSI);
+            }
+
+            escapeJsonRaw(value >> str) -> str {
+                return transform(value, ESCAPE_JSON);
+            }
+
+            escapeControlRaw(value >> str) -> str {
+                return transform(value, ESCAPE_CONTROL);
+            }
+
+            sanitizeTerminalRaw(value >> str) -> str {
+                return transform(value, SANITIZE_TERMINAL);
+            }
+
+            sanitizeLogRaw(value >> str) -> str {
+                return transform(value, SANITIZE_LOG);
+            }
+}

@@ -1,0 +1,84 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command, env>;
+
+linkNativeProviders73 {
+    view(model >> int, key >> str) -> str {
+        item >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(item,"");
+        jsonRelease(item);
+        return value;
+    }
+    quote(value >> str) -> str {
+        if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+        return "\""+value+"\"";
+    }
+    invoke(line >> str) -> bool {
+        windows >> bool <- envHas("WINDIR");
+        child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+            windows ? stdOut() : null,windows ? stdErr() : null,0);
+        if (child == null) return false;
+        valid >> bool <- commandStarted(child);
+        if (valid) {
+            waited >> int <- commandWait(child,120000);
+            if (waited != 0) { commandTerminate(child,15); commandWait(child,30000); }
+            valid <- waited == 0 && commandExitCode(child) == 0;
+        }
+        commandRelease(child);
+        return valid;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        model >> int <- jsonParseFile(argsAt(arguments,1));
+        if (model == 0) return 65;
+        replacements >> int <- jsonObjectBorrow(model,"replacements");
+        image >> str <- view(model,"image");
+        outputOption >> str <- envHas("WINDIR") ? "/out:"+quote(image) : "-o "+quote(image);
+        valid >> bool <- image != "" && jsonArrayLen(replacements) > 0 &&
+            strContains(view(model,"link_options"),outputOption);
+        strRelease(outputOption);
+        at >> int <- 0;
+        while (valid && at < jsonArrayLen(replacements)) {
+            replacement >> int <- jsonArrayBorrow(replacements,at);
+            mappings >> int <- jsonObjectBorrow(replacement,"mappings");
+            words >> str <- quote(view(model,"objcopy"));
+            index >> int <- 0;
+            while (index < jsonArrayLen(mappings)) {
+                row >> int <- jsonArrayBorrow(mappings,index);
+                words += " --redefine-sym "+quote(view(row,"from")+"="+view(row,"to"));
+                jsonRelease(row);
+                index += 1;
+            }
+            words += " "+quote(view(replacement,"object"))+" "+quote(view(replacement,"published_object"));
+            valid <- jsonArrayLen(mappings) > 0 && fsSize(view(replacement,"object")) > 0 &&
+                invoke(words) && fsSize(view(replacement,"published_object")) > 0;
+            strRelease(words);
+            jsonRelease(mappings);
+            jsonRelease(replacement);
+            at += 1;
+        }
+        jsonRelease(replacements);
+        if (!valid) { jsonRelease(model); argsRelease(arguments); return 66; }
+        words >> str <- quote(view(model,"linker"))+" "+view(model,"link_options");
+        objects >> int <- jsonObjectBorrow(model,"objects");
+        at <- 0;
+        while (at < jsonArrayLen(objects)) {
+            item >> int <- jsonArrayBorrow(objects,at);
+            path >> str <- jsonStringView(item,"");
+            valid <- valid && fsSize(path) > 0;
+            words += " "+quote(path);
+            jsonRelease(item);
+            at += 1;
+        }
+        valid <- valid && jsonArrayLen(objects) > 0 && invoke(words) && fsSize(view(model,"image")) > 0;
+        strRelease(words);
+        jsonRelease(objects);
+        jsonRelease(model);
+        argsRelease(arguments);
+        println(valid ? "native nC providers linked" : "native nC provider link failed");
+        return valid ? 0 : 67;
+    }
+    ref main ->> run;
+    fa: return true;
+}

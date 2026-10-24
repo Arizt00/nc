@@ -1,0 +1,365 @@
+/*
+ * Gestor academico compacto.
+ *
+ * La tabla plana usa la formula alumno * 10 + asignatura: 30 x 10 <- 300
+ * matriculas. Es el mismo acceso directo que usaria un programa C con una
+ * matriz contigua, pero conserva la sintaxis y los controles de nC.
+ */
+use <io:output, render, input>;
+
+gestorAcademicoCompacto :: runtime {
+    stc:
+        alumnos >> array<str, 30> <- [""];
+        asignaturas >> array<str, 10> <- [
+            "Programacion", "Matematicas", "Sistemas", "Bases de datos",
+            "Redes", "Algoritmos", "Arquitectura", "Seguridad",
+            "Ingenieria del software", "Inteligencia artificial"
+        ];
+        matriculado     >> array<bool, 300> <- [false];
+        evaluado        >> array<bool, 300> <- [false];
+        notas           >> array<ft64, 300> <- [0.0];
+        alumnosTotal    >> int              <- 0;
+        matriculasTotal >> int              <- 0;
+        notasTotal      >> int              <- 0;
+        sumaNotas       >> ft64             <- 0.0;
+
+    fn:
+        indice(alumno >> int, asignatura >> int) -> int {
+            return alumno * 10 + asignatura;
+        }
+
+        titulo(texto >> str) -> bool {
+            println("");
+            println(colorBold("============================================================", "cyan"));
+            println(colorBold(texto, "cyan"));
+            println(colorBold("============================================================", "cyan"));
+            return true;
+        }
+
+        leerEntre(minimo >> int, maximo >> int) -> int {
+            valor >> int <- readInt();
+            while (valor < minimo || valor > maximo) {
+                println("Opcion fuera de rango.");
+                print("> ");
+                valor <- readInt();
+            }
+            return valor;
+        }
+
+        leerNota() -> ft64 {
+            valor >> ft64 <- readFloat();
+            while (valor < 0.0 || valor > 10.0) {
+                println("La nota debe estar entre 0.0 y 10.0.");
+                print("Nota: ");
+                valor <- readFloat();
+            }
+            return valor;
+        }
+
+        buscarAlumno(nombre >> str) -> int {
+            i >> int <- 0;
+            while (i < alumnosTotal) {
+                if (alumnos[i] == nombre) {
+                    return i;
+                }
+                i <- i + 1;
+            }
+            return -1;
+        }
+
+        listarAlumnos() -> bool {
+            titulo("ALUMNOS");
+            if (alumnosTotal == 0) {
+                println("No hay alumnos registrados.");
+                return false;
+            }
+            for i in 0..alumnosTotal {
+                println(renderInt(i + 1) + ". " + alumnos[i]);
+            }
+            return true;
+        }
+
+        listarAsignaturas() -> bool {
+            titulo("ASIGNATURAS");
+            for i in 0..10 {
+                println(renderInt(i + 1) + ". " + asignaturas[i]);
+            }
+            return true;
+        }
+
+        elegirAlumno() -> int {
+            if (!listarAlumnos()) {
+                return -1;
+            }
+            print("Nombre del alumno: ");
+            nombre >> str <- readLine();
+            posicion >> int <- buscarAlumno(nombre);
+            if (posicion == -1) {
+                println("Alumno no encontrado.");
+            }
+            return posicion;
+        }
+
+        elegirAsignatura() -> int {
+            listarAsignaturas();
+            print("Asignatura [1..10]: ");
+            return leerEntre(1, 10) - 1;
+        }
+
+        registrarAlumno() -> bool {
+            if (alumnosTotal == 30) {
+                println("Capacidad maxima: 30 alumnos.");
+                return false;
+            }
+            print("Nombre del nuevo alumno: ");
+            nombre >> str <- readLine();
+            if (nombre == "") {
+                println("El nombre no puede estar vacio.");
+                return false;
+            }
+            if (buscarAlumno(nombre) != -1) {
+                println("Ese alumno ya existe.");
+                return false;
+            }
+            alumnos[alumnosTotal] <- nombre;
+            alumnosTotal <- alumnosTotal + 1;
+            println("Alumno registrado.");
+            return true;
+        }
+
+        matricularAlumno() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) {
+                return false;
+            }
+            asignatura >> int <- elegirAsignatura();
+            casilla >> int <- indice(alumno, asignatura);
+            if (matriculado[casilla]) {
+                println("El alumno ya esta matriculado en esa asignatura.");
+                return false;
+            }
+            matriculado[casilla] <- true;
+            matriculasTotal <- matriculasTotal + 1;
+            println("Matricula registrada.");
+            return true;
+        }
+
+        registrarNota() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) {
+                return false;
+            }
+            asignatura >> int <- elegirAsignatura();
+            casilla >> int <- indice(alumno, asignatura);
+            if (!matriculado[casilla]) {
+                println("Primero debes matricular al alumno.");
+                return false;
+            }
+            print("Nota [0..10]: ");
+            nueva >> ft64 <- leerNota();
+            if (evaluado[casilla]) {
+                sumaNotas <- sumaNotas - notas[casilla];
+            } else {
+                evaluado[casilla] <- true;
+                notasTotal <- notasTotal + 1;
+            }
+            notas[casilla] <- nueva;
+            sumaNotas <- sumaNotas + nueva;
+            println("Nota guardada.");
+            return true;
+        }
+
+        expedienteAlumno() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) {
+                return false;
+            }
+            titulo("EXPEDIENTE: " + alumnos[alumno]);
+            for asignatura in 0..10 {
+                casilla >> int <- indice(alumno, asignatura);
+                if (!matriculado[casilla]) {
+                    continue;
+                }
+                if (evaluado[casilla]) {
+                    println(
+                        asignaturas[asignatura] + " | " +
+                        colorBold(renderFloat(notas[casilla], 2), "green")
+                    );
+                } else {
+                    println(asignaturas[asignatura] + " | pendiente");
+                }
+            }
+            return true;
+        }
+
+        recalcularMetricas() -> bool {
+            matriculasTotal <- 0;
+            notasTotal <- 0;
+            sumaNotas <- 0.0;
+            for alumno in 0..alumnosTotal {
+                for asignatura in 0..10 {
+                    casilla >> int <- indice(alumno, asignatura);
+                    if (matriculado[casilla]) {
+                        matriculasTotal <- matriculasTotal + 1;
+                    }
+                    if (evaluado[casilla]) {
+                        notasTotal <- notasTotal + 1;
+                        sumaNotas <- sumaNotas + notas[casilla];
+                    }
+                }
+            }
+            return true;
+        }
+
+        estadisticasGlobales() -> bool {
+            titulo("ESTADISTICAS GLOBALES");
+            println("Alumnos: " + renderInt(alumnosTotal));
+            println("Matriculas: " + renderInt(matriculasTotal));
+            println("Notas registradas: " + renderInt(notasTotal));
+            if (notasTotal == 0) {
+                println("Media: sin notas");
+                return true;
+            }
+            divisor >> ft64 <- 0.0;
+            for i in 0..notasTotal {
+                divisor <- divisor + 1.0;
+            }
+            println("Media: " + colorBold(renderFloat(sumaNotas / divisor, 2), "yellow"));
+            return true;
+        }
+
+        estadisticasAsignatura() -> bool {
+            asignatura >> int <- elegirAsignatura();
+            titulo("ESTADISTICAS: " + asignaturas[asignatura]);
+            evaluados >> int <- 0;
+            suma >> ft64 <- 0.0;
+            mejor >> ft64 <- 0.0;
+            peor >> ft64 <- 10.0;
+            for alumno in 0..alumnosTotal {
+                casilla >> int <- indice(alumno, asignatura);
+                if (!evaluado[casilla]) {
+                    continue;
+                }
+                evaluados <- evaluados + 1;
+                suma <- suma + notas[casilla];
+                if (notas[casilla] > mejor) { mejor <- notas[casilla]; }
+                if (notas[casilla] < peor) { peor <- notas[casilla]; }
+            }
+            if (evaluados == 0) {
+                println("No hay notas en esta asignatura.");
+                return true;
+            }
+            divisor >> ft64 <- 0.0;
+            for i in 0..evaluados { divisor <- divisor + 1.0; }
+            println("Evaluados: " + renderInt(evaluados));
+            println("Media: " + renderFloat(suma / divisor, 2));
+            println("Maxima: " + renderFloat(mejor, 2));
+            println("Minima: " + renderFloat(peor, 2));
+            return true;
+        }
+
+        editarAsignatura() -> bool {
+            asignatura >> int <- elegirAsignatura();
+            print("Nuevo nombre: ");
+            nombre >> str <- readLine();
+            if (nombre == "") {
+                println("El nombre no puede estar vacio.");
+                return false;
+            }
+            asignaturas[asignatura] <- nombre;
+            println("Asignatura actualizada.");
+            return true;
+        }
+
+        limpiarFila(alumno >> int) -> bool {
+            for asignatura in 0..10 {
+                casilla >> int <- indice(alumno, asignatura);
+                matriculado[casilla] <- false;
+                evaluado[casilla] <- false;
+                notas[casilla] <- 0.0;
+            }
+            return true;
+        }
+
+        eliminarAlumno() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) {
+                return false;
+            }
+            cursor >> int <- alumno;
+            while (cursor < alumnosTotal - 1) {
+                alumnos[cursor] <- alumnos[cursor + 1];
+                for asignatura in 0..10 {
+                    origen >> int <- indice(cursor + 1, asignatura);
+                    destino >> int <- indice(cursor, asignatura);
+                    matriculado[destino] <- matriculado[origen];
+                    evaluado[destino] <- evaluado[origen];
+                    notas[destino] <- notas[origen];
+                }
+                cursor <- cursor + 1;
+            }
+            alumnosTotal <- alumnosTotal - 1;
+            alumnos[alumnosTotal] <- "";
+            limpiarFila(alumnosTotal);
+            recalcularMetricas();
+            println("Alumno eliminado.");
+            return true;
+        }
+
+        menuEstadisticas() -> bool {
+            titulo("SUBMENU DE ESTADISTICAS");
+            println("1. Globales");
+            println("2. Por asignatura");
+            println("3. Recalcular metricas");
+            println("0. Volver");
+            print("> ");
+            opcion >> int <- leerEntre(0, 3);
+            if (opcion == 1) { return estadisticasGlobales(); }
+            if (opcion == 2) { return estadisticasAsignatura(); }
+            if (opcion == 3) {
+                recalcularMetricas();
+                println("Metricas recalculadas.");
+            }
+            return true;
+        }
+
+        menu() -> bool {
+            titulo("GESTOR ACADEMICO | 30 ALUMNOS | 10 ASIGNATURAS | 300 PLAZAS");
+            println("1. Registrar alumno");
+            println("2. Listar alumnos");
+            println("3. Matricular alumno");
+            println("4. Registrar o modificar nota");
+            println("5. Ver expediente");
+            println("6. Estadisticas");
+            println("7. Editar asignatura");
+            println("8. Eliminar alumno");
+            println("0. Salir");
+            print("> ");
+            return true;
+        }
+
+        run() -> bool {
+            activo >> bool <- true;
+            while (activo) {
+                menu();
+                opcion >> int <- leerEntre(0, 8);
+                if (opcion == 1) { registrarAlumno(); }
+                else if (opcion == 2) { listarAlumnos(); }
+                else if (opcion == 3) { matricularAlumno(); }
+                else if (opcion == 4) { registrarNota(); }
+                else if (opcion == 5) { expedienteAlumno(); }
+                else if (opcion == 6) { menuEstadisticas(); }
+                else if (opcion == 7) { editarAsignatura(); }
+                else if (opcion == 8) { eliminarAlumno(); }
+                else { activo <- false; }
+            }
+            println(colorBold("Gestor cerrado.", "cyan"));
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

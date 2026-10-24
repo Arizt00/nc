@@ -1,0 +1,53 @@
+use <process:command>;
+use <io:output>;
+nativeCommandPipesV55 {
+    drain(pipe >> addr, expected >> int) -> bool {
+        data >> p<byte> <- cast<byte>(alloc(137));
+        if (data == null) return false;
+        total >> int <- 0;
+        while (total < expected) {
+            wanted >> int <- expected-total < 137 ? expected-total : 137;
+            received >> int <- commandPipeRead(pipe,adr(data),wanted);
+            if (received <= 0 || received > wanted) { free(data); return false; }
+            at >> int <- 0;
+            while (at < received) {
+                if (rd(off(data,at)) != ((total+at)*17) % 256) { free(data); return false; }
+                at += 1;
+            }
+            total += received;
+        }
+        free(data); return total == expected;
+    }
+    run() -> int {
+        guard commandPipeRead(null,null,1) == -22 && commandError(null) == 22 else return 1;
+        guard commandPipeRelease(null) && commandRelease(null) else return 2;
+        input >> addr <- commandPipeOpen(true,false);
+        output >> addr <- commandPipeOpen(false,true);
+        errors >> addr <- commandPipeOpen(false,true);
+        guard input != null && output != null && errors != null else return 3;
+        guard commandPipeError(input) == 0 && commandPipeError(output) == 0 && commandPipeError(errors) == 0 else return 4;
+        guard commandPipeRead(output,null,0) == 0 && commandPipeWrite(input,null,-1) == -22 else return 5;
+        data >> p<byte> <- cast<byte>(alloc(16)); guard data != null else return 6;
+        at >> int <- 0;
+        while (at < 16) { wr(off(data,at),(at*17) % 256); at += 1; }
+        child >> addr <- commandOpen("\"./child process.bin\"","",commandPipeReadHandle(input),commandPipeWriteHandle(output),commandPipeWriteHandle(errors),0);
+        guard child != null && commandStarted(child) && commandError(child) == 0 && commandId(child) > 0 else return 7;
+        guard commandProcessHandle(child) != null && commandThreadId(child) >= 0 else return 8;
+        guard commandThreadHandle(child) != null || commandThreadId(child) == 0 else return 9;
+        guard commandPipeCloseRead(input) && commandPipeCloseWrite(output) && commandPipeCloseWrite(errors) else return 10;
+        guard commandPipeWrite(input,adr(data),16) == 16 && commandPipeCloseWrite(input) else return 11;
+        // Drain while the child is running: its output exceeds both hosts' pipe buffers.
+        guard drain(output,262144) && drain(errors,257) else return 12;
+        guard commandWait(child,5000) == 0 && commandExitCode(child) == 73 && commandWait(child,0) == 0 else return 13;
+        eof >> int <- commandPipeRead(output,adr(data),1);
+        guard eof == 0 || (eof == -109 && commandPipeError(output) == 109) else return 14;
+        guard commandRelease(child) && commandPipeRelease(input) && commandPipeRelease(output) && commandPipeRelease(errors) else return 15;
+        broken >> addr <- commandPipeOpen(false,false);
+        guard commandPipeCloseRead(broken) && commandPipeWrite(broken,adr(data),1) < 0 else return 16;
+        guard commandPipeError(broken) > 0 && commandPipeRelease(broken) else return 17;
+        free(data);
+        println("native command pipes ok"); return 132;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,47 @@
+use <io:output>;
+
+nativeRecordsMemoryAbi65 {
+    type:
+        Packed {
+            public: marker >> byte; value >> u64;
+            layout: repr(C); packed;
+        }
+        Block { public: a >> u64; b >> u64; c >> u64; d >> u64; }
+        Big { public: a >> Block; b >> Block; c >> Block; d >> Block; e >> Block; f >> Block; }
+    fn:
+        block(value >> int) -> Block { return Block(a: value,b: 2,c: 3,d: 4); }
+        big(value >> int) -> Big {
+            return Big(a: block(value),b: block(value+1),c: block(value+2),
+                d: block(value+3),e: block(value+4),f: block(value+5));
+        }
+        change(before >> int, value >> Big, after >> int) -> Big {
+            value.a.a += before+after;
+            value.f.d <- 99;
+            return value;
+        }
+        consumePacked(value >> Packed, tail >> int) -> u64 {
+            value.marker <- 0;
+            return value.value+tail;
+        }
+        many(a >> int,b >> int,c >> int,d >> int,e >> int,f >> int,
+            first >> Big,second >> Packed,tail >> int) -> int {
+            first.a.a <- 1000;
+            second.marker <- 0;
+            return a+b+c+d+e+f+first.f.a+second.value+tail;
+        }
+        run() -> int {
+            source >> Big <- big(7);
+            result >> Big <- change(2,source,3);
+            item >> Packed <- Packed(marker: 251,value: 0x8123456789ABCDE0);
+            expected >> u64 <- 0x8123456789ABCDEF;
+            if (sizeOf(Big) != 192 || sizeOf(Packed) != 9 || alignOf(Packed) != 1) return 1;
+            if (source.a.a != 7 || result.a.a != 12 || result.f.d != 99 || source.f.d != 4) return 2;
+            if (consumePacked(item,15) != expected || item.marker != 251) return 3;
+            small >> Packed <- Packed(marker: 17,value: 9);
+            if (many(1,2,3,4,5,6,source,small,7) != 49 || source.a.a != 7 || small.marker != 17) return 4;
+            println("records-memory-abi-ok");
+            return 200;
+        }
+    ref main ->> run;
+    fa: return true;
+}

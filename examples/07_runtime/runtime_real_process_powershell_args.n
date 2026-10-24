@@ -1,0 +1,54 @@
+use <collections:result>;
+use <io:output, render>;
+use <process:spawn, wait>;
+
+runtimeRealProcessPowerShellArgs :: runtime {
+    stc:
+        exitCode >> int  <- -1;
+        ok       >> bool <- false;
+        script   >> str  <- "";
+
+        handle >> Result<ProcessHandle, ProcessError>;
+        status >> Result<int, ProcessError>;
+
+    fn:
+        run() -> bool {
+            script <-
+                "if (($args.Count -ge 2) -and " +
+                "($args[0] -eq 'vida de un hierro league of legends') -and " +
+                "($args[1] -eq 'segundo valor')) { exit 0 } else { exit 41 }";
+
+            handle <- spawn(
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                    "vida de un hierro league of legends",
+                    "segundo valor"
+                ]
+            );
+            status <- wait(handle);
+
+            match (status) {
+                Ok(code) => {
+                    exitCode <- code;
+                }
+                Err(e) => {
+                    exitCode <- -1;
+                }
+            }
+
+            ok <- exitCode == 0;
+            println("ps-args-ok = " + renderBool(ok));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

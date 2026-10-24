@@ -1,0 +1,76 @@
+kernelLowLevelBridge :: kernel {
+    fn:
+        verifyLowLevel() -> bool {
+            cell   at 0x70000;
+            wide   at 0x70008;
+            device at 0x71000;
+            source at 0x72000;
+            destination at 0x73000;
+
+            guard atomic32_load(cell) >= 0 else return false;
+            guard atomic32_store(cell, 1) else return false;
+            guard atomic32_exchange(cell, 2) >= 0 else return false;
+            guard atomic32_compare_exchange(cell, 2, 3) >= 0 else return false;
+            guard atomic32_fetch_add(cell, 1) >= 0 else return false;
+            guard atomic32_fetch_sub(cell, 1) >= 0 else return false;
+            guard atomic32_fetch_and(cell, 0xFF) >= 0 else return false;
+            guard atomic32_fetch_or(cell, 0x10) >= 0 else return false;
+            guard atomic32_fetch_xor(cell, 3) >= 0 else return false;
+
+            guard atomic32_store(cell, 0) &&
+                  spin_try_lock(cell) &&
+                  spin_unlock(cell) else return false;
+
+            guard atomic64_store(wide, 0x100000001) else return false;
+            guard atomic64_load(wide) >= 0 else return false;
+            guard atomic64_exchange(wide, 33) >= 0 else return false;
+            guard atomic64_compare_exchange(wide, 33, 41) >= 0 else return false;
+            guard atomic64_fetch_add(wide, 9) >= 0 else return false;
+            guard atomic64_fetch_sub(wide, 2) >= 0 else return false;
+            guard atomic64_fetch_and(wide, 0xFF) >= 0 else return false;
+            guard atomic64_fetch_or(wide, 0x100) >= 0 else return false;
+            guard atomic64_fetch_xor(wide, 3) >= 0 else return false;
+
+            *8(device, load8(device));
+            *16(device, load16(device));
+            *32(device, load32(device));
+            *64(device, load64(device));
+
+            *64(source + 0x00, 11);
+            *64(source + 0x08, 22);
+            *64(source + 0x10, 33);
+            *64(source + 0x18, 44);
+            *64(source + 0x20, 55);
+            *64(source + 0x28, 66);
+            *64(source + 0x30, 77);
+            *64(source + 0x38, 88);
+
+            *128(device, source);
+            guard load128(device, destination) else return false;
+            guard load64(destination) == 11 &&
+                  load64(destination + 0x08) == 22 else return false;
+
+            *256(device, source);
+            guard load256(device, destination) else return false;
+            guard load64(destination + 0x10) == 33 &&
+                  load64(destination + 0x18) == 44 else return false;
+
+            *512(device, source);
+            guard load512(device, destination) else return false;
+            guard load64(destination + 0x20) == 55 &&
+                  load64(destination + 0x28) == 66 &&
+                  load64(destination + 0x30) == 77 &&
+                  load64(destination + 0x38) == 88 else return false;
+
+            guard read_barrier() &&
+                  write_barrier() &&
+                  atomic_fence_acquire() &&
+                  atomic_fence_release() &&
+                  atomic_fence_seq_cst() else return false;
+
+            return memmove(device, cell, 0) == device &&
+                   memcmp(device, cell, 0) == 0;
+        }
+
+    ref main ->> verifyLowLevel;
+}

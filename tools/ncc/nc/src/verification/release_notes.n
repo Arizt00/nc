@@ -1,0 +1,60 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io>;
+
+releaseNotes {
+    fn:
+        public:
+            reportNames() -> int {
+                return jsonParse("[\"F10_P1_distribution_report.json\",\"F10_P2_toolchain_model_report.json\",\"F10_P3_distribution_os_report.json\",\"F10_P4_disk_layout_report.json\",\"F10_P5_ncup_commands_report.json\",\"F10_P6_toolchain_resolution_report.json\",\"F10_P7_supply_chain_security_report.json\",\"F10_P8_manifest_format_report.json\",\"F10_P9_updates_report.json\",\"F10_P10_jetbrains_integration_report.json\",\"F10_P11_vscode_integration_report.json\",\"F10_P12_file_association_global_exec_report.json\",\"F10_P13_first_run_report.json\",\"F10_P14_cicd_compat_report.json\",\"F10_P15_telemetry_report.json\",\"F10_P16_installer_matrix_report.json\",\"F10_P17_support_policy_report.json\",\"F10_P18_documentation_report.json\",\"F10_P19_final_closure_report.json\"]");
+            }
+            generate(root >> str, output >> str, stamp >> str) -> bool {
+                names >> int <- reportNames();
+                body >> str <- "# nC v2.0.0 Release Notes\n\nGenerated: "+stamp+"\n\n## Estado del release\n\n- Serie: `2.x`\n- Estado contractual: `frozen`\n- Alcance: F10-P1..F10-P19 y operacion externa\n\n## Matriz F10\n\n| Punto | Reporte | Estado |\n|---|---|---|\n";
+                index >> int <- 0;
+                complete >> bool <- true;
+                while (index < jsonArrayLen(names)) {
+                    name >> str <- jsonGetString(jsonArrayGet(names,index));
+                    file >> str <- release_io.releaseIo.path(root,"docs/status/"+name);
+                    report >> int <- jsonParseFile(file);
+                    accepted >> bool <- release_io.releaseIo.reportOk(report,true);
+                    complete <- complete && release_io.releaseIo.reportOk(report,false);
+                    body += "| P"+renderInt(index+1)+" | `"+name+"` | `"+(accepted ? "ok" : "missing/error")+"` |\n";
+                    jsonRelease(report);
+                    index += 1;
+                }
+                externalPath >> str <- release_io.releaseIo.path(root,"docs/status/F10_external_publish_report.json");
+                external >> str <- "pending";
+                if (exists(externalPath)) {
+                    report >> int <- jsonParseFile(externalPath);
+                    if (jsonKind(report) != 6) external <- "invalid";
+                    else {
+                        external <- release_io.releaseIo.field(report,"status");
+                        if (external == "") external <- "unknown";
+                    }
+                    jsonRelease(report);
+                }
+                complete <- complete && external == "ok";
+                body += "\n## Operacion externa\n\n- External publish report: `"+external+"`\n- Publicacion externa canonica: `tools/release/publish_phase10_external_channels_v2_0_0.sh`\n- Smoke clean-machine: `tools/release/smoke_phase10_clean_machine_matrix_v2_0_0.sh`\n\n## Seguridad\n\n- Verificacion SHA-256 y firma obligatoria antes de instalacion.\n- Modelo enterprise con mirror y trust key interno.\n\n## Notas de compatibilidad\n\n- No se permiten breaking changes sin RFC formal.\n- La migracion de extensiones low-level mantiene warning-first -> error-by-profile -> strict.\n";
+                announcement >> str <- "# nC v2.0.0 Announcement\n\n";
+                if (complete) announcement += "Los informes suministrados declaran completos los puntos de Fase 10 y su publicacion externa.\n";
+                else announcement += "Borrador: faltan informes satisfactorios. No se declara un release publicado o certificado.\n";
+                announcement += "\n## Alcance\n\n- Cadena `ncup-init`, `ncup` y binarios de toolchain.\n- Integracion IDE/LSP para JetBrains y VSCode.\n- Verificacion de cadena de suministro.\n- Matriz de instalacion, actualizacion y rollback.\n\n## Para operadores\n\n- Consultar los estados individuales de las release notes antes de promover un canal.\n- El compilador `ncc` mantiene la autoridad semantica del lenguaje.\n\n## Proximos pasos\n\n- Promocion mediante `tools/release/promote_release_train_v2_0_0.sh`.\n- Publicacion de artefactos por OS/canal mediante el pipeline externo.\n";
+                first >> bool <- release_io.releaseIo.atomicWrite(release_io.releaseIo.path(output,"v2_0_0_release_notes.md"),body);
+                second >> bool <- release_io.releaseIo.atomicWrite(release_io.releaseIo.path(output,"v2_0_0_release_announcement.md"),announcement);
+                jsonRelease(names);
+                return first && second;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) { println("ncc-release release-notes [--root DIR] [--out DIR] [--timestamp ISO]"); return 0; }
+                guard release_io.releaseIo.optionsValid(arguments,"|--root|--out|--timestamp|") else { println("Invalid release-notes options; use --help"); return 2; }
+                root >> str <- release_io.releaseIo.option(arguments,"--root",".");
+                output >> str <- release_io.releaseIo.option(arguments,"--out",release_io.releaseIo.path(root,"docs/spec/release"));
+                stamp >> str <- release_io.releaseIo.option(arguments,"--timestamp",release_io.releaseIo.utc(timestamp()));
+                result >> bool <- generate(root,output,stamp);
+                println(result ? "OK: release notes generated in "+output : "FAIL: release notes write failed");
+                return result ? 0 : 1;
+            }
+    fa:
+        return true;
+}

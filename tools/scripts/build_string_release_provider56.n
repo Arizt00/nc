@@ -1,0 +1,115 @@
+use <io:output, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildStringReleaseProvider56 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                at >> int <- 1;
+                while (at+1 < argsCount(arguments)) { if (argsAt(arguments,at) == name) return argsAt(arguments,at+1); at += 1; }
+                return fallback;
+            }
+            parent(path >> str) -> str {
+                at >> int <- strByteLen(path)-1;
+                while (at >= 0) { code >> byte <- rd<byte>(off(cast<byte>(path),at)); if (code == 47 || code == 92) return at == 0 ? "/" : strSubstring(path,0,at); at -= 1; }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                above >> str <- parent(path); if (above == path || !mkdir(above)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            copied(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source); if (bytes <= 0 || bytes > 4194304) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes)); if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes && fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child); waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child); commandRelease(child);
+                if (!started || waited != 0 || code != 0) { println("string release provider build failed: "+line); return false; }
+                return true;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                root >> str <- option(arguments,"--root",".");
+                out >> str <- option(arguments,"--out","target/frontend56/providers");
+                platform >> str <- windows ? "windows" : "linux";
+                base >> str <- option(arguments,"--base",root+"/target/tmp/frontend55-providers-r3/"+platform);
+                foundation >> str <- option(arguments,"--foundation",root+"/target/tmp/frontend54-providers-r2/"+platform);
+                heap >> str <- option(arguments,"--heap",root+"/docs/evidence/frontend48/providers/"+(windows ? "windows/heap.exports.obj" : "linux/heap.exports.o"));
+                ncc >> str <- option(arguments,"--ncc",windows ? root+"/target/debug/ncc.exe" : "ncc");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                support >> str <- option(arguments,"--compiler-support","C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+                kernel >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                nativeObject >> str <- option(arguments,"--native-object","");
+                if (quote(root) == "" || quote(out) == "" || quote(base) == "" || quote(foundation) == "" || quote(heap) == "" || quote(ncc) == "" || quote(linker) == "" || quote(objcopy) == "" || quote(support) == "" || quote(kernel) == "" || (nativeObject != "" && quote(nativeObject) == "")) return 64;
+                project >> str <- out+"/project"; if (!mkdir(project+"/src")) return 73;
+                if (!copied(root+"/tools/tests/string_release_provider_probe56.n",project+"/main.n") ||
+                    !copied(root+"/runtime/nc/string_release_provider.n",project+"/src/string_release_provider.n") ||
+                    !copied(root+"/runtime/nc/heap_provider.n",project+"/src/heap_provider.n")) return 74;
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                if (!invoke(quote(ncc)+" project sync "+quote(project)+" --main main.n --target "+target,windows) ||
+                    !invoke(quote(ncc)+" project graph "+quote(project)+" --main main.n --target "+target,windows)) return 1;
+                suffix >> str <- windows ? ".obj" : ".o";
+                objectDirectory >> str <- windows ? "x86_64_pc_windows_msvc" : "x86_64_unknown_linux_gnu";
+                source >> str <- nativeObject == "" ? project+"/.ncc/obj/"+objectDirectory+"/string_release_provider"+suffix : nativeObject;
+                rename >> str <- " --redefine-sym stringReleaseProvider_provider_string_strRelease=nC.runtime.string.strRelease"+
+                    " --redefine-sym free=nC.runtime.heap.free ";
+                if (nativeObject != "") rename <- " --redefine-sym nc$S$P$21$stringReleaseProvider$26$provider_string_strRelease=nC.runtime.string.strRelease"+
+                    " --redefine-sym nc$S$P$12$heapProvider$18$provider_heap_free=nC.runtime.heap.free ";
+                exported >> str <- out+"/string_release.exports"+suffix;
+                if (!invoke(quote(objcopy)+rename+quote(source)+" "+quote(exported),windows)) return 1;
+                if (!copied(foundation+"/output.exports"+suffix,out+"/output.exports"+suffix) ||
+                    !copied(foundation+"/render.exports"+suffix,out+"/render.exports"+suffix) ||
+                    !copied(foundation+"/string_length.exports"+suffix,out+"/string_length.exports"+suffix) ||
+                    !copied(foundation+"/json.exports"+suffix,out+"/json.exports"+suffix) ||
+                    !copied(foundation+"/project/.ncc/obj/"+objectDirectory+"/output_host"+suffix,out+"/output_host"+suffix) ||
+                    !copied(base+"/command.exports"+suffix,out+"/command.exports"+suffix) ||
+                    !copied(base+"/command_host.exports"+suffix,out+"/command_host.exports"+suffix) ||
+                    !copied(heap,out+"/heap.exports"+suffix)) return 74;
+                inputs >> str <- " "+quote(exported)+" "+quote(out+"/heap.exports"+suffix)+" "+quote(out+"/output.exports"+suffix)+
+                    " "+quote(out+"/render.exports"+suffix)+" "+quote(out+"/string_length.exports"+suffix)+" "+quote(out+"/json.exports"+suffix)+
+                    " "+quote(out+"/output_host"+suffix)+" "+quote(out+"/command.exports"+suffix)+" "+quote(out+"/command_host.exports"+suffix);
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                if (windows) {
+                    families >> str <- "heap output render string json command std";
+                    names >> str <- "alloc calloc realloc free|print println flush writeBytes|renderInt renderBool renderChar renderStr|strByteLen strLen len strRelease|jsonNewBool jsonObjectSet jsonNewObject jsonRelease jsonGetBool jsonKind jsonObjectBorrow jsonObjectLen jsonObjectHas jsonObjectGet jsonClone jsonNewNull jsonNewInt jsonNewString jsonNewArray jsonArrayPush jsonArrayBorrow jsonArrayLen jsonGetInt jsonStringView jsonObjectRemove jsonEquals jsonObjectKeyAt jsonStringify|commandOpen commandStarted commandWait commandExitCode commandTerminate commandProcessHandle commandThreadHandle commandId commandThreadId commandError commandRelease commandPipeOpen commandPipeReadHandle commandPipeWriteHandle commandPipeRead commandPipeWrite commandPipeCloseRead commandPipeCloseWrite commandPipeError commandPipeRelease|stdIn stdOut stdErr";
+                    exports >> str <- ""; familyStart >> int <- 0; familyEnd >> int <- 0;
+                    at >> int <- 0; start >> int <- 0; bytes >> int <- strByteLen(names);
+                    while (at <= bytes) {
+                        code >> int <- at == bytes ? 124 : rd<byte>(off(cast<byte>(names),at));
+                        if (code == 32 || code == 124) {
+                            familyEnd <- familyStart;
+                            while (familyEnd < strByteLen(families) && rd<byte>(off(cast<byte>(families),familyEnd)) != 32) { familyEnd += 1; }
+                            exports += " /export:nC.runtime."+strSubstring(families,familyStart,familyEnd-familyStart)+"."+strSubstring(names,start,at-start);
+                            start <- at+1; if (code == 124) familyStart <- familyEnd+1;
+                        }
+                        at += 1;
+                    }
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:"+quote(artifact)+exports+inputs+" "+quote(kernel)+" "+quote(support),windows)) return 1;
+                } else {
+                    if (!copied(base+"/runtime.exports.map",out+"/runtime.exports.map")) return 74;
+                    version >> str <- "NC_RUNTIME_56 { global: \"nC.runtime.string.strRelease\"; } NC_RUNTIME_55;\n";
+                    if (fsWriteFrom(out+"/runtime.exports.map",cast<byte>(version),strByteLen(version),true) != strByteLen(version)) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+quote(out+"/runtime.exports.map")+" -o "+quote(artifact)+inputs+" -lc",windows)) return 1;
+                }
+                println("string release provider built from nC: "+artifact); return fsSize(artifact) > 0 ? 0 : 74;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

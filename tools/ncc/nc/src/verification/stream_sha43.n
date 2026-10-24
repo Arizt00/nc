@@ -1,0 +1,163 @@
+use <project:release43_host>;
+
+streamSha43 {
+    const:
+        CONTEXT_BYTES >> int <- 368;
+        CHUNK_BYTES >> int <- 1048576;
+    fn:
+        private:
+            rotate(value >> u32, count >> int) -> u32 {
+                return (value >>> count) | (value << (32-count));
+            }
+            block(context >> p<byte>, data >> p<byte>) -> void {
+                constants >> array<u32,64> <- [
+                    1116352408,1899447441,3049323471,3921009573,
+                    961987163,1508970993,2453635748,2870763221,
+                    3624381080,310598401,607225278,1426881987,
+                    1925078388,2162078206,2614888103,3248222580,
+                    3835390401,4022224774,264347078,604807628,
+                    770255983,1249150122,1555081692,1996064986,
+                    2554220882,2821834349,2952996808,3210313671,
+                    3336571891,3584528711,113926993,338241895,
+                    666307205,773529912,1294757372,1396182291,
+                    1695183700,1986661051,2177026350,2456956037,
+                    2730485921,2820302411,3259730800,3345764771,
+                    3516065817,3600352804,4094571909,275423344,
+                    430227734,506948616,659060556,883997877,
+                    958139571,1322822218,1537002063,1747873779,
+                    1955562222,2024104815,2227730452,2361852424,
+                    2428436474,2756734187,3204031479,3329325298
+                ];
+                state >> p<u32> <- cast(context);
+                words >> p<u32> <- cast(off(context,32));
+                index >> int <- 0;
+                while (index < 16) {
+                    at >> int <- index*4;
+                    first >> u32 <- rd(off(data,at)) & 255;
+                    second >> u32 <- rd(off(data,at+1)) & 255;
+                    third >> u32 <- rd(off(data,at+2)) & 255;
+                    fourth >> u32 <- rd(off(data,at+3)) & 255;
+                    wr(off(words,index),(first << 24) | (second << 16) | (third << 8) | fourth);
+                    index += 1;
+                }
+                while (index < 64) {
+                    a >> u32 <- rd(off(words,index-15));
+                    b >> u32 <- rd(off(words,index-2));
+                    s0 >> u32 <- rotate(a,7) ^ rotate(a,18) ^ (a >>> 3);
+                    s1 >> u32 <- rotate(b,17) ^ rotate(b,19) ^ (b >>> 10);
+                    wr(off(words,index),rd(off(words,index-16))+s0+rd(off(words,index-7))+s1);
+                    index += 1;
+                }
+                a >> u32 <- rd(state); b >> u32 <- rd(off(state,1));
+                c >> u32 <- rd(off(state,2)); d >> u32 <- rd(off(state,3));
+                e >> u32 <- rd(off(state,4)); f >> u32 <- rd(off(state,5));
+                g >> u32 <- rd(off(state,6)); h >> u32 <- rd(off(state,7));
+                index <- 0;
+                while (index < 64) {
+                    upper >> u32 <- rotate(e,6) ^ rotate(e,11) ^ rotate(e,25);
+                    choice >> u32 <- (e & f) ^ ((e ^ 4294967295) & g);
+                    first >> u32 <- h+upper+choice+constants[index]+rd(off(words,index));
+                    lower >> u32 <- rotate(a,2) ^ rotate(a,13) ^ rotate(a,22);
+                    majority >> u32 <- (a & b) ^ (a & c) ^ (b & c);
+                    second >> u32 <- lower+majority;
+                    h <- g; g <- f; f <- e; e <- d+first;
+                    d <- c; c <- b; b <- a; a <- first+second;
+                    index += 1;
+                }
+                wr(state,rd(state)+a); wr(off(state,1),rd(off(state,1))+b);
+                wr(off(state,2),rd(off(state,2))+c); wr(off(state,3),rd(off(state,3))+d);
+                wr(off(state,4),rd(off(state,4))+e); wr(off(state,5),rd(off(state,5))+f);
+                wr(off(state,6),rd(off(state,6))+g); wr(off(state,7),rd(off(state,7))+h);
+            }
+        public:
+            open() -> p<byte> {
+                context >> p<byte> <- cast(alloc(CONTEXT_BYTES));
+                if (context == null) return null;
+                state >> p<u32> <- cast(context);
+                wr(state,1779033703); wr(off(state,1),3144134277);
+                wr(off(state,2),1013904242); wr(off(state,3),2773480762);
+                wr(off(state,4),1359893119); wr(off(state,5),2600822924);
+                wr(off(state,6),528734635); wr(off(state,7),1541459225);
+                total >> p<u64> <- cast(off(context,352));
+                used >> p<int> <- cast(off(context,360));
+                wr(total,0); wr(used,0);
+                return context;
+            }
+            update(context >> p<byte>, data >> p<byte>, count >> int) -> bool {
+                if (context == null || count < 0 || (count > 0 && data == null)) return false;
+                usedSlot >> p<int> <- cast(off(context,360));
+                used >> int <- rd(usedSlot);
+                if (used < 0 || used >= 64) return false;
+                total >> p<u64> <- cast(off(context,352));
+                incoming >> u64 <- count;
+                wr(total,rd(total)+incoming);
+                tail >> p<byte> <- off(context,288);
+                at >> int <- 0;
+                if (used > 0) {
+                    take >> int <- count < 64-used ? count : 64-used;
+                    if (take > 0) cp(off(tail,used),data,take);
+                    used += take; at += take;
+                    if (used == 64) { block(context,tail); used <- 0; }
+                }
+                while (count-at >= 64) { block(context,off(data,at)); at += 64; }
+                left >> int <- count-at;
+                if (left > 0) { cp(tail,off(data,at),left); used <- left; }
+                wr(usedSlot,used); return true;
+            }
+            finish(context >> p<byte>) -> str {
+                if (context == null) return "";
+                usedSlot >> p<int> <- cast(off(context,360)); used >> int <- rd(usedSlot);
+                if (used < 0 || used >= 64) return "";
+                tail >> p<byte> <- off(context,288); wr(off(tail,used),128); used += 1;
+                if (used > 56) {
+                    while (used < 64) { wr(off(tail,used),0); used += 1; }
+                    block(context,tail); used <- 0;
+                }
+                while (used < 56) { wr(off(tail,used),0); used += 1; }
+                totalSlot >> p<u64> <- cast(off(context,352));
+                total >> u64 <- rd(totalSlot);
+                eight >> u64 <- 8;
+                bits >> u64 <- total*eight; index >> int <- 0;
+                while (index < 8) {
+                    shift >> u64 <- index*8;
+                    shifted >> u64 <- bits >>> shift;
+                    octet >> int <- shifted & 255;
+                    wr(off(tail,63-index),octet); index += 1;
+                }
+                block(context,tail); wr(usedSlot,-1);
+                output >> p<byte> <- cast(alloc(65)); if (output == null) return "";
+                digits >> p<byte> <- cast("0123456789abcdef");
+                state >> p<u32> <- cast(context); index <- 0;
+                while (index < 8) {
+                    value >> u32 <- rd(off(state,index)); digit >> int <- 0;
+                    while (digit < 8) {
+                        shifted >> u32 <- value >>> ((7-digit)*4);
+                        nibble >> int <- shifted & 15;
+                        character >> int <- rd(off(digits,nibble));
+                        wr(off(output,index*8+digit),character); digit += 1;
+                    }
+                    index += 1;
+                }
+                wr(off(output,64),0); text >> str <- cast(output);
+                result >> str <- strSubstring(text,0,64); free(output); return result;
+            }
+            close(context >> p<byte>) -> void { free(context); }
+            file(path >> str) -> str {
+                length >> i64 <- release43_host.release43Host.size64(path);
+                if (length < 0) return "";
+                context >> p<byte> <- open(); data >> p<byte> <- cast(alloc(CHUNK_BYTES));
+                if (context == null || data == null) { close(context); free(data); return ""; }
+                position >> i64 <- 0; good >> bool <- true;
+                while (position < length && good) {
+                    remaining >> i64 <- length-position;
+                    count >> int <- remaining < CHUNK_BYTES ? remaining : CHUNK_BYTES;
+                    got >> int <- release43_host.release43Host.readRange(path,data,count,position);
+                    if (got != count || !update(context,data,count)) { good <- false; break; }
+                    position += count;
+                }
+                if (release43_host.release43Host.size64(path) != length) good <- false;
+                result >> str <- good ? finish(context) : "";
+                close(context); free(data); return result;
+            }
+    fa: return true;
+}

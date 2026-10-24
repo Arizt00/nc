@@ -1,0 +1,195 @@
+manualAllocatorPolicies {
+    stc:
+        backing       >> p<byte> <- null;
+        arenaBase     >> p<byte> <- null;
+        arenaCapacity >> int     <- 0;
+        arenaCursor   >> int     <- 0;
+        smallBase     >> p<byte> <- null;
+        smallHead     >> int     <- -1;
+        largeBase     >> p<byte> <- null;
+        largeHead     >> int     <- -1;
+        buddyBase     >> p<byte> <- null;
+        buddyMask     >> int     <- 0;
+        perCpuBase    >> p<byte> <- null;
+
+    fn:
+        alignUp(value >> int, alignment >> int) -> int {
+            return ((value + alignment - 1) / alignment) * alignment;
+        }
+
+        arenaAlloc(bytes >> int, alignment >> int) -> p<byte> | null {
+            start >> int <- alignUp(arenaCursor, alignment);
+            end >> int <- start + bytes;
+            guard end <= arenaCapacity else return null;
+            arenaCursor <- end;
+            return off(arenaBase, start);
+        }
+
+        initPool(base >> p<byte>, blocks >> int, stride >> int) -> bool {
+            i >> int <- 0;
+            while (i < blocks) {
+                node >> p<byte> <- off(base, i * stride);
+                next >> int <- -1;
+                if (i + 1 < blocks) {
+                    next <- i + 1;
+                }
+                wr(node, next);
+                i++;
+            }
+            return true;
+        }
+
+        smallAlloc() -> p<byte> | null {
+            guard smallHead >= 0 else return null;
+            block >> p<byte> <- off(smallBase, smallHead * 32);
+            smallHead <- rd(block);
+            return block;
+        }
+
+        smallFree(block >> p<byte>) -> bool {
+            index >> int <- pDiff<byte>(block, smallBase) / 32;
+            wr(block, smallHead);
+            smallHead <- index;
+            return true;
+        }
+
+        largeAlloc() -> p<byte> | null {
+            guard largeHead >= 0 else return null;
+            block >> p<byte> <- off(largeBase, largeHead * 128);
+            largeHead <- rd(block);
+            return block;
+        }
+
+        largeFree(block >> p<byte>) -> bool {
+            index >> int <- pDiff<byte>(block, largeBase) / 128;
+            wr(block, largeHead);
+            largeHead <- index;
+            return true;
+        }
+
+        slabAlloc(bytes >> int) -> p<byte> | null {
+            if (bytes <= 32) {
+                return smallAlloc();
+            }
+            if (bytes <= 128) {
+                return largeAlloc();
+            }
+            return null;
+        }
+
+        pow2(exponent >> int) -> int {
+            value >> int <- 1;
+            i >> int <- 0;
+            while (i < exponent) {
+                value *= 2;
+                i++;
+            }
+            return value;
+        }
+
+        buddyBlocks(bytes >> int) -> int {
+            blocks >> int <- (bytes + 63) / 64;
+            rounded >> int <- 1;
+            while (rounded < blocks) {
+                rounded *= 2;
+            }
+            return rounded;
+        }
+
+        buddyRangeFree(start >> int, blocks >> int) -> bool {
+            i >> int <- 0;
+            while (i < blocks) {
+                bit >> int <- pow2(start + i);
+                if ((buddyMask / bit) % 2 != 0) {
+                    return false;
+                }
+                i++;
+            }
+            return true;
+        }
+
+        buddyMark(start >> int, blocks >> int, used >> bool) -> bool {
+            i >> int <- 0;
+            while (i < blocks) {
+                bit >> int <- pow2(start + i);
+                present >> bool <- (buddyMask / bit) % 2 != 0;
+                if (used && !present) {
+                    buddyMask += bit;
+                }
+                if (!used && present) {
+                    buddyMask -= bit;
+                }
+                i++;
+            }
+            return true;
+        }
+
+        buddyAlloc(bytes >> int) -> p<byte> | null {
+            blocks >> int <- buddyBlocks(bytes);
+            guard blocks <= 8 else return null;
+            start >> int <- 0;
+            while (start + blocks <= 8) {
+                if (buddyRangeFree(start, blocks)) {
+                    buddyMark(start, blocks, true);
+                    return off(buddyBase, start * 64);
+                }
+                start += blocks;
+            }
+            return null;
+        }
+
+        buddyFree(block >> p<byte>, bytes >> int) -> bool {
+            start >> int <- pDiff<byte>(block, buddyBase) / 64;
+            return buddyMark(start, buddyBlocks(bytes), false);
+        }
+
+        perCpuHeap(cpu >> int) -> p<byte> {
+            return off(perCpuBase, cpu * 256);
+        }
+
+        run() -> bool {
+            backing <- alignedAlloc(4096, 64);
+            guard backing != null else return false;
+
+            arenaBase <- backing;
+            arenaCapacity <- 512;
+            arenaCursor <- 0;
+            smallBase <- off(backing, 512);
+            largeBase <- off(backing, 768);
+            buddyBase <- off(backing, 1280);
+            perCpuBase <- off(backing, 2048);
+            smallHead <- 0;
+            largeHead <- 0;
+            buddyMask <- 0;
+            initPool(smallBase, 8, 32);
+            initPool(largeBase, 4, 128);
+
+            a >> p<byte> <- arenaAlloc(17, 64);
+            b >> p<byte> <- arenaAlloc(33, 64);
+            guard a != null && b != null && pDiff<byte>(b, a) == 64 else return false;
+
+            s >> p<byte> <- slabAlloc(16);
+            l >> p<byte> <- slabAlloc(96);
+            guard s != null && l != null else return false;
+            smallFree(s);
+            largeFree(l);
+
+            first >> p<byte> <- buddyAlloc(100);
+            second >> p<byte> <- buddyAlloc(200);
+            guard first != null && second != null else return false;
+            buddyFree(first, 100);
+            buddyFree(second, 200);
+            whole >> p<byte> <- buddyAlloc(400);
+            guard whole == buddyBase else return false;
+
+            cpu3 >> p<byte> <- perCpuHeap(3);
+            guard pDiff<byte>(cpu3, perCpuBase) == 768 else return false;
+            return alignedFree(backing);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

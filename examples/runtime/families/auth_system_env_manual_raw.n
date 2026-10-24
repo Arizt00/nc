@@ -1,0 +1,46 @@
+use <auth.system:env>;
+use <memory:stack>;
+use <io:output>;
+
+authSystemEnvManualRaw {
+    fn:
+        strideCheck() -> bool { return authEnvStride() == 64; }
+
+        writeCopy(table >> p<byte>, value >> p<byte>) -> bool {
+            wr(off(value, 0), 0x6E);
+            wr(off(value, 1), 0x43);
+            written >> bool <- authEnvWrite(table, 0, 901, value, 2, 7, 4, 66, 5, 1);
+            copied >> bool <- authEnvCopy(table, 1, table, 0);
+            return written && copied;
+        }
+
+        identity(table >> p<byte>, value >> p<byte>) -> bool {
+            return authEnvNameKey(table, 1) == 901 &&
+                authEnvData(table, 1) == value && authEnvBytes(table, 1) == 2 &&
+                authEnvOwner(table, 1) == 66 && authEnvGeneration(table, 1) == 5;
+        }
+
+        authority(table >> p<byte>) -> bool {
+            return authEnvRights(table, 1) == 7 && authEnvFlags(table, 1) == 4 &&
+                authEnvState(table, 1) == 1 && authEnvAllows(table, 1, 3);
+        }
+
+        clearRecord(table >> p<byte>) -> bool {
+            cleared >> bool <- authEnvClear(table, 1);
+            return cleared && authEnvState(table, 1) == 0;
+        }
+
+        run() -> bool {
+            table >> p<byte> <- stackAlloc(authEnvStride() * 2, 8);
+            value >> p<byte> <- stackAlloc(2, 1);
+            ok >> bool <- strideCheck() && writeCopy(table, value) &&
+                identity(table, value) && authority(table) && clearRecord(table);
+            println("manual nC auth system env backend: " + (ok ? "true" : "false"));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

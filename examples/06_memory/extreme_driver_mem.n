@@ -1,0 +1,188 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:ptr, heap, region>;
+
+extremeDriverMem :: runtime {
+    stc:
+        ring >> array<int, 16>;
+        packets >> list<int>;
+        regionA >> memRegion<int>;
+        metrics >> memRegion<int>;
+        p >> p<int>;
+        pSlot >> p<int>;
+        ok >> bool;
+        freed >> bool;
+        /*
+         * metrics slots:
+         * 0 idx, 1 valueOut, 2 pointerOut, 3 checksum,
+         * 4 pointerChecksum, 5 ringChecksum, 6 producidos,
+         * 7 ultimo, 8 sobrescritos.
+         */
+        i >> int <- 0;
+
+    fn:
+        boot() -> bool {
+            ring <- [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            packets <- [10, 20, 30, 40, 50, 60, 70, 80];
+            regionA <- regionCreate<int>(16);
+            metrics <- regionCreate<int>(16);
+            p !> p<int> : alloc(128);
+            initMetricas();
+            limpiarMemoria();
+            ok <- true;
+            freed <- false;
+            return true;
+        }
+
+        initMetricas() -> bool {
+            for metricSlot in 0..9 {
+                mw(metricSlot, 0);
+            }
+            return true;
+        }
+
+        m(metricSlot >> int) -> int {
+            return regionRead(metrics, metricSlot);
+        }
+
+        mw(metricSlot >> int, value >> int) -> bool {
+            regionWrite(metrics, metricSlot, value);
+            return true;
+        }
+
+        incMetric(metricSlot >> int, value >> int) -> bool {
+            mw(metricSlot, m(metricSlot) + value);
+            return true;
+        }
+
+        seleccionarSlot(index >> int) -> bool {
+            pSlot <- p.offset(index);
+            return true;
+        }
+
+        writePtr(index >> int, value >> int) -> bool {
+            seleccionarSlot(index);
+            wr(pSlot, value);
+            return true;
+        }
+
+        readPtr(index >> int) -> int {
+            seleccionarSlot(index);
+            return pSlot.read();
+        }
+
+        limpiarMemoria() -> bool {
+            i <- 0;
+            while (i < 16) {
+                ring[i] <- 0;
+                regionWrite(regionA, i, 0);
+                writePtr(i, 0);
+                i <- i + 1;
+            }
+            return true;
+        }
+
+        avanzarRing() -> bool {
+            mw(0, m(0) + 1);
+            if (m(0) >= 16) {
+                mw(0, 0);
+            }
+            return true;
+        }
+
+        pushPacket(packet >> int) -> bool {
+            if (m(6) >= 16) {
+                incMetric(8, 1);
+            }
+
+            ring[m(0)] <- packet;
+            packets.push(packet);
+            regionWrite(regionA, m(0), packet);
+            writePtr(m(0), packet);
+
+            mw(1, regionRead(regionA, m(0)));
+            mw(2, readPtr(m(0)));
+
+            if (m(1) != packet) {
+                return false;
+            }
+            if (m(2) != packet) {
+                return false;
+            }
+
+            incMetric(3, m(1));
+            incMetric(4, m(2));
+            incMetric(6, 1);
+            mw(7, m(1));
+            avanzarRing();
+            return true;
+        }
+
+        runCarga() -> bool {
+            for n in 0..90 {
+                if (!pushPacket(500 + n)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        calcularRingChecksum() -> bool {
+            mw(5, 0);
+            for (i >> int <- 0; i < 16; i += 1) {
+                incMetric(5, regionRead(regionA, i));
+            }
+            return m(5) == 9304;
+        }
+
+        validar() -> bool {
+            guard (m(6) == 90) else { return false; }
+            guard (packets.len() == 98) else { return false; }
+            guard (m(3) == 49005) else { return false; }
+            guard (m(4) == 49005) else { return false; }
+            guard (m(7) == 589) else { return false; }
+            guard (m(8) == 74) else { return false; }
+            guard (m(0) == 10) else { return false; }
+            guard (calcularRingChecksum()) else { return false; }
+            return m(1) == 589 && m(2) == 589;
+        }
+
+        imprimir() -> bool {
+            println(colorBold("===== extremeDriverMem real =====", "cyan"));
+            println("ultimo valor = " + renderInt(m(7)));
+            println("paquetes en lista = " + renderInt(packets.len()));
+            println("paquetes producidos = " + renderInt(m(6)));
+            println("sobrescrituras ring = " + renderInt(m(8)));
+            println("idx siguiente = " + renderInt(m(0)));
+            println("checksum region = " + renderInt(m(3)));
+            println("checksum puntero = " + renderInt(m(4)));
+            println("checksum ring final = " + renderInt(m(5)));
+            println("regionA ultimo = " + renderInt(m(1)));
+            println("ptr ultimo = " + renderInt(m(2)));
+            println("ok = " + renderBool(ok));
+            return true;
+        }
+
+        liberar() -> bool {
+            freed <- free(p);
+            println(colorBold("heap liberado = " + renderBool(freed), "green"));
+            return freed;
+        }
+
+        run() -> bool {
+            boot();
+            ok <- runCarga();
+            if (ok) {
+                ok <- validar();
+            }
+            imprimir();
+            freed <- liberar();
+            return ok && freed;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

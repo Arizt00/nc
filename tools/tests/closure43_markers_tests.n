@@ -1,0 +1,29 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output>;
+use <project:closure43_core, closure43_markers, release_io>;
+
+closure43MarkersTests {
+    fn:
+        run() -> int {
+            args >> addr <- argsOpen(); if (argsCount(args) != 3) return 2;
+            envSet("CLOSURE43_ROOT",argsAt(args,1)); closure43_core.closure43Core.init();
+            first >> str <- "place"; last >> str <- "holder\r\nruntime st"+"ub\u{85}Expected Semicolon\u{2028}Expected identifier\u{2029}compiler.no-placeholder-expr\n";
+            bytes >> p<byte> <- cast(alloc(strByteLen(first)+strByteLen(last)+2)); guard bytes != null else return 3;
+            cp(bytes,cast<byte>(first),strByteLen(first)); wr(off(bytes,strByteLen(first)),255); cp(off(bytes,strByteLen(first)+1),cast<byte>(last),strByteLen(last));
+            path >> str <- closure43_core.closure43Core.path("examples/runtime/positive.txt"); if (!release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(path))) return 4;
+            written >> int <- fsWriteFrom(path,bytes,strByteLen(first)+strByteLen(last)+1,false); free(bytes); if (written < 0) return 5;
+            text >> str <- ""; index >> int <- 0;
+            while (index < 83) { text <- text+"place"+"holder\n"; index += 1; }
+            if (!closure43_core.closure43Core.write("docs/spec/runtime/negative.txt",text)) return 6;
+            compiler >> int <- closure43_markers.closure43Markers.execute(false); runtime >> int <- closure43_markers.closure43Markers.execute(true);
+            blockers >> int <- jsonObjectGet(compiler,"blocking_occurrences"); classified >> int <- jsonObjectGet(compiler,"classified_sample");
+            good >> bool <- closure43_core.closure43Core.field(compiler,"status") == "blocked" && jsonArrayLen(blockers) == 4 && jsonArrayLen(classified) == 80 && release_io.releaseIo.number(compiler,"classified_non_blocking_count",0) == 84;
+            jsonRelease(blockers); jsonRelease(classified); blockers <- jsonObjectGet(runtime,"blocking_occurrences"); good <- good && jsonArrayLen(blockers) == 4; jsonRelease(blockers);
+            report >> int <- jsonNewObject(); jsonObjectSet(report,"compiler",compiler); jsonObjectSet(report,"runtime",runtime); closure43_core.closure43Core.put(report,"passed",jsonNewBool(good));
+            if (!release_io.releaseIo.write(argsAt(args,2),closure43_core.closure43Core.pretty(report)+"\n")) good <- false;
+            jsonRelease(report); jsonRelease(compiler); jsonRelease(runtime); argsRelease(args); println(good ? "closure43 markers: passed" : "closure43 markers: FAILED"); return good ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,81 @@
+use <io:output, render>;
+use <project:parser_ast, diagnostics>;
+
+nccAstReport {
+    fn:
+        private:
+            token(session >> p<byte>, index >> int) -> void {
+                print("{\"kind\":"); print(renderInt(parser_ast.nccParserAst.materialTokenKind(session, index)));
+                print(",\"start\":"); print(renderInt(parser_ast.nccParserAst.materialTokenStart(session, index)));
+                print(",\"end\":"); print(renderInt(parser_ast.nccParserAst.materialTokenEnd(session, index)));
+                print(",\"payload\":[");
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenPayload(session, index);
+                count >> int <- parser_ast.nccParserAst.materialTokenBytes(session, index);
+                at >> int <- 0;
+                while (at < count) {
+                    if (at > 0) print(",");
+                    print(renderInt(rd<byte>(off(data, at)) & 255));
+                    at += 1;
+                }
+                print("]}");
+            }
+
+            node(session >> p<byte>, index >> int) -> void {
+                first >> int <- parser_ast.nccParserAst.materialNodeFirstToken(session, index);
+                end >> int <- parser_ast.nccParserAst.materialNodeEndToken(session, index);
+                print("{\"kind\":\""); print(parser_ast.nccParserAst.materialNodeName(session, index));
+                print("\",\"parent\":"); print(renderInt(parser_ast.nccParserAst.materialNodeParent(session, index)));
+                print(",\"first_child\":"); print(renderInt(parser_ast.nccParserAst.materialNodeFirstChild(session, index)));
+                print(",\"next_sibling\":"); print(renderInt(parser_ast.nccParserAst.materialNodeNextSibling(session, index)));
+                print(",\"first_token\":"); print(renderInt(first));
+                print(",\"end_token\":"); print(renderInt(end));
+                print(",\"origin_token\":"); print(renderInt(parser_ast.nccParserAst.materialNodeOrigin(session, index)));
+                print(",\"start\":"); print(renderInt(parser_ast.nccParserAst.materialTokenStart(session, first)));
+                print(",\"end\":"); print(renderInt(parser_ast.nccParserAst.materialTokenEnd(session, end)));
+                print(",\"operator\":"); print(renderInt(parser_ast.nccParserAst.materialNodeRoleHash(session, index)));
+                print(",\"flags\":"); print(renderInt(parser_ast.nccParserAst.materialNodeFlags(session, index)));
+                print("}");
+            }
+
+        public:
+            parseFile(path >> str) -> int {
+                session >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard session != null else return 66;
+                if (!parser_ast.nccParserAst.materialReady(session)) {
+                    error >> int <- parser_ast.nccParserAst.materialLexerError(session);
+                    code >> int <- 70;
+                    if (error != 0) code <- diagnostics.nccDiagnostics.emitDiagnostic(error,
+                        parser_ast.nccParserAst.materialErrorLine(session),
+                        parser_ast.nccParserAst.materialErrorColumn(session), path);
+                    else code <- diagnostics.nccDiagnostics.emitParser(
+                        parser_ast.nccParserAst.materialParserError(session),
+                        parser_ast.nccParserAst.materialErrorLine(session),
+                        parser_ast.nccParserAst.materialErrorColumn(session), path);
+                    parser_ast.nccParserAst.closeMaterial(session);
+                    return code;
+                }
+                guard parser_ast.nccParserAst.materialTreeValid(session) else {
+                    parser_ast.nccParserAst.closeMaterial(session);
+                    return 70;
+                }
+                print("{\"schema\":\"nc.parser.ast-material.v1\",\"revision\":45,\"tokens\":[");
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialTokenCount(session)) {
+                    if (at > 0) print(",");
+                    token(session, at);
+                    at += 1;
+                }
+                print("],\"nodes\":[");
+                at <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(session)) {
+                    if (at > 0) print(",");
+                    node(session, at);
+                    at += 1;
+                }
+                println("]}");
+                parser_ast.nccParserAst.closeMaterial(session);
+                return 0;
+            }
+    fa:
+        return true;
+}

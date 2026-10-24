@@ -1,0 +1,109 @@
+use <data:json>;
+use <project:release_io, tool_cli>;
+
+contractChecks {
+    fn:
+        public:
+            equal(left >> int, right >> int) -> bool {
+                kind >> int <- jsonKind(left);
+                if (kind != jsonKind(right)) return false;
+                if (kind == 5) {
+                    if (jsonArrayLen(left) != jsonArrayLen(right)) return false;
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(left)) {
+                        a >> int <- jsonArrayGet(left,index);
+                        b >> int <- jsonArrayGet(right,index);
+                        same >> bool <- equal(a,b);
+                        jsonRelease(a); jsonRelease(b);
+                        if (!same) return false;
+                        index += 1;
+                    }
+                    return true;
+                }
+                if (kind == 6) {
+                    if (jsonObjectLen(left) != jsonObjectLen(right)) return false;
+                    index >> int <- 0;
+                    while (index < jsonObjectLen(left)) {
+                        key >> str <- jsonObjectKeyAt(left,index);
+                        if (!jsonObjectHas(right,key)) return false;
+                        a >> int <- jsonObjectGet(left,key);
+                        b >> int <- jsonObjectGet(right,key);
+                        same >> bool <- equal(a,b);
+                        jsonRelease(a); jsonRelease(b);
+                        if (!same) return false;
+                        index += 1;
+                    }
+                    return true;
+                }
+                a >> str <- jsonStringify(left);
+                b >> str <- jsonStringify(right);
+                same >> bool <- a == b;
+                strRelease(a); strRelease(b);
+                return same;
+            }
+            setSame(left >> int, right >> int) -> bool {
+                if (jsonKind(left) != 5 || jsonKind(right) != 5) return false;
+                index >> int <- 0;
+                while (index < jsonArrayLen(left)) {
+                    value >> int <- jsonArrayGet(left,index);
+                    found >> bool <- jsonKind(value) == 4 && release_io.releaseIo.contains(right,jsonGetString(value));
+                    jsonRelease(value);
+                    if (!found) return false;
+                    index += 1;
+                }
+                index <- 0;
+                while (index < jsonArrayLen(right)) {
+                    value >> int <- jsonArrayGet(right,index);
+                    found >> bool <- release_io.releaseIo.contains(left,jsonGetString(value));
+                    jsonRelease(value);
+                    if (!found) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            boolean(object >> int, key >> str, expected >> bool) -> bool {
+                item >> int <- jsonObjectGet(object,key);
+                if (jsonKind(item) != 2) { jsonRelease(item); return false; }
+                valid >> bool <- jsonGetBoolOr(item,false) == expected;
+                jsonRelease(item);
+                return valid;
+            }
+            contract(object >> int, schema >> str, gate >> str) -> bool {
+                return release_io.releaseIo.field(object,"schema") == schema &&
+                    release_io.releaseIo.field(object,"version") == "2.0.0" &&
+                    release_io.releaseIo.field(object,"state") == "frozen" &&
+                    release_io.releaseIo.member(object,"required_gates",gate);
+            }
+            files(root >> str, paths >> int, nonempty >> bool) -> bool {
+                index >> int <- 0;
+                while (index < jsonArrayLen(paths)) {
+                    item >> int <- jsonArrayGet(paths,index);
+                    path >> str <- root+"/"+jsonGetString(item);
+                    jsonRelease(item);
+                    if (release_io.releaseIo.fileType(path) != 1) return false;
+                    if (nonempty && fsSize(path) <= 0) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            phrases(content >> str, wanted >> int) -> bool {
+                index >> int <- 0;
+                while (index < jsonArrayLen(wanted)) {
+                    item >> int <- jsonArrayGet(wanted,index);
+                    found >> bool <- strContains(content,jsonGetString(item));
+                    jsonRelease(item);
+                    if (!found) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            integrated(model >> int, gate >> str, artifact >> str, install >> bool) -> bool {
+                if (!release_io.releaseIo.member(model,"required_gates",gate)) return false;
+                if (!release_io.releaseIo.member(model,"required_artifacts",artifact)) return false;
+                if (install && !release_io.releaseIo.member(model,"required_artifacts","INSTALL.md")) return false;
+                return true;
+            }
+            record(checks >> int, name >> str, value >> bool) -> void { jsonObjectSet(checks,name,jsonNewBool(value)); }
+    fa:
+        return true;
+}

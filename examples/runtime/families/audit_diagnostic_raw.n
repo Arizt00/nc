@@ -1,0 +1,41 @@
+use <audit:diagnostic>;
+use <io:output>;
+use <memory:stack>;
+
+rawAuditDiagnostic :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            records >> p<byte> <- stackAlloc(diagStride() * 2, 8);
+            table >> addr <- adr(records);
+            message >> addr <- adr(b"raw diagnostic");
+            source >> addr <- adr(b"fixture.n");
+
+            written >> bool <- diagWrite(
+                table, 0, 2, 7001, message, 14, source, 19, 7, 3
+            );
+            copied >> bool <- diagCopy(table, 1, table, 0);
+            ok >> bool <- written && copied &&
+                diagSeverity(table, 1) == 2 &&
+                diagCode(table, 1) == 7001 &&
+                diagMessage(table, 1) == message &&
+                diagMessageBytes(table, 1) == 14 &&
+                diagSource(table, 1) == source &&
+                diagLine(table, 1) == 19 &&
+                diagColumn(table, 1) == 7 &&
+                diagFlags(table, 1) == 3;
+            cleared >> bool <- diagClear(table, 1);
+            ok <- ok && cleared && diagCode(table, 1) == 0;
+
+            print("manual nC audit diagnostic backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

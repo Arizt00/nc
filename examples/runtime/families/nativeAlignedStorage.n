@@ -1,0 +1,33 @@
+use <io:output>;
+
+nativeAlignedStorage {
+    const:
+        LINE_BYTES >> usize <- 64;
+    type:
+        Line {
+            public:
+                sequence >> u64;
+                payload >> array<byte,48>;
+            layout:
+                align(64);
+        }
+    stc:
+        published >> Line <- Line(sequence: 17,payload: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+        spare >> Line;
+    inspect(value >> Line) -> u64 {
+        if (adr(&value) % LINE_BYTES != 0) return 0;
+        return value.sequence;
+    }
+    run() -> int {
+        work >> Line <- published;
+        wr(&work.sequence,23);
+        if (alignOf(Line) != LINE_BYTES || sizeOf(Line) != LINE_BYTES ||
+            adr(&published) % LINE_BYTES != 0 || adr(&spare) % LINE_BYTES != 0 ||
+            adr(&work) % LINE_BYTES != 0 || inspect(work) != 23 || published.sequence != 17) return 1;
+        println("aligned-storage-ok");
+        return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

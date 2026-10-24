@@ -1,0 +1,652 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <process:args, env, spawn, wait>;
+use <project:text, manifest, cargo_config, transport>;
+
+registry[@runtime] {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            contains(value >> str, wanted >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                needle >> p<byte> <- cast(wanted);
+                sourceBytes >> int <- length(source);
+                needleBytes >> int <- length(needle);
+                if (needleBytes == 0) return true;
+                at >> int <- 0;
+                while (at + needleBytes <= sourceBytes) {
+                    part >> int <- 0;
+                    while (part < needleBytes &&
+                        rd(off(source, at + part)) == rd(off(needle, part))) { part += 1; }
+                    if (part == needleBytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            after(value >> str, bytes >> int) -> str {
+                return cast(off(cast(value), bytes));
+            }
+
+            registryBase(value >> str) -> str {
+                if (starts(value, "sparse+")) return after(value, 7);
+                if (starts(value, "git+")) return after(value, 4);
+                return value;
+            }
+
+            urlJoin(left >> str, right >> str) -> str {
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && rd(off(source, width - 1)) == 47) return left + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionWithValue(value >> str) -> bool {
+                return value == "--manifest" || value == "--manifest-path" ||
+                    value == "--path" || value == "--registry" ||
+                    value == "--registry-protocol" || value == "--token" ||
+                    value == "--vers" || value == "--version";
+            }
+
+            positional(handle >> addr, wanted >> int) -> str {
+                count >> int <- argsCount(handle);
+                found >> int <- 0;
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (starts(value, "-")) {
+                        at += optionWithValue(value) ? 2 : 1;
+                    }
+                    else {
+                        if (found == wanted) return value;
+                        found += 1;
+                        at += 1;
+                    }
+                }
+                return "";
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            isWindows() -> bool {
+                return same(envText("OS"), "Windows_NT");
+            }
+
+            waitOk(process >> Result<ProcessHandle, ProcessError>) -> bool {
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) && unwrap(status) == 0;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            privateMode(path >> str, mode >> str) -> bool {
+                if (isWindows()) return true;
+                return waitOk(spawn("chmod", [mode, path]));
+            }
+
+            digitsAfter(value >> p<byte>, marker >> str) -> int {
+                wanted >> p<byte> <- cast(marker);
+                valueBytes >> int <- length(value);
+                markerBytes >> int <- length(wanted);
+                at >> int <- 0;
+                while (at + markerBytes <= valueBytes) {
+                    part >> int <- 0;
+                    while (part < markerBytes &&
+                        rd(off(value, at + part)) == rd(off(wanted, part))) { part += 1; }
+                    if (part == markerBytes) {
+                        cursor >> int <- at + markerBytes;
+                        parsed >> int <- 0;
+                        found >> bool <- false;
+                        while (cursor < valueBytes && rd(off(value, cursor)) >= 48 &&
+                            rd(off(value, cursor)) <= 57) {
+                            parsed <- parsed * 10 + rd(off(value, cursor)) - 48;
+                            found <- true;
+                            cursor += 1;
+                        }
+                        return found ? parsed : -1;
+                    }
+                    at += 1;
+                }
+                return -1;
+            }
+
+            permissionsSecure(path >> str) -> bool {
+                if (isWindows() || !exists(path)) return true;
+                buffer >> p<byte> <- cast(alloc(256));
+                guard buffer != null else return false;
+                written >> int <- fsPermissionsInto(path, buffer, 256);
+                if (written < 0) { free(buffer); return false; }
+                mode >> int <- digitsAfter(buffer, "mode=");
+                free(buffer);
+                return mode >= 0 && mode % 64 == 0;
+            }
+
+            home() -> str {
+                selected >> str <- envText("GHOR_HOME");
+                if (selected != "") return selected;
+                selected <- envText("HOME");
+                if (selected != "") return join(selected, ".ghor");
+                selected <- envText("USERPROFILE");
+                if (selected != "") return join(selected, ".ghor");
+                return ".ghor";
+            }
+
+            credentialsPath() -> str {
+                return join(home(), "credentials.json");
+            }
+
+            emptyCredentials() -> int {
+                root >> int <- jsonNewObject();
+                jsonObjectSet(root, "schema", jsonNewString("ghor.credentials.v1"));
+                jsonObjectSet(root, "registries", jsonNewObject());
+                return root;
+            }
+
+            loadCredentials(requireSecure >> bool) -> int {
+                path >> str <- credentialsPath();
+                if (!exists(path)) return emptyCredentials();
+                if (requireSecure && !permissionsSecure(path)) return 0;
+                parsed >> int <- jsonParseFile(path);
+                if (parsed == 0 || jsonKind(parsed) != 6) return 0;
+                registries >> int <- jsonObjectGet(parsed, "registries");
+                if (registries == 0 || jsonKind(registries) != 6) {
+                    jsonObjectSet(parsed, "registries", jsonNewObject());
+                }
+                return parsed;
+            }
+
+            saveCredentials(root >> int) -> bool {
+                selectedHome >> str <- home();
+                guard ensureDirectory(selectedHome) else return false;
+                guard privateMode(selectedHome, "700") else return false;
+                path >> str <- credentialsPath();
+                guard jsonSaveFile(root, path, 2) else return false;
+                return privateMode(path, "600");
+            }
+
+            storedToken(registry >> str) -> str {
+                root >> int <- loadCredentials(true);
+                if (root == 0) return "";
+                entry >> int <- jsonObjectGet(jsonObjectGet(root, "registries"), registry);
+                token >> str <- jsonGetStringOr(jsonObjectGet(entry, "token"), "");
+                jsonRelease(root);
+                return token;
+            }
+
+            token(handle >> addr, registry >> str) -> str {
+                model >> int <- manifestModel(handle);
+                selected >> str <- cargo_config.cargoConfig.token(handle, model);
+                if (model != 0) jsonRelease(model);
+                if (selected != "") return selected;
+                return storedToken(registry);
+            }
+
+            registryNodeValue(node >> int) -> str {
+                selected >> str <- jsonGetStringOr(node, "");
+                if (selected != "") return selected;
+                selected <- jsonGetStringOr(jsonObjectGet(node, "index"), "");
+                if (selected != "") return selected;
+                return jsonGetStringOr(jsonObjectGet(node, "registry"), "");
+            }
+
+            manifestModel(handle >> addr) -> int {
+                path >> str <- manifest.manifest.select(handle);
+                if (path == "" || !exists(path)) return 0;
+                return cargo_config.cargoConfig.apply(handle, manifest.manifest.load(path));
+            }
+
+            registryReference(handle >> addr, model >> int) -> str {
+                return cargo_config.cargoConfig.reference(handle, model);
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            failure(schema >> str, diagnostics >> int) -> int {
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "status", jsonNewString("error"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                printModel(report);
+                return 2;
+            }
+
+            index(handle >> addr, registry >> str, selectedToken >> str, diagnostics >> int) -> int {
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, registry, selectedToken, diagnostics);
+                guard root != "" else return 0;
+                path >> str <- join(root, "index.json");
+                if (!exists(path)) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                        "registry index is missing at '" + path + "'");
+                    return 0;
+                }
+                parsed >> int <- jsonParseFile(path);
+                if (parsed == 0 || jsonKind(parsed) != 6) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                        "registry index is not valid JSON at '" + path + "'");
+                    return 0;
+                }
+                packages >> int <- jsonObjectGet(parsed, "packages");
+                if (packages == 0) jsonObjectSet(parsed, "packages", jsonNewArray());
+                else if (jsonKind(packages) != 5) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                        "registry index packages must be an array");
+                    jsonRelease(parsed);
+                    return 0;
+                }
+                return parsed;
+            }
+
+            baseReport(schema >> str, registry >> str) -> int {
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "status", jsonNewString("ok"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "registry", jsonNewString(registry));
+                jsonObjectSet(report, "registry_transport",
+                    jsonNewString(transport.transport.kind(registry)));
+                return report;
+            }
+
+            executeSearch(handle >> addr) -> int {
+                model >> int <- manifestModel(handle);
+                selectedRegistry >> str <- registryReference(handle, model);
+                selectedToken >> str <- token(handle, selectedRegistry);
+                diagnostics >> int <- jsonNewArray();
+                source >> int <- index(handle, selectedRegistry, selectedToken, diagnostics);
+                if (source == 0) {
+                    if (model != 0) jsonRelease(model);
+                    return failure("ghor.search.v1", diagnostics);
+                }
+                query >> str <- positional(handle, 0);
+                matches >> int <- jsonNewArray();
+                packages >> int <- jsonObjectGet(source, "packages");
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    entry >> int <- jsonArrayGet(packages, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "");
+                    if (contains(name, query)) jsonArrayPush(matches, jsonClone(entry));
+                    at += 1;
+                }
+                report >> int <- baseReport("ghor.search.v1", selectedRegistry);
+                jsonObjectSet(report, "packages", matches);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(source);
+                if (model != 0) jsonRelease(model);
+                return printModel(report);
+            }
+
+            executeInfo(handle >> addr) -> int {
+                name >> str <- positional(handle, 0);
+                diagnostics >> int <- jsonNewArray();
+                if (name == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_INFO_001", "info expects <package>");
+                    return failure("ghor.info.v1", diagnostics);
+                }
+                model >> int <- manifestModel(handle);
+                selectedRegistry >> str <- registryReference(handle, model);
+                selectedToken >> str <- token(handle, selectedRegistry);
+                source >> int <- index(handle, selectedRegistry, selectedToken, diagnostics);
+                if (source == 0) {
+                    if (model != 0) jsonRelease(model);
+                    return failure("ghor.info.v1", diagnostics);
+                }
+                matches >> int <- jsonNewArray();
+                packages >> int <- jsonObjectGet(source, "packages");
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    entry >> int <- jsonArrayGet(packages, at);
+                    if (same(jsonGetStringOr(jsonObjectGet(entry, "name"), ""), name)) {
+                        jsonArrayPush(matches, jsonClone(entry));
+                    }
+                    at += 1;
+                }
+                report >> int <- baseReport("ghor.info.v1", selectedRegistry);
+                jsonObjectSet(report, "packages", matches);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(source);
+                if (model != 0) jsonRelease(model);
+                return printModel(report);
+            }
+
+            executeLogin(handle >> addr) -> int {
+                model >> int <- manifestModel(handle);
+                selectedRegistry >> str <- registryReference(handle, model);
+                selectedToken >> str <- option(handle, "--token");
+                if (selectedToken == "") selectedToken <- envText("GHOR_REGISTRY_TOKEN");
+                auth >> str <- transport.transport.kind(selectedRegistry) == "filesystem" ?
+                    "local_registry" : "anonymous_remote";
+                if (selectedToken != "") {
+                    credentials >> int <- loadCredentials(false);
+                    if (credentials == 0) credentials <- emptyCredentials();
+                    entry >> int <- jsonNewObject();
+                    jsonObjectSet(entry, "token", jsonNewString(selectedToken));
+                    jsonObjectSet(entry, "transport",
+                        jsonNewString(transport.transport.kind(selectedRegistry)));
+                    registries >> int <- jsonObjectGet(credentials, "registries");
+                    jsonObjectSet(registries, selectedRegistry, entry);
+                    jsonObjectSet(credentials, "registries", registries);
+                    jsonRelease(entry);
+                    jsonRelease(registries);
+                    if (!saveCredentials(credentials)) {
+                        jsonRelease(credentials);
+                        diagnostics >> int <- jsonNewArray();
+                        addDiagnostic(diagnostics, "E_GHOR_AUTH_001",
+                            "registry credentials could not be stored privately");
+                        if (model != 0) jsonRelease(model);
+                        return failure("ghor.login.v1", diagnostics);
+                    }
+                    jsonRelease(credentials);
+                    auth <- "token_stored";
+                }
+                report >> int <- baseReport("ghor.login.v1", selectedRegistry);
+                jsonObjectSet(report, "status", jsonNewString("configured"));
+                jsonObjectSet(report, "auth", jsonNewString(auth));
+                jsonObjectSet(report, "login_url", jsonNewString(
+                    transport.transport.kind(selectedRegistry) == "filesystem" ?
+                    "" : urlJoin(registryBase(selectedRegistry), "me")));
+                jsonObjectSet(report, "cargo_login_semantics", jsonNewString(
+                    "token is obtained out-of-band and stored locally"));
+                if (model != 0) jsonRelease(model);
+                return printModel(report);
+            }
+
+            executeLogout(handle >> addr) -> int {
+                model >> int <- manifestModel(handle);
+                selectedRegistry >> str <- registryReference(handle, model);
+                path >> str <- credentialsPath();
+                removed >> bool <- false;
+                if (exists(path)) {
+                    credentials >> int <- loadCredentials(false);
+                    if (credentials != 0) {
+                        registries >> int <- jsonObjectGet(credentials, "registries");
+                        detached >> int <- jsonObjectRemove(registries, selectedRegistry);
+                        removed <- detached != 0;
+                        if (detached != 0) jsonRelease(detached);
+                        jsonObjectSet(credentials, "registries", registries);
+                        jsonRelease(registries);
+                        if (!saveCredentials(credentials)) {
+                            jsonRelease(credentials);
+                            diagnostics >> int <- jsonNewArray();
+                            addDiagnostic(diagnostics, "E_GHOR_AUTH_001",
+                                "registry credentials could not be updated privately");
+                            if (model != 0) jsonRelease(model);
+                            return failure("ghor.logout.v1", diagnostics);
+                        }
+                        jsonRelease(credentials);
+                    }
+                }
+                report >> int <- baseReport("ghor.logout.v1", selectedRegistry);
+                jsonObjectSet(report, "removed", jsonNewBool(removed));
+                if (model != 0) jsonRelease(model);
+                return printModel(report);
+            }
+
+            defaultConfig(registry >> str) -> int {
+                config >> int <- jsonNewObject();
+                jsonObjectSet(config, "dl",
+                    jsonNewString("packages/{crate}/{version}/{crate}-{version}.crate"));
+                jsonObjectSet(config, "api", jsonNewString(
+                    transport.transport.kind(registry) == "filesystem" ?
+                    "file://" + registry : registryBase(registry)));
+                jsonObjectSet(config, "auth-required", jsonNewBool(false));
+                jsonObjectSet(config, "ghor-protocol",
+                    jsonNewString("cargo-index-compatible"));
+                return config;
+            }
+
+            registryConfig(
+                handle >> addr,
+                registry >> str,
+                selectedToken >> str,
+                diagnostics >> int
+            ) -> int {
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, registry, selectedToken, diagnostics);
+                guard root != "" else return 0;
+                path >> str <- join(root, "config.json");
+                kind >> str <- transport.transport.kind(registry);
+                if (!exists(path) && (kind == "http" || kind == "sparse-http")) {
+                    transport.transport.downloadAuthorized(handle,
+                        urlJoin(registryBase(registry), "config.json"), path, selectedToken);
+                }
+                if (!exists(path)) return defaultConfig(registry);
+                parsed >> int <- jsonParseFile(path);
+                return parsed == 0 ? defaultConfig(registry) : parsed;
+            }
+
+            protocol() -> int {
+                value >> int <- jsonNewObject();
+                jsonObjectSet(value, "schema", jsonNewString("ghor.registry.protocol.v1"));
+                jsonObjectSet(value, "config", jsonNewString("config.json"));
+                jsonObjectSet(value, "compat_index", jsonNewString("index.json"));
+                jsonObjectSet(value, "package_index", jsonNewString(
+                    "Cargo-style package file with one JSON object per line"));
+                jsonObjectSet(value, "checksum", jsonNewString("sha256"));
+                jsonObjectSet(value, "auth", jsonNewString(
+                    "CLI, environment, Cargo config, credential provider, or private credentials"));
+                return value;
+            }
+
+            executeRegistry(handle >> addr) -> int {
+                action >> str <- positional(handle, 0);
+                if (action == "") action <- "doctor";
+                model >> int <- manifestModel(handle);
+                selectedRegistry >> str <- registryReference(handle, model);
+                selectedToken >> str <- token(handle, selectedRegistry);
+                diagnostics >> int <- jsonNewArray();
+                if (action == "doctor") {
+                    source >> int <- index(handle, selectedRegistry, selectedToken, diagnostics);
+                    report >> int <- baseReport("ghor.registry.doctor.v1", selectedRegistry);
+                    jsonObjectSet(report, "status", jsonNewString(source == 0 ? "unreachable" : "ok"));
+                    jsonObjectSet(report, "curl_available", jsonNewBool(true));
+                    jsonObjectSet(report, "credential_status",
+                        jsonNewString(selectedToken == "" ? "not_configured" : "available"));
+                    jsonObjectSet(report, "protocol", protocol());
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    if (source != 0) jsonRelease(source);
+                    if (model != 0) jsonRelease(model);
+                    return printModel(report);
+                }
+                if (action == "cargo-config") {
+                    guard model != 0 else {
+                        addDiagnostic(diagnostics, "E_GHOR_CONFIG_001",
+                            "registry cargo-config expects --manifest-path");
+                        return failure("ghor.registry.cargo_config.v1", diagnostics);
+                    }
+                    report >> int <- baseReport("ghor.registry.cargo_config.v1", selectedRegistry);
+                    config >> int <- cargo_config.cargoConfig.report(handle, model);
+                    jsonObjectSet(report, "credential_status",
+                        jsonNewString(selectedToken == "" ? "not_configured" : "available"));
+                    jsonObjectSet(report, "config", config);
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    jsonRelease(model);
+                    return printModel(report);
+                }
+                if (action == "index") {
+                    source >> int <- index(handle, selectedRegistry, selectedToken, diagnostics);
+                    if (source == 0) {
+                        if (model != 0) jsonRelease(model);
+                        return failure("ghor.registry.index.v1", diagnostics);
+                    }
+                    report >> int <- baseReport("ghor.registry.index.v1", selectedRegistry);
+                    jsonObjectSet(report, "index", source);
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    if (model != 0) jsonRelease(model);
+                    return printModel(report);
+                }
+                if (action == "config") {
+                    config >> int <- registryConfig(
+                        handle, selectedRegistry, selectedToken, diagnostics);
+                    if (config == 0) {
+                        if (model != 0) jsonRelease(model);
+                        return failure("ghor.registry.config.v1", diagnostics);
+                    }
+                    report >> int <- baseReport("ghor.registry.config.v1", selectedRegistry);
+                    jsonObjectSet(report, "config", config);
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    if (model != 0) jsonRelease(model);
+                    return printModel(report);
+                }
+                addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                    "unsupported registry action '" + action + "'");
+                if (model != 0) jsonRelease(model);
+                return failure("ghor.registry.operation.v1", diagnostics);
+            }
+
+        public:
+            reference(handle >> addr) -> str {
+                model >> int <- manifestModel(handle);
+                selected >> str <- registryReference(handle, model);
+                if (model != 0) jsonRelease(model);
+                return selected;
+            }
+
+            authToken(handle >> addr, selectedRegistry >> str) -> str {
+                return token(handle, selectedRegistry);
+            }
+
+            loadIndex(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                diagnostics >> int
+            ) -> int {
+                return index(handle, selectedRegistry, selectedToken, diagnostics);
+            }
+
+            loadConfig(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                diagnostics >> int
+            ) -> int {
+                return registryConfig(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+            }
+
+            supports(handle >> addr) -> bool {
+                if (argsCount(handle) <= 1) return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "search" || selected == "info" || selected == "login" ||
+                    selected == "logout" || selected == "registry";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "search") return executeSearch(handle);
+                if (selected == "info") return executeInfo(handle);
+                if (selected == "login") return executeLogin(handle);
+                if (selected == "logout") return executeLogout(handle);
+                if (selected == "registry") return executeRegistry(handle);
+                return 64;
+            }
+
+            selfTest() -> bool {
+                return length(cast("registry")) == 8 &&
+                    starts("sparse+https://registry.invalid", "sparse+") &&
+                    separator(47) && !separator(45);
+            }
+}

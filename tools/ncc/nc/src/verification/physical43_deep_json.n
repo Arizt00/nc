@@ -1,0 +1,233 @@
+use <data:json>;
+use <io:render>;
+use <project:physical43_json>;
+
+physical43DeepJson {
+    stc:
+        error >> str <- "";
+        numbers >> p<byte> <- null;
+        nextNumber >> int <- 0;
+    fn:
+        private:
+            text(data >> p<byte>) -> str { return cast(data); }
+            copy(value >> str) -> str { return strSubstring(value,0,strByteLen(value)); }
+            fail(message >> str, at >> int) -> int {
+                strRelease(error); error <- message+" at byte "+renderInt(at); return 0;
+            }
+            prefix(data >> p<byte>, length >> int, at >> int, word >> str) -> bool {
+                count >> int <- strByteLen(word); if (at+count > length) return false;
+                index >> int <- 0; source >> p<byte> <- cast(word);
+                while (index < count) { if (rd(off(data,at+index)) != rd(off(source,index))) return false; index += 1; }
+                return true;
+            }
+            tagged(lexical >> str) -> int {
+                entry >> p<byte> <- numbers;
+                while (entry != null) {
+                    stored >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,16)));
+                    if (text(stored) == lexical) return jsonNewString(text(rd<p<byte>>(cast<p<byte>>(off(entry,8)))));
+                    entry <- rd<p<byte>>(cast<p<byte>>(entry));
+                }
+                label >> str <- "physical43-number-"+renderInt(nextNumber+1);
+                token >> p<byte> <- cast(alloc(strByteLen(label)+2)); entry <- cast(alloc(24));
+                value >> str <- copy(lexical);
+                if (token == null || entry == null || value == "") { free(token); free(entry); strRelease(label); strRelease(value); return 0; }
+                wr(token,1); cp(off(token,1),cast<byte>(label),strByteLen(label)); wr(off(token,strByteLen(label)+1),0); strRelease(label);
+                wr<p<byte>>(cast<p<byte>>(entry),numbers); wr<p<byte>>(cast<p<byte>>(off(entry,8)),token); wr<p<byte>>(cast<p<byte>>(off(entry,16)),cast<byte>(value));
+                numbers <- entry; nextNumber += 1; return jsonNewString(text(token));
+            }
+            number(lexical >> str) -> int {
+                if (lexical == "NaN" || lexical == "Infinity" || lexical == "-Infinity") return tagged(lexical);
+                normalized >> str <- lexical == "-0" ? "0" : lexical;
+                result >> int <- jsonParse(normalized);
+                if (jsonKind(result) == 3) {
+                    stored >> str <- jsonGetNumberText(result); exact >> bool <- stored == normalized; strRelease(stored);
+                    if (exact) return result;
+                }
+                if (result != 0) jsonRelease(result);
+                return tagged(normalized);
+            }
+            hex(code >> int) -> int { if (code >= 48 && code <= 57) return code-48; if (code >= 65 && code <= 70) return code-55; if (code >= 97 && code <= 102) return code-87; return -1; }
+            scalar(data >> p<byte>, at >> int) -> int {
+                value >> int <- 0; index >> int <- 0;
+                while (index < 4) { digit >> int <- hex(rd(off(data,at+index)) & 255); if (digit < 0) return -1; value <- value*16+digit; index += 1; }
+                return value;
+            }
+            utf8(data >> p<byte>, at >> int, value >> int) -> int {
+                if (value < 128) { wr(off(data,at),value); return at+1; }
+                first >> int <- 0; second >> int <- 0; third >> int <- 0; fourth >> int <- 0;
+                if (value < 2048) { first <- 192+(value >>> 6); second <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); return at+2; }
+                if (value < 65536) { first <- 224+(value >>> 12); second <- 128+((value >>> 6) & 63); third <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); return at+3; }
+                first <- 240+(value >>> 18); second <- 128+((value >>> 12) & 63); third <- 128+((value >>> 6) & 63); fourth <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); wr(off(data,at+3),fourth); return at+4;
+            }
+            string(context >> p<byte>) -> int {
+                at >> int <- rd<int>(cast<int>(context))+1; length >> int <- rd<int>(cast<int>(off(context,4)));
+                bytes >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(context,8))); output >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(context,16)));
+                written >> int <- 0; closed >> bool <- false; surrogates >> bool <- false;
+                while (at < length) {
+                    code >> int <- rd(off(bytes,at)) & 255; at += 1;
+                    if (code == 34) { closed <- true; break; }
+                    if (code < 32) return fail("unescaped control in string",at-1);
+                    if (code >= 128) {
+                        width >> int <- code >= 194 && code <= 223 ? 2 : (code >= 224 && code <= 239 ? 3 : (code >= 240 && code <= 244 ? 4 : 0));
+                        if (width == 0 || at+width-1 > length) return fail("invalid UTF-8 string",at-1);
+                        cursor >> int <- 1;
+                        while (cursor < width) {
+                            next >> int <- rd(off(bytes,at+cursor-1)) & 255;
+                            if (next < 128 || next > 191 || (cursor == 1 && ((code == 224 && next < 160) || (code == 237 && next > 159) || (code == 240 && next < 144) || (code == 244 && next > 143)))) return fail("invalid UTF-8 string",at-1);
+                            cursor += 1;
+                        }
+                        cp(off(output,written),off(bytes,at-1),width); written += width; at += width-1; continue;
+                    }
+                    if (code == 92) {
+                        if (at >= length) return fail("unfinished escape",at);
+                        code <- rd(off(bytes,at)) & 255; at += 1;
+                        if (code == 98) code <- 8;
+                        else if (code == 102) code <- 12;
+                        else if (code == 110) code <- 10;
+                        else if (code == 114) code <- 13;
+                        else if (code == 116) code <- 9;
+                        else if (code == 117) {
+                            if (at+4 > length) return fail("unfinished Unicode escape",at);
+                            value >> int <- scalar(bytes,at); at += 4;
+                            if (value < 0) return fail("invalid Unicode escape",at-4);
+                            if (value >= 55296 && value <= 56319) {
+                                low >> int <- -1;
+                                if (at+6 <= length && rd(off(bytes,at)) == 92 && rd(off(bytes,at+1)) == 117) low <- scalar(bytes,at+2);
+                                if (low >= 56320 && low <= 57343) { value <- 65536+(value-55296)*1024+low-56320; at += 6; }
+                                else surrogates <- true;
+                            } else if (value >= 56320 && value <= 57343) surrogates <- true;
+                            written <- utf8(output,written,value); continue;
+                        } else if (code != 34 && code != 92 && code != 47) return fail("invalid escape",at-1);
+                    }
+                    wr(off(output,written),code); written += 1;
+                }
+                if (!closed) return fail("unfinished string",at);
+                wr(off(output,written),0); wr<int>(cast<int>(context),at);
+                // Escape the entire reserved namespace, including tokens not minted yet.
+                reserved >> bool <- written > 0 && rd(output) == 1 && (prefix(output,written,1,"physical43-number-") || prefix(output,written,1,"physical43-raw-"));
+                return reserved ? physical43_json.physical43Json.newStringRegistered(output,written,surrogates) : physical43_json.physical43Json.newStringImpl(output,written,surrogates);
+            }
+            leaf(context >> p<byte>) -> int {
+                at >> int <- rd<int>(cast<int>(context)); length >> int <- rd<int>(cast<int>(off(context,4))); bytes >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(context,8)));
+                code >> int <- at < length ? rd(off(bytes,at)) & 255 : 0;
+                if (code == 34) return string(context);
+                result >> int <- 0; count >> int <- 0;
+                if (prefix(bytes,length,at,"true")) { result <- jsonNewBool(true); count <- 4; }
+                else if (prefix(bytes,length,at,"false")) { result <- jsonNewBool(false); count <- 5; }
+                else if (prefix(bytes,length,at,"null")) { result <- jsonNewNull(); count <- 4; }
+                else if (prefix(bytes,length,at,"NaN")) { result <- number("NaN"); count <- 3; }
+                else if (prefix(bytes,length,at,"Infinity")) { result <- number("Infinity"); count <- 8; }
+                else if (prefix(bytes,length,at,"-Infinity")) { result <- number("-Infinity"); count <- 9; }
+                if (count != 0) { wr<int>(cast<int>(context),at+count); return result; }
+                begin >> int <- at;
+                if (code == 45) { at += 1; code <- at < length ? rd(off(bytes,at)) & 255 : 0; }
+                if (code < 48 || code > 57) return fail("expected JSON value",at);
+                if (code == 48) at += 1;
+                else { while (at < length) { code <- rd(off(bytes,at)) & 255; if (code < 48 || code > 57) break; at += 1; } }
+                if (at < length && rd(off(bytes,at)) == 46) {
+                    at += 1; digits >> int <- at;
+                    while (at < length) { code <- rd(off(bytes,at)) & 255; if (code < 48 || code > 57) break; at += 1; }
+                    if (at == digits) return fail("expected fractional digits",at);
+                }
+                if (at < length && (rd(off(bytes,at)) == 101 || rd(off(bytes,at)) == 69)) {
+                    at += 1; if (at < length && (rd(off(bytes,at)) == 43 || rd(off(bytes,at)) == 45)) at += 1;
+                    digits >> int <- at;
+                    while (at < length) { code <- rd(off(bytes,at)) & 255; if (code < 48 || code > 57) break; at += 1; }
+                    if (at == digits) return fail("expected exponent digits",at);
+                }
+                lexicalBytes >> p<byte> <- cast(alloc(at-begin+1));
+                if (lexicalBytes == null) return fail("JSON allocation failed",at);
+                cp(lexicalBytes,off(bytes,begin),at-begin); wr(off(lexicalBytes,at-begin),0);
+                result <- number(text(lexicalBytes)); free(lexicalBytes); wr<int>(cast<int>(context),at); return result;
+            }
+            attach(frame >> p<byte>, value >> int) -> bool {
+                model >> int <- rd<int>(cast<int>(off(frame,8))); state >> int <- rd<int>(cast<int>(off(frame,12))); valid >> bool <- false;
+                if (state == 0 || state == 2) { valid <- jsonArrayPush(model,value); wr<int>(cast<int>(off(frame,12)),1); }
+                else if (state == 12) {
+                    key >> int <- rd<int>(cast<int>(off(frame,16))); valid <- jsonObjectSet(model,jsonStringView(key,""),value); jsonRelease(key);
+                    wr<int>(cast<int>(off(frame,16)),0); wr<int>(cast<int>(off(frame,12)),13);
+                }
+                jsonRelease(value); return valid;
+            }
+        public:
+            diagnostic() -> str { return error; }
+            hasSurrogates(value >> str) -> bool {
+                data >> p<byte> <- physical43_json.physical43Json.rawData(value); length >> int <- physical43_json.physical43Json.rawLength(value); at >> int <- 0;
+                // The raw registry flag is encoding permission, not evidence of a surrogate.
+                while (at+2 < length) {
+                    first >> int <- rd(off(data,at)) & 255; second >> int <- rd(off(data,at+1)) & 255; third >> int <- rd(off(data,at+2)) & 255;
+                    if (first == 237 && second >= 160 && second <= 191 && third >= 128 && third <= 191) return true;
+                    at += 1;
+                }
+                return false;
+            }
+            isNumber(model >> int) -> bool {
+                if (jsonKind(model) == 3) return true;
+                if (jsonKind(model) != 4) return false;
+                value >> str <- jsonStringView(model,""); entry >> p<byte> <- numbers;
+                while (entry != null) { if (text(rd<p<byte>>(cast<p<byte>>(off(entry,8)))) == value) return true; entry <- rd<p<byte>>(cast<p<byte>>(entry)); }
+                return false;
+            }
+            numberText(model >> int) -> str {
+                if (jsonKind(model) == 3) return jsonGetNumberText(model);
+                if (jsonKind(model) != 4) return "";
+                value >> str <- jsonStringView(model,""); entry >> p<byte> <- numbers;
+                while (entry != null) { if (text(rd<p<byte>>(cast<p<byte>>(off(entry,8)))) == value) return copy(text(rd<p<byte>>(cast<p<byte>>(off(entry,16))))); entry <- rd<p<byte>>(cast<p<byte>>(entry)); }
+                return "";
+            }
+            parse(value >> str) -> int { return parseBytes(cast<byte>(value),strByteLen(value)); }
+            parseBytes(bytes >> p<byte>, length >> int) -> int {
+                strRelease(error); error <- "";
+                if (length < 0 || length > 134217728 || bytes == null) return fail("invalid JSON input span",0);
+                context >> p<byte> <- cast(alloc(24)); output >> p<byte> <- cast(alloc(length+1));
+                if (context == null || output == null) { free(context); free(output); return fail("JSON allocation failed",0); }
+                wr<int>(cast<int>(context),0); wr<int>(cast<int>(off(context,4)),length); wr<p<byte>>(cast<p<byte>>(off(context,8)),bytes); wr<p<byte>>(cast<p<byte>>(off(context,16)),output);
+                frame >> p<byte> <- null; root >> int <- 0; valid >> bool <- true; at >> int <- 0;
+                while (valid) {
+                    at <- rd<int>(cast<int>(context));
+                    while (at < length) { whitespace >> int <- rd(off(bytes,at)) & 255; if (whitespace != 32 && whitespace != 9 && whitespace != 10 && whitespace != 13) break; at += 1; }
+                    wr<int>(cast<int>(context),at);
+                    if (frame == null && root != 0) { if (at != length) { fail("extra data",at); valid <- false; } break; }
+                    if (at == length) { fail("unexpected end of JSON",at); valid <- false; break; }
+                    code >> int <- rd(off(bytes,at)) & 255; state >> int <- frame == null ? -1 : rd<int>(cast<int>(off(frame,12)));
+                    close >> bool <- (code == 93 && (state == 0 || state == 1)) || (code == 125 && (state == 10 || state == 13));
+                    if (close) {
+                        value >> int <- rd<int>(cast<int>(off(frame,8))); parent >> p<byte> <- rd<p<byte>>(cast<p<byte>>(frame)); free(frame); frame <- parent;
+                        wr<int>(cast<int>(context),at+1);
+                        if (frame == null) root <- value;
+                        else if (!attach(frame,value)) { fail("cannot attach JSON container",at); valid <- false; }
+                        continue;
+                    }
+                    if (state == 1 || state == 13) {
+                        if (code != 44) { fail("expected comma or container end",at); valid <- false; break; }
+                        wr<int>(cast<int>(off(frame,12)),state == 1 ? 2 : 14); wr<int>(cast<int>(context),at+1); continue;
+                    }
+                    if (state == 10 || state == 14) {
+                        if (code != 34) { fail("expected object key",at); valid <- false; break; }
+                        key >> int <- string(context); if (key == 0) { valid <- false; break; }
+                        wr<int>(cast<int>(off(frame,16)),key); wr<int>(cast<int>(off(frame,12)),11); continue;
+                    }
+                    if (state == 11) {
+                        if (code != 58) { fail("expected colon",at); valid <- false; break; }
+                        wr<int>(cast<int>(off(frame,12)),12); wr<int>(cast<int>(context),at+1); continue;
+                    }
+                    if (code == 91 || code == 123) {
+                        next >> p<byte> <- cast(alloc(24)); value >> int <- code == 91 ? jsonNewArray() : jsonNewObject();
+                        if (next == null || value == 0) { free(next); if (value != 0) jsonRelease(value); fail("JSON allocation failed",at); valid <- false; break; }
+                        wr<p<byte>>(cast<p<byte>>(next),frame); wr<int>(cast<int>(off(next,8)),value); wr<int>(cast<int>(off(next,12)),code == 91 ? 0 : 10); wr<int>(cast<int>(off(next,16)),0);
+                        frame <- next; wr<int>(cast<int>(context),at+1); continue;
+                    }
+                    value >> int <- leaf(context);
+                    if (value == 0) { if (error == "") fail("cannot construct JSON scalar",at); valid <- false; break; }
+                    if (frame == null) root <- value;
+                    else if (!attach(frame,value)) { fail("cannot attach JSON scalar",at); valid <- false; }
+                }
+                while (frame != null) {
+                    parent >> p<byte> <- rd<p<byte>>(cast<p<byte>>(frame)); jsonRelease(rd<int>(cast<int>(off(frame,8)))); key >> int <- rd<int>(cast<int>(off(frame,16))); if (key != 0) jsonRelease(key); free(frame); frame <- parent;
+                }
+                free(output); free(context);
+                if (!valid) { if (root != 0) jsonRelease(root); return 0; }
+                return root;
+            }
+    fa: return true;
+}

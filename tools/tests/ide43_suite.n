@@ -1,0 +1,215 @@
+use <data:json>;
+use <fs:dir>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_files, ide43_golden, sha256>;
+
+ide43Suite {
+    local:
+        repo >> str;
+        root >> str;
+        work >> str;
+        candidate >> str;
+        fixture >> str;
+        rows >> int;
+        hostGolden >> int;
+    fn:
+        private:
+            pythonFree(path >> str) -> bool {
+                if (release_io.releaseIo.fileType(path) != 2) return !strEndsWith(path,".py");
+                names >> int <- release_io.releaseIo.names(path); index >> int <- 0; good >> bool <- true;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayGet(names,index);
+                    good <- pythonFree(path+"/"+jsonStringView(name,"")) && good; jsonRelease(name); index += 1;
+                }
+                jsonRelease(names); return good;
+            }
+            copyFile(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source); guard bytes >= 0 && bytes <= 134217728 else return false;
+                data >> p<byte> <- cast(alloc(bytes+1)); guard data != null else return false;
+                result >> bool <- fsReadInto(source,data,bytes) == bytes && release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(destination));
+                if (result) result <- fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return result;
+            }
+            clearOwned(path >> str) -> void {
+                if (release_io.releaseIo.fileType(path) == 2) {
+                    names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                    while (index < jsonArrayLen(names)) {
+                        item >> int <- jsonArrayGet(names,index); clearOwned(path+"/"+jsonStringView(item,"")); jsonRelease(item); index += 1;
+                    }
+                    jsonRelease(names); removeDir(path);
+                } else delete_file(path);
+            }
+            transferFiles(from >> str, to >> str, inventory >> int) -> bool {
+                ready >> bool <- true; index >> int <- 0;
+                while (index < jsonObjectLen(inventory)) {
+                    key >> str <- jsonObjectKeyAt(inventory,index); ready <- copyFile(from+"/"+key,to+"/"+key) && ready;
+                    free(cast<byte>(key)); index += 1;
+                }
+                return ready;
+            }
+            prepare(index >> int) -> bool {
+                root <- work+"/root-"+renderInt(index);
+                manifest >> int <- jsonParseFile(repo+"/bootstrap/ide43-tests-build.json");
+                files >> int <- jsonObjectGet(manifest,"fixture_files"); at >> int <- 0; ready >> bool <- true;
+                while (at < jsonArrayLen(files)) {
+                    entry >> int <- jsonArrayGet(files,at); rel >> str <- jsonStringView(entry,"");
+                    original >> str <- repo+"/"+rel;
+                    if (release_io.releaseIo.fileType(original) == 0 && strStartsWith(rel,"examples/"))
+                        original <- repo+"/_archive/old_examples/"+strSubstring(rel,9,strByteLen(rel)-9);
+                    if (release_io.releaseIo.fileType(original) == 1) ready <- copyFile(original,root+"/"+rel) && ready;
+                    jsonRelease(entry); at += 1;
+                }
+                // Both registries can legally be empty; each declared path still must resolve.
+                cap >> int <- jsonParseFile(repo+"/tools/jetbrains/nc-language-plugin/capabilities.contract.json");
+                paths >> int <- jsonObjectGet(cap,"base_sources"); at <- 0;
+                while (at < jsonArrayLen(paths)) {
+                    entry >> int <- jsonArrayGet(paths,at); rel >> str <- jsonStringView(entry,"");
+                    if (release_io.releaseIo.fileType(repo+"/"+rel) == 1) ready <- copyFile(repo+"/"+rel,root+"/"+rel) && ready;
+                    jsonRelease(entry); at += 1;
+                }
+                registry >> int <- jsonParseFile(repo+"/tools/vscode/nc-language/data/nc_base_registry.json");
+                docs >> int <- jsonObjectGet(registry,"source_docs"); at <- 0;
+                while (at < jsonObjectLen(docs)) {
+                    key >> str <- jsonObjectKeyAt(docs,at); entry >> int <- jsonObjectGet(docs,key); free(cast<byte>(key));
+                    rel >> str <- jsonStringView(entry,"");
+                    if (release_io.releaseIo.fileType(repo+"/"+rel) == 1) ready <- copyFile(repo+"/"+rel,root+"/"+rel) && ready;
+                    jsonRelease(entry); at += 1;
+                }
+                suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                ready <- copyFile(fixture,root+"/target/debug/ncc"+suffix) && ready;
+                ready <- copyFile(fixture,root+"/target/debug/ncup"+suffix) && ready;
+                ready <- copyFile(repo+"/tools/vscode/nc-language/test-fixtures/machine_mode.nm",root+"/examples/machine/legacy_at/machine_at_strict_ok.nm") && ready;
+                ready <- copyFile(repo+"/tools/vscode/nc-language/test-fixtures/primitive_mode.ncp",root+"/examples/primitive_at/primitive_at_minimal_ok.ncp") && ready;
+                jsonRelease(manifest); jsonRelease(files); jsonRelease(cap); jsonRelease(paths); jsonRelease(registry); jsonRelease(docs);
+                baselineManifest >> int <- jsonObjectGet(hostGolden,"baseline_ghidra_manifest");
+                cases >> int <- jsonObjectGet(hostGolden,"cases"); entry >> int <- jsonArrayGet(cases,index);
+                outputs >> int <- jsonObjectGet(entry,"files"); ledger >> int <- jsonObjectGet(outputs,"var/releases/v2_0_0/phase10_ide_dist/ghidra/ghidra_extension_manifest.v1.json");
+                savedInput >> int <- jsonObjectGet(ledger,"json");
+                if (jsonObjectLen(savedInput) > 0) { jsonRelease(baselineManifest); baselineManifest <- jsonClone(savedInput); }
+                jsonRelease(cases); jsonRelease(entry); jsonRelease(outputs); jsonRelease(ledger); jsonRelease(savedInput);
+                ready <- cert_json.certJson.save(root+"/var/releases/v2_0_0/phase10_ide_dist/ghidra/ghidra_extension_manifest.v1.json",baselineManifest) && ready;
+                jsonRelease(baselineManifest); return pythonFree(root) && ready;
+            }
+            mutate(name >> str, family >> str) -> void {
+                if (name == "old-vscode") {
+                    path >> str <- root+"/tools/vscode/nc-language/package.json"; model >> int <- jsonParseFile(path);
+                    cert_json.certJson.put(model,"version",jsonNewString("1.0.0-20v")); cert_json.certJson.save(path,model); jsonRelease(model);
+                }
+                if (name == "old-jetbrains") {
+                    release_io.releaseIo.write(root+"/tools/jetbrains/nc-language-plugin/build.gradle.kts","version = \"1.0.0.20v\"\n");
+                }
+                if (name == "missing-provider") release_io.releaseIo.write(root+"/tools/vscode/nc-language/src/extension.js","");
+                if (name == "legacy-alias") {
+                    path >> str <- root+"/tools/vscode/nc-language/package.json"; model >> int <- jsonParseFile(path);
+                    contrib >> int <- jsonObjectGet(model,"contributes"); languages >> int <- jsonObjectGet(contrib,"languages");
+                    row >> int <- jsonArrayGet(languages,0); exts >> int <- jsonObjectGet(row,"extensions");
+                    cert_json.certJson.push(exts,jsonNewString(".nc")); cert_json.certJson.put(row,"extensions",exts);
+                    jsonArrayRemove(languages,0); jsonArrayInsert(languages,0,row);
+                    cert_json.certJson.put(contrib,"languages",languages); cert_json.certJson.put(model,"contributes",contrib);
+                    cert_json.certJson.save(path,model); jsonRelease(model);
+                }
+                if (name == "malformed-contract") {
+                    release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_phase10_ghidra_integration_contract.json","{bad");
+                }
+                if (name == "missing-artifact") delete_file(root+"/tools/vscode/nc-language/src/nc_semantic.js");
+                if (name == "missing-native-role") {
+                    module >> str <- family == "jetbrains" ? "ide43_jetbrains_router.n" : (family == "ghidra" ? "ide43_ghidra.n" : "ide43_association.n");
+                    delete_file(root+"/tools/ncc/nc/src/verification/"+module);
+                }
+                if (name == "missing-example") delete_file(root+"/examples/machine/legacy_at/machine_at_strict_ok.nm");
+            }
+
+            exercise(expected >> int, index >> int) -> bool {
+                selected >> str <- release_io.releaseIo.field(expected,"family");
+                fault >> str <- release_io.releaseIo.field(expected,"fault");
+                if (!prepare(index)) { println("FAIL prepare "+selected+" "+fault); return false; }
+                mutate(fault,selected); envSet("IDE43_FAULT",fault);
+                temporary >> str <- work+"/temp-"+renderInt(index);
+                words >> int <- ide43_core.ide43Core.list("ide43-"+selected);
+                jsonArrayInsert(words,0,jsonNewString(candidate));
+                cert_json.certJson.push(words,jsonNewString("--root")); cert_json.certJson.push(words,jsonNewString(root));
+                cert_json.certJson.push(words,jsonNewString("--work")); cert_json.certJson.push(words,jsonNewString(temporary));
+                canonical >> str <- root+"/docs/status/";
+                if (selected == "jetbrains") canonical += "F10_P10_jetbrains_integration_report.json";
+                if (selected == "vscode") canonical += "F10_P11_vscode_integration_report.json";
+                if (selected == "ghidra") canonical += "F10_P20_ghidra_integration_report.json";
+                if (selected == "association") canonical += "F10_P12_file_association_global_exec_report.json";
+                if (selected == "fullstack") canonical += "F10_P20_ide_fullstack_report.json";
+                cert_json.certJson.push(words,jsonNewString("--report")); cert_json.certJson.push(words,jsonNewString(canonical));
+                keys >> int <- ide43_core.ide43Core.list("--cargo|--ncup|--router|--jetbrains-router|--node|--go|--bash|--global-ncc|--bundle|--distribution"); at >> int <- 0;
+                while (at < jsonArrayLen(keys)) {
+                    cert_json.certJson.push(words,jsonArrayGet(keys,at)); cert_json.certJson.push(words,jsonNewString(fixture)); at += 1;
+                }
+                jsonRelease(keys);
+                native >> int <- tool_cli.toolCli.execute(words,repo,120000); jsonRelease(words);
+                actual >> int <- ide43_files.ide43Files.snapshot(root);
+                files >> int <- jsonObjectGet(expected,"files"); details >> int <- jsonNewArray();
+                expectedCode >> int <- release_io.releaseIo.number(expected,"exit",-999);
+                nativeCode >> int <- release_io.releaseIo.number(native,"code",-998);
+                exists >> bool <- release_io.releaseIo.fileType(canonical) == 1;
+                pyFree >> bool <- pythonFree(root);
+                passed >> bool <- tool_cli.toolCli.clean(native) && nativeCode == expectedCode &&
+                    exists == tool_cli.toolCli.hasFlag(expected,"report_exists") && pyFree && jsonObjectLen(actual) == jsonObjectLen(files);
+                ide43_golden.ide43Golden.scope(root,temporary,work,repo,fixture); at <- 0;
+                while (at < jsonObjectLen(files)) {
+                    key >> str <- jsonObjectKeyAt(files,at); want >> int <- jsonObjectGet(files,key); got >> int <- jsonObjectGet(actual,key);
+                    present >> bool <- jsonObjectHas(actual,key); equal >> bool <- false; diff >> int <- jsonNewArray();
+                    if (jsonObjectHas(want,"json")) {
+                        a >> int <- jsonObjectGet(want,"json"); raw >> int <- jsonObjectGet(got,"json"); b >> int <- ide43_golden.ide43Golden.model(raw);
+                        equal <- present && jsonEquals(a,b);
+                        jsonRelease(diff); diff <- ide43_files.ide43Files.diff(a,b); jsonRelease(a); jsonRelease(raw); jsonRelease(b);
+                    } else {
+                        a >> int <- jsonObjectGet(want,"sha256"); b >> int <- jsonObjectGet(got,"sha256");
+                        c >> int <- jsonObjectGet(want,"bytes"); d >> int <- jsonObjectGet(got,"bytes");
+                        equal <- present && jsonEquals(a,b) && jsonEquals(c,d); jsonRelease(a); jsonRelease(b); jsonRelease(c); jsonRelease(d);
+                    }
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"path",jsonNewString(key));
+                    cert_json.certJson.put(row,"passed",jsonNewBool(equal)); cert_json.certJson.put(row,"differences",diff);
+                    cert_json.certJson.put(row,"frozen",jsonClone(want)); cert_json.certJson.put(row,"native",jsonClone(got));
+                    cert_json.certJson.push(details,row); passed <- equal && passed;
+                    free(cast<byte>(key)); jsonRelease(want); jsonRelease(got); at += 1;
+                }
+                ide43_golden.ide43Golden.close();
+                detail >> int <- jsonNewObject(); cert_json.certJson.put(detail,"files",details);
+                cert_json.certJson.put(detail,"native_inventory",jsonClone(actual)); cert_json.certJson.put(detail,"expected_inventory",jsonClone(files));
+                cert_json.certJson.save(work+"/files-"+renderInt(index)+".json",detail);
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"family",jsonNewString(selected));
+                cert_json.certJson.put(row,"fault",jsonNewString(fault)); cert_json.certJson.put(row,"passed",jsonNewBool(passed));
+                cert_json.certJson.put(row,"expected_code",jsonNewInt(expectedCode)); cert_json.certJson.put(row,"native_code",jsonNewInt(nativeCode));
+                cert_json.certJson.put(row,"report_exists",jsonNewBool(exists)); cert_json.certJson.put(row,"python_files_absent",jsonNewBool(pyFree));
+                cert_json.certJson.put(row,"stdout",jsonObjectGet(native,"stdout")); cert_json.certJson.put(row,"stderr",jsonObjectGet(native,"stderr"));
+                cert_json.certJson.put(row,"files_diff",jsonNewString("files-"+renderInt(index)+".json")); cert_json.certJson.push(rows,row);
+                println((passed ? "PASS " : "FAIL ")+selected+" "+fault);
+                jsonRelease(detail); jsonRelease(files); jsonRelease(actual); jsonRelease(native); envRemove("IDE43_FAULT"); return passed;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(args,"|--repo|--candidate|--fixture|--work|--out|","");
+                if (options == 0) return 2;
+                repo <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--repo","."));
+                work <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--work",""));
+                candidate <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                if (release_io.releaseIo.fileType(work) != 0 || !release_io.releaseIo.makeDirectories(work)) return 2;
+                golden >> int <- jsonParseFile(repo+"/bootstrap/ide43-golden.json");
+                hosts >> int <- jsonObjectGet(golden,"hosts"); hostGolden <- jsonObjectGet(hosts,envHas("WINDIR") ? "windows" : "linux");
+                entries >> int <- jsonObjectGet(hostGolden,"cases");
+                rows <- jsonNewArray(); passed >> bool <- jsonArrayLen(entries) == 44; index >> int <- 0;
+                while (index < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries,index); passed <- exercise(entry,index) && passed; jsonRelease(entry); index += 1;
+                }
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.ide43.native-golden-suite.v1"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed)); cert_json.certJson.put(report,"cases",jsonClone(rows));
+                cert_json.certJson.put(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                cert_json.certJson.put(report,"fixture_sha256",jsonNewString(sha256.nccSha256.file(fixture)));
+                cert_json.certJson.put(report,"golden_sha256",jsonNewString(sha256.nccSha256.file(repo+"/bootstrap/ide43-golden.json")));
+                cert_json.certJson.put(report,"scope",jsonNewString("41 sealed legacy outcomes plus 3 migrated role absence negatives; strict native dependencies and Python-free migrated fixture copies; not live editor certification"));
+                if (!cert_json.certJson.save(tool_cli.toolCli.value(options,"--out",work+"/suite.json"),report)) passed <- false;
+                jsonRelease(report); jsonRelease(rows); jsonRelease(entries); jsonRelease(hostGolden); jsonRelease(hosts); jsonRelease(golden); jsonRelease(options); argsRelease(args);
+                return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

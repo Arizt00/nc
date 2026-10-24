@@ -1,0 +1,34 @@
+use <data:json>;
+use <project:ncup_session, release_io>;
+
+ncupResolution {
+    fn:
+        private:
+            selection(row >> int, source >> str, id >> str, detail >> bool) -> bool {
+                model >> int <- ncup_session.ncupSession.document(row);
+                good >> bool <- ncup_session.ncupSession.ok(row) && jsonKind(model) == 6 && release_io.releaseIo.field(model,"source") == source && release_io.releaseIo.field(model,"toolchain_id") == id;
+                if (detail) good <- good && release_io.releaseIo.field(model,"source_detail") == "NCUP_TOOLCHAIN";
+                jsonRelease(model); return good;
+            }
+        public:
+            inspect() -> void {
+                ncup_session.ncupSession.run("[\"ncup\",\"init\",\"--home\",\"$home\",\"--profile\",\"minimal\",\"--force\"]");
+                ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"install\",\"beta-x86_64-unknown-linux-gnu\",\"--home\",\"$home\",\"--profile\",\"minimal\"]");
+                ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"install\",\"stable-wasm32-wasi\",\"--home\",\"$home\",\"--profile\",\"minimal\"]");
+                query >> str <- "[\"ncup\",\"toolchain\",\"which\",\"--home\",\"$home\",\"--cwd\",\"$project\",\"--json\"]";
+                global >> int <- ncup_session.ncupSession.run(query);
+                ncup_session.ncupSession.record("global_default_resolution",selection(global,"global_default","stable-x86_64-unknown-linux-gnu",false));
+                environment >> int <- ncup_session.ncupSession.runWith(query,"NCUP_TOOLCHAIN","beta-x86_64-unknown-linux-gnu");
+                ncup_session.ncupSession.record("env_resolution",selection(environment,"env_var","beta-x86_64-unknown-linux-gnu",true));
+                written >> bool <- release_io.releaseIo.write(ncup_session.ncupSession.projectPath()+"/nc-toolchain.toml","[toolchain]\nid = \"stable-wasm32-wasi\"\n");
+                localSelection >> int <- ncup_session.ncupSession.runWith(query,"NCUP_TOOLCHAIN","beta-x86_64-unknown-linux-gnu");
+                ncup_session.ncupSession.record("local_override_resolution",written && selection(localSelection,"local_override","stable-wasm32-wasi",false));
+                missing >> int <- ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"which\",\"--home\",\"$home\",\"--cwd\",\"$project\",\"--require-component\",\"nclsp\"]");
+                ncup_session.ncupSession.record("missing_component_actionable",ncup_session.ncupSession.failure(missing,"missing required component 'nclsp'","ncup component add nclsp --toolchain"));
+                install >> int <- ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"install\",\"stable-x86_64-unknown-none-elf\",\"--home\",\"$home\"]");
+                ncup_session.ncupSession.record("tier_channel_install_actionable",ncup_session.ncupSession.failure(install,"does not support channel 'stable'","workaround"));
+                add >> int <- ncup_session.ncupSession.run("[\"ncup\",\"target\",\"add\",\"x86_64-unknown-none-elf\",\"--home\",\"$home\",\"--toolchain\",\"stable-x86_64-unknown-linux-gnu\"]");
+                ncup_session.ncupSession.record("tier_channel_target_add_actionable",ncup_session.ncupSession.failure(add,"does not support channel 'stable'","workaround"));
+            }
+    fa: return true;
+}

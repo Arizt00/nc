@@ -1,0 +1,133 @@
+use <process:args, env>;
+use <io:output, errorOutput>;
+use <data:json>;
+use <project:closure43_core, release_io, tool_cli, editor_json>;
+
+closure43Fixture {
+    fn:
+        private:
+            relay(args >> addr) -> int {
+                lateFault >> str <- closure43_core.closure43Core.environment("CLOSURE43_FIXTURE_FAULT","");
+                if (argsAt(args,2) == "doctor" && lateFault == "late-doctor") return 7;
+                if (argsAt(args,2) == "doctor" && lateFault == "late-json") { println("{not-json"); return 0; }
+                binary >> str <- closure43_core.closure43Core.environment("CLOSURE43_FIXTURE_NCC","");
+                if (binary == "") return 64;
+                words >> int <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(binary)); index >> int <- 1;
+                while (index < argsCount(args)) { closure43_core.closure43Core.push(words,jsonNewString(argsAt(args,index))); index += 1; }
+                record >> int <- tool_cli.toolCli.execute(words,"",3600000); code >> int <- release_io.releaseIo.number(record,"code",-1);
+                fault >> str <- closure43_core.closure43Core.environment("CLOSURE43_FIXTURE_FAULT","");
+                output >> str <- closure43_core.closure43Core.field(record,"stdout");
+                if (code == 0 && (fault != "" || envHas("CLOSURE43_FIXTURE_SMALL"))) {
+                    value >> int <- editor_json.editorJson.parse(output); operation >> str <- argsAt(args,2);
+                    if (jsonKind(value) != 6) return 65;
+                    if (envHas("CLOSURE43_FIXTURE_SMALL") && operation == "families") {
+                        rows >> int <- jsonObjectGet(value,"rows"); selected >> int <- jsonNewArray(); index <- 0;
+                        while (index < jsonArrayLen(rows)) { row >> int <- jsonArrayGet(rows,index); key >> str <- closure43_core.closure43Core.field(row,"family_key"); if (index == 0 || key == "queue") jsonArrayPush(selected,row); jsonRelease(row); index += 1; }
+                        closure43_core.closure43Core.put(value,"rows",selected); jsonRelease(rows);
+                    }
+                    if ((fault == "capabilities" && operation == "capabilities") || (fault == "policies" && operation == "policies")) closure43_core.closure43Core.put(value,"catalog",jsonNewArray());
+                    if (operation == "exports" && fault == "identity") closure43_core.closure43Core.set(value,"family_key","invalid-identity");
+                    if (operation == "exports" && fault == "mixed-queue" && closure43_core.closure43Core.field(value,"family_key") == "queue") {
+                        exports >> int <- jsonObjectGet(value,"exports"); extra >> int <- jsonParse("{\"name\":\"listInjected\",\"arg_types\":[],\"return\":\"bool\"}"); closure43_core.closure43Core.push(exports,extra); closure43_core.closure43Core.put(value,"exports",exports);
+                    }
+                    output <- closure43_core.closure43Core.pretty(value)+"\n"; jsonRelease(value);
+                }
+                print(output); eprint(closure43_core.closure43Core.field(record,"stderr"));
+                jsonRelease(record); jsonRelease(words); return code;
+            }
+            compiler(args >> addr, data >> int) -> int {
+                commands >> int <- jsonObjectGet(data,"ncc_commands"); words >> int <- jsonNewArray(); index >> int <- 1; markdown >> bool <- false; source >> str <- "";
+                while (index < argsCount(args)) {
+                    word >> str <- closure43_core.closure43Core.replace(argsAt(args,index),"\\","/"); word <- closure43_core.closure43Core.replace(word,"_archive/old_examples/","examples/");
+                    if (word == "--md" || word == "--md-out") markdown <- true;
+                    if (strStartsWith(word,"examples/")) source <- argsAt(args,index);
+                    closure43_core.closure43Core.push(words,jsonNewString(word)); index += 1;
+                }
+                valid >> bool <- false; text >> str <- closure43_core.closure43Core.dumps(words); index <- 0;
+                while (index < jsonArrayLen(commands)) { row >> int <- jsonArrayGet(commands,index); if (closure43_core.closure43Core.dumps(row) == text) valid <- true; jsonRelease(row); index += 1; }
+                if (!valid) { println("fixture: unrecognized ncc command "+text); return 64; }
+                if (envHas("CLOSURE43_FIXTURE_FAIL")) return 7;
+                if (envHas("CLOSURE43_FIXTURE_BAD_JSON")) { println("{not-json"); return 0; }
+                if (markdown) println("# closure43 compiler comparison report\n\n"+text);
+                else if (argsAt(args,1) == "emit-ir") println("closure43 comparison nIR\n"+text);
+                else {
+                    value >> int <- jsonParse("{\"status\":\"ok\",\"count\":13,\"comparison_fixture\":true}"); jsonObjectSet(value,"arguments",words);
+                    closure43_core.closure43Core.set(value,"unicode","caf\u{e9} \u{1f642}"); println(closure43_core.closure43Core.pretty(value)); jsonRelease(value);
+                }
+                jsonRelease(words); jsonRelease(commands); return 0;
+            }
+            runtime(args >> addr, data >> int) -> int {
+                if (argsCount(args) < 4) return 64;
+                operation >> str <- argsAt(args,2);
+                if (operation == "families" || operation == "capabilities" || operation == "policies" || operation == "errors" || operation == "doctor" || operation == "exports") return relay(args);
+                if (operation != "imports" && operation != "check" && operation != "report") return 64;
+                source >> str <- closure43_core.closure43Core.replace(argsAt(args,3),"\\","/");
+                prefix >> str <- "examples/runtime/families/"; if (!strStartsWith(source,prefix) || !strEndsWith(source,"_basic.n")) return 64;
+                key >> str <- strSubstring(source,strByteLen(prefix),strByteLen(source)-strByteLen(prefix)-8);
+                sources >> int <- jsonObjectGet(data,"runtime_sources"); if (!jsonObjectHas(sources,key)) return 64;
+                contents >> str <- release_io.releaseIo.text(source); contents <- closure43_core.closure43Core.replace(contents,"\r\n","\n");
+                if (contents != closure43_core.closure43Core.field(sources,key)) { println("fixture: changed minimal runtime source"); return 65; }
+                if (operation == "report" && key == "list" && closure43_core.closure43Core.environment("CLOSURE43_FIXTURE_FAULT","") == "list-report") return 7;
+                mode >> str <- argsAt(args,argsCount(args)-1);
+                if (operation == "check") { if (argsCount(args) != 6 || argsAt(args,4) != "--strict" || mode != "--json") return 64; }
+                else if (argsCount(args) != 5 || (mode != "--json" && (operation != "report" || mode != "--md"))) return 64;
+                if (envHas("CLOSURE43_FIXTURE_FAIL")) return 7;
+                if (envHas("CLOSURE43_FIXTURE_BAD_JSON")) { println("{not-json"); return 0; }
+                if (mode == "--md") println("# closure43 runtime comparison report\n\n"+source+"\n"+key);
+                else {
+                    value >> int <- jsonParse("{\"status\":\"ok\",\"comparison_fixture\":true}"); closure43_core.closure43Core.set(value,"source",source); closure43_core.closure43Core.set(value,"family_key",key); closure43_core.closure43Core.set(value,"operation",operation);
+                    closure43_core.closure43Core.set(value,"unicode","caf\u{e9} \u{1f642}"); println(closure43_core.closure43Core.pretty(value)); jsonRelease(value);
+                }
+                jsonRelease(sources); return 0;
+            }
+        public:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            closure43_core.closure43Core.init();
+            if (argsCount(arguments) > 1 && (argsAt(arguments,1) == "runtime" || argsAt(arguments,1) == "compiler" || (argsAt(arguments,1) == "check" && argsAt(arguments,2) != "--workspace") || argsAt(arguments,1) == "emit-ir")) {
+                data >> int <- closure43_core.closure43Core.load("fixture"); code >> int <- argsAt(arguments,1) == "runtime" ? runtime(arguments,data) : compiler(arguments,data); jsonRelease(data); argsRelease(arguments); return code;
+            }
+            if (argsCount(arguments) == 3 && argsAt(arguments,1) == "run" && strStartsWith(closure43_core.closure43Core.replace(argsAt(arguments,2),"\\","/"),"examples/")) {
+                source >> str <- closure43_core.closure43Core.replace(argsAt(arguments,2),"\\","/");
+                if (!strContains("|examples/helloWorld.n|examples/calculadoraElite.n|examples/randomArraySearchHidden.n|examples/sumaParesImpares.n|examples/maxMinMediaArray.n|examples/maxMinMediaResultados.n|examples/arrayCapicua.n|","|"+source+"|") || release_io.releaseIo.fileType(source) != 1) return 64;
+                if (closure43_core.closure43Core.environment("CLOSURE43_FIXTURE_FAULT","") == "runnable") return 7;
+                println("closure43 runnable comparison fixture: "+source); argsRelease(arguments); return 0;
+            }
+            if (argsCount(arguments) > 1 && argsAt(arguments,1) != "run") {
+                data >> int <- closure43_core.closure43Core.load("fixture"); commands >> int <- jsonObjectGet(data,"cargo_commands");
+                words >> int <- jsonParse("[\"cargo\"]"); index >> int <- 1;
+                while (index < argsCount(arguments)) { closure43_core.closure43Core.push(words,jsonNewString(argsAt(arguments,index))); index += 1; }
+                valid >> bool <- false; index <- 0; text >> str <- closure43_core.closure43Core.dumps(words);
+                while (index < jsonArrayLen(commands)) { item >> int <- jsonArrayGet(commands,index); if (closure43_core.closure43Core.dumps(item) == text) valid <- true; jsonRelease(item); index += 1; }
+                if (!valid) { println("fixture: unrecognized cargo command "+text); return 64; }
+                if (envHas("CLOSURE43_FIXTURE_FAIL")) { println("fixture command failed"); return 7; }
+                if (argsAt(arguments,1) == "test") println(envHas("CLOSURE43_FIXTURE_ZERO_TESTS") ? "test result: ok. 0 passed; 0 failed" : "test result: ok. 2 passed; 0 failed\n\ntest result: ok. 1 passed; 0 failed");
+                else println("closure43 cargo comparison fixture: "+text);
+                jsonRelease(data); jsonRelease(commands); jsonRelease(words); argsRelease(arguments); return 0;
+            }
+            if (argsCount(arguments) < 8) { println("fixture: invalid argc"); return 64; }
+            if (argsAt(arguments,1) != "run" || argsAt(arguments,2) != "-q" || argsAt(arguments,3) != "-p" || argsAt(arguments,4) != "ncc-cli" || argsAt(arguments,5) != "--" || argsAt(arguments,6) != "primitive") return 64;
+            operation >> str <- argsAt(arguments,7);
+            if (!strContains("|doctor|witness|map|lower|run|capture|build|check|verify|","|"+operation+"|")) return 64;
+            if (operation != "doctor" && argsCount(arguments) < 9) return 64;
+            values >> int <- jsonNewArray(); index >> int <- 6;
+            while (index < argsCount(arguments)) { closure43_core.closure43Core.push(values,jsonNewString(argsAt(arguments,index))); index += 1; }
+            if (envHas("CLOSURE43_FIXTURE_BAD_JSON")) { println("{not-json"); return 0; }
+            if (envHas("CLOSURE43_FIXTURE_FAIL")) { println("fixture command failed"); return 7; }
+            model >> int <- jsonParse("{\"status\":\"checked\",\"real_hardware_available\":false,\"evidence_level\":\"compiler_validated\",\"physical_certification\":false}");
+            closure43_core.closure43Core.set(model,"operation",operation); jsonObjectSet(model,"arguments",values);
+            closure43_core.closure43Core.set(model,"unicode","caf\u{e9} \u{1f642}\\u000a\n");
+            if (operation == "run" || operation == "capture") closure43_core.closure43Core.set(model,"status","blocked_no_hardware");
+            if (operation == "build") {
+                index <- 9; output >> str <- "";
+                while (index+1 < argsCount(arguments)) { if (argsAt(arguments,index) == "--out") output <- argsAt(arguments,index+1); index += 1; }
+                if (output == "" || !release_io.releaseIo.write(output,"closure43-fixture-artifact\n")) return 65;
+            }
+            println(closure43_core.closure43Core.pretty(model));
+            code >> int <- operation == "run" || operation == "capture" ? 3 : 0;
+            jsonRelease(values); jsonRelease(model); argsRelease(arguments);
+            return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

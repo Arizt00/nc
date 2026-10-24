@@ -1,0 +1,907 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <process:args>;
+use <project:text, manifest, transport, registry, sha256, artifact>;
+
+registryMutation[@runtime] {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            urlBase(value >> str) -> str {
+                if (starts(value, "sparse+")) return cast(off(cast(value), 7));
+                if (starts(value, "git+")) return cast(off(cast(value), 4));
+                return value;
+            }
+
+            urlJoin(left >> str, right >> str) -> str {
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && rd(off(source, width - 1)) == 47) return left + right;
+                return left + "/" + right;
+            }
+
+            slice(value >> str, begin >> int, count >> int) -> str {
+                source >> p<byte> <- cast(value);
+                output >> p<byte> <- cast(alloc(count + 1));
+                guard output != null else return "";
+                at >> int <- 0;
+                while (at < count) {
+                    wr(off(output, at), rd(off(source, begin + at)));
+                    at += 1;
+                }
+                wr(off(output, count), 0);
+                return cast(output);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionWithValue(value >> str) -> bool {
+                return value == "--manifest" || value == "--manifest-path" ||
+                    value == "--path" || value == "--registry" ||
+                    value == "--registry-protocol" || value == "--token" ||
+                    value == "--vers" || value == "--version" ||
+                    value == "--out";
+            }
+
+            positional(handle >> addr, wanted >> int) -> str {
+                count >> int <- argsCount(handle);
+                found >> int <- 0;
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (starts(value, "-")) at += optionWithValue(value) ? 2 : 1;
+                    else {
+                        if (found == wanted) return value;
+                        found += 1;
+                        at += 1;
+                    }
+                }
+                return "";
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            failure(schema >> str, diagnostics >> int) -> int {
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "status", jsonNewString("error"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                printModel(report);
+                return 2;
+            }
+
+            report(schema >> str, selectedRegistry >> str) -> int {
+                value >> int <- jsonNewObject();
+                jsonObjectSet(value, "schema", jsonNewString(schema));
+                jsonObjectSet(value, "status", jsonNewString("ok"));
+                jsonObjectSet(value, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(value, "registry", jsonNewString(selectedRegistry));
+                jsonObjectSet(value, "registry_transport",
+                    jsonNewString(transport.transport.kind(selectedRegistry)));
+                return value;
+            }
+
+            requireMutable(
+                selectedRegistry >> str,
+                selectedToken >> str,
+                operation >> str,
+                diagnostics >> int
+            ) -> bool {
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                if (kind == "git") return addDiagnostic(diagnostics,
+                    "E_GHOR_REGISTRY_GIT_001",
+                    "git registry mutation requires an explicit VCS transaction") && false;
+                if (kind != "filesystem" && selectedToken == "") return addDiagnostic(
+                    diagnostics, "E_GHOR_AUTH_001",
+                    operation + " requires registry authentication") && false;
+                return true;
+            }
+
+            atomicJson(path >> str, value >> int) -> bool {
+                guard ensureDirectory(directory(path)) else return false;
+                lockPath >> str <- path + ".lock";
+                lock >> addr <- fsLock(lockPath, true, true);
+                guard lock != null else return false;
+                temporary >> str <- path + ".new";
+                backup >> str <- path + ".bak";
+                if (!exists(path) && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                written >> bool <- jsonSaveFile(value, temporary, 2);
+                if (written) {
+                    synced >> Result<bool, FsError> <- fsync(temporary);
+                    written <- isOk(synced) && unwrap(synced);
+                }
+                if (written && exists(path)) {
+                    if (exists(backup)) delete_file(backup);
+                    written <- fsCopy(path, backup) == fsSize(path);
+                }
+                if (written) written <- rename_file(temporary, path);
+                if (!written && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                fsUnlock(lock);
+                return written;
+            }
+
+            atomicText(path >> str, value >> str) -> bool {
+                guard ensureDirectory(directory(path)) else return false;
+                lock >> addr <- fsLock(path + ".lock", true, true);
+                guard lock != null else return false;
+                temporary >> str <- path + ".new";
+                backup >> str <- path + ".bak";
+                if (!exists(path) && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                written >> bool <- fswrite(temporary, value);
+                if (written) {
+                    synced >> Result<bool, FsError> <- fsync(temporary);
+                    written <- isOk(synced) && unwrap(synced);
+                }
+                if (written && exists(path)) {
+                    if (exists(backup)) delete_file(backup);
+                    written <- fsCopy(path, backup) == fsSize(path);
+                }
+                if (written) written <- rename_file(temporary, path);
+                if (!written && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                fsUnlock(lock);
+                return written;
+            }
+
+            atomicCopy(source >> str, path >> str) -> bool {
+                guard exists(source) && ensureDirectory(directory(path)) else return false;
+                lock >> addr <- fsLock(path + ".lock", true, true);
+                guard lock != null else return false;
+                temporary >> str <- path + ".new";
+                backup >> str <- path + ".bak";
+                if (!exists(path) && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                expected >> int <- fsSize(source);
+                written >> bool <- expected >= 0 && fsCopy(source, temporary) == expected;
+                if (written) {
+                    synced >> Result<bool, FsError> <- fsync(temporary);
+                    written <- isOk(synced) && unwrap(synced);
+                }
+                if (written && exists(path)) {
+                    if (exists(backup)) delete_file(backup);
+                    written <- fsCopy(path, backup) == fsSize(path);
+                }
+                if (written) written <- rename_file(temporary, path);
+                if (!written && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                fsUnlock(lock);
+                return written;
+            }
+
+            recoverIndex(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                diagnostics >> int
+            ) -> bool {
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard root != "" else return false;
+                path >> str <- join(root, "index.json");
+                if (exists(path) || !exists(path + ".bak")) return true;
+                expected >> int <- fsSize(path + ".bak");
+                restored >> bool <- expected >= 0 && fsCopy(path + ".bak", path) == expected;
+                if (restored) delete_file(path + ".bak");
+                if (!restored) addDiagnostic(diagnostics,
+                    "E_GHOR_REGISTRY_RECOVERY_001",
+                    "registry index backup could not be recovered");
+                return restored;
+            }
+
+            saveRegistryJson(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                relative >> str,
+                value >> int
+            ) -> bool {
+                diagnostics >> int <- jsonNewArray();
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                if (root == "") { jsonRelease(diagnostics); return false; }
+                path >> str <- join(root, relative);
+                guard atomicJson(path, value) else { jsonRelease(diagnostics); return false; }
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                uploaded >> bool <- true;
+                if (kind != "filesystem") uploaded <- transport.transport.uploadAuthorized(
+                    handle, "PUT", urlJoin(urlBase(selectedRegistry), relative), path,
+                    selectedToken, "application/json");
+                jsonRelease(diagnostics);
+                return uploaded;
+            }
+
+            appendAudit(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                action >> str,
+                package >> str,
+                version >> str,
+                result >> str
+            ) -> bool {
+                diagnostics >> int <- jsonNewArray();
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                if (root == "") { jsonRelease(diagnostics); return false; }
+                path >> str <- join(root, "registry-audit.json");
+                audit >> int <- exists(path) ? jsonParseFile(path) : jsonNewObject();
+                if (audit == 0 || jsonKind(audit) != 6) audit <- jsonNewObject();
+                events >> int <- jsonObjectGet(audit, "events");
+                if (events == 0 || jsonKind(events) != 5) events <- jsonNewArray();
+                event >> int <- jsonNewObject();
+                material >> str <- action + "\n" + package + "\n" + version + "\n" +
+                    result + "\n" + renderInt(jsonArrayLen(events));
+                jsonObjectSet(event, "id", jsonNewString(
+                    sha256.sha256.bytes(cast(material), length(cast(material)))));
+                jsonObjectSet(event, "action", jsonNewString(action));
+                jsonObjectSet(event, "package", jsonNewString(package));
+                jsonObjectSet(event, "version", jsonNewString(version));
+                jsonObjectSet(event, "result", jsonNewString(result));
+                jsonArrayPush(events, event);
+                jsonObjectSet(audit, "schema", jsonNewString("ghor.registry-audit.v1"));
+                jsonObjectSet(audit, "events", events);
+                saved >> bool <- saveRegistryJson(
+                    handle, selectedRegistry, selectedToken, "registry-audit.json", audit);
+                jsonRelease(audit);
+                jsonRelease(diagnostics);
+                return saved;
+            }
+
+            packagePath(name >> str) -> str {
+                width >> int <- length(cast(name));
+                if (width == 1) return "1/" + name;
+                if (width == 2) return "2/" + name;
+                if (width == 3) return "3/" + slice(name, 0, 1) + "/" + name;
+                return slice(name, 0, 2) + "/" + slice(name, 2, 2) + "/" + name;
+            }
+
+            savePackageIndex(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                name >> str,
+                entries >> int
+            ) -> bool {
+                textValue >> str <- "";
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "name"), "") == name) {
+                        metadata >> int <- jsonObjectGet(entry, "metadata");
+                        if (metadata == 0) metadata <- entry;
+                        line >> str <- jsonStringify(metadata);
+                        textValue += line + "\n";
+                        strRelease(line);
+                    }
+                    at += 1;
+                }
+                diagnostics >> int <- jsonNewArray();
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                if (root == "") { jsonRelease(diagnostics); return false; }
+                relative >> str <- packagePath(name);
+                path >> str <- join(root, relative);
+                ensureDirectory(directory(path));
+                guard atomicText(path, textValue) else {
+                    jsonRelease(diagnostics); return false;
+                }
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                uploaded >> bool <- true;
+                if (kind != "filesystem") uploaded <- transport.transport.uploadAuthorized(
+                    handle, "PUT", urlJoin(urlBase(selectedRegistry), relative), path,
+                    selectedToken, "application/json");
+                jsonRelease(diagnostics);
+                return uploaded;
+            }
+
+            updateYank(entries >> int, name >> str, version >> str, yanked >> bool) -> bool {
+                touched >> bool <- false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    sameName >> bool <- jsonGetStringOr(jsonObjectGet(entry, "name"), "") == name;
+                    entryVersion >> str <- jsonGetStringOr(jsonObjectGet(entry, "version"),
+                        jsonGetStringOr(jsonObjectGet(entry, "vers"), ""));
+                    if (sameName && (version == "" || entryVersion == version)) {
+                        jsonObjectSet(entry, "yanked", jsonNewBool(yanked));
+                        metadata >> int <- jsonObjectGet(entry, "metadata");
+                        if (metadata != 0) {
+                            jsonObjectSet(metadata, "yanked", jsonNewBool(yanked));
+                            jsonObjectSet(entry, "metadata", metadata);
+                            jsonRelease(metadata);
+                        }
+                        removed >> int <- jsonArrayRemove(entries, at);
+                        if (removed != 0) jsonRelease(removed);
+                        jsonArrayInsert(entries, at, entry);
+                        jsonRelease(entry);
+                        touched <- true;
+                    }
+                    at += 1;
+                }
+                return touched;
+            }
+
+            ownerList(entries >> int, package >> str) -> int {
+                output >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "name"), "") == package) {
+                        owners >> int <- jsonObjectGet(entry, "owners");
+                        ownerAt >> int <- 0;
+                        while (ownerAt < jsonArrayLen(owners)) {
+                            owner >> str <- jsonGetStringOr(jsonArrayGet(owners, ownerAt), "");
+                            found >> bool <- false;
+                            scan >> int <- 0;
+                            while (scan < jsonArrayLen(output)) {
+                                if (jsonGetStringOr(jsonArrayGet(output, scan), "") == owner) found <- true;
+                                scan += 1;
+                            }
+                            if (!found) jsonArrayPush(output, jsonNewString(owner));
+                            ownerAt += 1;
+                        }
+                    }
+                    at += 1;
+                }
+                return output;
+            }
+
+            updateOwner(entries >> int, package >> str, owner >> str, add >> bool) -> bool {
+                touched >> bool <- false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "name"), "") == package) {
+                        touched <- true;
+                        existingOwners >> int <- jsonObjectGet(entry, "owners");
+                        owners >> int <- existingOwners == 0 || jsonKind(existingOwners) != 5 ?
+                            jsonNewArray() : jsonClone(existingOwners);
+                        found >> int <- -1;
+                        ownerAt >> int <- 0;
+                        while (ownerAt < jsonArrayLen(owners)) {
+                            if (jsonGetStringOr(jsonArrayGet(owners, ownerAt), "") == owner) found <- ownerAt;
+                            ownerAt += 1;
+                        }
+                        if (add && found < 0) jsonArrayPush(owners, jsonNewString(owner));
+                        if (!add && found >= 0) {
+                            removed >> int <- jsonArrayRemove(owners, found);
+                            if (removed != 0) jsonRelease(removed);
+                        }
+                        jsonObjectSet(entry, "owners", owners);
+                        jsonRelease(owners);
+                        removedEntry >> int <- jsonArrayRemove(entries, at);
+                        if (removedEntry != 0) jsonRelease(removedEntry);
+                        jsonArrayInsert(entries, at, entry);
+                        jsonRelease(entry);
+                    }
+                    at += 1;
+                }
+                return touched;
+            }
+
+            webYank(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                config >> int,
+                name >> str,
+                version >> str,
+                yanked >> bool
+            ) -> bool {
+                if (transport.transport.kind(selectedRegistry) == "filesystem") return true;
+                api >> str <- jsonGetStringOr(jsonObjectGet(config, "api"), "");
+                if (api == "" || version == "") return false;
+                action >> str <- yanked ? "yank" : "unyank";
+                method >> str <- yanked ? "DELETE" : "PUT";
+                endpoint >> str <- urlJoin(api,
+                    "api/v1/crates/" + name + "/" + version + "/" + action);
+                response >> str <- join("target/ghor/registry-responses",
+                    "yank-" + name + "-" + version + ".json");
+                ensureDirectory(directory(response));
+                return transport.transport.requestAuthorized(handle, method, endpoint, "",
+                    selectedToken, "application/json", response);
+            }
+
+            webOwner(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                config >> int,
+                action >> str,
+                package >> str,
+                owner >> str
+            ) -> bool {
+                if (transport.transport.kind(selectedRegistry) == "filesystem") return true;
+                api >> str <- jsonGetStringOr(jsonObjectGet(config, "api"), "");
+                if (api == "") return false;
+                endpoint >> str <- urlJoin(api, "api/v1/crates/" + package + "/owners");
+                response >> str <- join("target/ghor/registry-responses", "owner-" + package + ".json");
+                ensureDirectory(directory(response));
+                if (action == "list") return transport.transport.requestAuthorized(
+                    handle, "GET", endpoint, "", selectedToken, "application/json", response);
+                body >> int <- jsonNewObject();
+                users >> int <- jsonNewArray();
+                jsonArrayPush(users, jsonNewString(owner));
+                jsonObjectSet(body, "users", users);
+                bodyPath >> str <- response + ".request";
+                guard jsonSaveFile(body, bodyPath, 0) else { jsonRelease(body); return false; }
+                jsonRelease(body);
+                method >> str <- action == "add" ? "PUT" : "DELETE";
+                ok >> bool <- transport.transport.requestAuthorized(handle, method, endpoint,
+                    bodyPath, selectedToken, "application/json", response);
+                delete_file(bodyPath);
+                return ok;
+            }
+
+            executeYank(handle >> addr) -> int {
+                name >> str <- positional(handle, 0);
+                version >> str <- option(handle, "--version");
+                if (version == "") version <- option(handle, "--vers");
+                diagnostics >> int <- jsonNewArray();
+                if (name == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_YANK_001", "yank expects <package>");
+                    return failure("ghor.yank.v1", diagnostics);
+                }
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                guard requireMutable(selectedRegistry, selectedToken, "yank", diagnostics)
+                    else return failure("ghor.yank.v1", diagnostics);
+                guard recoverIndex(handle, selectedRegistry, selectedToken, diagnostics)
+                    else return failure("ghor.yank.v1", diagnostics);
+                source >> int <- registry.registry.loadIndex(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard source != 0 else return failure("ghor.yank.v1", diagnostics);
+                entries >> int <- jsonObjectGet(source, "packages");
+                yanked >> bool <- !hasFlag(handle, "--undo");
+                guard updateYank(entries, name, version, yanked) else {
+                    jsonRelease(source);
+                    addDiagnostic(diagnostics, "E_GHOR_YANK_001",
+                        "package/version was not found in registry");
+                    return failure("ghor.yank.v1", diagnostics);
+                }
+                config >> int <- registry.registry.loadConfig(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                apiOk >> bool <- webYank(handle, selectedRegistry, selectedToken,
+                    config, name, version, yanked);
+                jsonObjectSet(source, "packages", entries);
+                saved >> bool <- saveRegistryJson(
+                    handle, selectedRegistry, selectedToken, "index.json", source);
+                if (saved) saved <- savePackageIndex(
+                    handle, selectedRegistry, selectedToken, name, entries);
+                if (saved) saved <- appendAudit(handle, selectedRegistry, selectedToken,
+                    "yank", name, version, yanked ? "yanked" : "unyanked");
+                if (!saved || !apiOk) {
+                    jsonRelease(config); jsonRelease(source);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_TRANSACTION_001",
+                        "yank transaction did not commit every material target");
+                    return failure("ghor.yank.v1", diagnostics);
+                }
+                value >> int <- report("ghor.yank.v1", selectedRegistry);
+                jsonObjectSet(value, "package", jsonNewString(name));
+                jsonObjectSet(value, "version", jsonNewString(version));
+                jsonObjectSet(value, "yanked", jsonNewBool(yanked));
+                jsonObjectSet(value, "transaction", jsonNewString("committed"));
+                jsonObjectSet(value, "web_api", jsonNewString(
+                    transport.transport.kind(selectedRegistry) == "filesystem" ?
+                    "not_applicable" : "committed"));
+                jsonObjectSet(value, "diagnostics", diagnostics);
+                jsonRelease(config); jsonRelease(source);
+                return printModel(value);
+            }
+
+            executeOwner(handle >> addr) -> int {
+                first >> str <- positional(handle, 0);
+                second >> str <- positional(handle, 1);
+                third >> str <- positional(handle, 2);
+                action >> str <- "list";
+                package >> str <- first;
+                owner >> str <- "";
+                if (first == "list" || first == "add" || first == "remove") {
+                    action <- first; package <- second; owner <- third;
+                }
+                else if (hasFlag(handle, "--add") || hasFlag(handle, "-a")) {
+                    action <- "add"; owner <- second;
+                }
+                else if (hasFlag(handle, "--remove") || hasFlag(handle, "-r")) {
+                    action <- "remove"; owner <- second;
+                }
+                diagnostics >> int <- jsonNewArray();
+                if (package == "" || ((action == "add" || action == "remove") && owner == "")) {
+                    addDiagnostic(diagnostics, "E_GHOR_OWNER_001",
+                        "owner expects an action, package and owner identity");
+                    return failure("ghor.owner.v1", diagnostics);
+                }
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                if (action != "list") guard requireMutable(
+                    selectedRegistry, selectedToken, "owner", diagnostics)
+                    else return failure("ghor.owner.v1", diagnostics);
+                guard recoverIndex(handle, selectedRegistry, selectedToken, diagnostics)
+                    else return failure("ghor.owner.v1", diagnostics);
+                source >> int <- registry.registry.loadIndex(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard source != 0 else return failure("ghor.owner.v1", diagnostics);
+                entries >> int <- jsonObjectGet(source, "packages");
+                owners >> int <- ownerList(entries, package);
+                config >> int <- registry.registry.loadConfig(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                apiOk >> bool <- webOwner(handle, selectedRegistry, selectedToken,
+                    config, action, package, owner);
+                saved >> bool <- true;
+                if (action == "add" || action == "remove") {
+                    saved <- updateOwner(entries, package, owner, action == "add");
+                    if (saved) {
+                        jsonObjectSet(source, "packages", entries);
+                        saved <- saveRegistryJson(
+                            handle, selectedRegistry, selectedToken, "index.json", source);
+                    }
+                    if (saved) saved <- appendAudit(handle, selectedRegistry, selectedToken,
+                        "owner-" + action, package, "", "committed");
+                    jsonRelease(owners);
+                    owners <- ownerList(entries, package);
+                }
+                if (!saved || !apiOk) {
+                    jsonRelease(owners); jsonRelease(config); jsonRelease(source);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_TRANSACTION_001",
+                        "owner transaction did not commit every material target");
+                    return failure("ghor.owner.v1", diagnostics);
+                }
+                value >> int <- report("ghor.owner.v1", selectedRegistry);
+                jsonObjectSet(value, "package", jsonNewString(package));
+                jsonObjectSet(value, "action", jsonNewString(action));
+                jsonObjectSet(value, "owners", owners);
+                jsonObjectSet(value, "transaction", jsonNewString(
+                    action == "list" ? "read_only" : "committed"));
+                jsonObjectSet(value, "diagnostics", diagnostics);
+                jsonRelease(config); jsonRelease(source);
+                return printModel(value);
+            }
+
+            materializePackage(handle >> addr, model >> int, diagnostics >> int) -> int {
+                return artifact.artifact.materialize(handle, model, diagnostics);
+            }
+
+            writeU32LE(destination >> p<byte>, value >> int) -> void {
+                wr(off(destination, 0), value & 255);
+                wr(off(destination, 1), (value >> 8) & 255);
+                wr(off(destination, 2), (value >> 16) & 255);
+                wr(off(destination, 3), (value >> 24) & 255);
+            }
+
+            cargoPublish(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                config >> int,
+                receipt >> int
+            ) -> bool {
+                if (transport.transport.kind(selectedRegistry) == "filesystem") return true;
+                api >> str <- jsonGetStringOr(jsonObjectGet(config, "api"), "");
+                guard api != "" else return false;
+                metadata >> int <- jsonObjectGet(receipt, "metadata");
+                metadataPath >> str <- join(directory(jsonGetStringOr(
+                    jsonObjectGet(receipt, "archive"), "")), "publish-metadata.json");
+                guard jsonSaveFile(metadata, metadataPath, 0) else return false;
+                archive >> str <- jsonGetStringOr(jsonObjectGet(receipt, "archive"), "");
+                metadataBytes >> int <- fsSize(metadataPath);
+                archiveBytes >> int <- fsSize(archive);
+                guard metadataBytes >= 0 && archiveBytes >= 0 else return false;
+                total >> int <- 8 + metadataBytes + archiveBytes;
+                body >> p<byte> <- cast(alloc(total));
+                guard body != null else return false;
+                writeU32LE(body, metadataBytes);
+                guard fsReadInto(metadataPath, off(body, 4), metadataBytes) == metadataBytes
+                    else { free(body); return false; }
+                writeU32LE(off(body, 4 + metadataBytes), archiveBytes);
+                guard fsReadInto(archive, off(body, 8 + metadataBytes), archiveBytes) == archiveBytes
+                    else { free(body); return false; }
+                bodyPath >> str <- join(directory(archive), "publish-body.bin");
+                written >> int <- fsWriteFrom(bodyPath, body, total, false);
+                free(body);
+                guard written == total else return false;
+                response >> str <- join(directory(archive), "publish-response.json");
+                ok >> bool <- transport.transport.requestAuthorized(handle, "PUT",
+                    urlJoin(api, "api/v1/crates/new"), bodyPath, selectedToken,
+                    "application/octet-stream", response);
+                delete_file(bodyPath);
+                return ok;
+            }
+
+            putMaterial(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                relative >> str,
+                source >> str,
+                contentType >> str
+            ) -> bool {
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                if (kind == "filesystem") {
+                    destination >> str <- join(selectedRegistry, relative);
+                    return atomicCopy(source, destination);
+                }
+                return transport.transport.uploadAuthorized(handle, "PUT",
+                    urlJoin(urlBase(selectedRegistry), relative), source,
+                    selectedToken, contentType);
+            }
+
+            executePublish(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                manifestPath >> str <- manifest.manifest.select(handle);
+                guard manifestPath != "" && exists(manifestPath) else {
+                    addDiagnostic(diagnostics, "E_GHOR_MANIFEST_001",
+                        "publish requires a readable manifest");
+                    return failure("ghor.publish.v1", diagnostics);
+                }
+                model >> int <- manifest.manifest.load(manifestPath);
+                guard model != 0 else return failure("ghor.publish.v1", diagnostics);
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                guard requireMutable(selectedRegistry, selectedToken, "publish", diagnostics)
+                    else { jsonRelease(model); return failure("ghor.publish.v1", diagnostics); }
+                guard recoverIndex(handle, selectedRegistry, selectedToken, diagnostics)
+                    else { jsonRelease(model); return failure("ghor.publish.v1", diagnostics); }
+                receipt >> int <- materializePackage(handle, model, diagnostics);
+                guard receipt != 0 else {
+                    jsonRelease(model); return failure("ghor.publish.v1", diagnostics);
+                }
+                package >> int <- jsonObjectGet(model, "package");
+                name >> str <- jsonGetStringOr(jsonObjectGet(package, "name"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(package, "version"), "");
+                if (hasFlag(handle, "--dry-run")) {
+                    value >> int <- report("ghor.publish.v1", selectedRegistry);
+                    jsonObjectSet(value, "status", jsonNewString("dry_run"));
+                    jsonObjectSet(value, "package", jsonNewString(name));
+                    jsonObjectSet(value, "version", jsonNewString(version));
+                    jsonObjectSet(value, "material", receipt);
+                    jsonObjectSet(value, "diagnostics", diagnostics);
+                    jsonRelease(model);
+                    return printModel(value);
+                }
+                config >> int <- registry.registry.loadConfig(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard config != 0 else {
+                    jsonRelease(receipt); jsonRelease(model);
+                    return failure("ghor.publish.v1", diagnostics);
+                }
+                apiOk >> bool <- cargoPublish(
+                    handle, selectedRegistry, selectedToken, config, receipt);
+                archive >> str <- jsonGetStringOr(jsonObjectGet(receipt, "archive"), "");
+                archiveName >> str <- jsonGetStringOr(jsonObjectGet(receipt, "archive_name"),
+                    name + "-" + version + ".crate");
+                manifestFile >> str <- jsonGetStringOr(
+                    jsonObjectGet(receipt, "package_manifest"), "");
+                relativeRoot >> str <- "packages/" + name + "/" + version;
+                archiveRelative >> str <- relativeRoot + "/" + archiveName;
+                manifestRelative >> str <- relativeRoot + "/manifest.json";
+                materialOk >> bool <- putMaterial(handle, selectedRegistry, selectedToken,
+                    archiveRelative, archive, "application/octet-stream");
+                if (materialOk) materialOk <- putMaterial(
+                    handle, selectedRegistry, selectedToken,
+                    manifestRelative, manifestFile, "application/json");
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                indexMissing >> bool <- kind == "filesystem" &&
+                    !exists(join(selectedRegistry, "index.json"));
+                source >> int <- indexMissing ? 0 : registry.registry.loadIndex(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                if (source == 0) {
+                    source <- jsonNewObject();
+                    jsonObjectSet(source, "schema", jsonNewString("ghor.registry.v1"));
+                    jsonObjectSet(source, "packages", jsonNewArray());
+                }
+                entries >> int <- jsonObjectGet(source, "packages");
+                at >> int <- jsonArrayLen(entries) - 1;
+                while (at >= 0) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "name"), "") == name &&
+                        jsonGetStringOr(jsonObjectGet(entry, "version"), "") == version) {
+                        removed >> int <- jsonArrayRemove(entries, at);
+                        if (removed != 0) jsonRelease(removed);
+                    }
+                    at -= 1;
+                }
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "name", jsonNewString(name));
+                jsonObjectSet(entry, "version", jsonNewString(version));
+                jsonObjectSet(entry, "checksum", jsonClone(jsonObjectGet(receipt, "checksum")));
+                jsonObjectSet(entry, "archive", jsonNewString(archiveRelative));
+                jsonObjectSet(entry, "archive_name", jsonNewString(archiveName));
+                jsonObjectSet(entry, "manifest", jsonNewString(manifestRelative));
+                jsonObjectSet(entry, "package_manifest", jsonNewString(manifestRelative));
+                jsonObjectSet(entry, "package_manifest_hash",
+                    jsonClone(jsonObjectGet(receipt, "package_manifest_hash")));
+                jsonObjectSet(entry, "ffi_link_manifest_hash",
+                    jsonClone(jsonObjectGet(receipt, "ffi_link_manifest_hash")));
+                jsonObjectSet(entry, "metadata", jsonClone(jsonObjectGet(receipt, "metadata")));
+                jsonObjectSet(entry, "files", jsonClone(jsonObjectGet(receipt, "files")));
+                jsonObjectSet(entry, "verification",
+                    jsonClone(jsonObjectGet(receipt, "verification")));
+                jsonObjectSet(entry, "owners", jsonNewArray());
+                jsonObjectSet(entry, "yanked", jsonNewBool(false));
+                jsonArrayPush(entries, entry);
+                jsonObjectSet(source, "packages", entries);
+                indexOk >> bool <- saveRegistryJson(
+                    handle, selectedRegistry, selectedToken, "index.json", source);
+                if (indexOk) indexOk <- savePackageIndex(
+                    handle, selectedRegistry, selectedToken, name, entries);
+                committed >> bool <- materialOk && indexOk && apiOk;
+                if (committed) committed <- appendAudit(handle, selectedRegistry, selectedToken,
+                    "publish", name, version, "published");
+                if (!committed) {
+                    jsonRelease(config); jsonRelease(source);
+                    jsonRelease(receipt); jsonRelease(model);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_TRANSACTION_001",
+                        "publish transaction did not commit every material target");
+                    return failure("ghor.publish.v1", diagnostics);
+                }
+                value >> int <- report("ghor.publish.v1", selectedRegistry);
+                jsonObjectSet(value, "status", jsonNewString("published"));
+                jsonObjectSet(value, "package", jsonNewString(name));
+                jsonObjectSet(value, "version", jsonNewString(version));
+                jsonObjectSet(value, "archive", jsonNewString(archiveRelative));
+                jsonObjectSet(value, "checksum", jsonClone(jsonObjectGet(receipt, "checksum")));
+                jsonObjectSet(value, "transaction", jsonNewString("committed"));
+                jsonObjectSet(value, "web_api", jsonNewString(
+                    transport.transport.kind(selectedRegistry) == "filesystem" ?
+                    "not_applicable" : "committed"));
+                jsonObjectSet(value, "diagnostics", diagnostics);
+                jsonRelease(config); jsonRelease(source);
+                jsonRelease(receipt); jsonRelease(model);
+                return printModel(value);
+            }
+
+        public:
+            writeJson(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                relative >> str,
+                value >> int
+            ) -> bool {
+                return saveRegistryJson(
+                    handle, selectedRegistry, selectedToken, relative, value);
+            }
+
+            writePackageIndex(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                name >> str,
+                entries >> int
+            ) -> bool {
+                return savePackageIndex(
+                    handle, selectedRegistry, selectedToken, name, entries);
+            }
+
+            writeAudit(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                action >> str,
+                package >> str,
+                version >> str,
+                result >> str
+            ) -> bool {
+                return appendAudit(handle, selectedRegistry, selectedToken,
+                    action, package, version, result);
+            }
+
+            supports(handle >> addr) -> bool {
+                if (argsCount(handle) <= 1) return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "publish" || selected == "owner" || selected == "yank";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "publish") return executePublish(handle);
+                if (selected == "owner") return executeOwner(handle);
+                if (selected == "yank") return executeYank(handle);
+                return 64;
+            }
+
+            selfTest() -> bool {
+                return length(cast("registry-mutation")) == 17 &&
+                    starts("publish", "pub") && !starts("publish", "yank");
+            }
+}

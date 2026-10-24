@@ -1,0 +1,50 @@
+runtimeFaultHeap78 {
+    const: CAPACITY >> int <- 8192;
+    stc:
+        blocks >> p<addr> <- null;
+        sizes >> p<u64> <- null;
+        calls >> int <- 0;
+        failure >> int <- 0;
+        persistent >> bool <- false;
+        live >> int <- 0;
+        bytes >> u64 <- 0;
+        invalid >> int <- 0;
+        failed >> bool <- false;
+    fn:
+        public:
+            open() -> bool {
+                blocks <- cast(calloc(CAPACITY,8)); sizes <- cast(calloc(CAPACITY,8));
+                return blocks != null && sizes != null;
+            }
+            close() -> void { free(blocks); free(sizes); blocks <- null; sizes <- null; }
+            configure(at >> int, all >> bool) -> void {
+                calls <- 0; failure <- at; persistent <- all; failed <- false;
+            }
+            allocations() -> int { return calls; }
+            outstanding() -> int { return live; }
+            outstandingBytes() -> u64 { return bytes; }
+            invalidFrees() -> int { return invalid; }
+            didFail() -> bool { return failed; }
+            allocate(count >> u64) -> p<byte> {
+                calls += 1;
+                if (failure > 0 && (calls == failure || (persistent && calls >= failure))) {
+                    failed <- true; return null;
+                }
+                value >> p<byte> <- alloc(count);
+                if (value == null) return null;
+                at >> int <- 0;
+                while (at < CAPACITY && rd(off(blocks,at)) != 0) at += 1;
+                if (at == CAPACITY) { free(value); invalid += 1; return null; }
+                wr(off(blocks,at),adr(value)); wr(off(sizes,at),count); live += 1; bytes += count;
+                return value;
+            }
+            release(value >> addr) -> bool {
+                if (value == null) return true;
+                at >> int <- 0;
+                while (at < CAPACITY && rd(off(blocks,at)) != value) at += 1;
+                if (at == CAPACITY) { invalid += 1; return false; }
+                live -= 1; bytes -= rd(off(sizes,at)); wr(off(blocks,at),0); wr(off(sizes,at),0);
+                return free(value);
+            }
+    fa: return true;
+}

@@ -1,0 +1,50 @@
+use <io:output>;
+use <memory:stack>;
+use <process:service>;
+
+rawProcessService :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            status >> p<byte> <- stackAlloc(64, 8);
+            needed >> p<byte> <- stackAlloc(8, 4);
+            name >> addr <- serviceWideAlloc("EventLog");
+
+            manager >> addr <- serviceManagerOpen(null, null, 1);
+            service >> addr <- serviceOpen(manager, name, 4);
+            queried >> bool <- serviceQueryStatus(
+                service,
+                0,
+                adr(status),
+                64,
+                adr(needed)
+            );
+
+            state >> int <- rd(off(status, 4));
+            closedService >> bool <- serviceClose(service);
+            closedManager >> bool <- serviceClose(manager);
+            releasedName >> bool <- serviceWideFree(name);
+
+            ok >> bool <-
+                name != null &&
+                manager != null &&
+                service != null &&
+                queried &&
+                state >= 1 &&
+                state <= 7 &&
+                closedService &&
+                closedManager &&
+                releasedName;
+
+            stackRestore(mark);
+            print("manual nC process service backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

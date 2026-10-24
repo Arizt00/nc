@@ -1,0 +1,30 @@
+use <data:json>;
+
+jsonFileProvider :: runtime {
+    fn:
+        public:
+            provider_json_jsonParseFile(path >> str) -> int {
+                bytes >> int <- fsSize(path);
+                if (bytes < 0) return 0;
+                reserved >> u64 <- bytes;
+                reserved += 1;
+                data >> p<byte> <- cast<byte>(alloc(reserved));
+                if (data == null) return 0;
+                if (fsReadInto(path,data,bytes) != bytes) { free(data); return 0; }
+                wr<byte>(off(data,bytes),0);
+                source >> str <- cast(data);
+                result >> int <- jsonParse(source);
+                free(data);
+                return result;
+            }
+            provider_json_jsonSaveFile(handle >> int, path >> str, indent >> int) -> bool {
+                if (indent < 0) return false;
+                text >> str <- jsonStringifyPretty(handle,indent);
+                bytes >> int <- strByteLen(text);
+                if (bytes <= 0) return false;
+                written >> int <- fsWriteFrom(path,cast<byte>(text),bytes,false);
+                strRelease(text);
+                return written == bytes;
+            }
+    fa: return true;
+}

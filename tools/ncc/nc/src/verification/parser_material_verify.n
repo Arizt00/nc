@@ -1,0 +1,198 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, tool_cli, contract_checks, frontend_session, frontend_material, frontend_material_tests>;
+
+parserMaterialVerify {
+    const:
+        TARGETS >> str <- "[\"x86_64-unknown-linux-gnu\",\"x86_64-pc-windows-msvc\",\"x86_64-apple-darwin\",\"i386-unknown-linux-gnu\",\"aarch64-unknown-linux-gnu\",\"aarch64-apple-darwin\",\"armv7-unknown-linux-gnueabihf\",\"riscv32imac-unknown-elf\",\"riscv64gc-unknown-linux-gnu\",\"wasm32-wasi\"]";
+    fn:
+        private:
+            same(a >> int, b >> int, label >> str) -> bool {
+                result >> bool <- frontend_session.frontendSession.check(contract_checks.contractChecks.equal(a,b),label);
+                jsonRelease(a); jsonRelease(b); return result;
+            }
+            fixtures(details >> int) -> void {
+                corpus >> str <- frontend_session.frontendSession.rootPath()+"/bootstrap/corpus/ncc-stage2-lexer";
+                paths >> int <- release_io.releaseIo.names(corpus);
+                rows >> int <- jsonNewArray();
+                total >> int <- 0;
+                index >> int <- 0;
+                while (index < jsonArrayLen(paths) && frontend_session.frontendSession.good()) {
+                    item >> int <- jsonArrayGet(paths,index);
+                    name >> str <- jsonGetString(item);
+                    if (strStartsWith(name,"ast_") && strEndsWith(name,".n")) {
+                        path >> str <- corpus+"/"+name;
+                        row >> int <- jsonNewObject(); jsonObjectSet(row,"file",jsonNewString(name));
+                        if (strStartsWith(name,"ast_invalid_")) {
+                            frontend_session.frontendSession.check(frontend_session.frontendSession.rejection("candidate","ast-head",path),"fixture-candidate-"+name);
+                            frontend_session.frontendSession.check(frontend_session.frontendSession.rejection("baseline","ast-head",path),"fixture-baseline-"+name);
+                            frontend_session.frontendSession.check(frontend_session.frontendSession.rejection("stage0","ast",path),"fixture-stage0-"+name);
+                            jsonObjectSet(row,"rejected",jsonNewBool(true));
+                        } else {
+                            material >> int <- frontend_session.frontendSession.document("candidate","ast-head",path,"--material","");
+                            frontend_session.frontendSession.check(frontend_material.frontendMaterial.validate(material,fsSize(path)),"material-"+name);
+                            nodes >> int <- jsonObjectGet(material,"nodes");
+                            total += jsonArrayLen(nodes);
+                            jsonObjectSet(row,"nodes",jsonNewInt(jsonArrayLen(nodes)));
+                            head >> int <- frontend_session.frontendSession.document("candidate","ast-head",path,"--json","");
+                            if (name != "ast_compact_roles.n") {
+                                old >> int <- frontend_session.frontendSession.document("baseline","ast-head",path,"--json","");
+                                same(jsonClone(head),old,"head-"+name);
+                            } else {
+                                frontend_session.frontendSession.check(frontend_material.frontendMaterial.countKind(nodes,"FunctionDecl") == 2 &&
+                                    frontend_material.frontendMaterial.countKind(nodes,"FieldDecl") == 2 &&
+                                    frontend_material.frontendMaterial.countKind(nodes,"ReturnStmt") == 2 &&
+                                    frontend_material.frontendMaterial.countKind(nodes,"EntryRef") == 1,"compact-roles");
+                            }
+                            oracle >> int <- frontend_session.frontendSession.invoke("stage0",frontend_session.frontendSession.args("ast",path,"--json",""));
+                            accepted >> bool <- tool_cli.toolCli.hasFlag(oracle,"ok");
+                            error >> str <- release_io.releaseIo.field(oracle,"stderr");
+                            frontend_session.frontendSession.check(accepted || (name == "ast_expression_disambiguation.n" &&
+                                tool_cli.toolCli.clean(oracle) && release_io.releaseIo.number(oracle,"code",0) == 1 && strContains(error,"E_MATERIAL_CONTAINER_001")),"oracle-"+name);
+                            jsonObjectSet(row,"stage0_surface_accepted",jsonNewBool(accepted));
+                            strRelease(error); jsonRelease(oracle); jsonRelease(head); jsonRelease(nodes); jsonRelease(material);
+                        }
+                        jsonArrayPush(rows,row);
+                    }
+                    jsonRelease(item); index += 1;
+                }
+                frontend_session.frontendSession.check(jsonArrayLen(rows) >= 11,"fixture-inventory");
+                jsonRelease(paths); jsonObjectSet(details,"fixtures",rows); jsonObjectSet(details,"fixture_nodes",jsonNewInt(total));
+            }
+            precedence(details >> int) -> void {
+                // Preserve the 48 exact operands previously generated by the Python oracle.
+                catalog >> int <- jsonParseFile(frontend_session.frontendSession.rootPath()+"/bootstrap/frontend-v41-cases.json");
+                cases >> int <- jsonObjectGet(catalog,"precedence");
+                frontend_session.frontendSession.check(jsonArrayLen(cases) == 48,"precedence-inventory");
+                index >> int <- 0;
+                while (index < jsonArrayLen(cases) && frontend_session.frontendSession.good()) {
+                    entry >> int <- jsonArrayGet(cases,index);
+                    source >> str <- release_io.releaseIo.field(entry,"source");
+                    path >> str <- frontend_session.frontendSession.fixture("precedence_"+renderInt(index),source);
+                    doc >> int <- frontend_session.frontendSession.document("candidate","ast-head",path,"--material","");
+                    frontend_session.frontendSession.check(frontend_material.frontendMaterial.validate(doc,fsSize(path)),"precedence-tree-"+renderInt(index));
+                    nodes >> int <- jsonObjectGet(doc,"nodes");
+                    returned >> int <- frontend_material.frontendMaterial.firstKind(nodes,"ReturnStmt");
+                    value >> int <- frontend_material.frontendMaterial.expression(doc,frontend_material.frontendMaterial.fieldAt(nodes,returned,"first_child"));
+                    expected >> int <- jsonObjectGet(entry,"expected");
+                    same(value,jsonClone(expected),"precedence-value-"+renderInt(index));
+                    oracle >> int <- frontend_session.frontendSession.document("stage0","ast",path,"--json","");
+                    ast >> int <- jsonObjectGet(oracle,"ast");
+                    result >> int <- frontend_material.frontendMaterial.firstReturn(ast);
+                    same(frontend_material.frontendMaterial.rustExpression(result),expected,"precedence-oracle-"+renderInt(index));
+                    jsonRelease(result); jsonRelease(ast); jsonRelease(oracle); jsonRelease(nodes); jsonRelease(doc); jsonRelease(entry); strRelease(source);
+                    index += 1;
+                }
+                jsonRelease(cases); jsonRelease(catalog); jsonObjectSet(details,"precedence_cases",jsonNewInt(index));
+            }
+            literalsAndErrors(details >> int) -> void {
+                path >> str <- frontend_session.frontendSession.fixture("literals","sample { fn: value() -> str { return (\"A\\0\\u{1F642}\\x42\"); } fa: return true; }");
+                doc >> int <- frontend_session.frontendSession.document("candidate","ast-head",path,"--material","");
+                frontend_session.frontendSession.check(frontend_material.frontendMaterial.validate(doc,fsSize(path)),"literal-tree");
+                nodes >> int <- jsonObjectGet(doc,"nodes");
+                tokens >> int <- jsonObjectGet(doc,"tokens");
+                literal >> int <- -1;
+                cursor >> int <- 0;
+                while (cursor < jsonArrayLen(nodes) && literal < 0) {
+                    origin >> int <- frontend_material.frontendMaterial.fieldAt(nodes,cursor,"origin_token");
+                    if (frontend_material.frontendMaterial.kindAt(nodes,cursor) == "ExprLiteral" &&
+                        frontend_material.frontendMaterial.fieldAt(tokens,origin,"kind") == 3) literal <- cursor;
+                    cursor += 1;
+                }
+                same(frontend_material.frontendMaterial.expression(doc,literal),jsonParse("[\"StringBytes\",[65,0,240,159,153,130,66]]"),"literal-payload");
+                jsonRelease(tokens); jsonRelease(nodes); jsonRelease(doc);
+                catalog >> int <- jsonParseFile(frontend_session.frontendSession.rootPath()+"/bootstrap/frontend-v41-cases.json");
+                cases >> int <- jsonObjectGet(catalog,"parser_negative");
+                frontend_session.frontendSession.check(jsonArrayLen(cases) == 5,"negative-inventory");
+                index >> int <- 0;
+                while (index < jsonArrayLen(cases) && frontend_session.frontendSession.good()) {
+                    item >> int <- jsonArrayGet(cases,index);
+                    path <- frontend_session.frontendSession.fixture("negative_"+renderInt(index),jsonGetString(item));
+                    frontend_session.frontendSession.check(frontend_session.frontendSession.rejection("candidate","ast-head",path),"negative-candidate-"+renderInt(index));
+                    frontend_session.frontendSession.check(frontend_session.frontendSession.rejection("stage0","ast",path),"negative-stage0-"+renderInt(index));
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(cases); jsonRelease(catalog);
+                jsonObjectSet(details,"negative_cases",jsonNewInt(index)); jsonObjectSet(details,"decoded_literal_cases",jsonNewInt(1));
+            }
+            consumers(details >> int) -> void {
+                targets >> int <- jsonParse(TARGETS);
+                actions >> int <- jsonParse("[\"sema\",\"emit-ir\",\"emit-mct\"]");
+                files >> int <- jsonParse("[\"sema_core.n\",\"ir_material_all.n\",\"mct_final_image_exit.n\"]");
+                count >> int <- 0;
+                action >> int <- 0;
+                while (action < 3 && frontend_session.frontendSession.good()) {
+                    command >> int <- jsonArrayGet(actions,action);
+                    file >> int <- jsonArrayGet(files,action);
+                    path >> str <- frontend_session.frontendSession.rootPath()+"/bootstrap/corpus/ncc-stage2-lexer/"+jsonGetString(file);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(targets) && frontend_session.frontendSession.good()) {
+                        target >> int <- jsonArrayGet(targets,at);
+                        a >> int <- frontend_session.frontendSession.document("candidate",jsonGetString(command),path,"--json",jsonGetString(target));
+                        b >> int <- frontend_session.frontendSession.document("baseline",jsonGetString(command),path,"--json",jsonGetString(target));
+                        same(a,b,"consumer-"+renderInt(action)+"-"+renderInt(at));
+                        jsonRelease(target); at += 1; count += 1;
+                    }
+                    jsonRelease(file); jsonRelease(command); action += 1;
+                }
+                jsonObjectSet(details,"consumer_regressions",jsonNewInt(count)); jsonObjectSet(details,"emitted_targets",targets);
+                jsonRelease(actions); jsonRelease(files);
+            }
+            performance(details >> int) -> void {
+                rows >> int <- jsonNewArray();
+                width >> int <- 1000;
+                while (width <= 4000 && frontend_session.frontendSession.good()) {
+                    source >> str <- "wideTree { stc:\n";
+                    index >> int <- 0;
+                    while (index < width) { source <- source+"x"+renderInt(index)+" >> int <- "+renderInt(index)+";\n"; index += 1; }
+                    path >> str <- frontend_session.frontendSession.fixture("wide_"+renderInt(width),source+"\nfa: return true; }");
+                    row >> int <- jsonNewObject(); jsonObjectSet(row,"declarations",jsonNewInt(width));
+                    version >> int <- 0;
+                    while (version < 2) {
+                        name >> str <- version == 0 ? "baseline" : "candidate";
+                        samples >> int <- jsonNewArray();
+                        times >> p<int> <- cast(alloc(5*sizeOf(int)));
+                        if (times == null) { frontend_session.frontendSession.check(false,"timing-allocation"); break; }
+                        sample >> int <- 0;
+                        while (sample < 5) {
+                            result >> int <- frontend_session.frontendSession.invoke(name,frontend_session.frontendSession.args("ast-head",path,"--quiet",""));
+                            frontend_session.frontendSession.check(tool_cli.toolCli.hasFlag(result,"ok"),"timing-"+name+"-"+renderInt(width)+"-"+renderInt(sample));
+                            elapsed >> int <- release_io.releaseIo.number(result,"elapsed_ms",-1);
+                            jsonArrayPush(samples,jsonNewInt(elapsed));
+                            at >> int <- sample;
+                            while (at > 0) {
+                                previous >> int <- rd(off(times,at-1));
+                                if (previous <= elapsed) break;
+                                wr(off(times,at),previous); at -= 1;
+                            }
+                            wr(off(times,at),elapsed); jsonRelease(result); sample += 1;
+                        }
+                        jsonObjectSet(row,name+"_median_ms",jsonNewInt(rd(off(times,2))));
+                        jsonObjectSet(row,name+"_samples_ms",samples); free(times); version += 1;
+                    }
+                    jsonArrayPush(rows,row); width <- width*4;
+                }
+                jsonObjectSet(details,"performance",rows);
+                jsonObjectSet(details,"benchmark_scope",jsonNewString("process startup, file IO and parsing; not C execution parity"));
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                if (!frontend_session.frontendSession.open(arguments)) {
+                    println("verify-parser-material --candidate EXE --baseline EXE --stage0 EXE --out DIR [--root REPO]"); return 2;
+                }
+                details >> int <- jsonNewObject();
+                frontend_session.frontendSession.check(frontend_material_tests.frontendMaterialTests.run(),"validator-adversarial-self-test");
+                words >> int <- jsonParse("[\"self-test\"]");
+                selfTest >> int <- frontend_session.frontendSession.invoke("candidate",words);
+                frontend_session.frontendSession.check(tool_cli.toolCli.hasFlag(selfTest,"ok"),"self-test");
+                jsonObjectSet(details,"self_test",jsonNewBool(tool_cli.toolCli.hasFlag(selfTest,"ok")));
+                jsonRelease(selfTest);
+                fixtures(details);
+                if (frontend_session.frontendSession.good()) precedence(details);
+                if (frontend_session.frontendSession.good()) literalsAndErrors(details);
+                if (frontend_session.frontendSession.good()) consumers(details);
+                if (frontend_session.frontendSession.good()) performance(details);
+                return frontend_session.frontendSession.finish("nc.parser.material.verification.v1",details);
+            }
+    fa: return true;
+}

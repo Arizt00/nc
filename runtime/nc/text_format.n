@@ -1,0 +1,1127 @@
+/*
+ * Native text formatter provider.
+ *
+ * This module is nC source compiled into the same MCT module as its caller.
+ * It deliberately uses raw virtual memory and byte operations only: no C
+ * source, libc allocator, ownership, hidden collection growth or hosted
+ * formatter is part of this implementation.
+ */
+nccTextFormatRuntime :: runtime {
+    const:
+        HEADER_BYTES >> int <- 16;
+        HEADER_MAGIC >> u64 <- 0x4E4346544D543031;
+
+    fn:
+        private:
+            textLen(value >> str) -> int {
+                bytes >> p<byte> <- cast(value);
+                count >> int <- 0;
+                while (rd(off(bytes, count)) != 0) {
+                    count += 1;
+                }
+                return count;
+            }
+
+            textAlloc(bytes >> int) -> p<byte> {
+                total >> int <- bytes + HEADER_BYTES;
+                base >> p<byte> <- vmReserve(null, total, 0);
+                guard base != null else return null;
+                guard vmCommit(base, total, 4) else {
+                    vmRelease(base, total);
+                    return null;
+                }
+                wr<u64>(base, HEADER_MAGIC);
+                wr<int>(off(base, 8), total);
+                return off(base, HEADER_BYTES);
+            }
+
+            textFree(value >> p<byte>) -> bool {
+                guard value != null else return true;
+                base >> p<byte> <- off(value, 0 - HEADER_BYTES);
+                guard rd<u64>(base) == HEADER_MAGIC else return false;
+                total >> int <- rd<int>(off(base, 8));
+                return vmRelease(base, total);
+            }
+
+            copyBytes(out >> p<byte>, at >> int, source >> p<byte>, count >> int) -> int {
+                index >> int <- 0;
+                while (index < count) {
+                    wr(off(out, at + index), rd(off(source, index)));
+                    index += 1;
+                }
+                return at + count;
+            }
+
+            repeatByte(out >> p<byte>, at >> int, value >> byte, count >> int) -> int {
+                index >> int <- 0;
+                while (index < count) {
+                    wr(off(out, at + index), value);
+                    index += 1;
+                }
+                return at + count;
+            }
+
+            unsignedDigits(value >> u64, base >> u64) -> int {
+                guard value != 0 else return 1;
+                digits >> int <- 0;
+                cursor >> u64 <- value;
+                while (cursor != 0) {
+                    cursor <- cursor / base;
+                    digits += 1;
+                }
+                return digits;
+            }
+
+            writeUnsigned(
+                out >> p<byte>,
+                at >> int,
+                value >> u64,
+                base >> u64,
+                upper >> bool,
+                digits >> int
+            ) -> int {
+                index >> int <- 0;
+                cursor >> u64 <- value;
+                while (index < digits) {
+                    digit >> u64 <- cursor % base;
+                    code >> byte <- 0;
+                    if (digit < 10) {
+                        code <- cast(48 + digit);
+                    } else if (upper) {
+                        code <- cast(55 + digit);
+                    } else {
+                        code <- cast(87 + digit);
+                    }
+                    wr(off(out, at + digits - index - 1), code);
+                    cursor <- cursor / base;
+                    index += 1;
+                }
+                return at + digits;
+            }
+
+            sliceEquals(value >> str, source >> p<byte>, count >> int) -> bool {
+                guard textLen(value) == count else return false;
+                valueBytes >> p<byte> <- cast(value);
+                position >> int <- 0;
+                while (position < count) {
+                    guard rd(off(valueBytes, position)) == rd(off(source, position)) else {
+                        return false;
+                    }
+                    position += 1;
+                }
+                return true;
+            }
+
+            bytesEqualRaw(left >> p<byte>, right >> p<byte>, count >> int) -> bool {
+                position >> int <- 0;
+                while (position < count) {
+                    guard rd(off(left, position)) == rd(off(right, position)) else {
+                        return false;
+                    }
+                    position += 1;
+                }
+                return true;
+            }
+
+            descriptorIndexByName(
+                descriptors >> p<byte>,
+                count >> int,
+                name >> p<byte>,
+                nameLen >> int
+            ) -> int {
+                position >> int <- 0;
+                while (position + 1 < count) {
+                    descriptor >> p<byte> <- off(descriptors, position * 16);
+                    tag >> u64 <- rd<u64>(descriptor);
+                    payload >> u64 <- rd<u64>(off(descriptor, 8));
+                    if (tag == 5) {
+                        candidate >> str <- cast(payload);
+                        if (sliceEquals(candidate, name, nameLen)) {
+                            return position + 1;
+                        }
+                    }
+                    position += 2;
+                }
+                return -1;
+            }
+
+            descriptorText(
+                descriptors >> p<byte>,
+                index >> int,
+                specBytes >> p<byte>,
+                specLen >> int
+            ) -> str {
+                descriptor >> p<byte> <- off(descriptors, index * 16);
+                tag >> u64 <- rd<u64>(descriptor);
+                payload >> u64 <- rd<u64>(off(descriptor, 8));
+                spec >> p<byte> <- textAlloc(specLen + 1);
+                guard spec != null else return cast(null);
+                copyBytes(spec, 0, specBytes, specLen);
+                wr(off(spec, specLen), 0);
+
+                result >> str <- cast(null);
+                specText >> str <- cast(spec);
+                if (tag == 1) {
+                    integer >> int <- cast(payload);
+                    result <- formatIntRaw(integer, specText);
+                } else if (tag == 2) {
+                    floatingSlot >> p<ft64> <- cast(off(descriptor, 8));
+                    floating >> ft64 <- rd(floatingSlot);
+                    result <- formatFloatRaw(floating, specText);
+                } else if (tag == 3) {
+                    truth >> str <- payload != 0 ? "true" : "false";
+                    result <- sliceRaw(truth, 0, textLen(truth));
+                } else if (tag == 4) {
+                    character >> byte <- cast(payload);
+                    result <- repeatRaw(character, 1);
+                } else if (tag == 5) {
+                    source >> str <- cast(payload);
+                    result <- sliceRaw(source, 0, textLen(source));
+                } else if (tag == 6) {
+                    pointerSpec >> str <- specLen == 0 ? "#x" : specText;
+                    result <- formatUIntRaw(payload, pointerSpec);
+                } else {
+                    result <- sliceRaw("<?>" , 0, 3);
+                }
+                textFree(spec);
+                return result;
+            }
+
+            alignText(value >> str, specBytes >> p<byte>, specLen >> int) -> str {
+                position >> int <- 0;
+                fillByte >> byte <- 32;
+                alignment >> byte <- 0;
+                width >> int <- 0;
+                limit >> int <- textLen(value);
+
+                if (specLen >= 2 &&
+                    (rd(off(specBytes, 1)) == 60 || rd(off(specBytes, 1)) == 62 || rd(off(specBytes, 1)) == 94)) {
+                    fillByte <- rd(specBytes);
+                    alignment <- rd(off(specBytes, 1));
+                    position <- 2;
+                } else if (specLen >= 1 &&
+                    (rd(specBytes) == 60 || rd(specBytes) == 62 || rd(specBytes) == 94)) {
+                    alignment <- rd(specBytes);
+                    position <- 1;
+                }
+                while (position < specLen && rd(off(specBytes, position)) >= 48 && rd(off(specBytes, position)) <= 57) {
+                    width <- width * 10 + cast(rd(off(specBytes, position)) - 48);
+                    position += 1;
+                }
+                if (position < specLen && rd(off(specBytes, position)) == 46) {
+                    position += 1;
+                    limit <- 0;
+                    while (position < specLen && rd(off(specBytes, position)) >= 48 && rd(off(specBytes, position)) <= 57) {
+                        limit <- limit * 10 + cast(rd(off(specBytes, position)) - 48);
+                        position += 1;
+                    }
+                }
+
+                sourceLen >> int <- textLen(value);
+                if (limit < sourceLen) {
+                    sourceLen <- limit;
+                }
+                total >> int <- width > sourceLen ? width : sourceLen;
+                padding >> int <- total - sourceLen;
+                left >> int <- alignment == 62 ? padding : (alignment == 94 ? padding / 2 : 0);
+                right >> int <- padding - left;
+                out >> p<byte> <- textAlloc(total + 1);
+                guard out != null else return cast(null);
+                cursor >> int <- repeatByte(out, 0, fillByte, left);
+                cursor <- copyBytes(out, cursor, cast(value), sourceLen);
+                cursor <- repeatByte(out, cursor, fillByte, right);
+                wr(off(out, cursor), 0);
+                return cast(out);
+            }
+
+            formatTemplateRaw(
+                template >> str,
+                descriptors >> p<byte>,
+                count >> int,
+                named >> bool
+            ) -> str {
+                templateBytes >> p<byte> <- cast(template);
+                templateLen >> int <- textLen(template);
+                capacity >> int <- templateLen + count * 256 + 1;
+                out >> p<byte> <- textAlloc(capacity);
+                guard out != null else return cast(null);
+                input >> int <- 0;
+                output >> int <- 0;
+                positional >> int <- 0;
+
+                while (input < templateLen) {
+                    code >> byte <- rd(off(templateBytes, input));
+                    if (code == 123 && input + 1 < templateLen && rd(off(templateBytes, input + 1)) == 123) {
+                        wr(off(out, output), 123);
+                        output += 1;
+                        input += 2;
+                        continue;
+                    }
+                    if (code == 125 && input + 1 < templateLen && rd(off(templateBytes, input + 1)) == 125) {
+                        wr(off(out, output), 125);
+                        output += 1;
+                        input += 2;
+                        continue;
+                    }
+                    if (code != 123) {
+                        wr(off(out, output), code);
+                        output += 1;
+                        input += 1;
+                        continue;
+                    }
+
+                    tokenStart >> int <- input + 1;
+                    tokenEnd >> int <- tokenStart;
+                    colon >> int <- -1;
+                    while (tokenEnd < templateLen && rd(off(templateBytes, tokenEnd)) != 125) {
+                        if (rd(off(templateBytes, tokenEnd)) == 58 && colon < 0) {
+                            colon <- tokenEnd;
+                        }
+                        tokenEnd += 1;
+                    }
+                    guard tokenEnd < templateLen else {
+                        wr(off(out, output), code);
+                        output += 1;
+                        input += 1;
+                        continue;
+                    }
+
+                    nameEnd >> int <- colon >= 0 ? colon : tokenEnd;
+                    nameLen >> int <- nameEnd - tokenStart;
+                    argument >> int <- -1;
+                    if (nameLen == 0) {
+                        argument <- positional;
+                        positional += 1;
+                    } else if (named) {
+                        argument <- descriptorIndexByName(
+                            descriptors,
+                            count,
+                            off(templateBytes, tokenStart),
+                            nameLen
+                        );
+                    } else {
+                        numeric >> bool <- true;
+                        parseAt >> int <- tokenStart;
+                        argument <- 0;
+                        while (parseAt < nameEnd) {
+                            digit >> byte <- rd(off(templateBytes, parseAt));
+                            if (digit < 48 || digit > 57) {
+                                numeric <- false;
+                            } else {
+                                argument <- argument * 10 + cast(digit - 48);
+                            }
+                            parseAt += 1;
+                        }
+                        if (!numeric) {
+                            argument <- -1;
+                        }
+                    }
+
+                    if (argument >= 0 && argument < count) {
+                        specStart >> int <- colon >= 0 ? colon + 1 : tokenEnd;
+                        specLen >> int <- tokenEnd - specStart;
+                        rendered >> str <- descriptorText(
+                            descriptors,
+                            argument,
+                            off(templateBytes, specStart),
+                            specLen
+                        );
+                        descriptor >> p<byte> <- off(descriptors, argument * 16);
+                        tag >> u64 <- rd<u64>(descriptor);
+                        finalText >> str <- rendered;
+                        if (tag == 5 && specLen != 0) {
+                            finalText <- alignText(rendered, off(templateBytes, specStart), specLen);
+                        }
+                        renderedLen >> int <- textLen(finalText);
+                        output <- copyBytes(out, output, cast(finalText), renderedLen);
+                        if (finalText != rendered) {
+                            textFree(cast(finalText));
+                        }
+                        textFree(cast(rendered));
+                    }
+                    input <- tokenEnd + 1;
+                }
+                wr(off(out, output), 0);
+                return cast(out);
+            }
+
+        public:
+            emptyRaw() -> str {
+                out >> p<byte> <- textAlloc(1);
+                guard out != null else return cast(null);
+                wr(out, 0);
+                return cast(out);
+            }
+
+            allocRaw(bytes >> int) -> p<byte> {
+                return textAlloc(bytes);
+            }
+
+            lengthRaw(value >> str) -> int {
+                return textLen(value);
+            }
+
+            isEmptyRaw(value >> str) -> bool {
+                return textLen(value) == 0;
+            }
+
+            copyRaw(
+                out >> p<byte>,
+                position >> int,
+                source >> str,
+                count >> int
+            ) -> int {
+                return copyBytes(out, position, cast(source), count);
+            }
+
+            repeatRaw(value >> byte, count >> int) -> str {
+                out >> p<byte> <- textAlloc(count + 1);
+                guard out != null else return cast(null);
+                position >> int <- repeatByte(out, 0, value, count);
+                wr(off(out, position), 0);
+                return cast(out);
+            }
+
+            charCodeRaw(value >> byte) -> int {
+                return cast(value);
+            }
+
+            charToStrRaw(value >> byte) -> str {
+                return repeatRaw(value, 1);
+            }
+
+            concatRaw(left >> str, right >> str) -> str {
+                leftLen >> int <- textLen(left);
+                rightLen >> int <- textLen(right);
+                out >> p<byte> <- textAlloc(leftLen + rightLen + 1);
+                guard out != null else return cast(null);
+                position >> int <- copyBytes(out, 0, cast(left), leftLen);
+                position <- copyBytes(out, position, cast(right), rightLen);
+                wr(off(out, position), 0);
+                return cast(out);
+            }
+
+            concatIntoRaw(
+                destination >> p<byte>,
+                capacity >> int,
+                left >> str,
+                right >> str
+            ) -> int {
+                leftLen >> int <- textLen(left);
+                rightLen >> int <- textLen(right);
+                total >> int <- leftLen + rightLen;
+                guard destination != null && capacity > 0 && total < capacity else return -1;
+                position >> int <- copyBytes(destination, 0, cast(left), leftLen);
+                position <- copyBytes(destination, position, cast(right), rightLen);
+                wr(off(destination, position), 0);
+                return position;
+            }
+
+            sliceRaw(value >> str, start >> int, count >> int) -> str {
+                source >> p<byte> <- cast<byte>(value);
+                out >> p<byte> <- textAlloc(count + 1);
+                guard out != null else return cast(null);
+                copyBytes(out, 0, off(source, start), count);
+                wr(off(out, count), 0);
+                return cast(out);
+            }
+
+            compareRaw(left >> str, right >> str) -> int {
+                leftBytes >> p<byte> <- cast(left);
+                rightBytes >> p<byte> <- cast(right);
+                position >> int <- 0;
+                while (rd(off(leftBytes, position)) == rd(off(rightBytes, position))) {
+                    guard rd(off(leftBytes, position)) != 0 else return 0;
+                    position += 1;
+                }
+                return rd(off(leftBytes, position)) < rd(off(rightBytes, position)) ? -1 : 1;
+            }
+
+            equalsRaw(left >> str, right >> str) -> bool {
+                return compareRaw(left, right) == 0;
+            }
+
+            startsWithRaw(value >> str, prefix >> str) -> bool {
+                valueBytes >> p<byte> <- cast(value);
+                prefixBytes >> p<byte> <- cast(prefix);
+                position >> int <- 0;
+                while (rd(off(prefixBytes, position)) != 0) {
+                    guard rd(off(valueBytes, position)) == rd(off(prefixBytes, position)) else {
+                        return false;
+                    }
+                    position += 1;
+                }
+                return true;
+            }
+
+            endsWithRaw(value >> str, suffix >> str) -> bool {
+                valueLen >> int <- textLen(value);
+                suffixLen >> int <- textLen(suffix);
+                valueBytes >> p<byte> <- cast<byte>(value);
+                guard valueLen >= suffixLen else return false;
+                tail >> str <- cast(off(valueBytes, valueLen - suffixLen));
+                return startsWithRaw(tail, suffix);
+            }
+
+            indexOfRaw(value >> str, needle >> str) -> int {
+                valueLen >> int <- textLen(value);
+                needleLen >> int <- textLen(needle);
+                guard needleLen != 0 else return 0;
+                guard valueLen >= needleLen else return -1;
+                valueBytes >> p<byte> <- cast<byte>(value);
+                position >> int <- 0;
+                while (position <= valueLen - needleLen) {
+                    tail >> str <- cast(off(valueBytes, position));
+                    if (startsWithRaw(tail, needle)) {
+                        return position;
+                    }
+                    position += 1;
+                }
+                return -1;
+            }
+
+            containsRaw(value >> str, needle >> str) -> bool {
+                return indexOfRaw(value, needle) >= 0;
+            }
+
+            replaceRaw(value >> str, needle >> str, replacement >> str) -> str {
+                source >> p<byte> <- cast<byte>(value);
+                find >> p<byte> <- cast<byte>(needle);
+                put >> p<byte> <- cast<byte>(replacement);
+                sourceLen >> int <- textLen(value);
+                findLen >> int <- textLen(needle);
+                putLen >> int <- textLen(replacement);
+                matches >> int <- 0;
+                cursor >> int <- 0;
+
+                if (findLen <= 0) {
+                    return sliceRaw(value, 0, sourceLen);
+                }
+
+                while (cursor + findLen <= sourceLen) {
+                    if (bytesEqualRaw(off(source, cursor), find, findLen)) {
+                        matches += 1;
+                        cursor += findLen;
+                    } else {
+                        cursor += 1;
+                    }
+                }
+
+                outputLen >> int <- sourceLen + matches * (putLen - findLen);
+                output >> p<byte> <- textAlloc(outputLen + 1);
+                guard output != null else return cast(null);
+
+                cursor <- 0;
+                written >> int <- 0;
+                while (cursor < sourceLen) {
+                    if (
+                        cursor + findLen <= sourceLen &&
+                        bytesEqualRaw(off(source, cursor), find, findLen)
+                    ) {
+                        written <- copyBytes(output, written, put, putLen);
+                        cursor += findLen;
+                    } else {
+                        wr(off(output, written), rd(off(source, cursor)));
+                        written += 1;
+                        cursor += 1;
+                    }
+                }
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            asciiCaseRaw(value >> str, upper >> bool) -> str {
+                count >> int <- textLen(value);
+                source >> p<byte> <- cast(value);
+                out >> p<byte> <- textAlloc(count + 1);
+                guard out != null else return cast(null);
+                position >> int <- 0;
+                while (position < count) {
+                    code >> byte <- rd(off(source, position));
+                    if (upper && code >= 97 && code <= 122) {
+                        code <- code - 32;
+                    } else if (!upper && code >= 65 && code <= 90) {
+                        code <- code + 32;
+                    }
+                    wr(off(out, position), code);
+                    position += 1;
+                }
+                wr(off(out, count), 0);
+                return cast(out);
+            }
+
+            upperRaw(value >> str) -> str {
+                return asciiCaseRaw(value, true);
+            }
+
+            lowerRaw(value >> str) -> str {
+                return asciiCaseRaw(value, false);
+            }
+
+            trimRaw(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                start >> int <- 0;
+                finish >> int <- textLen(value);
+                while (start < finish && rd(off(source, start)) <= 32) {
+                    start += 1;
+                }
+                while (finish > start && rd(off(source, finish - 1)) <= 32) {
+                    finish -= 1;
+                }
+                return sliceRaw(value, start, finish - start);
+            }
+
+            truncateRaw(value >> str, limit >> int) -> str {
+                sourceLen >> int <- textLen(value);
+                count >> int <- limit;
+                if (count < 0) {
+                    count <- 0;
+                }
+                if (count > sourceLen) {
+                    count <- sourceLen;
+                }
+                return sliceRaw(value, 0, count);
+            }
+
+            truncateEndRaw(value >> str, limit >> int) -> str {
+                sourceLen >> int <- textLen(value);
+                if (sourceLen <= limit) {
+                    return sliceRaw(value, 0, sourceLen);
+                }
+                if (limit <= 0) {
+                    return emptyRaw();
+                }
+                if (limit <= 3) {
+                    return sliceRaw("...", 0, limit);
+                }
+
+                output >> p<byte> <- textAlloc(limit + 1);
+                guard output != null else return cast(null);
+                prefix >> int <- limit - 3;
+                written >> int <- copyBytes(output, 0, cast(value), prefix);
+                written <- copyBytes(output, written, cast("..."), 3);
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            truncateMiddleRaw(value >> str, limit >> int) -> str {
+                sourceLen >> int <- textLen(value);
+                if (sourceLen <= limit) {
+                    return sliceRaw(value, 0, sourceLen);
+                }
+                if (limit <= 0) {
+                    return emptyRaw();
+                }
+                if (limit <= 3) {
+                    return sliceRaw("...", 0, limit);
+                }
+
+                body >> int <- limit - 3;
+                left >> int <- (body + 1) / 2;
+                right >> int <- body - left;
+                source >> p<byte> <- cast<byte>(value);
+                output >> p<byte> <- textAlloc(limit + 1);
+                guard output != null else return cast(null);
+                written >> int <- copyBytes(output, 0, source, left);
+                written <- copyBytes(output, written, cast("..."), 3);
+                written <- copyBytes(
+                    output,
+                    written,
+                    off(source, sourceLen - right),
+                    right
+                );
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            splitIntoRaw(value >> str, separator >> str, descriptor >> p<byte>) -> int {
+                guard descriptor != null else return 0;
+
+                valueBytes >> p<byte> <- cast(value);
+                separatorBytes >> p<byte> <- cast(separator);
+                valueLen >> int <- textLen(value);
+                separatorLen >> int <- textLen(separator);
+                parts >> int <- 1;
+                position >> int <- 0;
+
+                if (separatorLen != 0) {
+                    while (position <= valueLen - separatorLen) {
+                        matched >> int <- 0;
+                        while (
+                            matched < separatorLen &&
+                            rd(off(valueBytes, position + matched)) == rd(off(separatorBytes, matched))
+                        ) {
+                            matched += 1;
+                        }
+                        if (matched == separatorLen) {
+                            parts += 1;
+                            position += separatorLen;
+                        } else {
+                            position += 1;
+                        }
+                    }
+                }
+
+                tableBytes >> int <- parts * sizeOf<addr>();
+                tableStorage >> p<byte> <- textAlloc(tableBytes);
+                guard tableStorage != null else {
+                    descriptorWords >> p<addr> <- cast(descriptor);
+                    wr(descriptorWords, 0);
+                    wr<i64>(off(descriptor, sizeOf<addr>()), 0);
+                    return 0;
+                }
+
+                table >> p<str> <- cast(tableStorage);
+                tokenStart >> int <- 0;
+                tokenIndex >> int <- 0;
+                position <- 0;
+
+                if (separatorLen == 0) {
+                    wr(table, sliceRaw(value, 0, valueLen));
+                    tokenIndex <- 1;
+                } else {
+                    while (position <= valueLen - separatorLen) {
+                        matched >> int <- 0;
+                        while (
+                            matched < separatorLen &&
+                            rd(off(valueBytes, position + matched)) == rd(off(separatorBytes, matched))
+                        ) {
+                            matched += 1;
+                        }
+                        if (matched == separatorLen) {
+                            wr(
+                                off(table, tokenIndex),
+                                sliceRaw(value, tokenStart, position - tokenStart)
+                            );
+                            tokenIndex += 1;
+                            position += separatorLen;
+                            tokenStart <- position;
+                        } else {
+                            position += 1;
+                        }
+                    }
+                    wr(
+                        off(table, tokenIndex),
+                        sliceRaw(value, tokenStart, valueLen - tokenStart)
+                    );
+                    tokenIndex += 1;
+                }
+
+                descriptorWords >> p<addr> <- cast(descriptor);
+                wr(descriptorWords, adr(table));
+                wr<i64>(off(descriptor, sizeOf<addr>()), cast(tokenIndex));
+                return 1;
+            }
+
+            splitReleaseRaw(descriptor >> p<byte>) -> bool {
+                guard descriptor != null else return true;
+                descriptorWords >> p<addr> <- cast(descriptor);
+                tableAddress >> addr <- rd(descriptorWords);
+                count >> i64 <- rd<i64>(off(descriptor, sizeOf<addr>()));
+                table >> p<str> <- from(tableAddress);
+                index >> int <- 0;
+                while (index < count) {
+                    piece >> str <- rd(off(table, index));
+                    textFree(cast<byte>(piece));
+                    index += 1;
+                }
+                textFree(cast<byte>(table));
+                wr(descriptorWords, 0);
+                wr<i64>(off(descriptor, sizeOf<addr>()), 0);
+                return true;
+            }
+
+            padLeftRaw(value >> str, width >> int, fill >> byte) -> str {
+                sourceLen >> int <- textLen(value);
+                total >> int <- width > sourceLen ? width : sourceLen;
+                padding >> int <- total - sourceLen;
+                out >> p<byte> <- textAlloc(total + 1);
+                guard out != null else return cast(null);
+                position >> int <- repeatByte(out, 0, fill, padding);
+                position <- copyBytes(out, position, cast(value), sourceLen);
+                wr(off(out, position), 0);
+                return cast(out);
+            }
+
+            padRightRaw(value >> str, width >> int, fill >> byte) -> str {
+                sourceLen >> int <- textLen(value);
+                total >> int <- width > sourceLen ? width : sourceLen;
+                padding >> int <- total - sourceLen;
+                out >> p<byte> <- textAlloc(total + 1);
+                guard out != null else return cast(null);
+                position >> int <- copyBytes(out, 0, cast(value), sourceLen);
+                position <- repeatByte(out, position, fill, padding);
+                wr(off(out, position), 0);
+                return cast(out);
+            }
+
+            padBothRaw(value >> str, width >> int, fill >> byte) -> str {
+                sourceLen >> int <- textLen(value);
+                total >> int <- width > sourceLen ? width : sourceLen;
+                padding >> int <- total - sourceLen;
+                left >> int <- padding / 2;
+                right >> int <- padding - left;
+                out >> p<byte> <- textAlloc(total + 1);
+                guard out != null else return cast(null);
+                position >> int <- repeatByte(out, 0, fill, left);
+                position <- copyBytes(out, position, cast(value), sourceLen);
+                position <- repeatByte(out, position, fill, right);
+                wr(off(out, position), 0);
+                return cast(out);
+            }
+
+            alignLeftRaw(value >> str, width >> int) -> str {
+                return padRightRaw(value, width, 32);
+            }
+
+            alignRightRaw(value >> str, width >> int) -> str {
+                return padLeftRaw(value, width, 32);
+            }
+
+            alignCenterRaw(value >> str, width >> int) -> str {
+                return padBothRaw(value, width, 32);
+            }
+
+            formatRaw(template >> str, descriptors >> p<byte>, count >> int) -> str {
+                return formatTemplateRaw(template, descriptors, count, false);
+            }
+
+            formatNamedRaw(template >> str, descriptors >> p<byte>, count >> int) -> str {
+                return formatTemplateRaw(template, descriptors, count, true);
+            }
+
+            releaseRaw(value >> str) -> bool {
+                return textFree(cast(value));
+            }
+
+            fromIntRaw(value >> int) -> str {
+                return formatIntRaw(value, "");
+            }
+
+            fromBoolRaw(value >> bool) -> str {
+                return value ? sliceRaw("true", 0, 4) : sliceRaw("false", 0, 5);
+            }
+
+            fromFloatRaw(value >> ft64) -> str {
+                rendered >> str <- formatFloatRaw(value, ".17f");
+                bytes >> p<byte> <- cast(rendered);
+                guard bytes != null else return rendered;
+                finish >> int <- textLen(rendered);
+                while (finish > 0 && rd(off(bytes, finish - 1)) == 48) {
+                    finish -= 1;
+                }
+                if (finish > 0 && rd(off(bytes, finish - 1)) == 46) {
+                    finish -= 1;
+                }
+                wr(off(bytes, finish), 0);
+                return rendered;
+            }
+
+            fromFloatBitsRaw(bits >> u64) -> str {
+                slot >> p<ft64> <- cast(&bits);
+                return fromFloatRaw(rd(slot));
+            }
+
+            formatIntRaw(value >> i64, spec >> str) -> str {
+                specBytes >> p<byte> <- cast(spec);
+                specLen >> int <- textLen(spec);
+                pos >> int <- 0;
+                sign >> byte <- 0;
+                alternate >> bool <- false;
+                zero >> bool <- false;
+                width >> int <- 0;
+                kind >> byte <- 100;
+
+                if (pos < specLen && (rd(off(specBytes, pos)) == 43 || rd(off(specBytes, pos)) == 32)) {
+                    sign <- rd(off(specBytes, pos));
+                    pos += 1;
+                }
+                if (pos < specLen && rd(off(specBytes, pos)) == 35) {
+                    alternate <- true;
+                    pos += 1;
+                }
+                if (pos < specLen && rd(off(specBytes, pos)) == 48) {
+                    zero <- true;
+                    pos += 1;
+                }
+                while (pos < specLen && rd(off(specBytes, pos)) >= 48 && rd(off(specBytes, pos)) <= 57) {
+                    width <- width * 10 + cast(rd(off(specBytes, pos)) - 48);
+                    pos += 1;
+                }
+                if (pos < specLen) {
+                    kind <- rd(off(specBytes, pos));
+                }
+
+                base >> u64 <- 10;
+                upper >> bool <- false;
+                if (kind == 120 || kind == 112) {
+                    base <- 16;
+                } else if (kind == 88) {
+                    base <- 16;
+                    upper <- true;
+                } else if (kind == 111) {
+                    base <- 8;
+                } else if (kind == 98) {
+                    base <- 2;
+                }
+
+                negative >> bool <- value < 0;
+                magnitude >> u64 <- cast(value);
+                if (negative) {
+                    magnitude <- cast(0 - value);
+                }
+                digits >> int <- unsignedDigits(magnitude, base);
+                prefix >> int <- (negative || sign != 0 ? 1 : 0) +
+                    ((alternate || kind == 112) && base != 10 ? 2 : 0);
+                body >> int <- prefix + digits;
+                padding >> int <- width > body ? width - body : 0;
+                out >> p<byte> <- textAlloc(body + padding + 1);
+                shifted >> p<byte> <- null;
+                written >> int <- 0;
+                guard out != null else return cast(null);
+
+                cursor >> int <- 0;
+                if (negative) {
+                    wr(off(out, cursor), 45);
+                    cursor += 1;
+                } else if (sign != 0) {
+                    wr(off(out, cursor), sign);
+                    cursor += 1;
+                }
+                if ((alternate || kind == 112) && base != 10) {
+                    wr(off(out, cursor), 48);
+                    cursor += 1;
+                    if (base == 16) {
+                        wr(off(out, cursor), upper ? 88 : 120);
+                    } else if (base == 8) {
+                        wr(off(out, cursor), 111);
+                    } else {
+                        wr(off(out, cursor), 98);
+                    }
+                    cursor += 1;
+                }
+                if (zero) {
+                    cursor <- repeatByte(out, cursor, 48, padding);
+                } else {
+                    shifted <- textAlloc(body + padding + 1);
+                    guard shifted != null else return cast(out);
+                    written <- repeatByte(shifted, 0, 32, padding);
+                    written <- copyBytes(shifted, written, out, cursor);
+                    textFree(out);
+                    out <- shifted;
+                    cursor <- written;
+                }
+                cursor <- writeUnsigned(out, cursor, magnitude, base, upper, digits);
+                wr(off(out, cursor), 0);
+                return cast(out);
+            }
+
+            formatUIntRaw(value >> u64, spec >> str) -> str {
+                specBytes >> p<byte> <- cast(spec);
+                specLen >> int <- textLen(spec);
+                position >> int <- 0;
+                alternate >> bool <- false;
+                zero >> bool <- false;
+                width >> int <- 0;
+                kind >> byte <- 100;
+
+                if (position < specLen && rd(off(specBytes, position)) == 35) {
+                    alternate <- true;
+                    position += 1;
+                }
+                if (position < specLen && rd(off(specBytes, position)) == 48) {
+                    zero <- true;
+                    position += 1;
+                }
+                while (position < specLen && rd(off(specBytes, position)) >= 48 && rd(off(specBytes, position)) <= 57) {
+                    width <- width * 10 + cast(rd(off(specBytes, position)) - 48);
+                    position += 1;
+                }
+                if (position < specLen) {
+                    kind <- rd(off(specBytes, position));
+                }
+
+                base >> u64 <- 10;
+                upper >> bool <- false;
+                if (kind == 120 || kind == 112) {
+                    base <- 16;
+                } else if (kind == 88) {
+                    base <- 16;
+                    upper <- true;
+                } else if (kind == 111) {
+                    base <- 8;
+                } else if (kind == 98) {
+                    base <- 2;
+                }
+
+                digits >> int <- unsignedDigits(value, base);
+                prefix >> int <- (alternate || kind == 112) && base != 10 ? 2 : 0;
+                body >> int <- prefix + digits;
+                padding >> int <- width > body ? width - body : 0;
+                out >> p<byte> <- textAlloc(body + padding + 1);
+                guard out != null else return cast(null);
+                cursor >> int <- 0;
+
+                if (!zero) {
+                    cursor <- repeatByte(out, cursor, 32, padding);
+                }
+                if (prefix != 0) {
+                    wr(off(out, cursor), 48);
+                    cursor += 1;
+                    if (base == 16) {
+                        wr(off(out, cursor), upper ? 88 : 120);
+                    } else if (base == 8) {
+                        wr(off(out, cursor), 111);
+                    } else {
+                        wr(off(out, cursor), 98);
+                    }
+                    cursor += 1;
+                }
+                if (zero) {
+                    cursor <- repeatByte(out, cursor, 48, padding);
+                }
+                cursor <- writeUnsigned(out, cursor, value, base, upper, digits);
+                wr(off(out, cursor), 0);
+                return cast(out);
+            }
+
+            formatFloatRaw(value >> ft64, spec >> str) -> str {
+                specBytes >> p<byte> <- cast(spec);
+                specLen >> int <- textLen(spec);
+                position >> int <- 0;
+                sign >> byte <- 0;
+                alternate >> bool <- false;
+                zero >> bool <- false;
+                width >> int <- 0;
+                precision >> int <- 6;
+                kind >> byte <- 102;
+
+                if (position < specLen && (rd(off(specBytes, position)) == 43 || rd(off(specBytes, position)) == 32)) {
+                    sign <- rd(off(specBytes, position));
+                    position += 1;
+                }
+                if (position < specLen && rd(off(specBytes, position)) == 35) {
+                    alternate <- true;
+                    position += 1;
+                }
+                if (position < specLen && rd(off(specBytes, position)) == 48) {
+                    zero <- true;
+                    position += 1;
+                }
+                while (position < specLen && rd(off(specBytes, position)) >= 48 && rd(off(specBytes, position)) <= 57) {
+                    width <- width * 10 + cast(rd(off(specBytes, position)) - 48);
+                    position += 1;
+                }
+                if (position < specLen && rd(off(specBytes, position)) == 46) {
+                    position += 1;
+                    precision <- 0;
+                    while (position < specLen && rd(off(specBytes, position)) >= 48 && rd(off(specBytes, position)) <= 57) {
+                        precision <- precision * 10 + cast(rd(off(specBytes, position)) - 48);
+                        position += 1;
+                    }
+                }
+                if (position < specLen) {
+                    kind <- rd(off(specBytes, position));
+                }
+                if (precision > 18) {
+                    precision <- 18;
+                }
+
+                negative >> bool <- value < 0.0;
+                magnitude >> ft64 <- negative ? 0.0 - value : value;
+                percent >> bool <- kind == 37;
+                scientific >> bool <- kind == 101 || kind == 69;
+                exponent >> int <- 0;
+                if (percent) {
+                    magnitude <- magnitude * 100.0;
+                    kind <- 102;
+                }
+                if (scientific && magnitude != 0.0) {
+                    while (magnitude >= 10.0) {
+                        magnitude <- magnitude / 10.0;
+                        exponent += 1;
+                    }
+                    while (magnitude < 1.0) {
+                        magnitude <- magnitude * 10.0;
+                        exponent -= 1;
+                    }
+                }
+
+                scale >> u64 <- 1;
+                scaleAt >> int <- 0;
+                while (scaleAt < precision) {
+                    scale <- scale * 10;
+                    scaleAt += 1;
+                }
+                scaleFloat >> ft64 <- cast(scale);
+                scaled >> u64 <- cast(magnitude * scaleFloat + 0.5);
+                whole >> u64 <- scaled / scale;
+                fraction >> u64 <- scaled % scale;
+                wholeDigits >> int <- unsignedDigits(whole, 10);
+                exponentMagnitude >> u64 <- cast(exponent < 0 ? 0 - exponent : exponent);
+                exponentDigits >> int <- unsignedDigits(exponentMagnitude, 10);
+                if (exponentDigits < 2) {
+                    exponentDigits <- 2;
+                }
+
+                prefix >> int <- negative || sign != 0 ? 1 : 0;
+                decimalBytes >> int <- precision > 0 || alternate ? precision + 1 : 0;
+                exponentBytes >> int <- scientific ? exponentDigits + 2 : 0;
+                suffixBytes >> int <- percent ? 1 : 0;
+                body >> int <- prefix + wholeDigits + decimalBytes + exponentBytes + suffixBytes;
+                padding >> int <- width > body ? width - body : 0;
+                out >> p<byte> <- textAlloc(body + padding + 1);
+                guard out != null else return cast(null);
+                cursor >> int <- 0;
+
+                if (!zero) {
+                    cursor <- repeatByte(out, cursor, 32, padding);
+                }
+                if (negative) {
+                    wr(off(out, cursor), 45);
+                    cursor += 1;
+                } else if (sign != 0) {
+                    wr(off(out, cursor), sign);
+                    cursor += 1;
+                }
+                if (zero) {
+                    cursor <- repeatByte(out, cursor, 48, padding);
+                }
+                cursor <- writeUnsigned(out, cursor, whole, 10, false, wholeDigits);
+                if (decimalBytes != 0) {
+                    wr(off(out, cursor), 46);
+                    cursor += 1;
+                    if (precision != 0) {
+                        cursor <- writeUnsigned(out, cursor, fraction, 10, false, precision);
+                    }
+                }
+                if (scientific) {
+                    wr(off(out, cursor), kind == 69 ? 69 : 101);
+                    cursor += 1;
+                    wr(off(out, cursor), exponent < 0 ? 45 : 43);
+                    cursor += 1;
+                    cursor <- writeUnsigned(
+                        out,
+                        cursor,
+                        exponentMagnitude,
+                        10,
+                        false,
+                        exponentDigits
+                    );
+                }
+                if (percent) {
+                    wr(off(out, cursor), 37);
+                    cursor += 1;
+                }
+                wr(off(out, cursor), 0);
+                return cast(out);
+            }
+
+            formatFloatBitsRaw(bits >> u64, spec >> str) -> str {
+                slot >> p<ft64> <- cast(&bits);
+                return formatFloatRaw(rd(slot), spec);
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,36 @@
+use <process:command>;
+use <data:json>;
+use <io:output>;
+nativeStringReleaseCaptureV56 {
+    hexBytes(data >> p<byte>, bytes >> int) -> str {
+        digits >> p<byte> <- cast<byte>("0123456789abcdef");
+        result >> p<byte> <- cast<byte>(alloc(bytes*2+1)); guard result != null else return null;
+        at >> int <- 0;
+        while (at < bytes) {
+            current >> int <- rd(off(data,at));
+            wr(off(result,at*2),rd(off(digits,current/16)));
+            wr(off(result,at*2+1),rd(off(digits,current%16))); at += 1;
+        }
+        wr(off(result,bytes*2),0); return cast(result);
+    }
+    run() -> int {
+        pipe >> addr <- commandPipeOpen(false,false);
+        guard pipe != null && commandPipeError(pipe) == 0 else return 1;
+        guard commandPipeWrite(pipe,adr("compiler capture"),16) == 16 && commandPipeCloseWrite(pipe) else return 2;
+        data >> p<byte> <- cast<byte>(alloc(17)); guard data != null else return 3;
+        count >> int <- commandPipeRead(pipe,adr(data),16); guard count == 16 else return 4;
+        wr(off(data,count),0);
+        hex >> str <- hexBytes(data,count); guard hex != null else return 5;
+        decoded >> str <- cast(data);
+        row >> int <- jsonNewObject(); hexNode >> int <- jsonNewString(hex); text >> int <- jsonNewString(decoded);
+        guard row > 0 && hexNode > 0 && text > 0 && jsonObjectSet(row,"hex",hexNode) && jsonObjectSet(row,"stdout",text) else return 6;
+        jsonRelease(hexNode); jsonRelease(text);
+        guard strRelease(hex) && strRelease(decoded) && commandPipeRelease(pipe) else return 7;
+        encoded >> str <- jsonStringify(row); guard encoded != null else return 8;
+        println(encoded);
+        guard strRelease(encoded) && jsonRelease(row) else return 9;
+        return 137;
+    }
+    ref main ->> run;
+    fa: return true;
+}

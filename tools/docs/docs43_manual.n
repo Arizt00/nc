@@ -1,0 +1,219 @@
+use <data:json>;
+use <project:docs43_document, docs43_manual_tail, docs43_source, docs43_time, docs43_books, docs43_utf8, release_io, cert_json>;
+
+docs43Manual {
+    stc:
+        workspace >> str <- "";
+        families >> int <- 0;
+        counts >> array<int,7>;
+        good >> bool <- true;
+        progress >> str <- "not started";
+    fn:
+        private:
+            pythonValue(value >> int, nested >> bool) -> str {
+                kind >> int <- jsonKind(value);
+                if (kind == 0 || kind == 1) return "None";
+                if (kind == 2) return jsonGetBoolOr(value,false) ? "True" : "False";
+                if (kind == 4) {
+                    text >> str <- jsonStringView(value,""); if (!nested) return strSubstring(text,0,strByteLen(text));
+                    quote >> str <- strContains(text,"'") && !strContains(text,"\"") ? "\"" : "'";
+                    escaped >> str <- docs43_books.docs43Books.replace(text,"\\","\\\\");
+                    next >> str <- docs43_books.docs43Books.replace(escaped,quote,"\\"+quote); strRelease(escaped); escaped <- next;
+                    next <- docs43_books.docs43Books.replace(escaped,"\n","\\n"); strRelease(escaped); escaped <- next;
+                    next <- docs43_books.docs43Books.replace(escaped,"\r","\\r"); strRelease(escaped); escaped <- next;
+                    next <- docs43_books.docs43Books.replace(escaped,"\t","\\t"); strRelease(escaped); escaped <- next;
+                    return quote+escaped+quote;
+                }
+                if (kind != 5 && kind != 6) return cert_json.certJson.stringify(value);
+                output >> str <- kind == 5 ? "[" : "{"; size >> int <- kind == 5 ? jsonArrayLen(value) : jsonObjectLen(value); i >> int <- 0;
+                while (i < size) {
+                    if (i > 0) output <- cert_json.certJson.append(output,", "); child >> int <- 0;
+                    if (kind == 5) child <- jsonArrayBorrow(value,i);
+                    else { key >> str <- jsonObjectKeyAt(value,i); name >> int <- jsonNewString(key); output <- cert_json.certJson.append(output,pythonValue(name,true)+": "); jsonRelease(name); child <- jsonObjectBorrow(value,key); free(cast<byte>(key)); }
+                    output <- cert_json.certJson.append(output,pythonValue(child,true)); jsonRelease(child); i += 1;
+                }
+                return output+(kind == 5 ? "]" : "}");
+            }
+            countExamples(path >> str, depth >> int) -> void {
+                if (depth > 64) { good <- false; return; }
+                if (release_io.releaseIo.fileType(path) != 2) return;
+                names >> int <- release_io.releaseIo.names(path);
+                if (names == 0) { good <- false; return; }
+                i >> int <- 0;
+                while (i < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,i); name >> str <- jsonStringView(item,"");
+                    full >> str <- path+"/"+name; j >> int <- 0;
+                    while (j < 7) { if (strEndsWith(name,docs43_books.docs43Books.part(".n|.nb|.nbb|.nm|.ncp|.s|.asm",j))) counts[j] <- counts[j]+1; j += 1; }
+                    if (release_io.releaseIo.fileType(full) == 2) countExamples(full,depth+1);
+                    strRelease(full); jsonRelease(item); i += 1;
+                }
+                jsonRelease(names);
+            }
+            loadFamilies() -> bool {
+                families <- jsonNewArray();
+                path >> str <- workspace+"/docs/spec/runtime/runtime_imports_index.json";
+                if (release_io.releaseIo.fileType(path) == 0) return true;
+                guard release_io.releaseIo.fileType(path) == 1 else return false;
+                text >> str <- docs43_source.docs43Source.readBytes(workspace,"docs/spec/runtime/runtime_imports_index.json",true);
+                progress <- "UTF8 source="+renderInt(docs43_source.docs43Source.ok() ? 1 : 0)+" valid="+renderInt(docs43_utf8.docs43Utf8.valid() ? 1 : 0);
+                guard docs43_source.docs43Source.ok() && docs43_utf8.docs43Utf8.valid() else { strRelease(text); return false; }
+                ascii >> str <- docs43_utf8.docs43Utf8.jsonAscii(text); strRelease(text);
+                model >> int <- jsonParse(ascii); strRelease(ascii);
+                progress <- "JSON root="+renderInt(jsonKind(model));
+                guard jsonKind(model) == 6 else { jsonRelease(model); return false; }
+                input >> int <- jsonObjectBorrow(model,"families");
+                progress <- "JSON families="+renderInt(jsonKind(input));
+                if (jsonKind(input) == 0) { jsonRelease(model); return true; }
+                guard jsonKind(input) == 5 else { jsonRelease(input); jsonRelease(model); return false; }
+                i >> int <- 0;
+                while (i < jsonArrayLen(input)) {
+                    item >> int <- jsonArrayBorrow(input,i);
+                    progress <- "family="+renderInt(i)+" kind="+renderInt(jsonKind(item));
+                    guard jsonKind(item) == 6 else { jsonRelease(item); jsonRelease(input); jsonRelease(model); return false; }
+                    field >> int <- jsonObjectBorrow(item,"family_key"); guard jsonKind(field) == 0 || jsonKind(field) == 4 || (jsonKind(field) == 1 && jsonArrayLen(input) == 1) else { jsonRelease(field); jsonRelease(item); jsonRelease(input); jsonRelease(model); return false; } jsonRelease(field);
+                    field <- jsonObjectBorrow(item,"import_path"); guard jsonKind(field) == 0 || jsonKind(field) == 1 || jsonKind(field) == 4 else { jsonRelease(field); jsonRelease(item); jsonRelease(input); jsonRelease(model); return false; } jsonRelease(field);
+                    field <- jsonObjectBorrow(item,"required_capabilities");
+                    progress <- "capabilities="+renderInt(jsonKind(field));
+                    if (jsonKind(field) != 0 && jsonKind(field) != 4 && jsonKind(field) != 5) { jsonRelease(field); jsonRelease(item); jsonRelease(input); jsonRelease(model); return false; }
+                    if (jsonKind(field) == 5) { j >> int <- 0; while (j < jsonArrayLen(field) && j < 3) { cap >> int <- jsonArrayBorrow(field,j); accepted >> bool <- jsonKind(cap) == 4; jsonRelease(cap); if (!accepted) { jsonRelease(field); jsonRelease(item); jsonRelease(input); jsonRelease(model); return false; } j += 1; } }
+                    jsonRelease(field);
+                    key >> str <- cert_json.certJson.field(item,"family_key"); at >> int <- 0;
+                    while (at < jsonArrayLen(families)) {
+                        other >> int <- jsonArrayBorrow(families,at); otherKey >> str <- cert_json.certJson.field(other,"family_key");
+                        comparison >> int <- strCompare(otherKey,key); strRelease(otherKey); jsonRelease(other);
+                        if (comparison > 0) break;
+                        at += 1;
+                    }
+                    cert_json.certJson.insert(families,at,item); strRelease(key); i += 1;
+                }
+                jsonRelease(input); jsonRelease(model); return true;
+            }
+        public:
+            phase() -> str { return progress; }
+            p(text >> str) -> void { docs43_document.docs43Document.paragraph(text); }
+            h(text >> str) -> void { docs43_document.docs43Document.heading(text,2); }
+            chapter(number >> str, title >> str) -> void { docs43_document.docs43Document.page(); docs43_document.docs43Document.heading(number+". "+title,1); }
+            b(text >> str) -> void { docs43_document.docs43Document.bullets(text,false); }
+            t(headers >> str, rows >> str, widths >> str) -> void { docs43_document.docs43Document.table(headers,rows,widths); }
+            s(paths >> str) -> void { docs43_document.docs43Document.sources(paths); }
+            c(caption >> str, code >> str) -> void { docs43_document.docs43Document.code(caption,code); }
+            read(relative >> str, maxLines >> int) -> str {
+                return docs43_source.docs43Source.read(workspace,relative,maxLines);
+            }
+            example(relative >> str, maxLines >> int) -> void {
+                text >> str <- read(relative,maxLines); c("Fuente: "+relative,text); strRelease(text);
+            }
+            appendRuntime() -> void {
+                docs43_document.docs43Document.tableStart("Familia|Import path|Exports|Capacidades iniciales","1450|2950|900|4060");
+                i >> int <- 0;
+                while (i < jsonArrayLen(families)) {
+                    item >> int <- jsonArrayBorrow(families,i);
+                    key >> str <- cert_json.certJson.field(item,"family_key"); path >> str <- cert_json.certJson.field(item,"import_path");
+                    exports >> int <- jsonObjectBorrow(item,"exports_count"); value >> str <- exports == 0 ? "" : pythonValue(exports,false);
+                    caps >> int <- jsonObjectBorrow(item,"required_capabilities"); description >> str <- ""; j >> int <- 0;
+                    while (j < jsonArrayLen(caps) && j < 3) {
+                        cap >> int <- jsonArrayBorrow(caps,j);
+                        if (j > 0) description <- cert_json.certJson.append(description,", ");
+                        description <- cert_json.certJson.append(description,jsonStringView(cap,"")); jsonRelease(cap); j += 1;
+                    }
+                    if (jsonArrayLen(caps) > 3) description <- cert_json.certJson.append(description,"...");
+                    if (jsonKind(caps) == 4) {
+                        chars >> str <- jsonStringView(caps,""); bytes >> p<byte> <- cast(chars); at >> int <- 0; j <- 0;
+                        while (at < strByteLen(chars) && j < 3) { size >> int <- docs43_utf8.docs43Utf8.span(rd(off(bytes,at)) & 255); if (j > 0) description <- cert_json.certJson.append(description,", "); description <- cert_json.certJson.append(description,strSubstring(chars,at,size)); at += size; j += 1; }
+                        if (at < strByteLen(chars)) description <- cert_json.certJson.append(description,"...");
+                    }
+                    docs43_document.docs43Document.rowValues(key,path,value,description);
+                    strRelease(key); strRelease(path); strRelease(value); strRelease(description); jsonRelease(caps); jsonRelease(exports); jsonRelease(item); i += 1;
+                }
+                docs43_document.docs43Document.tableEnd();
+            }
+            build(root >> str) -> bool {
+                workspace <- root; good <- true; docs43_source.docs43Source.reset(); i >> int <- 0; while (i < 7) { counts[i] <- 0; i += 1; }
+                progress <- "configuration"; countExamples(root+"/examples",0); guard good && loadFamilies() else return false;
+                progress <- "PDF destination";
+                guard docs43_document.docs43Document.begin(root+"/docs/manual/Manual_completo_nC.pdf") else return false;
+                docs43_document.docs43Document.centered("Manual completo de nC",28000,true);
+                docs43_document.docs43Document.centered("Lenguaje, capas, CLI, evidencia y ejemplos",15000,false);
+                today >> str <- docs43_time.docs43Time.today(); guard today != "" else return false;
+                docs43_document.docs43Document.centered("Edición interna generada el "+today,10500,false);
+                docs43_document.docs43Document.callout("Propósito","Este documento explica nC como sistema completo: sintaxis de usuario, compilador, runtime, basal [@], [@ma"+"chine], primi"+"tive[@], ghor y flujo de release. Se generó desde el workspace real y cita rutas internas para que cada afirmación pueda rastrearse.");
+                t("Área|Estado resumido","Machine|asm_complete_total=true; doctor y native-doctor cerrados para perfiles declarados.\nBasal|basal_closed=true; Fases 1-7 cerradas sobre machine evidence.\nRuntime|90 familias canónicas documentadas con capacidades y políticas.\nPrimitive|superficie activa parser/AST/sema/IR cerrada para el alcance v0.1.\nGhor|orquestador Cargo-like cerrado para la superficie inicial.","1800|7560");
+                docs43_document.docs43Document.page(); docs43_document.docs43Document.heading("Cómo leer este manual",1);
+                p("nC no es un único modo de ejecución. Es un lenguaje por capas: la fuente normal escribe programas, el runtime gobierna servicios y capacidades, basal declara raíz verificable, machine declara contratos de máquina, primitive declara materialidad física, y ghor organiza proyectos. Esa separación es el centro del diseño.");
+                p("Las rutas entre paréntesis son fuentes del repo. Cuando una parte está cerrada, el manual lo dice; cuando una parte está fuera del cierre, también lo dice. El manual no intenta ocultar deuda ni convertir documentación de estado en semántica nueva.");
+                t("Sufijo|Uso principal|Ejemplos encontrados",".n|Fuente nC general: sistema, runtime, compiler/high-level y ejercicios.|"+renderInt(counts[0])+"\n.nb|Fuente basal legible: root, site, bind, routine, verify, report, seal.|"+renderInt(counts[1])+"\n.nbb|Artefacto basal binario NBB0 verificable.|"+renderInt(counts[2])+"\n.nm|Fuente machine nativa o derivada de machine_at.|"+renderInt(counts[3])+"\n.ncp|Fuente primitive/material.|"+renderInt(counts[4]),"1400|6200|1760");
+                h("Índice de capítulos");
+                docs43_document.docs43Document.bullets("Arquitectura general y filosofía de nC.|Estructura de archivos, contenedores y modos.|Sintaxis de .n: funciones, secciones, referencias y flujo.|Tipos, contratos, memoria, arrays y estructuras.|Expresiones, operadores, condiciones y diagnostics.|Imports y runtime: las 90 familias canónicas.|Compilador ncc: pipeline, CLI, reports y FFI.|Basal [@]: root, .nb, tablas, IR, lowering, NBB0, evidence y seal.|[@ma"+"chine]: contrato de máquina, objetos, disasm, roundtrip y compatibilidad.|primi"+"tive[@]: materialidad, entorno, capacidades y hardware declarado.|Ghor: orquestador, manifests, lockfile y lenguaje-forja.|Recetas de trabajo: comandos para revisar, compilar, sellar y auditar.|Apéndices: catálogo runtime, matrices y galería de ejemplos.",true);
+                progress <- "content"; chapters(); docs43_manual_tail.docs43ManualTail.chapters(root); appendices();
+                jsonRelease(families); guard docs43_source.docs43Source.ok() else return false;
+                progress <- "PDF and DOCX finish";
+                return docs43_document.docs43Document.finish(root+"/docs/manual/Manual_completo_nC.docx");
+            }
+            chapters() -> void {
+                chapter("1","Arquitectura general de nC");
+                p("nC está organizado como un lenguaje de contratos progresivos. El usuario puede escribir programas de alto nivel, pero el sistema conserva una ruta explícita hacia capas más bajas. Cada capa tiene autoridad propia y no debe simular a otra capa.");
+                p("La idea práctica es simple: un programa no solo dice qué hacer; declara bajo qué modo, con qué capacidades, qué evidencia puede producir y qué límites no va a cruzar.");
+                t("Capa|Autoridad|Qué no debe hacer","Fuente .n|Programa humano, lógica, tipos, runtime permitido.|No fingir basal, machine o primitive.\nRuntime|Servicios canónicos importables, capacidades y políticas.|No usar fallback mágico ni capacidades implícitas.\nCompiler|Lexing, parsing, sema, nIR, lowering y reports.|No aceptar basura silenciosamente.\nBasal [@]|Raíz semántico-binaria, NBB0, evidence y seal.|No tocar hardware directamente ni ejecutar runtime.\n[@ma"+"chine]|Contrato de instrucciones, bytes, objetos y evidencia ASM.|No usar fn/fa de alto nivel ni fake bytes.\nprimi"+"tive[@]|Materialidad declarativa y entorno físico.|No prometer hardware universal.\nghor|Proyecto, build graph, paquetes, evidence y release.|No sustituir ncc ni ocultar adaptadores externos.","1500|4300|3560");
+                docs43_document.docs43Document.callout("Frase guía","nC separa intención, contrato, materialización y evidencia. El IDE puede asistir, pero el terminal y la CLI sentencian.");
+                s("docs/status/STATUS_release_machine_basal_closed.md|docs/spec/basal/basal_overview.md|docs/spec/machine/machine_definition.md|docs/spec/primitive/primitive_surface_official_v0_1.md|docs/spec/tooling/ghor.md");
+                chapter("2","Archivos, contenedores y modos");
+                p("La unidad visible de nC es el contenedor. En los ejemplos actuales aparece como Name[@mode] { ... }, Name[@] { ... }, Name[@ma"+"chine] { ... } o primi"+"tive[@]:. El modo decide qué secciones son legales y qué pipeline se activa.");
+                h("Modos comunes"); b("`[@system]` se usa en ejemplos de sistema/ejecución normal.|`[@]` es basal: raíz semántico-binaria y base de seal.|`[@ma"+"chine]` es máquina declarativa: target, ABI, símbolos, instrucciones y objeto.|`primi"+"tive[@]` o `[@primitive]` describe materialidad, bus, señales, ports, anchors y bridge.|Los espacios runtime/compiler/tooling/security aparecen como dominios de docs, ejemplos y comandos, no como permiso global implícito.");
+                h("Ejemplo mínimo .n"); example("examples/hello.n",80);
+                p("En .n general, `to main` define la entrada de ejecución del contenedor y `fa:` aparece como cierre/finalización histórica. En basal moderno, las formas ejecutables canónicas son `routine:` y `report:`; no se debe confundir ese base con la superficie .n general.");
+                h("Relación entre sufijos");
+                t("Sufijo|Lectura|Pipeline típico",".n|Programa nC general.|ncc check/run/compiler pipeline.\n.nb|Fuente basal legible.|parse -> tables -> IR -> lower -> NBB0 -> evidence/seal.\n.nbb|Binario basal NBB0.|read/inspect/verify/seal-report.\n.nm|Fuente machine.|check -> emit-ir/bytes/object -> verify-object -> disasm/roundtrip.\n.ncp|Fuente primitive.|check/material/lower/witness/QEMU smoke según entorno.","1200|3300|4860");
+                s("examples/hello.n|docs/spec/basal/basal_nb_grammar.md|docs/spec/machine/machine_definition.md|docs/spec/primitive/primitive_surface_official_v0_1.md");
+                chapter("3","Sintaxis de .n: programa, flujo y referencias");
+                p("La superficie .n combina contenedores, secciones, declaraciones tipadas, llamadas y cierre explícito. El estilo de asignación más visible en los ejemplos es `@nombre >> tipo : valor;`, que ata referencia, tipo y valor en una operación rastreable.");
+                h("Entradas y cierre"); p("La documentación de flujo define resolución explícita de entry (`ref main`) y cierre (`fa`/`final`) por contenedor. Las entradas ambiguas o incompatibles fallan.");
+                h("Referencias con @"); p("`@x` referencia una entidad declarada; en asignaciones, llamadas y condiciones evita que el compilador confunda nombre textual con valor resuelto. Esta convención aparece en ejemplos de arrays, listas, memoria y basal raw.");
+                h("Ejemplo de array y control"); example("examples/arrayCapicua.n",90);
+                h("Reglas prácticas"); b("Declare primero el dato y su tipo cuando el ejemplo necesita trazabilidad fuerte.|Use `@nombre` al leer o reusar un símbolo ya declarado.|No dependa de conversión implícita si existe ruta explícita de render, parse o concat.|No use placeholders como `String(\"<expr>\")` en condiciones ni rutas tipadas.");
+                s("docs/spec/language/flow_main_final.md|docs/spec/language/symbols_scopes_refs.md|docs/spec/language/expressions.md|examples/arrayCapicua.n");
+                chapter("4","Tipos, estructuras y contratos");
+                p("nC trata los tipos como contratos. No basta con que un valor sea manipulable: cada tipo define operadores, casts, layout, bounds, ownership, nulabilidad, FFI y validación según modo.");
+                t("Familia|Qué cubre|Regla de diseño","Base|int, bool, char, str y familias enteras/anchuras.|Evitar ambigüedad donde la capa exige anchura real.\nArrays|`array<T>`, `array<T, N>`, `T[N]`.|Índices literales se validan; dinámicos quedan auditados o guardados.\nListas|`list<T>` y alias `arrayList<T>` en ejemplos.|Operaciones explícitas con bounds y tipo de elemento.\nMemoria|`ptr<T>`, `region`, `addr`, `site`.|No ptr sin origen ni stale-site silencioso.\nResult/Option|Errores y ausencia tipados.|No fallback mágico de error.\nStruct/enum/union|Modelado compuesto.|Contrato de layout y variantes.\ntype:|DSL contractual formal.|Secciones internas como layout, bounds, invariant, ffi, ownership.","1500|3600|4260");
+                h("Contrato type:"); p("`type:` no es una sección global cualquiera. En docs aparece como DSL contractual con sub-secciones: public/private/internal/strictly, layout, bounds, invariant, constructure/destructure, copy/clone/move, ffi, ownership, nullability, methods, validate, drop, compare, hash, debug y stable.");
+                h("Bounds y memoria"); p("Los bounds contracts cubren validación de índices, arrays fijos, regiones, listas e invariantes. En memoria, `ptr<T>` debe conservar origen, `addr` representa dirección materializada y `site` da trazabilidad.");
+                example("examples/arraylist_ok.n",80);
+                s("docs/spec/language/types_structures.md|docs/spec/language/type_contracts.md|docs/spec/language/bounds_type_contracts.md|docs/spec/language/memory_ptr_region_addr_site.md|examples/arraylist_ok.n");
+                chapter("5","Expresiones, operadores y condiciones");
+                p("Las expresiones de nC cubren literales, referencias, llamadas, operadores compuestos, cadenas y condiciones. La regla crítica de la línea actual es que las expresiones no deben degradarse a texto placeholder cuando participan en condiciones o rutas tipadas.");
+                t("Tema|Regla","Precedencia|Los operadores tienen precedencia/asociatividad documentada y deben resolverse antes de sema profunda.\nCondiciones|La condición debe ser bool o int-like según profile; el resultado no se inventa por string placeholder.\nConcat|`str + str` se acepta en contextos high/runtime; `str + non-str` se rechaza sin render explícito.\nNarrowing|Patrones como `!>` deben conservar tipo refinado dentro del scope válido.\nErrores dev|`dev(...)` se usa como señal diagnóstica/controlada, no como salida runtime.","1800|7560");
+                h("Concat y render"); p("La regla industrial de concat evita mezclar strings con valores no renderizados. Use `concat`, `concat3`, `concatMany`, `join` o rutas `render*` cuando de verdad se quiere convertir valor a texto.");
+                h("Ejemplo de narrowing"); example("examples/and_narrow_ok.n",80);
+                s("docs/spec/language/expressions.md|docs/spec/language/operators.md|docs/spec/language/precedence_associativity.md|docs/spec/language/conditionals.md|docs/spec/language/concat_rules.md");
+                chapter("6","Imports, runtime y capacidades");
+                p("`use` e `import` son explícitos. La documentación dice que no hay fallback mágico: una familia runtime se importa por ruta canónica y se valida en contexto permitido.");
+                p("El runtime canónico mantiene "+renderInt(jsonArrayLen(families))+" familias cerradas en la matriz. Cada familia define exports/signatures, capacidades requeridas y políticas cuando aplica.");
+                t("Grupo|Familias típicas|Qué protege","Texto/salida|output, input, render, format, concat, unicode, string.|No output secreto, flush correcto, parse/render explícito.\nMemoria|memory, ptr, addr, region, buffer, bytes, heap, slice, span.|Bounds, origen de puntero, null refinement, alias tracking.\nSistema|fs, file, dir, process, command, env, os, temp.|Sandbox, timeout, no path traversal, no shell por defecto.\nRed|net, tcp, udp, http, dns, tls, socket.|Capacidad de red, timeout y verificación TLS.\nConcurrencia|task, thread, async, sync, lock, atomic, channel.|Trazabilidad y diagnostics estables.\nGobernanza|capability, policy, sandbox, resource, diagnostic, trace.|Permisos explícitos, reports reproducibles.","1600|3900|3860");
+                h("Ejemplo runtime de consola"); example("examples/runtime/console/prompt_read_int_ok.n",80);
+                h("Catálogo completo"); p("El apéndice A incluye una tabla con las 90 familias runtime, su ruta importable y número de exports.");
+                s("docs/spec/language/imports_use.md|docs/spec/runtime/runtime_90_families.md|docs/spec/runtime/runtime_imports_index.json|docs/spec/runtime/runtime_capability_policy_model.md");
+                chapter("7","Compilador ncc");
+                p("El compilador no es una caja opaca: expone fases, reports y comandos de inspección. El pipeline documentado va de lexing a backend emit/report, pasando por AST, sema, resolver, nIR y lowering.");
+                t("Fase|Responsabilidad","Lexing|Tokenizar sin perder spans.\nParsing|Construir AST y diagnosticar sintaxis.\nAST shaping|Normalizar formas sin cambiar semántica.\nSemantic analysis|Tipos, símbolos, scopes y reglas de modo.\nResolver passes|Imports, operadores, condiciones, bounds y FFI.\nnIR build/verify|IR interno verificable antes de bajar.\nLowering|Bajar a backend o report según modo.\nBackend emit/report|Emitir artefactos, diagnostics o evidencia.","2100|7260");
+                h("CLI compiler"); c("Comandos documentados en docs/spec/compiler/compiler_cli.md",read("docs/spec/compiler/compiler_cli.md",80));
+                h("FFI"); p("La ruta FFI valida enlace real C/C++/Rust sin ASM en esa fase, con perfiles ABI `nC.sysv64`, `nC.win64` y `nC.aapcs64`. La ruta final de usuario puede usar `ncc run <file.n> --native-ffi` cuando el programa declara `foreign` symbols.");
+                s("docs/spec/compiler/compiler_pipeline.md|docs/spec/compiler/compiler_cli.md|docs/spec/compiler/compiler_ffi_real_link_run.md|docs/spec/compiler/compiler_diagnostics.md");
+            }
+            appendices() -> void {
+                docs43_document.docs43Document.page(); docs43_document.docs43Document.heading("Apéndice A. Catálogo runtime de 90 familias",1);
+                p("Tabla generada desde docs/spec/runtime/runtime_imports_index.json. Muestra la ruta canónica, exports declarados y primeras capacidades requeridas."); appendRuntime();
+                docs43_document.docs43Document.page(); docs43_document.docs43Document.heading("Apéndice B. Matriz de capas y prohibiciones",1);
+                t("Capa|Debe declarar|Debe rechazar","Fuente .n|Entrada, tipos, imports, uso de runtime permitido.|Imports implícitos, tipos ambiguos no resueltos, placeholders.\nCompiler|Spans, diagnostics, reports, nIR/lowering según modo.|Panic, unimplemented, aceptación silenciosa de basura.\nRuntime|Capabilities/policies por familia.|Fallback mágico o permisos tácitos.\nBasal|Root/site/bind, IR, lowering, evidence, seal.|fn/final como base basal, NBB JSON disfrazado, fake seal.\nMachine|Target, symbols, proc, instr, object, verify.|fn/fa/stc en positivos machine, fake bytes/disasm/roundtrip.\nPrimitive|Target, environment, capability, witness, lowering path.|Hardware universal, emulación reportada como físico.\nGhor|Manifest, lockfile, adapters, graph, evidence.|Reemplazar herramientas o adaptar lenguajes implícitamente.","1400|4100|3860");
+                docs43_document.docs43Document.page(); docs43_document.docs43Document.heading("Apéndice C. Galería de ejemplos",1);
+                h("Programa general hello"); example("examples/hello.n",80);
+                h("Array capicua"); example("examples/arrayCapicua.n",110);
+                h("Runtime console"); example("examples/runtime/console/prompt_read_int_ok.n",90);
+                h("Basal root minimal"); example("examples/basal/root_minimal.nb",120);
+                h("Basal sealed bit weight"); example("examples/basal/phase6/bit_weight_pure_root_sealed.nb",180);
+                h("Machine ELF64 roundtrip"); example("examples/machine/native/roundtrip_elf64_x86_64.nm",130);
+                h("Primitive UART boot"); example("examples/primitive/boot_serial_hello.ncp",180);
+                docs43_document.docs43Document.page(); docs43_document.docs43Document.heading("Apéndice D. Mapa de documentación fuente",1);
+                p("Estas son las rutas principales usadas para construir el manual. No son las únicas del repo, pero sí las que sostienen las afirmaciones normativas de este documento.");
+                t("Dominio|Rutas|Uso","Language|docs/spec/language/*.md|Sintaxis, tipos, imports, condiciones, operadores.\nCompiler|docs/spec/compiler/*.md|Pipeline, CLI, diagnostics, FFI, reports.\nRuntime|docs/spec/runtime/*.md|90 familias, capabilities, policies, examples.\nBasal|docs/spec/basal/*.md|.nb, BasalIR, NBB0, evidence, seal, CLI final.\nMachine|docs/spec/machine/*.md|ASM total, ISA, objects, disasm, roundtrip, dialects.\nPrimitive|docs/spec/primitive/*.md|Material environment, directives, targets, QEMU/hardware evidence.\nTooling|docs/spec/tooling/ghor*.md|ghor, manifests, adapters, lockfiles.\nStatus|docs/status/STATUS_*.md|Cierres, evidence, conformance, release status.\nExamples|examples/**/*|Fixtures positivos/negativos por dominio.","1500|3300|4560");
+            }
+    fa: return true;
+}

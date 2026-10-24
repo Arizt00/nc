@@ -1,0 +1,602 @@
+use <io:output, render>;
+use <project:ir, mct, sema, diagnostics>;
+
+nccMctPlatformDebug {
+    const:
+        DEBUG_MAGIC >> int <- 0x4742444E;
+        DEBUG_VERSION >> int <- 1;
+        HEADER_BYTES >> int <- 64;
+        BUNDLE_FIXED_BYTES >> int <- 512;
+        LINE_RECORD_MAX_BYTES >> int <- 20;
+
+        FORMAT_DWARF4 >> int <- 1;
+        FORMAT_CODEVIEW_C13 >> int <- 2;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_TARGET >> int <- 8;
+        H_FORMAT >> int <- 12;
+        H_ABBREV_AT >> int <- 16;
+        H_ABBREV_BYTES >> int <- 20;
+        H_INFO_AT >> int <- 24;
+        H_INFO_BYTES >> int <- 28;
+        H_LINE_AT >> int <- 32;
+        H_LINE_BYTES >> int <- 36;
+        H_CODEVIEW_AT >> int <- 40;
+        H_CODEVIEW_BYTES >> int <- 44;
+        H_BYTES >> int <- 48;
+        H_HASH >> int <- 52;
+        H_LINES >> int <- 56;
+        H_FUNCTIONS >> int <- 60;
+
+        IR_FUNCTION >> int <- 2;
+
+        DW_TAG_COMPILE_UNIT >> int <- 0x11;
+        DW_TAG_SUBPROGRAM >> int <- 0x2E;
+        DW_CHILDREN_NO >> int <- 0;
+        DW_CHILDREN_YES >> int <- 1;
+        DW_AT_NAME >> int <- 0x03;
+        DW_AT_STMT_LIST >> int <- 0x10;
+        DW_AT_LOW_PC >> int <- 0x11;
+        DW_AT_HIGH_PC >> int <- 0x12;
+        DW_AT_LANGUAGE >> int <- 0x13;
+        DW_AT_PRODUCER >> int <- 0x25;
+        DW_AT_DECL_FILE >> int <- 0x3A;
+        DW_AT_DECL_LINE >> int <- 0x3B;
+        DW_FORM_ADDR >> int <- 0x01;
+        DW_FORM_DATA2 >> int <- 0x05;
+        DW_FORM_DATA4 >> int <- 0x06;
+        DW_FORM_STRING >> int <- 0x08;
+        DW_FORM_DATA1 >> int <- 0x0B;
+        DW_FORM_SEC_OFFSET >> int <- 0x17;
+        DW_LANG_NC >> int <- 0xFFFF;
+
+        DW_LNS_COPY >> int <- 1;
+        DW_LNS_ADVANCE_PC >> int <- 2;
+        DW_LNS_ADVANCE_LINE >> int <- 3;
+        DW_LNS_SET_COLUMN >> int <- 5;
+        DW_LNE_END_SEQUENCE >> int <- 1;
+        DW_LNE_SET_ADDRESS >> int <- 2;
+
+        DEBUG_S_SYMBOLS >> int <- 0xF1;
+        S_OBJNAME >> int <- 0x1101;
+        S_COMPILE3 >> int <- 0x113C;
+
+    type:
+        PlatformDebugContract {
+            public:
+                target >> int;
+                format >> int;
+                abbrevBytes >> int;
+                infoBytes >> int;
+                lineBytes >> int;
+                codeviewBytes >> int;
+                bytes >> int;
+                hash >> int;
+        }
+
+        SourceCursor {
+            public:
+                offset >> int;
+                line >> int;
+                column >> int;
+        }
+
+    stc:
+        materializations >> u64 <- 0;
+        materialBytes >> u64 <- 0;
+
+    local:
+        lastTarget >> int <- 0;
+        lastFormat >> int <- 0;
+        lastBytes >> int <- 0;
+        lastHash >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putU8(out >> p<byte>, at >> int, value >> int) -> void {
+                wr<byte>(off(out, at), value & 255);
+            }
+
+            putU16(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+            }
+
+            putU32(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+                putU8(out, at + 2, value >>> 16);
+                putU8(out, at + 3, value >>> 24);
+            }
+
+            putAddress(out >> p<byte>, at >> int, value >> int, pointerBytes >> int) -> int {
+                putU32(out, at, value);
+                if (pointerBytes == 8) putU32(out, at + 4, 0);
+                return at + pointerBytes;
+            }
+
+            zero(out >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) { putU8(out, at, 0); at += 1; }
+            }
+
+            alignUp(value >> int, boundary >> int) -> int {
+                remainder >> int <- value % boundary;
+                return remainder == 0 ? value : value + boundary - remainder;
+            }
+
+            literal(out >> p<byte>, at >> int, value >> str, count >> int) -> int {
+                cp(off(out, at), cast<byte>(value), count);
+                return at + count;
+            }
+
+            terminated(out >> p<byte>, at >> int, value >> str, count >> int) -> int {
+                cursor >> int <- literal(out, at, value, count);
+                putU8(out, cursor, 0);
+                return cursor + 1;
+            }
+
+            putUleb(out >> p<byte>, at >> int, value >> int) -> int {
+                cursor >> int <- at;
+                rest >> int <- value;
+                while (rest >= 128) {
+                    putU8(out, cursor, (rest & 127) | 128);
+                    rest <- rest >>> 7;
+                    cursor += 1;
+                }
+                putU8(out, cursor, rest);
+                return cursor + 1;
+            }
+
+            putSleb(out >> p<byte>, at >> int, value >> int) -> int {
+                cursor >> int <- at;
+                rest >> int <- value;
+                more >> bool <- true;
+                while (more) {
+                    item >> int <- rest & 127;
+                    rest <- rest >> 7;
+                    sign >> bool <- (item & 64) != 0;
+                    more <- !((rest == 0 && !sign) || (rest == -1 && sign));
+                    putU8(out, cursor, more ? item | 128 : item);
+                    cursor += 1;
+                }
+                return cursor;
+            }
+
+            hash(base >> p<byte>, bytes >> int) -> int {
+                value >> int <- 49979687;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value <- (value + (rd<byte>(off(base, at)) & 255) *
+                        ((at % 251) + 1) + at * 31) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            lineRecords(material >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordSection(material,node) == 1 && mct.nccMct.artifactRecordByteLength(material, node) > 0 &&
+                        mct.nccMct.artifactRecordLine(material, node) > 0) count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+
+            functionRecords(material >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION)
+                        count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+
+            functionEnd(material >> p<byte>, node >> int, start >> int) -> int {
+                next >> int <- node + 1;
+                while (next < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, next) == IR_FUNCTION) {
+                        candidate >> int <- mct.nccMct.artifactRecordTextOffset(material, next);
+                        if (candidate > start) return candidate;
+                    }
+                    next += 1;
+                }
+                return mct.nccMct.artifactTextBytes(material);
+            }
+
+            targetFormat(target >> int) -> int {
+                return target == 2 ? FORMAT_CODEVIEW_C13 : FORMAT_DWARF4;
+            }
+
+            bundleCapacity(material >> p<byte>, format >> int) -> int {
+                if (format == FORMAT_CODEVIEW_C13)
+                    return HEADER_BYTES + BUNDLE_FIXED_BYTES;
+                nodes >> int <- mct.nccMct.artifactNodeCount(material);
+                identities >> int <- mct.nccMct.artifactIdentityBytes(material);
+                functions >> int <- functionRecords(material);
+                pointerBytes >> int <- mct.nccMct.artifactPointerBits(material) / 8;
+                return HEADER_BYTES + BUNDLE_FIXED_BYTES + identities +
+                    functions * (16 + pointerBytes) +
+                    nodes * LINE_RECORD_MAX_BYTES;
+            }
+
+            codeviewMachine(target >> int) -> int {
+                if (target == 2) return 0xD0;
+                if (target == 4) return 0x03;
+                if (target == 5 || target == 6) return 0xF6;
+                if (target == 7) return 0xF4;
+                return 0;
+            }
+
+            writeAbbrev(out >> p<byte>, at >> int) -> int {
+                cursor >> int <- at;
+                cursor <- putUleb(out, cursor, 1);
+                cursor <- putUleb(out, cursor, DW_TAG_COMPILE_UNIT);
+                putU8(out, cursor, DW_CHILDREN_YES); cursor += 1;
+                cursor <- putUleb(out, cursor, DW_AT_PRODUCER);
+                cursor <- putUleb(out, cursor, DW_FORM_STRING);
+                cursor <- putUleb(out, cursor, DW_AT_LANGUAGE);
+                cursor <- putUleb(out, cursor, DW_FORM_DATA2);
+                cursor <- putUleb(out, cursor, DW_AT_NAME);
+                cursor <- putUleb(out, cursor, DW_FORM_STRING);
+                cursor <- putUleb(out, cursor, DW_AT_STMT_LIST);
+                cursor <- putUleb(out, cursor, DW_FORM_SEC_OFFSET);
+                cursor <- putUleb(out, cursor, DW_AT_LOW_PC);
+                cursor <- putUleb(out, cursor, DW_FORM_ADDR);
+                cursor <- putUleb(out, cursor, DW_AT_HIGH_PC);
+                cursor <- putUleb(out, cursor, DW_FORM_DATA4);
+                putU8(out, cursor, 0); putU8(out, cursor + 1, 0); cursor += 2;
+
+                cursor <- putUleb(out, cursor, 2);
+                cursor <- putUleb(out, cursor, DW_TAG_SUBPROGRAM);
+                putU8(out, cursor, DW_CHILDREN_NO); cursor += 1;
+                cursor <- putUleb(out, cursor, DW_AT_NAME);
+                cursor <- putUleb(out, cursor, DW_FORM_STRING);
+                cursor <- putUleb(out, cursor, DW_AT_DECL_FILE);
+                cursor <- putUleb(out, cursor, DW_FORM_DATA1);
+                cursor <- putUleb(out, cursor, DW_AT_DECL_LINE);
+                cursor <- putUleb(out, cursor, DW_FORM_DATA4);
+                cursor <- putUleb(out, cursor, DW_AT_LOW_PC);
+                cursor <- putUleb(out, cursor, DW_FORM_ADDR);
+                cursor <- putUleb(out, cursor, DW_AT_HIGH_PC);
+                cursor <- putUleb(out, cursor, DW_FORM_DATA4);
+                putU8(out, cursor, 0); putU8(out, cursor + 1, 0); cursor += 2;
+                putU8(out, cursor, 0);
+                return cursor + 1;
+            }
+
+            writeFunctionName(material >> p<byte>, node >> int,
+                out >> p<byte>, at >> int) -> int {
+                nameBytes >> int <- mct.nccMct.artifactRecordTargetNameBytes(material, node);
+                if (nameBytes > 0) {
+                    cp(off(out, at), mct.nccMct.artifactRecordTargetName(material, node), nameBytes);
+                    putU8(out, at + nameBytes, 0);
+                    return at + nameBytes + 1;
+                }
+                return terminated(out, at, "nC.function", 11);
+            }
+
+            writeInfo(material >> p<byte>, out >> p<byte>, at >> int) -> int {
+                pointerBytes >> int <- mct.nccMct.artifactPointerBits(material) / 8;
+                cursor >> int <- at + 11;
+                cursor <- putUleb(out, cursor, 1);
+                cursor <- terminated(out, cursor, "ncc Stage2 native nC MCT", 24);
+                putU16(out, cursor, DW_LANG_NC); cursor += 2;
+                cursor <- terminated(out, cursor, "nC-stage2.n", 11);
+                putU32(out, cursor, 0); cursor += 4;
+                cursor <- putAddress(out, cursor, 0, pointerBytes);
+                putU32(out, cursor, mct.nccMct.artifactTextBytes(material)); cursor += 4;
+
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION) {
+                        start >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                        end >> int <- functionEnd(material, node, start);
+                        cursor <- putUleb(out, cursor, 2);
+                        cursor <- writeFunctionName(material, node, out, cursor);
+                        putU8(out, cursor, 1); cursor += 1;
+                        putU32(out, cursor, mct.nccMct.artifactRecordLine(material, node));
+                        cursor += 4;
+                        cursor <- putAddress(out, cursor, start, pointerBytes);
+                        putU32(out, cursor, end - start); cursor += 4;
+                    }
+                    node += 1;
+                }
+                putU8(out, cursor, 0); cursor += 1;
+                putU32(out, at, cursor - at - 4);
+                putU16(out, at + 4, 4);
+                putU32(out, at + 6, 0);
+                putU8(out, at + 10, pointerBytes);
+                return cursor;
+            }
+
+            writeLineHeader(out >> p<byte>, at >> int) -> int {
+                cursor >> int <- at + 10;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, -5); cursor += 1;
+                putU8(out, cursor, 14); cursor += 1;
+                putU8(out, cursor, 13); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                putU8(out, cursor, 1); cursor += 1;
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- terminated(out, cursor, "nC-stage2.n", 11);
+                cursor <- putUleb(out, cursor, 0);
+                cursor <- putUleb(out, cursor, 0);
+                cursor <- putUleb(out, cursor, 0);
+                putU8(out, cursor, 0); cursor += 1;
+                putU32(out, at + 6, cursor - at - 10);
+                return cursor;
+            }
+
+            writeLine(material >> p<byte>, out >> p<byte>, at >> int) -> int {
+                pointerBytes >> int <- mct.nccMct.artifactPointerBits(material) / 8;
+                cursor >> int <- writeLineHeader(out, at);
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putUleb(out, cursor, pointerBytes + 1);
+                putU8(out, cursor, DW_LNE_SET_ADDRESS); cursor += 1;
+                cursor <- putAddress(out, cursor, 0, pointerBytes);
+
+                currentOffset >> int <- 0;
+                currentLine >> int <- 1;
+                currentColumn >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    length >> int <- mct.nccMct.artifactRecordByteLength(material, node);
+                    line >> int <- mct.nccMct.artifactRecordLine(material, node);
+                    if (mct.nccMct.artifactRecordSection(material,node) == 1 && length > 0 && line > 0) {
+                        textPosition >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                        column >> int <- mct.nccMct.artifactRecordColumn(material, node);
+                        if (textPosition != currentOffset) {
+                            putU8(out, cursor, DW_LNS_ADVANCE_PC); cursor += 1;
+                            cursor <- putUleb(out, cursor, textPosition - currentOffset);
+                        }
+                        if (line != currentLine) {
+                            putU8(out, cursor, DW_LNS_ADVANCE_LINE); cursor += 1;
+                            cursor <- putSleb(out, cursor, line - currentLine);
+                        }
+                        if (column != currentColumn) {
+                            putU8(out, cursor, DW_LNS_SET_COLUMN); cursor += 1;
+                            cursor <- putUleb(out, cursor, column);
+                        }
+                        putU8(out, cursor, DW_LNS_COPY); cursor += 1;
+                        currentOffset <- textPosition;
+                        currentLine <- line;
+                        currentColumn <- column;
+                    }
+                    node += 1;
+                }
+                if (mct.nccMct.artifactTextBytes(material) > currentOffset) {
+                    putU8(out, cursor, DW_LNS_ADVANCE_PC); cursor += 1;
+                    cursor <- putUleb(out, cursor,
+                        mct.nccMct.artifactTextBytes(material) - currentOffset);
+                }
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putUleb(out, cursor, 1);
+                putU8(out, cursor, DW_LNE_END_SEQUENCE); cursor += 1;
+                putU32(out, at, cursor - at - 4);
+                putU16(out, at + 4, 4);
+                return cursor;
+            }
+
+            closeCodeviewRecord(out >> p<byte>, recordAt >> int, cursor >> int) -> int {
+                putU16(out, recordAt, cursor - recordAt - 2);
+                return cursor;
+            }
+
+            writeCodeview(material >> p<byte>, out >> p<byte>, at >> int) -> int {
+                putU32(out, at, 4);
+                putU32(out, at + 4, DEBUG_S_SYMBOLS);
+                symbolsAt >> int <- at + 8;
+                cursor >> int <- symbolsAt + 4;
+
+                recordAt >> int <- cursor;
+                cursor += 2; putU16(out, cursor, S_OBJNAME); cursor += 2;
+                putU32(out, cursor, 0); cursor += 4;
+                cursor <- terminated(out, cursor, "nC-stage2.obj", 13);
+                cursor <- closeCodeviewRecord(out, recordAt, cursor);
+
+                recordAt <- cursor;
+                cursor += 2; putU16(out, cursor, S_COMPILE3); cursor += 2;
+                putU32(out, cursor, 0); cursor += 4;
+                putU16(out, cursor, codeviewMachine(mct.nccMct.artifactTarget(material)));
+                cursor += 2;
+                version >> int <- 0;
+                while (version < 8) {
+                    putU16(out, cursor, version == 0 || version == 4 ? 2 :
+                        (version == 2 || version == 6 ? 2 : 0));
+                    cursor += 2;
+                    version += 1;
+                }
+                cursor <- terminated(out, cursor, "nC MCT Stage2", 13);
+                cursor <- closeCodeviewRecord(out, recordAt, cursor);
+                putU32(out, symbolsAt, cursor - symbolsAt - 4);
+                while (((cursor - at) % 4) != 0) {
+                    putU8(out, cursor, 0); cursor += 1;
+                }
+                return cursor;
+            }
+
+            valid(blob >> p<byte>) -> bool {
+                guard blob != null else return false;
+                total >> int <- integer(blob, H_BYTES);
+                saved >> int <- integer(blob, H_HASH);
+                putU32(blob, H_HASH, 0);
+                computed >> int <- hash(blob, total);
+                putU32(blob, H_HASH, saved);
+                format >> int <- integer(blob, H_FORMAT);
+                return integer(blob, H_MAGIC) == DEBUG_MAGIC &&
+                    integer(blob, H_VERSION) == DEBUG_VERSION && saved == computed &&
+                    ((format == FORMAT_DWARF4 && integer(blob, H_ABBREV_BYTES) > 0 &&
+                        integer(blob, H_INFO_BYTES) > 0 && integer(blob, H_LINE_BYTES) > 0) ||
+                    (format == FORMAT_CODEVIEW_C13 && integer(blob, H_CODEVIEW_BYTES) > 0));
+            }
+
+            emitReport(blob >> p<byte>, json >> bool) -> bool {
+                if (!json) {
+                    print("platform-debug target=");
+                    println(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                    print("format="); println(integer(blob, H_FORMAT) == FORMAT_DWARF4 ?
+                        "dwarf4" : "codeview-c13");
+                    print("bytes="); print(renderInt(integer(blob, H_BYTES)));
+                    print(" hash="); println(renderInt(integer(blob, H_HASH)));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.platform-debug.v1\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                print("\",\"format\":"); print(renderInt(integer(blob, H_FORMAT)));
+                print(",\"abbrev_bytes\":"); print(renderInt(integer(blob, H_ABBREV_BYTES)));
+                print(",\"info_bytes\":"); print(renderInt(integer(blob, H_INFO_BYTES)));
+                print(",\"line_bytes\":"); print(renderInt(integer(blob, H_LINE_BYTES)));
+                print(",\"codeview_bytes\":"); print(renderInt(integer(blob, H_CODEVIEW_BYTES)));
+                print(",\"line_records\":"); print(renderInt(integer(blob, H_LINES)));
+                print(",\"function_records\":"); print(renderInt(integer(blob, H_FUNCTIONS)));
+                print(",\"bytes\":"); print(renderInt(integer(blob, H_BYTES)));
+                print(",\"hash\":"); print(renderInt(integer(blob, H_HASH)));
+                println("}");
+                return true;
+            }
+
+        public:
+            build(material >> p<byte>) -> p<byte> {
+                guard material != null else return null;
+                target >> int <- mct.nccMct.artifactTarget(material);
+                format >> int <- targetFormat(target);
+                capacity >> int <- bundleCapacity(material, format);
+                guard capacity >= HEADER_BYTES else return null;
+                blob >> p<byte> <- cast<byte>(alloc(capacity));
+                guard blob != null else return null;
+                zero(blob, capacity);
+                cursor >> int <- HEADER_BYTES;
+                if (format == FORMAT_DWARF4) {
+                    abbrevAt >> int <- cursor;
+                    cursor <- writeAbbrev(blob, cursor);
+                    putU32(blob, H_ABBREV_AT, abbrevAt);
+                    putU32(blob, H_ABBREV_BYTES, cursor - abbrevAt);
+                    cursor <- alignUp(cursor, 4);
+                    infoAt >> int <- cursor;
+                    cursor <- writeInfo(material, blob, cursor);
+                    putU32(blob, H_INFO_AT, infoAt);
+                    putU32(blob, H_INFO_BYTES, cursor - infoAt);
+                    cursor <- alignUp(cursor, 4);
+                    lineAt >> int <- cursor;
+                    cursor <- writeLine(material, blob, cursor);
+                    putU32(blob, H_LINE_AT, lineAt);
+                    putU32(blob, H_LINE_BYTES, cursor - lineAt);
+                } else {
+                    codeviewAt >> int <- cursor;
+                    cursor <- writeCodeview(material, blob, cursor);
+                    putU32(blob, H_CODEVIEW_AT, codeviewAt);
+                    putU32(blob, H_CODEVIEW_BYTES, cursor - codeviewAt);
+                }
+                total >> int <- alignUp(cursor, 4);
+                putU32(blob, H_MAGIC, DEBUG_MAGIC);
+                putU32(blob, H_VERSION, DEBUG_VERSION);
+                putU32(blob, H_TARGET, target);
+                putU32(blob, H_FORMAT, format);
+                putU32(blob, H_BYTES, total);
+                putU32(blob, H_LINES, lineRecords(material));
+                putU32(blob, H_FUNCTIONS, functionRecords(material));
+                putU32(blob, H_HASH, hash(blob, total));
+                materializations += 1;
+                materialBytes += total;
+                lastTarget <- target;
+                lastFormat <- format;
+                lastBytes <- total;
+                lastHash <- integer(blob, H_HASH);
+                return blob;
+            }
+
+            format(blob >> p<byte>) -> int { return integer(blob, H_FORMAT); }
+            bytes(blob >> p<byte>) -> int { return integer(blob, H_BYTES); }
+            checksum(blob >> p<byte>) -> int { return integer(blob, H_HASH); }
+            abbrevData(blob >> p<byte>) -> p<byte> {
+                return off(blob, integer(blob, H_ABBREV_AT));
+            }
+            abbrevBytes(blob >> p<byte>) -> int { return integer(blob, H_ABBREV_BYTES); }
+            infoData(blob >> p<byte>) -> p<byte> {
+                return off(blob, integer(blob, H_INFO_AT));
+            }
+            infoBytes(blob >> p<byte>) -> int { return integer(blob, H_INFO_BYTES); }
+            lineData(blob >> p<byte>) -> p<byte> {
+                return off(blob, integer(blob, H_LINE_AT));
+            }
+            lineBytes(blob >> p<byte>) -> int { return integer(blob, H_LINE_BYTES); }
+            codeviewData(blob >> p<byte>) -> p<byte> {
+                return off(blob, integer(blob, H_CODEVIEW_AT));
+            }
+            codeviewBytes(blob >> p<byte>) -> int { return integer(blob, H_CODEVIEW_BYTES); }
+            release(blob >> p<byte>) -> void { if (blob != null) free(blob); }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                if (output != "" && fsWriteFrom(output, blob, bytes(blob), false) != bytes(blob)) {
+                    release(blob); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitReport(blob, json);
+                code >> int <- valid(blob) ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return code;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                ok >> bool <- valid(blob) && checksum(blob) == expectedHash;
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                return DEBUG_MAGIC == 0x4742444E && DEBUG_VERSION == 1 &&
+                    HEADER_BYTES == 64 && FORMAT_DWARF4 == 1 && FORMAT_CODEVIEW_C13 == 2 &&
+                    targetFormat(1) == FORMAT_DWARF4 &&
+                    targetFormat(2) == FORMAT_CODEVIEW_C13 && codeviewMachine(2) == 0xD0;
+            }
+
+    fa:
+        return true;
+}

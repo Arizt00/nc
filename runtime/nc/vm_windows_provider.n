@@ -1,0 +1,103 @@
+vmWindowsProvider :: runtime {
+    fn:
+        public:
+            provider_osVirtualAlloc(address >> p<byte>, bytes >> u64, flags >> u32, protection >> u32) -> p<byte> {
+                return cast<byte>(osVirtualAlloc(address,bytes,flags,protection));
+            }
+            provider_osVirtualFree(address >> p<byte>, bytes >> u64, flags >> u32) -> i32 {
+                return osVirtualFree(address,bytes,flags);
+            }
+            provider_osVirtualProtect(address >> p<byte>, bytes >> u64, protection >> u32, previous >> p<u32>) -> i32 {
+                return osVirtualProtect(address,bytes,protection,previous);
+            }
+            provider_osGetSystemInfo(info >> p<byte>) -> void { osGetSystemInfo(info); }
+            provider_osGetLastError() -> u32 { return osGetLastError(); }
+            provider_osSetLastError(error >> u32) -> void { osSetLastError(error); }
+            provider_osVirtualLock(address >> p<byte>, bytes >> u64) -> i32 { return osVirtualLock(address,bytes); }
+            provider_osVirtualUnlock(address >> p<byte>, bytes >> u64) -> i32 { return osVirtualUnlock(address,bytes); }
+            provider_osGetCurrentProcess() -> p<byte> { return cast<byte>(osGetCurrentProcess()); }
+            provider_osFlushInstructionCache(process >> p<byte>, address >> p<byte>, bytes >> u64) -> i32 {
+                return osFlushInstructionCache(process,address,bytes);
+            }
+            provider_osMapViewOfFileEx(handle >> p<byte>, access >> u32, high >> u32, low >> u32,
+                bytes >> u64, address >> p<byte>) -> p<byte> {
+                return cast<byte>(osMapViewOfFileEx(handle,access,high,low,bytes,address));
+            }
+            provider_osUnmapViewOfFile(address >> p<byte>) -> i32 { return osUnmapViewOfFile(address); }
+            provider_osDiscardVirtualMemory(address >> p<byte>, bytes >> u64) -> u32 {
+                return osDiscardVirtualMemory(address,bytes);
+            }
+            provider_osFlushViewOfFile(address >> p<byte>, bytes >> u64) -> i32 {
+                return osFlushViewOfFile(address,bytes);
+            }
+            vmPageSize() -> int {
+                info >> array<byte,48>;
+                osGetSystemInfo(adr(&info));
+                return rd<u32>(off(cast<byte>(&info),4));
+            }
+            vmAllocationGranularity() -> int {
+                info >> array<byte,48>;
+                osGetSystemInfo(adr(&info));
+                return rd<u32>(off(cast<byte>(&info),40));
+            }
+            vmReserve(address >> p<byte>, bytes >> u64, flags >> u64) -> p<byte> {
+                return cast<byte>(osVirtualAlloc(address,bytes,flags | 0x2000,1));
+            }
+            vmCommit(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                return osVirtualAlloc(address,bytes,0x1000,protection) != null;
+            }
+            vmDecommit(address >> p<byte>, bytes >> u64) -> bool {
+                return osVirtualFree(address,bytes,0x4000) != 0;
+            }
+            vmRelease(address >> p<byte>, bytes >> u64) -> bool {
+                return osVirtualFree(address,0,0x8000) != 0;
+            }
+            vmProtect(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                previous >> u32;
+                return osVirtualProtect(address,bytes,protection,adr(&previous)) != 0;
+            }
+            vmGuard(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                return osVirtualAlloc(address,bytes,0x1000,protection | 0x100) != null;
+            }
+            vmExecutable(address >> p<byte>, bytes >> u64) -> bool {
+                if (!vmProtect(address,bytes,0x20)) return false;
+                return osFlushInstructionCache(osGetCurrentProcess(),address,bytes) != 0;
+            }
+            vmLastError() -> int { return osGetLastError(); }
+            vmReadWriteProtection() -> int { return 4; }
+            vmLock(address >> p<byte>, bytes >> u64) -> bool { return osVirtualLock(address,bytes) != 0; }
+            vmUnlock(address >> p<byte>, bytes >> u64) -> bool { return osVirtualUnlock(address,bytes) != 0; }
+            vmMap(address >> p<byte>, bytes >> u64, protection >> u64, flags >> u64,
+                handle >> u64, offset >> u64) -> p<byte> {
+                if (handle == 0 || handle == 0xFFFFFFFFFFFFFFFF)
+                    return cast<byte>(osVirtualAlloc(address,bytes,flags,protection));
+                return cast<byte>(osMapViewOfFileEx(from<byte>(handle),flags,offset >> 32,offset,bytes,address));
+            }
+            vmUnmap(address >> p<byte>, bytes >> u64) -> bool {
+                if (osUnmapViewOfFile(address) != 0) return true;
+                return vmRelease(address,bytes);
+            }
+            vmAdvise(address >> p<byte>, bytes >> u64, advice >> u64) -> bool {
+                if (advice == 4) return osDiscardVirtualMemory(address,bytes) == 0;
+                osSetLastError(50);
+                return false;
+            }
+            vmSync(address >> p<byte>, bytes >> u64, flags >> u64) -> bool {
+                return osFlushViewOfFile(address,bytes) != 0;
+            }
+            vmRemap(address >> p<byte>, oldBytes >> u64, newBytes >> u64, protection >> u64,
+                flags >> u64, requested >> p<byte>) -> p<byte> {
+                block >> p<byte> <- cast<byte>(osVirtualAlloc(requested,newBytes,flags | 0x3000,4));
+                if (block == null) return null;
+                copied >> u64 <- oldBytes < newBytes ? oldBytes : newBytes;
+                cp(block,address,copied);
+                if (!vmProtect(block,newBytes,protection)) {
+                    error >> u32 <- osGetLastError(); vmRelease(block,newBytes); osSetLastError(error); return null;
+                }
+                if (!vmUnmap(address,oldBytes)) {
+                    error >> u32 <- osGetLastError(); vmRelease(block,newBytes); osSetLastError(error); return null;
+                }
+                return block;
+            }
+    fa: return true;
+}

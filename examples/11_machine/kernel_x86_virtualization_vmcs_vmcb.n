@@ -1,0 +1,28 @@
+kernelX86VirtualizationVmcsVmcb :: kernel {
+    fn:
+        virtualizationLifecycle() -> bool {
+            vmxon      at 0x100000;
+            vmcs       at 0x101000;
+            current    at 0x102000;
+            destination at 0x103000;
+            descriptor at 0x104000;
+            vmcb       at 0x200000;
+
+            guard vmx_on(vmxon) else return false;
+            guard vmcs_clear(vmcs) && vmcs_load(vmcs) else return false;
+            guard vmcs_write(0x681E, 0x400000) else return false;
+            guard vmcs_read(0x681E, destination) else return false;
+
+            guard vm_invalidate_ept(2, descriptor) &&
+                  vm_invalidate_vpid(2, descriptor) &&
+                  vmcs_store(current) else return false;
+
+            guard vm_launch() && vm_resume() && vmx_off() else return false;
+
+            return svm_load(vmcb) &&
+                   svm_save(vmcb) &&
+                   svm_run(vmcb);
+        }
+
+    ref main ->> virtualizationLifecycle;
+}

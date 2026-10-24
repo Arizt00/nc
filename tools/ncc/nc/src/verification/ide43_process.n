@@ -1,0 +1,209 @@
+use <io:output, render>;
+use <data:json>;
+use <process:command, env>;
+use <auth.system:thread>;
+use <collections:result>;
+use <project:ide43_host, process_capture>;
+
+ide43Process {
+    const:
+        CHUNK >> int <- 16384;
+    stc:
+        outputPipe >> addr;
+        errorPipe >> addr;
+        outputBytes >> p<byte>;
+        errorBytes >> p<byte>;
+        outputCount >> int <- 0;
+        errorCount >> int <- 0;
+        outputTotal >> int <- 0;
+        errorTotal >> int <- 0;
+        capacity >> int <- 0;
+        outputFailed >> bool <- false;
+        errorFailed >> bool <- false;
+        busy >> bool <- false;
+    fn:
+        private:
+            drain(pipe >> addr, data >> p<byte>, output >> bool) -> int {
+                scratch >> p<byte> <- cast(alloc(CHUNK));
+                if (scratch == null) {
+                    if (output) outputFailed <- true;
+                    else errorFailed <- true;
+                    return -1;
+                }
+                retained >> int <- 0;
+                total >> int <- 0;
+                failed >> bool <- false;
+                count >> int <- commandPipeRead(pipe,adr(scratch),CHUNK);
+                while (count > 0) {
+                    take >> int <- count;
+                    if (take > capacity-retained) take <- capacity-retained;
+                    if (take > 0) cp(off(data,retained),scratch,take);
+                    retained += take;
+                    total += count;
+                    // Always drain excess bytes so a truncated report cannot block its child.
+                    count <- commandPipeRead(pipe,adr(scratch),CHUNK);
+                }
+                // ReadFile signals EOF on an anonymous pipe as ERROR_BROKEN_PIPE.
+                if (count < 0) failed <- !(envHas("WINDIR") && count == -109);
+                wr(off(data,retained),0);
+                if (output) {
+                    outputCount <- retained;
+                    outputTotal <- total;
+                    outputFailed <- failed;
+                } else {
+                    errorCount <- retained;
+                    errorTotal <- total;
+                    errorFailed <- failed;
+                }
+                free(scratch);
+                return failed ? -1 : 0;
+            }
+            drainOutput() -> int { return drain(outputPipe,outputBytes,true); }
+            drainError() -> int { return drain(errorPipe,errorBytes,false); }
+            recordStream(report >> int, key >> str, data >> p<byte>, count >> int) -> bool {
+                text >> str <- cast(data);
+                jsonObjectSet(report,key,jsonNewString(text));
+                if (strByteLen(text) == count) return true;
+                hex >> p<byte> <- cast(alloc(count*2+1));
+                diagnostic >> p<byte> <- cast(alloc(count+1));
+                if (hex == null || diagnostic == null) { free(hex); free(diagnostic); return false; }
+                digits >> p<byte> <- cast("0123456789abcdef");
+                index >> int <- 0;
+                while (index < count) {
+                    code >> int <- rd(off(data,index)) & 255;
+                    wr(off(hex,index*2),rd(off(digits,code/16)));
+                    wr(off(hex,index*2+1),rd(off(digits,code%16)));
+                    // Both NUL and SOH are non-newline, non-digit characters for diagnostic matching.
+                    wr(off(diagnostic,index),code == 0 ? 1 : code);
+                    index += 1;
+                }
+                wr(off(hex,count*2),0); wr(off(diagnostic,count),0);
+                encoded >> str <- cast(hex); projected >> str <- cast(diagnostic);
+                jsonObjectSet(report,key+"_hex",jsonNewString(encoded));
+                jsonObjectSet(report,key+"_diagnostic",jsonNewString(projected));
+                free(hex); free(diagnostic); return true;
+            }
+        public:
+            quoted(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                count >> int <- strByteLen(value);
+                data >> p<byte> <- cast(alloc(count*2+3));
+                guard data != null else return "";
+                wr(data,34);
+                cursor >> int <- 1;
+                index >> int <- 0;
+                windows >> bool <- envHas("WINDIR");
+                while (index < count) {
+                    code >> int <- rd(off(source,index));
+                    if (windows && code == 92) {
+                        slashes >> int <- 0;
+                        while (index < count) {
+                            if (rd(off(source,index)) != 92) break;
+                            slashes += 1;
+                            index += 1;
+                        }
+                        emitted >> int <- slashes;
+                        if (index == count) emitted <- slashes*2;
+                        else if (rd(off(source,index)) == 34) emitted <- slashes*2;
+                        while (emitted > 0) { wr(off(data,cursor),92); cursor += 1; emitted -= 1; }
+                        continue;
+                    }
+                    if (code == 34 || code == 92) { wr(off(data,cursor),92); cursor += 1; }
+                    wr(off(data,cursor),code);
+                    cursor += 1;
+                    index += 1;
+                }
+                wr(off(data,cursor),34);
+                wr(off(data,cursor+1),0);
+                result >> str <- cast(data);
+                return result;
+            }
+            capture(line >> str, cwd >> str, timeoutMs >> int, limit >> int) -> int {
+                if (envHas("WINDIR")) return process_capture.processCapture.capture(line,cwd,timeoutMs,limit);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"cmd",jsonNewString(line));
+                jsonObjectSet(report,"code",jsonNewInt(-1));
+                jsonObjectSet(report,"ok",jsonNewBool(false));
+                jsonObjectSet(report,"started",jsonNewBool(false));
+                jsonObjectSet(report,"timed_out",jsonNewBool(false));
+                jsonObjectSet(report,"truncated",jsonNewBool(false));
+                jsonObjectSet(report,"capture_ok",jsonNewBool(false));
+                jsonObjectSet(report,"stdout",jsonNewString(""));
+                jsonObjectSet(report,"stderr",jsonNewString(""));
+                // CLI workers call this serially; no global state is shared with reader threads
+                // except their own pipe/buffer and counters, observed only after threadJoin.
+                if (busy || timeoutMs <= 0 || limit <= 0 || limit > 134217728) {
+                    jsonObjectSet(report,"error",jsonNewString("invalid capture contract or concurrent invocation"));
+                    return report;
+                }
+                busy <- true;
+                capacity <- limit;
+                outputCount <- 0; errorCount <- 0;
+                outputTotal <- 0; errorTotal <- 0;
+                outputFailed <- false; errorFailed <- false;
+                outputBytes <- cast(alloc(limit+1));
+                errorBytes <- cast(alloc(limit+1));
+                outputPipe <- commandPipeOpen(false,true);
+                errorPipe <- commandPipeOpen(false,true);
+                ready >> bool <- outputBytes != null && errorBytes != null;
+                if (outputPipe == null || errorPipe == null) ready <- false;
+                if (ready) ready <- commandPipeError(outputPipe) == 0 && commandPipeError(errorPipe) == 0;
+                child >> addr <- null;
+                if (ready) {
+                    child <- commandOpen(line,cwd,null,commandPipeWriteHandle(outputPipe),commandPipeWriteHandle(errorPipe),0);
+                    commandPipeCloseWrite(outputPipe);
+                    commandPipeCloseWrite(errorPipe);
+                    if (child == null) ready <- false;
+                    else ready <- commandStarted(child);
+                }
+                if (ready) {
+                    jsonObjectSet(report,"started",jsonNewBool(true));
+                    outWorker >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(drainOutput));
+                    errWorker >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(drainError));
+                    readers >> bool <- isOk(outWorker) && isOk(errWorker);
+                    exactCode >> int <- -999999;
+                    if (readers) exactCode <- ide43_host.ide43Host.pythonCode(child,timeoutMs);
+                    waited >> int <- -1;
+                    if (readers) waited <- commandWait(child,timeoutMs);
+                    if (waited != 0) {
+                        jsonObjectSet(report,"timed_out",jsonNewBool(readers));
+                        commandTerminate(child,15);
+                        commandWait(child,3000);
+                    }
+                    joined >> bool <- readers;
+                    if (isOk(outWorker)) {
+                        outResult >> Result<int, ThreadError> <- threadJoin(outWorker);
+                        if (!isOk(outResult)) joined <- false;
+                    }
+                    if (isOk(errWorker)) {
+                        errResult >> Result<int, ThreadError> <- threadJoin(errWorker);
+                        if (!isOk(errResult)) joined <- false;
+                    }
+                    code >> int <- commandExitCode(child);
+                    if (exactCode != -999999) code <- exactCode;
+                    overflow >> bool <- outputTotal > limit || errorTotal > limit;
+                    jsonObjectSet(report,"code",jsonNewInt(code));
+                    jsonObjectSet(report,"truncated",jsonNewBool(overflow));
+                    jsonObjectSet(report,"stdout_bytes",jsonNewInt(outputCount));
+                    jsonObjectSet(report,"stderr_bytes",jsonNewInt(errorCount));
+                    jsonObjectSet(report,"stdout_total",jsonNewInt(outputTotal));
+                    jsonObjectSet(report,"stderr_total",jsonNewInt(errorTotal));
+                    wr(off(outputBytes,outputCount),0);
+                    wr(off(errorBytes,errorCount),0);
+                    if (!recordStream(report,"stdout",outputBytes,outputCount)) outputFailed <- true;
+                    if (!recordStream(report,"stderr",errorBytes,errorCount)) errorFailed <- true;
+                    jsonObjectSet(report,"capture_ok",jsonNewBool(waited == 0 && joined && !overflow && !outputFailed && !errorFailed));
+                    jsonObjectSet(report,"ok",jsonNewBool(code == 0 && waited == 0 && joined && !overflow && !outputFailed && !errorFailed));
+                }
+                if (child != null) commandRelease(child);
+                if (outputPipe != null) commandPipeRelease(outputPipe);
+                if (errorPipe != null) commandPipeRelease(errorPipe);
+                if (outputBytes != null) free(outputBytes);
+                if (errorBytes != null) free(errorBytes);
+                busy <- false;
+                return report;
+            }
+    fa:
+        return true;
+}
+

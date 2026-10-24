@@ -1,0 +1,136 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_files, ide43_golden, sha256>;
+
+ide43Packaging {
+    fn:
+        private:
+            copyInput(source >> str, target >> str) -> bool {
+                size >> int <- fsSize(source); if (size < 0 || size > 134217728) return false;
+                data >> p<byte> <- cast(alloc(size+1)); if (data == null) return false;
+                good >> bool <- fsReadInto(source,data,size) == size && release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(target));
+                if (good) good <- fsWriteFrom(target,data,size,false) == size; free(data); return good;
+            }
+            entries(root >> str, relative >> str, result >> int) -> void {
+                path >> str <- root+"/"+relative; kind >> int <- release_io.releaseIo.fileType(path);
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"directory",jsonNewBool(kind == 2));
+                cert_json.certJson.put(row,"bytes",jsonNewInt(kind == 2 ? 0 : fsSize(path)));
+                cert_json.certJson.put(row,"sha256",jsonNewString(kind == 2 ? "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" : sha256.nccSha256.file(path)));
+                if (relative != "") cert_json.certJson.put(result,relative+(kind == 2 ? "/" : ""),row); else jsonRelease(row);
+                if (kind != 2) return;
+                names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayGet(names,index);
+                    entries(root,(relative == "" ? "" : relative+"/")+jsonStringView(name,""),result); jsonRelease(name); index += 1;
+                }
+                jsonRelease(names);
+            }
+            prepare(repo >> str, root >> str, mode >> str) -> bool {
+                gh >> str <- root+"/tools/ghidra/nc-ghidra-extension";
+                good >> bool <- release_io.releaseIo.makeDirectories(gh+"/bin") && release_io.releaseIo.makeDirectories(gh+"/ghidra_scripts") &&
+                    release_io.releaseIo.makeDirectories(root+"/tools/jetbrains/nc-language-plugin/build/distributions") &&
+                    release_io.releaseIo.makeDirectories(root+"/tools/vscode/nc-language");
+                files >> int <- ide43_core.ide43Core.list("README.md|extension.properties|Module.manifest|ghidra_scripts/NcPrimitiveAnalyze.java"); index >> int <- 0;
+                while (index < jsonArrayLen(files)) {
+                    rel >> int <- jsonArrayGet(files,index);
+                    good <- copyInput(repo+"/tools/ghidra/nc-ghidra-extension/"+jsonStringView(rel,""),gh+"/"+jsonStringView(rel,"")) && good;
+                    jsonRelease(rel); index += 1;
+                }
+                jsonRelease(files);
+                good <- copyInput(repo+"/tools/ncc/nc/src/verification/ide_router.n",gh+"/bin/ide_router.n") && good;
+                if (mode == "built" || mode == "multiple") {
+                    good <- release_io.releaseIo.write(root+"/tools/jetbrains/nc-language-plugin/build/distributions/z-first.zip","ide43 opaque preexisting JetBrains package\n") && good;
+                    good <- release_io.releaseIo.write(root+"/tools/vscode/nc-language/z-first.vsix","ide43 opaque preexisting VSCode package\n") && good;
+                }
+                if (mode == "multiple") {
+                    good <- release_io.releaseIo.write(root+"/tools/jetbrains/nc-language-plugin/build/distributions/a-second.zip","ide43 second JetBrains package\n") && good;
+                    good <- release_io.releaseIo.write(root+"/tools/vscode/nc-language/a-second.vsix","ide43 second VSCode package\n") && good;
+                }
+                return good;
+            }
+            extracted(archive >> str, destination >> str, repo >> str) -> int {
+                if (!release_io.releaseIo.makeDirectories(destination)) return 0;
+                words >> int <- ide43_core.ide43Core.list(envHas("WINDIR") ? "C:/Windows/System32/tar.exe|-xf" : "/usr/bin/unzip|-q");
+                cert_json.certJson.push(words,jsonNewString(archive)); cert_json.certJson.push(words,jsonNewString(envHas("WINDIR") ? "-C" : "-d"));
+                cert_json.certJson.push(words,jsonNewString(destination));
+                row >> int <- tool_cli.toolCli.execute(words,repo,30000); jsonRelease(words);
+                good >> bool <- tool_cli.toolCli.clean(row) && tool_cli.toolCli.hasFlag(row,"ok"); jsonRelease(row);
+                if (!good) return 0;
+                result >> int <- jsonNewObject(); entries(destination,"",result); return result;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(args,"|--repo|--candidate|--fixture|--work|--out|","");
+                if (options == 0) return 2;
+                repo >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--repo","."));
+                work >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--work",""));
+                candidate >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                if (release_io.releaseIo.fileType(work) != 0 || !release_io.releaseIo.makeDirectories(work)) return 2;
+                golden >> int <- jsonParseFile(repo+"/bootstrap/ide43-golden.json"); hosts >> int <- jsonObjectGet(golden,"hosts");
+                host >> int <- jsonObjectGet(hosts,envHas("WINDIR") ? "windows" : "linux"); frozen >> int <- jsonObjectGet(host,"packaging");
+                rows >> int <- jsonNewArray(); passed >> bool <- jsonArrayLen(frozen) == 5; index >> int <- 0;
+                while (index < jsonArrayLen(frozen)) {
+                    expected >> int <- jsonArrayGet(frozen,index); mode >> str <- release_io.releaseIo.field(expected,"mode");
+                    root >> str <- work+"/"+mode; good >> bool <- prepare(repo,root,mode);
+                    wantEntries >> int <- jsonNewObject(); entries(root+"/tools/ghidra/nc-ghidra-extension","",wantEntries);
+                    words >> int <- ide43_core.ide43Core.list(mode == "bundle" ? "ide43-bundle|--root" : "ide43-distribution|--root");
+                    jsonArrayInsert(words,0,jsonNewString(candidate)); cert_json.certJson.push(words,jsonNewString(root));
+                    if (mode != "bundle") {
+                        cert_json.certJson.push(words,jsonNewString("--gradle")); cert_json.certJson.push(words,jsonNewString(fixture));
+                        cert_json.certJson.push(words,jsonNewString("--npx")); cert_json.certJson.push(words,jsonNewString(fixture));
+                    }
+                    if (mode == "zip-failure") { cert_json.certJson.push(words,jsonNewString("--zip")); cert_json.certJson.push(words,jsonNewString(fixture)); }
+                    native >> int <- tool_cli.toolCli.execute(words,repo,120000); jsonRelease(words);
+                    good <- tool_cli.toolCli.clean(native) && release_io.releaseIo.number(native,"code",-1) == release_io.releaseIo.number(expected,"exit",-2) && good;
+                    actual >> int <- ide43_files.ide43Files.snapshot(root); files >> int <- jsonObjectGet(expected,"files"); details >> int <- jsonNewArray();
+                    good <- jsonObjectLen(actual) == jsonObjectLen(files) && good;
+                    archive >> str <- root+"/var/releases/v2_0_0/phase10_ide_dist/ghidra/nc-ghidra-extension-v2_0_0.zip";
+                    archiveHash >> str <- sha256.nccSha256.file(archive);
+                    ide43_golden.ide43Golden.scope(root,"",work,repo,fixture); at >> int <- 0;
+                    while (at < jsonObjectLen(files)) {
+                        key >> str <- jsonObjectKeyAt(files,at); want >> int <- jsonObjectGet(files,key); got >> int <- jsonObjectGet(actual,key);
+                        present >> bool <- jsonObjectHas(actual,key); equal >> bool <- false; changes >> int <- jsonNewArray();
+                        if (tool_cli.toolCli.hasFlag(want,"archive")) {
+                            unpacked >> int <- extracted(root+"/"+key,root+"/extracted",repo);
+                            equal <- present && jsonKind(unpacked) == 6 && jsonEquals(unpacked,wantEntries);
+                            jsonRelease(changes); changes <- ide43_files.ide43Files.diff(wantEntries,unpacked); jsonRelease(unpacked);
+                        } else if (jsonObjectHas(want,"json")) {
+                            a >> int <- jsonObjectGet(want,"json"); raw >> int <- jsonObjectGet(got,"json");
+                            ownHash >> bool <- true;
+                            if (strEndsWith(key,"ghidra_extension_manifest.v1.json")) {
+                                ownHash <- archiveHash != "" && release_io.releaseIo.field(raw,"sha256") == archiveHash;
+                                cert_json.certJson.put(raw,"sha256",jsonNewString("$ZIP_SHA256"));
+                            }
+                            b >> int <- ide43_golden.ide43Golden.model(raw); equal <- present && ownHash && jsonEquals(a,b);
+                            jsonRelease(changes); changes <- ide43_files.ide43Files.diff(a,b); jsonRelease(a); jsonRelease(raw); jsonRelease(b);
+                        } else {
+                            a >> int <- jsonObjectGet(want,"sha256"); b >> int <- jsonObjectGet(got,"sha256");
+                            c >> int <- jsonObjectGet(want,"bytes"); d >> int <- jsonObjectGet(got,"bytes");
+                            equal <- present && jsonEquals(a,b) && jsonEquals(c,d); jsonRelease(a); jsonRelease(b); jsonRelease(c); jsonRelease(d);
+                        }
+                        row >> int <- jsonNewObject(); cert_json.certJson.put(row,"path",jsonNewString(key)); cert_json.certJson.put(row,"passed",jsonNewBool(equal));
+                        cert_json.certJson.put(row,"differences",changes); cert_json.certJson.put(row,"native",jsonClone(got)); cert_json.certJson.push(details,row);
+                        good <- equal && good; free(cast<byte>(key)); jsonRelease(want); jsonRelease(got); at += 1;
+                    }
+                    ide43_golden.ide43Golden.close();
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"mode",jsonNewString(mode)); cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                    cert_json.certJson.put(row,"code",jsonObjectGet(native,"code")); cert_json.certJson.put(row,"files",details);
+                    cert_json.certJson.put(row,"input_entries",jsonClone(wantEntries));
+                    cert_json.certJson.put(row,"stdout",jsonObjectGet(native,"stdout")); cert_json.certJson.put(row,"stderr",jsonObjectGet(native,"stderr")); cert_json.certJson.push(rows,row);
+                    println((good ? "PASS " : "FAIL ")+"native packaging "+mode); passed <- good && passed;
+                    jsonRelease(wantEntries); jsonRelease(actual); jsonRelease(files); jsonRelease(native); jsonRelease(expected); index += 1;
+                }
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.ide43.native-packaging-golden.v1"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed)); cert_json.certJson.put(report,"cases",jsonClone(rows));
+                cert_json.certJson.put(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                cert_json.certJson.put(report,"scope",jsonNewString("Frozen legacy distribution schemas/outputs and exits; migrated native packaging inputs, real host ZIP archive and native input-to-extracted entry hash/size/directory equality; no interpreter"));
+                if (!cert_json.certJson.save(tool_cli.toolCli.value(options,"--out",work+"/packaging.json"),report)) passed <- false;
+                jsonRelease(report); jsonRelease(rows); jsonRelease(frozen); jsonRelease(host); jsonRelease(hosts); jsonRelease(golden); jsonRelease(options); argsRelease(args);
+                return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

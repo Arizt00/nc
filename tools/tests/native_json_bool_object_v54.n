@@ -1,0 +1,65 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonBoolObjectV54 {
+    const:
+        ROUNDS >> int <- 600;
+    run() -> int {
+        root >> int <- jsonNewObject();
+        yes >> int <- jsonNewBool(true);
+        no >> int <- jsonNewBool(false);
+        guard root > 0 && yes > 0 && no > 0 else return 1;
+        guard jsonKind(yes) == 2 && jsonGetBool(yes) && !jsonGetBool(no) else return 2;
+        guard !jsonObjectSet(0,"flag",yes) && !jsonObjectSet(yes,"flag",no) else return 3;
+        guard !jsonObjectSet(root,"flag",0) && jsonObjectLen(root) == 0 else return 4;
+        guard jsonObjectSet(root,"flag",yes) && jsonObjectSet(root,"tail",no) else return 5;
+        jsonRelease(yes); jsonRelease(no);
+        held >> p<int> <- cast<int>(alloc(ROUNDS*sizeOf(int)));
+        guard held != null else return 13;
+        at >> int <- 0;
+        while (at < ROUNDS) {
+            handle >> int <- jsonNewBool((at & 1) == 0);
+            guard handle > 0 else return 14;
+            wr(off(held,at),handle); at += 1;
+        }
+        at <- 0;
+        while (at < ROUNDS) {
+            handle >> int <- rd(off(held,at));
+            guard jsonGetBool(handle) == ((at & 1) == 0) else return 15;
+            jsonRelease(handle); at += 1;
+        }
+        free(held);
+        at <- 0;
+        while (at < ROUNDS) {
+            value >> int <- jsonNewBool((at & 1) == 0);
+            guard jsonObjectSet(root,"flag",value) else return 6;
+            jsonRelease(value);
+            view >> int <- jsonObjectBorrow(root,"flag");
+            guard jsonGetBool(view) == ((at & 1) == 0) else return 7;
+            jsonRelease(view);
+            at += 1;
+        }
+        guard jsonObjectLen(root) == 2 && jsonObjectHas(root,"flag") else return 8;
+        clone >> int <- jsonClone(root);
+        guard clone > 0 && jsonEquals(root,clone) else return 9;
+        jsonRelease(root);
+        item >> int <- jsonObjectGet(clone,"flag");
+        guard item > 0 && !jsonGetBool(item) else return 10;
+        jsonRelease(item);
+        removed >> int <- jsonObjectRemove(clone,"tail");
+        guard removed > 0 && !jsonGetBool(removed) && jsonObjectLen(clone) == 1 else return 11;
+        jsonRelease(removed);
+        borrowed >> int <- jsonObjectBorrow(clone,"flag");
+        guard jsonObjectSet(clone,"copy",borrowed) else return 16;
+        jsonRelease(borrowed);
+        text >> str <- jsonStringify(clone);
+        guard text == "{\"flag\":false,\"copy\":false}" else return 12;
+        println(text);
+        free(cast<byte>(text));
+        jsonRelease(clone);
+        println("json bool/object ok");
+        return 127;
+    }
+    ref main ->> run;
+    fa: return true;
+}

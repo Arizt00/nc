@@ -1,0 +1,28 @@
+use <io:output>;
+
+nativeRemoveDir64 {
+    fn:
+        public:
+            run() -> int {
+                path >> str <- "remove-dir-64";
+                if (exists(path)) return 1;
+                created >> Result<bool,FsError> <- createDir(path);
+                if (!isOk(created)) return 2;
+                child >> str <- path+"/child";
+                nested >> Result<bool,FsError> <- createDir(child);
+                if (!isOk(nested)) return 3;
+                blocked >> Result<bool,FsError> <- removeDir(path);
+                if (!isErr(blocked) || !exists(child)) return 4;
+                removedChild >> Result<bool,FsError> <- removeDir(child);
+                removedParent >> Result<bool,FsError> <- removeDir(path);
+                if (!isOk(removedChild) || !isOk(removedParent) || exists(path)) return 5;
+                missing >> Result<bool,FsError> <- removeDir(path);
+                empty >> Result<bool,FsError> <- removeDir("");
+                absent >> Result<bool,FsError> <- removeDir(null);
+                if (!isErr(missing) || !isErr(empty) || !isErr(absent)) return 6;
+                println("remove-dir-ok");
+                return 192;
+            }
+    ref main ->> run;
+    fa: return true;
+}

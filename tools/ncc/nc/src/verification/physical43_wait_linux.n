@@ -1,0 +1,30 @@
+use foreign { c };
+use <process:command>;
+
+physical43Wait {
+    stc:
+        result >> int <- 0;
+    foreign:
+        c symbol "waitpid" { abi: C; header: "sys/wait.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr,i32) -> i32; }
+    fn:
+        public:
+            wait(child >> addr, timeoutMs >> int) -> int {
+                result <- -1;
+                status >> p<i32> <- cast(alloc(4)); if (status == null) return -1;
+                pid >> i32 <- commandId(child); milliseconds >> i64 <- timeoutMs; deadline >> i64 <- monotonicNs()+milliseconds*1000000;
+                while (true) {
+                    waited >> i32 <- waitpid(pid,adr(status),1);
+                    if (waited == pid) {
+                        value >> i32 <- rd<i32>(status); signalNumber >> int <- value & 127;
+                        result <- signalNumber == 0 ? (value >>> 8) & 255 : 0-signalNumber;
+                        free(status); return 0;
+                    }
+                    if (waited < 0) { free(status); return -1; }
+                    if (monotonicNs() >= deadline) { free(status); return 258; }
+                    sleepMs(1);
+                }
+                free(status); return -1;
+            }
+            exitCode() -> int { return result; }
+    fa: return true;
+}

@@ -1,0 +1,41 @@
+captureHost78 {
+    fn:
+      public:
+    utf16(path >> str) -> p<u16> {
+        count >> int <- strByteLen(path);
+        if (count > 1073741822) return null;
+        text >> p<u16> <- cast<u16>(alloc((count+1)*2));
+        if (text == null) return null;
+        at >> int <- 0; written >> int <- 0;
+        while (at < count) {
+            first >> int <- rd(off(cast<byte>(path),at)); at += 1;
+            value >> int <- first; extra >> int <- 0; minimum >> int <- 0;
+            if (first >= 0xC2 && first <= 0xDF) { value <- first & 31; extra <- 1; minimum <- 128; }
+            else if (first >= 0xE0 && first <= 0xEF) { value <- first & 15; extra <- 2; minimum <- 2048; }
+            else if (first >= 0xF0 && first <= 0xF4) { value <- first & 7; extra <- 3; minimum <- 65536; }
+            else if (first >= 128) { free(text); return null; }
+            if (at+extra > count) { free(text); return null; }
+            while (extra > 0) {
+                next >> int <- rd(off(cast<byte>(path),at)); at += 1; extra -= 1;
+                if (next < 128 || next > 191) { free(text); return null; }
+                value <- (value << 6) | (next & 63);
+            }
+            if (value < minimum || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) { free(text); return null; }
+            if (value >= 65536) {
+                value -= 65536; wr(off(text,written),0xD800+(value >> 10)); written += 1;
+                value <- 0xDC00+(value & 1023);
+            }
+            wr(off(text,written),value); written += 1;
+        }
+        wr(off(text,written),0); return text;
+    }
+    open(path >> str) -> addr {
+        text >> p<u16> <- utf16(path);
+        if (text == null) return null;
+        handle >> addr <- osCreateFileW(text,0x40000000,7,null,1,128,null);
+        free(text);
+        return handle == 0xFFFFFFFFFFFFFFFF ? null : handle;
+    }
+    close(handle >> addr) -> bool { return osCloseHandle(handle) != 0; }
+    fa: return true;
+}

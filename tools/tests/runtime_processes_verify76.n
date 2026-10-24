@@ -1,0 +1,120 @@
+use <io:output>;
+use <data:json>;
+use <process:args, command, env>;
+
+runtimeProcessesVerify76 {
+    text(model >> int, key >> str) -> str {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(field,"");
+        jsonRelease(field);
+        return value;
+    }
+    number(model >> int, key >> str) -> int {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> int <- jsonGetIntOr(field,-999);
+        jsonRelease(field);
+        return value;
+    }
+    capture(image >> str, cwd >> str, arguments >> int) -> int {
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"code",jsonNewInt(-999));
+        jsonObjectSet(report,"capture_ok",jsonNewBool(false));
+        output >> addr <- commandPipeOpen(false,true);
+        errors >> addr <- commandPipeOpen(false,true);
+        data >> p<byte> <- alloc(1025);
+        scratch >> p<byte> <- alloc(1025);
+        if (output == null || errors == null || data == null || scratch == null) {
+            if (output != null) commandPipeRelease(output);
+            if (errors != null) commandPipeRelease(errors);
+            free(data); free(scratch);
+            return report;
+        }
+        if (strContains(image,"\"")) {
+            commandPipeRelease(output); commandPipeRelease(errors);
+            free(data); free(scratch); return report;
+        }
+        line >> str <- "\""+image+"\"";
+        index >> int <- 0;
+        while (index < jsonArrayLen(arguments)) {
+            item >> int <- jsonArrayBorrow(arguments,index);
+            argument >> str <- jsonStringView(item,"");
+            if (strContains(argument,"\"") || strContains(argument,"\n") || strContains(argument,"\r")) {
+                jsonRelease(item); commandPipeRelease(output); commandPipeRelease(errors);
+                free(data); free(scratch); strRelease(line);
+                return report;
+            }
+            line += " \""+argument+"\"";
+            jsonRelease(item); index += 1;
+        }
+        child >> addr <- commandOpen(line,cwd,null,commandPipeWriteHandle(output),commandPipeWriteHandle(errors),0);
+        commandPipeCloseWrite(output); commandPipeCloseWrite(errors);
+        ready >> bool <- child != null && commandStarted(child);
+        waited >> int <- ready ? commandWait(child,300000) : -1;
+        if (waited != 0 && child != null) { commandTerminate(child,15); commandWait(child,30000); }
+        if (ready && waited == 0) {
+            jsonObjectSet(report,"code",jsonNewInt(commandExitCode(child)));
+            count >> int <- commandPipeRead(output,adr(data),1024);
+            countErr >> int <- commandPipeRead(errors,adr(scratch),1024);
+            if (countErr == -109 && envHas("WINDIR")) countErr <- 0;
+            if (count < 0 && count == -109 && envHas("WINDIR")) count <- 0;
+            if (count >= 0 && count < 1024 && countErr >= 0 && countErr < 1024) {
+                wr(off(data,count),0); wr(off(scratch,countErr),0);
+                jsonObjectSet(report,"stdout",jsonNewString(cast<str>(data)));
+                jsonObjectSet(report,"stderr",jsonNewString(cast<str>(scratch)));
+                jsonObjectSet(report,"stdout_bytes",jsonNewInt(count));
+                jsonObjectSet(report,"stderr_bytes",jsonNewInt(countErr));
+                jsonObjectSet(report,"capture_ok",jsonNewBool(true));
+            }
+        }
+        if (child != null) commandRelease(child);
+        commandPipeRelease(output); commandPipeRelease(errors);
+        free(data); free(scratch); strRelease(line);
+        return report;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3) return 64;
+        manifest >> int <- jsonParseFile(argsAt(arguments,1));
+        if (manifest == 0) return 65;
+        cases >> int <- jsonObjectBorrow(manifest,"cases");
+        results >> int <- jsonNewArray();
+        valid >> bool <- jsonArrayLen(cases) > 0;
+        index >> int <- 0;
+        while (index < jsonArrayLen(cases)) {
+            entry >> int <- jsonArrayBorrow(cases,index);
+            cwd >> str <- text(entry,"cwd");
+            expected >> str <- text(entry,"stdout");
+            code >> int <- number(entry,"exit");
+            words >> int <- jsonObjectBorrow(entry,"arguments");
+            row >> int <- capture(text(entry,"image"),cwd,words);
+            jsonRelease(words);
+            flag >> int <- jsonObjectBorrow(row,"capture_ok");
+            actual >> str <- text(row,"stdout");
+            passed >> bool <- jsonGetBoolOr(flag,false) &&
+                number(row,"code") == code &&
+                actual == expected &&
+                number(row,"stdout_bytes") == strByteLen(expected) &&
+                number(row,"stderr_bytes") == 0;
+            jsonRelease(flag);
+            jsonObjectSet(row,"name",jsonObjectGet(entry,"name"));
+            jsonObjectSet(row,"expected_exit",jsonNewInt(code));
+            jsonObjectSet(row,"expected_stdout",jsonNewString(expected));
+            jsonObjectSet(row,"passed",jsonNewBool(passed));
+            jsonArrayPush(results,row);
+            valid <- valid && passed;
+            jsonRelease(row); jsonRelease(entry);
+            index += 1;
+        }
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.native.runtime.processes.v76"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"cases",results);
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,2),2);
+        jsonRelease(report); jsonRelease(cases); jsonRelease(manifest);
+        argsRelease(arguments);
+        println(valid && saved ? "native runtime execution PASS" : "native runtime execution FAIL");
+        return valid && saved ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

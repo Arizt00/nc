@@ -1,0 +1,24 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output>;
+use <project:portable43_repr, physical43_common, release_io, cert_json>;
+
+portable43AnchorTests {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); repo >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--repo",".")); out >> str <- release_io.releaseIo.option(arguments,"--out","");
+                golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/portable43-anchor-goldens.json",false); vectors >> int <- jsonObjectBorrow(golden,"vectors"); checks >> int <- jsonNewArray(); at >> int <- 0; passed >> bool <- jsonArrayLen(vectors) > 0;
+                while (at < jsonArrayLen(vectors)) {
+                    row >> int <- jsonArrayBorrow(vectors,at); input >> str <- physical43_common.physical43Common.field(row,"input"); expected >> int <- jsonObjectBorrow(row,envHas("WINDIR") ? "windows" : "linux");
+                    name >> str <- portable43_repr.portable43Repr.basename(input); parent >> str <- portable43_repr.portable43Repr.parent(input); actualParent >> str <- envHas("WINDIR") ? physical43_common.physical43Common.nativePath(parent) : strSubstring(parent,0,strByteLen(parent));
+                    namePassed >> bool <- name == physical43_common.physical43Common.field(expected,"basename"); parentPassed >> bool <- actualParent == physical43_common.physical43Common.field(expected,"parent"); passed <- passed && namePassed && parentPassed;
+                    check >> int <- jsonNewObject(); cert_json.certJson.put(check,"input",jsonNewString(input)); cert_json.certJson.put(check,"passed",jsonNewBool(namePassed && parentPassed)); cert_json.certJson.put(check,"basename_passed",jsonNewBool(namePassed)); cert_json.certJson.put(check,"parent_passed",jsonNewBool(parentPassed)); cert_json.certJson.put(check,"actual_basename",jsonNewString(name)); cert_json.certJson.put(check,"actual_parent",jsonNewString(actualParent)); jsonObjectSet(check,"expected",expected); cert_json.certJson.push(checks,check);
+                    println((namePassed && parentPassed ? "PASS " : "FAIL ")+input); strRelease(name); strRelease(parent); strRelease(actualParent); strRelease(input); jsonRelease(expected); jsonRelease(row); at += 1;
+                }
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.portable43.path-anchor-tests.v1")); cert_json.certJson.put(report,"passed",jsonNewBool(passed)); cert_json.certJson.put(report,"physical_claims",jsonNewBool(false)); jsonObjectSet(report,"checks",checks); saved >> bool <- physical43_common.physical43Common.save(out,report);
+                jsonRelease(report); jsonRelease(checks); jsonRelease(vectors); jsonRelease(golden); argsRelease(arguments); return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

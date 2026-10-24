@@ -1,0 +1,38 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:utility_source, release_io, editor_json, cert_matrix>;
+
+existing43Case {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 2;
+                content >> str <- release_io.releaseIo.text(argsAt(arguments,1));
+                data >> int <- editor_json.editorJson.parse(content); strRelease(content);
+                vectors >> int <- jsonObjectGet(data,"vectors");
+                index >> int <- 0; failures >> int <- 0;
+                while (index < jsonArrayLen(vectors)) {
+                    row >> int <- jsonArrayGet(vectors,index); a >> int <- jsonArrayGet(row,0); b >> int <- jsonArrayGet(row,1);
+                    lower >> str <- utility_source.utilitySource.lowerPython(jsonStringView(a,""));
+                    if (lower != jsonStringView(b,"")) { failures += 1; println("FAIL lower-vector-"+renderInt(index)); }
+                    strRelease(lower); jsonRelease(a); jsonRelease(b); jsonRelease(row); index += 1;
+                }
+                buffer >> p<byte> <- cast(alloc(4)); wr(buffer,128); wr(off(buffer,1),233); wr(off(buffer,2),0);
+                text >> str <- cast(buffer); decoded >> str <- cert_matrix.certMatrix.captureText(text,"cp1252");
+                if (decoded != "\u{20ac}\u{e9}") failures += 1;
+                strRelease(decoded); wr(buffer,129); wr(off(buffer,1),0);
+                decoded <- cert_matrix.certMatrix.captureText(text,"cp1252"); if (decoded != "") failures += 1;
+                strRelease(decoded); free(buffer);
+                decoded <- cert_matrix.certMatrix.captureText("\u{e9}","utf8"); if (decoded != "\u{e9}") failures += 1;
+                strRelease(decoded);
+                report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.case.v43"));
+                jsonObjectSet(report,"checks",jsonNewInt(index+3)); jsonObjectSet(report,"failures",jsonNewInt(failures));
+                jsonObjectSet(report,"passed",jsonNewBool(failures == 0 && index == 1442));
+                saved >> bool <- release_io.releaseIo.save(argsAt(arguments,2),report);
+                println("existing43 Unicode/capture checks="+renderInt(index+3)+" failures="+renderInt(failures));
+                jsonRelease(report); jsonRelease(vectors); jsonRelease(data); argsRelease(arguments); return failures == 0 && index == 1442 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

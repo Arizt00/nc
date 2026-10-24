@@ -1,0 +1,43 @@
+pointerTargetsComplete {
+    type:
+        Packet {
+            public:
+                tag >> int;
+                flags >> byte;
+                wide >> qword;
+            layout:
+                repr(C);
+        }
+
+    fn:
+        measure(base >> p<byte>, index >> int) -> isize {
+            cpu >> p<Packet> <- cast(base);
+            mmio >> p<Packet, mmio> <- cast(cpu);
+            dma >> p<Packet, dma, 32> <- cast(mmio);
+            physical >> p<byte, physical, 16> <- cast(cpu);
+            gpu >> p<byte, gpu, 128> <- cast(cpu);
+            firmware >> p<byte, firmware, 64> <- cast(cpu);
+            next >> p<Packet, mmio> <- off(mmio, index);
+            tagAddress >> p<int, mmio> <- cast(mmio);
+            tag >> int <- rd(tagAddress);
+            wr(tagAddress, tag + 1);
+            return dist(next, mmio);
+        }
+
+        run() -> bool {
+            memory >> p<byte> <- alloc(256);
+            guard nil(memory) == false else return false;
+            valueAddress >> p<int> <- cast(memory);
+            wr(valueAddress, 41);
+            distance >> isize <- measure(memory, 1);
+            value >> int <- rd(valueAddress);
+            free(memory);
+            return value == 42;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

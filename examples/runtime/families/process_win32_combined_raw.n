@@ -1,0 +1,38 @@
+use <io:output>;
+use <process:args, command, env, exit>;
+
+rawProcessCombined :: runtime {
+    fn:
+        run() -> bool {
+            args >> addr <- argsOpen();
+            environment >> addr <- envOpen();
+            pipe >> addr <- commandPipeOpen(false, false);
+            current >> addr <- processCurrent();
+
+            ok >> bool <-
+                args != null &&
+                argsCount(args) > 0 &&
+                argsError(args) == 0 &&
+                environment != null &&
+                envCount(environment) > 0 &&
+                envError(environment) == 0 &&
+                pipe != null &&
+                commandPipeError(pipe) == 0 &&
+                current != null &&
+                processId(current) > 0;
+
+            commandPipeRelease(pipe);
+            envRelease(environment);
+            argsRelease(args);
+
+            print("manual nC combined process backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

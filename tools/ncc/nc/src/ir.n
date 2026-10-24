@@ -1,0 +1,2425 @@
+use <io:output, render>;
+use <data:json>;
+use <project:parser_ast, sema, diagnostics, intrinsics, type_contract_sema, binary_layout>;
+
+nccIr {
+    const:
+        IR_MAGIC >> int <- 1380537166;
+        IR_VERSION >> int <- 7;
+        HEADER_BYTES >> int <- 128;
+        RECORD_BYTES >> int <- 104;
+        IDENTITY_BYTES >> int <- 24;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_TARGET >> int <- 8;
+        H_POINTER_BITS >> int <- 12;
+        H_ENDIAN >> int <- 16;
+        H_OBJECT >> int <- 20;
+        H_ABI >> int <- 24;
+        H_NODES >> int <- 28;
+        H_RECORD_BYTES >> int <- 32;
+        H_BLOCKS >> int <- 36;
+        H_FUNCTIONS >> int <- 40;
+        H_VALUES >> int <- 44;
+        H_OPERATIONS >> int <- 48;
+        H_TERMINATORS >> int <- 52;
+        H_MEMORY >> int <- 56;
+        H_CALLS >> int <- 60;
+        H_BRANCHES >> int <- 64;
+        H_EFFECTS >> int <- 68;
+        H_SEED_BYTES >> int <- 72;
+        H_FINGERPRINT >> int <- 76;
+        H_RECORDS >> int <- 80;
+        H_SEED >> int <- 96;
+        H_IDENTITIES >> int <- 104;
+        H_SPELLINGS >> int <- 112;
+        H_SPELLING_BYTES >> int <- 120;
+        H_MATERIAL_BYTES >> int <- 124;
+
+        R_OPCODE >> int <- 0;
+        R_AST_KIND >> int <- 4;
+        R_VALUE_ID >> int <- 8;
+        R_BLOCK_ID >> int <- 12;
+        R_PARENT >> int <- 16;
+        R_FIRST_CHILD >> int <- 20;
+        R_NEXT_SIBLING >> int <- 24;
+        R_TYPE_HASH >> int <- 28;
+        R_NAME_HASH >> int <- 32;
+        R_ROLE_HASH >> int <- 36;
+        R_LINE >> int <- 40;
+        R_COLUMN >> int <- 44;
+        R_EFFECTS >> int <- 48;
+        R_FLAGS >> int <- 52;
+        R_FIRST_TOKEN >> int <- 56;
+        R_END_TOKEN >> int <- 60;
+        R_LAYOUT_VALUE >> int <- 64;
+        R_LAYOUT_VALID >> int <- 72;
+        R_LAYOUT_ALIGN >> int <- 76;
+        R_SIGNATURE_OFFSET >> int <- 80;
+        R_SIGNATURE_BYTES >> int <- 84;
+        R_GVN_SOURCE >> int <- 88;
+        R_GVN_SLOT >> int <- 92;
+        R_GVN_TYPE >> int <- 96;
+
+        I_NAME_OFFSET >> int <- 0;
+        I_NAME_BYTES >> int <- 4;
+        I_OWNER_OFFSET >> int <- 8;
+        I_OWNER_BYTES >> int <- 12;
+        I_VISIBILITY >> int <- 16;
+        I_KIND >> int <- 20;
+
+        IDENTITY_NONE >> int <- 0;
+        IDENTITY_FUNCTION >> int <- 1;
+        IDENTITY_CONTAINER >> int <- 2;
+        IDENTITY_TYPE >> int <- 3;
+        IDENTITY_VALUE >> int <- 4;
+        IDENTITY_REFERENCE >> int <- 5;
+        IDENTITY_RUNTIME >> int <- 256;
+
+        TARGET_X86_64_SYSV >> int <- 1;
+        TARGET_X86_64_WIN64 >> int <- 2;
+        TARGET_X86_64_DARWIN >> int <- 3;
+        TARGET_I386_SYSV >> int <- 4;
+        TARGET_AARCH64_SYSV >> int <- 5;
+        TARGET_AARCH64_DARWIN >> int <- 6;
+        TARGET_ARMV7_EABI >> int <- 7;
+        TARGET_RISCV32 >> int <- 8;
+        TARGET_RISCV64 >> int <- 9;
+        TARGET_WASM32 >> int <- 10;
+
+        OBJECT_ELF64 >> int <- 1;
+        OBJECT_ELF32 >> int <- 2;
+        OBJECT_COFF64 >> int <- 3;
+        OBJECT_MACHO64 >> int <- 4;
+        OBJECT_WASM >> int <- 5;
+
+        ABI_SYSV64 >> int <- 1;
+        ABI_WIN64 >> int <- 2;
+        ABI_AAPCS64 >> int <- 3;
+        ABI_SYSV32 >> int <- 4;
+        ABI_AAPCS32 >> int <- 5;
+        ABI_RISCV32 >> int <- 6;
+        ABI_RISCV64 >> int <- 7;
+        ABI_WASM >> int <- 8;
+
+        IR_META >> int <- 1;
+        IR_FUNCTION >> int <- 2;
+        IR_DECLARE >> int <- 3;
+        IR_TYPE >> int <- 4;
+        IR_CONSTANT >> int <- 5;
+        IR_LOAD >> int <- 6;
+        IR_COMPUTE >> int <- 7;
+        IR_CALL >> int <- 8;
+        IR_STORE >> int <- 9;
+        IR_BLOCK >> int <- 10;
+        IR_RETURN >> int <- 11;
+        IR_BRANCH >> int <- 12;
+        IR_JUMP >> int <- 13;
+        IR_DEFER >> int <- 14;
+        IR_CLOSURE >> int <- 15;
+        IR_COROUTINE >> int <- 16;
+        IR_PATTERN >> int <- 17;
+        IR_ABI >> int <- 18;
+        IR_ENTRY >> int <- 19;
+        IR_INTRINSIC >> int <- 20;
+
+        EFFECT_READ >> int <- 1;
+        EFFECT_WRITE >> int <- 2;
+        EFFECT_CALL >> int <- 4;
+        EFFECT_BRANCH >> int <- 8;
+        EFFECT_TERMINATE >> int <- 16;
+        EFFECT_MEMORY >> int <- 32;
+        EFFECT_SUSPEND >> int <- 64;
+        EFFECT_CLEANUP >> int <- 128;
+
+        AST_PROGRAM >> int <- 1;
+        AST_USE_GROUP >> int <- 2;
+        AST_CONTAINER >> int <- 3;
+        AST_CONST_SECTION >> int <- 4;
+        AST_TYPE_SECTION >> int <- 5;
+        AST_STC_SECTION >> int <- 6;
+        AST_LOCAL_SECTION >> int <- 7;
+        AST_FN_SECTION >> int <- 8;
+        AST_FA_SECTION >> int <- 9;
+        AST_GLOBAL_CONST >> int <- 10;
+        AST_GLOBAL_TYPE >> int <- 11;
+        AST_VALUE_DECL >> int <- 12;
+        AST_TYPE_DECL >> int <- 13;
+        AST_FIELD_DECL >> int <- 14;
+        AST_FUNCTION_DECL >> int <- 15;
+        AST_PARAMETER_DECL >> int <- 16;
+        AST_ENTRY_REF >> int <- 17;
+        AST_TYPE_NAME >> int <- 18;
+        AST_TYPE_APPLY >> int <- 19;
+        AST_TYPE_POINTER >> int <- 20;
+        AST_TYPE_ARRAY >> int <- 21;
+        AST_TYPE_UNION >> int <- 22;
+        AST_TYPE_FUNCTION >> int <- 23;
+        AST_TYPE_CONST >> int <- 24;
+        AST_EXPR_LITERAL >> int <- 25;
+        AST_EXPR_NAME >> int <- 26;
+        AST_EXPR_UNARY >> int <- 27;
+        AST_EXPR_BINARY >> int <- 28;
+        AST_EXPR_CALL >> int <- 29;
+        AST_EXPR_MEMBER >> int <- 30;
+        AST_EXPR_INDEX >> int <- 31;
+        AST_EXPR_TERNARY >> int <- 32;
+        AST_EXPR_ARRAY >> int <- 33;
+        AST_BLOCK >> int <- 34;
+        AST_STMT_EXPRESSION >> int <- 35;
+        AST_STMT_ASSIGN >> int <- 36;
+        AST_STMT_RETURN >> int <- 37;
+        AST_STMT_IF >> int <- 38;
+        AST_STMT_WHILE >> int <- 39;
+        AST_STMT_FOR >> int <- 40;
+        AST_STMT_GUARD >> int <- 41;
+        AST_STMT_DEFER >> int <- 42;
+        AST_STMT_BREAK >> int <- 43;
+        AST_STMT_CONTINUE >> int <- 44;
+        AST_EXPR_STRUCT >> int <- 45;
+        AST_EXPR_FIELD >> int <- 46;
+        AST_EXPR_CLOSURE >> int <- 47;
+        AST_EXPR_TRY >> int <- 48;
+        AST_EXPR_PREFIX >> int <- 49;
+        AST_EXPR_IF >> int <- 50;
+        AST_STMT_MATCH >> int <- 51;
+        AST_MATCH_ARM >> int <- 52;
+        AST_STMT_FOR_IN >> int <- 53;
+        AST_STMT_FOR_RANGE >> int <- 54;
+        AST_STMT_LOOP >> int <- 55;
+        AST_STMT_REPEAT >> int <- 56;
+        AST_STMT_DO_WHILE >> int <- 57;
+        AST_STMT_UNLESS >> int <- 58;
+        AST_STMT_YIELD >> int <- 59;
+        AST_PATTERN_WILDCARD >> int <- 60;
+        AST_PATTERN_LITERAL >> int <- 61;
+        AST_PATTERN_BINDING >> int <- 62;
+        AST_PATTERN_VARIANT >> int <- 63;
+        AST_PATTERN_STRUCT >> int <- 64;
+        AST_PATTERN_FIELD >> int <- 65;
+        AST_PATTERN_ARRAY >> int <- 66;
+        AST_PATTERN_RANGE >> int <- 67;
+        AST_PATTERN_REST >> int <- 68;
+        AST_CLOSURE_PARAMETER >> int <- 69;
+        AST_CLOSURE_CAPTURE >> int <- 70;
+        AST_CLOSURE_EFFECT >> int <- 71;
+        AST_GENERIC_DECL >> int <- 72;
+        AST_GENERIC_PARAM >> int <- 73;
+        AST_GENERIC_APPLY >> int <- 74;
+        AST_TRAIT_DECL >> int <- 75;
+        AST_IMPL_DECL >> int <- 76;
+        AST_ASSOCIATED_TYPE >> int <- 77;
+        AST_ABI_CONTRACT >> int <- 78;
+        AST_ABI_FIELD >> int <- 79;
+        AST_ABI_BINDING >> int <- 80;
+
+        FLAG_PROJECT_EXPORT >> int <- 1048576;
+        FLAG_TYPE_EDGE >> int <- 134217728;
+        FLAG_INTRINSIC_BASE >> int <- 2097152;
+        FLAG_INTRINSIC_MOD >> int <- 128;
+        FLAG_OPTIMIZED_OUT >> int <- 536870912;
+
+    type:
+        TargetContract {
+            public:
+                id >> int;
+                pointerBits >> int;
+                objectFormat >> int;
+                abi >> int;
+                littleEndian >> bool;
+                seedBytes >> int;
+        }
+
+        IrContract {
+            public:
+                nodeBytes >> int;
+                recordBytes >> int;
+                target >> TargetContract;
+                fingerprint >> int;
+        }
+
+        SymbolIdentity {
+            public:
+                name >> p<byte>;
+                nameBytes >> int;
+                owner >> p<byte>;
+                ownerBytes >> int;
+                visibility >> int;
+                kind >> int;
+        }
+
+    stc:
+        lowerings >> u64 <- 0;
+
+    local:
+        lastTarget >> int <- 0;
+        lastFingerprint >> int <- 0;
+        lastNodes >> int <- 0;
+        lastIdentityBytes >> int <- 0;
+
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast<byte>(left);
+                b >> p<byte> <- cast<byte>(right);
+                at >> int <- 0;
+                while (rd<byte>(off(a, at)) != 0 && rd<byte>(off(b, at)) != 0) {
+                    if (rd<byte>(off(a, at)) != rd<byte>(off(b, at))) return false;
+                    at += 1;
+                }
+                return rd<byte>(off(a, at)) == rd<byte>(off(b, at));
+            }
+
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            records(graph >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(graph, H_RECORDS)));
+            }
+
+            record(graph >> p<byte>, index >> int) -> p<byte> {
+                return off(records(graph), index * RECORD_BYTES);
+            }
+
+            identities(graph >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(graph, H_IDENTITIES)));
+            }
+
+            identity(graph >> p<byte>, index >> int) -> p<byte> {
+                return off(identities(graph), index * IDENTITY_BYTES);
+            }
+
+            spellings(graph >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(graph, H_SPELLINGS)));
+            }
+
+            targetId(target >> str) -> int {
+                if (same(target, "host") || same(target, "x86_64-unknown-linux-gnu")) return TARGET_X86_64_SYSV;
+                if (same(target, "x86_64-pc-windows-msvc")) return TARGET_X86_64_WIN64;
+                if (same(target, "x86_64-apple-darwin")) return TARGET_X86_64_DARWIN;
+                if (same(target, "i386-unknown-linux-gnu") || same(target, "i686-unknown-linux-gnu")) return TARGET_I386_SYSV;
+                if (same(target, "aarch64-unknown-linux-gnu")) return TARGET_AARCH64_SYSV;
+                if (same(target, "aarch64-apple-darwin")) return TARGET_AARCH64_DARWIN;
+                if (same(target, "armv7-unknown-linux-gnueabihf") || same(target, "armv7a-none-eabi")) return TARGET_ARMV7_EABI;
+                if (same(target, "riscv32imac-unknown-elf") || same(target, "riscv32imac-unknown-none-elf")) return TARGET_RISCV32;
+                if (same(target, "riscv64gc-unknown-linux-gnu") || same(target, "riscv64-unknown-elf")) return TARGET_RISCV64;
+                if (same(target, "wasm32-wasi")) return TARGET_WASM32;
+                return 0;
+            }
+
+            canonicalTarget(target >> int) -> str {
+                if (target == TARGET_X86_64_SYSV) return "x86_64-unknown-linux-gnu";
+                if (target == TARGET_X86_64_WIN64) return "x86_64-pc-windows-msvc";
+                if (target == TARGET_X86_64_DARWIN) return "x86_64-apple-darwin";
+                if (target == TARGET_I386_SYSV) return "i386-unknown-linux-gnu";
+                if (target == TARGET_AARCH64_SYSV) return "aarch64-unknown-linux-gnu";
+                if (target == TARGET_AARCH64_DARWIN) return "aarch64-apple-darwin";
+                if (target == TARGET_ARMV7_EABI) return "armv7-unknown-linux-gnueabihf";
+                if (target == TARGET_RISCV32) return "riscv32imac-unknown-elf";
+                if (target == TARGET_RISCV64) return "riscv64gc-unknown-linux-gnu";
+                if (target == TARGET_WASM32) return "wasm32-wasi";
+                return "unknown";
+            }
+
+            pointerBits(target >> int) -> int {
+                if (target == TARGET_I386_SYSV || target == TARGET_ARMV7_EABI ||
+                    target == TARGET_RISCV32 || target == TARGET_WASM32) return 32;
+                return 64;
+            }
+
+            objectFormat(target >> int) -> int {
+                if (target == TARGET_X86_64_WIN64) return OBJECT_COFF64;
+                if (target == TARGET_X86_64_DARWIN || target == TARGET_AARCH64_DARWIN) return OBJECT_MACHO64;
+                if (target == TARGET_I386_SYSV || target == TARGET_ARMV7_EABI || target == TARGET_RISCV32) return OBJECT_ELF32;
+                if (target == TARGET_WASM32) return OBJECT_WASM;
+                return OBJECT_ELF64;
+            }
+
+            abi(target >> int) -> int {
+                if (target == TARGET_X86_64_WIN64) return ABI_WIN64;
+                if (target == TARGET_I386_SYSV) return ABI_SYSV32;
+                if (target == TARGET_AARCH64_SYSV || target == TARGET_AARCH64_DARWIN) return ABI_AAPCS64;
+                if (target == TARGET_ARMV7_EABI) return ABI_AAPCS32;
+                if (target == TARGET_RISCV32) return ABI_RISCV32;
+                if (target == TARGET_RISCV64) return ABI_RISCV64;
+                if (target == TARGET_WASM32) return ABI_WASM;
+                return ABI_SYSV64;
+            }
+
+            objectName(value >> int) -> str {
+                if (value == OBJECT_ELF64) return "elf64";
+                if (value == OBJECT_ELF32) return "elf32";
+                if (value == OBJECT_COFF64) return "coff64";
+                if (value == OBJECT_MACHO64) return "macho64";
+                if (value == OBJECT_WASM) return "wasm";
+                return "unknown";
+            }
+
+            abiName(value >> int) -> str {
+                if (value == ABI_SYSV64) return "sysv64";
+                if (value == ABI_WIN64) return "win64";
+                if (value == ABI_AAPCS64) return "aapcs64";
+                if (value == ABI_SYSV32) return "sysv32";
+                if (value == ABI_AAPCS32) return "aapcs32";
+                if (value == ABI_RISCV32) return "riscv32";
+                if (value == ABI_RISCV64) return "riscv64";
+                if (value == ABI_WASM) return "wasm";
+                return "unknown";
+            }
+
+            putSeed(graph >> p<byte>, target >> int) -> int {
+                seed >> p<byte> <- off(graph, H_SEED);
+                if (target == TARGET_X86_64_SYSV || target == TARGET_X86_64_WIN64 ||
+                    target == TARGET_X86_64_DARWIN || target == TARGET_I386_SYSV) {
+                    wr<byte>(off(seed, 0), 49);
+                    wr<byte>(off(seed, 1), 192);
+                    wr<byte>(off(seed, 2), 195);
+                    return 3;
+                }
+                if (target == TARGET_AARCH64_SYSV || target == TARGET_AARCH64_DARWIN) {
+                    wr<byte>(off(seed, 0), 0); wr<byte>(off(seed, 1), 0);
+                    wr<byte>(off(seed, 2), 128); wr<byte>(off(seed, 3), 82);
+                    wr<byte>(off(seed, 4), 192); wr<byte>(off(seed, 5), 3);
+                    wr<byte>(off(seed, 6), 95); wr<byte>(off(seed, 7), 214);
+                    return 8;
+                }
+                if (target == TARGET_ARMV7_EABI) {
+                    wr<byte>(off(seed, 0), 0); wr<byte>(off(seed, 1), 0);
+                    wr<byte>(off(seed, 2), 160); wr<byte>(off(seed, 3), 227);
+                    wr<byte>(off(seed, 4), 30); wr<byte>(off(seed, 5), 255);
+                    wr<byte>(off(seed, 6), 47); wr<byte>(off(seed, 7), 225);
+                    return 8;
+                }
+                if (target == TARGET_RISCV32 || target == TARGET_RISCV64) {
+                    wr<byte>(off(seed, 0), 19); wr<byte>(off(seed, 1), 5);
+                    wr<byte>(off(seed, 2), 0); wr<byte>(off(seed, 3), 0);
+                    wr<byte>(off(seed, 4), 103); wr<byte>(off(seed, 5), 128);
+                    wr<byte>(off(seed, 6), 0); wr<byte>(off(seed, 7), 0);
+                    return 8;
+                }
+                wr<byte>(off(seed, 0), 0); wr<byte>(off(seed, 1), 97);
+                wr<byte>(off(seed, 2), 115); wr<byte>(off(seed, 3), 109);
+                wr<byte>(off(seed, 4), 1); wr<byte>(off(seed, 5), 0);
+                wr<byte>(off(seed, 6), 0); wr<byte>(off(seed, 7), 0);
+                return 8;
+            }
+
+            isType(kind >> int) -> bool {
+                return kind == AST_TYPE_DECL || kind == AST_FIELD_DECL ||
+                    (kind >= AST_TYPE_NAME && kind <= AST_TYPE_CONST) ||
+                    kind == AST_ASSOCIATED_TYPE;
+            }
+
+            isExpression(kind >> int) -> bool {
+                return (kind >= AST_EXPR_LITERAL && kind <= AST_EXPR_ARRAY) ||
+                    (kind >= AST_EXPR_STRUCT && kind <= AST_EXPR_IF) ||
+                    kind == AST_GENERIC_APPLY;
+            }
+
+            isPattern(kind >> int) -> bool {
+                return kind >= AST_PATTERN_WILDCARD && kind <= AST_PATTERN_REST;
+            }
+
+            isBranch(kind >> int) -> bool {
+                return (kind >= AST_STMT_IF && kind <= AST_STMT_GUARD) ||
+                    kind == AST_STMT_MATCH || kind == AST_MATCH_ARM ||
+                    (kind >= AST_STMT_FOR_IN && kind <= AST_STMT_UNLESS);
+            }
+
+            isTerminator(kind >> int) -> bool {
+                return kind == AST_STMT_RETURN || kind == AST_STMT_BREAK ||
+                    kind == AST_STMT_CONTINUE || kind == AST_ENTRY_REF;
+            }
+
+            isMemory(kind >> int) -> bool {
+                return kind == AST_VALUE_DECL || kind == AST_STMT_ASSIGN ||
+                    kind == AST_EXPR_MEMBER || kind == AST_EXPR_INDEX ||
+                    kind == AST_EXPR_ARRAY || kind == AST_EXPR_STRUCT ||
+                    kind == AST_EXPR_FIELD;
+            }
+
+            opcode(kind >> int) -> int {
+                if (kind == AST_FUNCTION_DECL) return IR_FUNCTION;
+                if (kind == AST_VALUE_DECL || kind == AST_PARAMETER_DECL ||
+                    kind == AST_FIELD_DECL || kind == AST_GLOBAL_CONST ||
+                    kind == AST_GLOBAL_TYPE) return IR_DECLARE;
+                if (isType(kind)) return IR_TYPE;
+                if (kind == AST_EXPR_LITERAL) return IR_CONSTANT;
+                if (kind == AST_EXPR_NAME || kind == AST_EXPR_MEMBER || kind == AST_EXPR_INDEX) return IR_LOAD;
+                if (kind == AST_EXPR_CALL) return IR_CALL;
+                if (kind == AST_GENERIC_APPLY) return IR_META;
+                if (kind == AST_STMT_ASSIGN || kind == AST_EXPR_FIELD) return IR_STORE;
+                if (kind == AST_BLOCK) return IR_BLOCK;
+                if (kind == AST_STMT_RETURN || kind == AST_FA_SECTION) return IR_RETURN;
+                if (isBranch(kind)) return IR_BRANCH;
+                if (kind == AST_STMT_BREAK || kind == AST_STMT_CONTINUE) return IR_JUMP;
+                if (kind == AST_STMT_DEFER) return IR_DEFER;
+                if (kind == AST_EXPR_CLOSURE || kind == AST_CLOSURE_PARAMETER ||
+                    kind == AST_CLOSURE_CAPTURE || kind == AST_CLOSURE_EFFECT) return IR_CLOSURE;
+                if (kind == AST_EXPR_TRY || kind == AST_STMT_YIELD) return IR_COROUTINE;
+                if (isPattern(kind)) return IR_PATTERN;
+                if (kind >= AST_ABI_CONTRACT && kind <= AST_ABI_BINDING) return IR_ABI;
+                if (kind == AST_ENTRY_REF) return IR_ENTRY;
+                if (isExpression(kind) || kind == AST_STMT_EXPRESSION) return IR_COMPUTE;
+                return IR_META;
+            }
+
+            effects(kind >> int) -> int {
+                value >> int <- 0;
+                if (kind == AST_EXPR_NAME || kind == AST_EXPR_MEMBER || kind == AST_EXPR_INDEX) value += EFFECT_READ;
+                if (kind == AST_VALUE_DECL || kind == AST_STMT_ASSIGN || kind == AST_EXPR_FIELD) value += EFFECT_WRITE;
+                if (kind == AST_EXPR_CALL) value += EFFECT_CALL;
+                if (isBranch(kind)) value += EFFECT_BRANCH;
+                if (isTerminator(kind)) value += EFFECT_TERMINATE;
+                if (isMemory(kind)) value += EFFECT_MEMORY;
+                if (kind == AST_EXPR_TRY || kind == AST_STMT_YIELD) value += EFFECT_SUSPEND;
+                if (kind == AST_STMT_DEFER) value += EFFECT_CLEANUP;
+                return value;
+            }
+
+            blockOf(material >> p<byte>, index >> int) -> int {
+                current >> int <- index;
+                while (current >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, current);
+                    if (kind == AST_BLOCK || kind == AST_FUNCTION_DECL || kind == AST_PROGRAM) return current;
+                    current <- parser_ast.nccParserAst.materialNodeParent(material, current);
+                }
+                return 0;
+            }
+
+            stable(value >> int) -> int {
+                if (value < 0) return 0 - (value % 1000003);
+                return value % 1000003;
+            }
+
+            identityKind(kind >> int) -> int {
+                if (kind == AST_FUNCTION_DECL) return IDENTITY_FUNCTION;
+                if (kind == AST_CONTAINER) return IDENTITY_CONTAINER;
+                if (kind == AST_TYPE_DECL || kind == AST_GLOBAL_TYPE ||
+                    kind == AST_TRAIT_DECL || kind == AST_ASSOCIATED_TYPE)
+                    return IDENTITY_TYPE;
+                if (kind == AST_VALUE_DECL || kind == AST_FIELD_DECL ||
+                    kind == AST_PARAMETER_DECL || kind == AST_GLOBAL_CONST)
+                    return IDENTITY_VALUE;
+                if (kind == AST_EXPR_NAME || kind == AST_ENTRY_REF)
+                    return IDENTITY_REFERENCE;
+                return IDENTITY_NONE;
+            }
+
+            callSourceNode(material >> p<byte>, index >> int) -> int {
+                guard parser_ast.nccParserAst.materialNodeKind(material, index) ==
+                    AST_EXPR_CALL else return -1;
+                source >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, index);
+                if (source >= 0 && parser_ast.nccParserAst.materialNodeKind(material, source) ==
+                    AST_GENERIC_APPLY)
+                    return parser_ast.nccParserAst.materialNodeFirstChild(material, source);
+                return source;
+            }
+
+            callGenericTypeNode(material >> p<byte>, index >> int) -> int {
+                guard parser_ast.nccParserAst.materialNodeKind(material, index) ==
+                    AST_EXPR_CALL else return -1;
+                source >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, index);
+                guard source >= 0 && parser_ast.nccParserAst.materialNodeKind(material, source) ==
+                    AST_GENERIC_APPLY else return -1;
+                name >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, source);
+                return name >= 0 ?
+                    parser_ast.nccParserAst.materialNodeNextSibling(material, name) : -1;
+            }
+
+            materialNodeText(material >> p<byte>, index >> int, value >> str) -> bool {
+                token >> int <- identityToken(material, index);
+                if (token < 0) token <-
+                    parser_ast.nccParserAst.materialNodeFirstToken(material, index);
+                return token >= 0 && parser_ast.nccParserAst.materialTokenSame(
+                    material, token, value);
+            }
+
+            scalarTypeCode(material >> p<byte>, typeNode >> int, target >> int) -> int {
+                guard typeNode >= 0 else return 0;
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, typeNode);
+                if (kind == AST_TYPE_POINTER || kind == AST_TYPE_FUNCTION)
+                    return pointerBits(target) / 8;
+                guard kind == AST_TYPE_NAME || kind == AST_GENERIC_PARAM ||
+                    kind == AST_EXPR_NAME else return 0;
+                if (materialNodeText(material, typeNode, "bool") ||
+                    materialNodeText(material, typeNode, "char") ||
+                    materialNodeText(material, typeNode, "byte") ||
+                    materialNodeText(material, typeNode, "u8")) return 1;
+                if (materialNodeText(material, typeNode, "i8") ||
+                    materialNodeText(material, typeNode, "sbyte")) return 17;
+                if (materialNodeText(material, typeNode, "word") ||
+                    materialNodeText(material, typeNode, "u16")) return 2;
+                if (materialNodeText(material, typeNode, "i16") ||
+                    materialNodeText(material, typeNode, "short") ||
+                    materialNodeText(material, typeNode, "sword")) return 18;
+                if (materialNodeText(material, typeNode, "u32") ||
+                    materialNodeText(material, typeNode, "ft32")) return 4;
+                if (materialNodeText(material, typeNode, "int") ||
+                    materialNodeText(material, typeNode, "i32")) return 20;
+                if (materialNodeText(material, typeNode, "u64") ||
+                    materialNodeText(material, typeNode, "ft64")) return 8;
+                if (materialNodeText(material, typeNode, "i64")) return 24;
+                if (materialNodeText(material, typeNode, "addr") ||
+                    materialNodeText(material, typeNode, "usize"))
+                    return pointerBits(target) / 8;
+                if (materialNodeText(material, typeNode, "isize"))
+                    return 16 + pointerBits(target) / 8;
+                return 0;
+            }
+
+            functionOf(material >> p<byte>, index >> int) -> int {
+                current >> int <- index;
+                while (current >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, current) ==
+                        AST_FUNCTION_DECL) return current;
+                    current <- parser_ast.nccParserAst.materialNodeParent(material, current);
+                }
+                return -1;
+            }
+
+            reservedSymbolSame(material >> p<byte>, declaration >> int,
+                expression >> int) -> bool {
+                token >> int <- identityToken(material, declaration);
+                if (token < 0) token <- parser_ast.nccParserAst.materialNodeFirstToken(
+                    material, declaration);
+                guard token >= 0 else return false;
+                role >> int <- parser_ast.nccParserAst.materialNodeRoleHash(
+                    material, expression);
+                if (role == 55) return parser_ast.nccParserAst.materialTokenSame(material, token, "move");
+                if (role == 56) return parser_ast.nccParserAst.materialTokenSame(material, token, "probe");
+                if (role == 57) return parser_ast.nccParserAst.materialTokenSame(material, token, "bind");
+                if (role == 58) return parser_ast.nccParserAst.materialTokenSame(material, token, "binary");
+                if (role == 59) return parser_ast.nccParserAst.materialTokenSame(material, token, "raw");
+                if (role == 60) return parser_ast.nccParserAst.materialTokenSame(material, token, "structure");
+                if (role == 78) return parser_ast.nccParserAst.materialTokenSame(material, token, "ly");
+                if (role == 79) return parser_ast.nccParserAst.materialTokenSame(material, token, "cnt");
+                if (role == 80) return parser_ast.nccParserAst.materialTokenSame(material, token, "cut");
+                if (role == 81) return parser_ast.nccParserAst.materialTokenSame(material, token, "anchor");
+                if (role == 82) return parser_ast.nccParserAst.materialTokenSame(material, token, "slot");
+                if (role == 83) return parser_ast.nccParserAst.materialTokenSame(material, token, "pattern");
+                if (role == 84) return parser_ast.nccParserAst.materialTokenSame(material, token, "mask");
+                if (role == 85) return parser_ast.nccParserAst.materialTokenSame(material, token, "window");
+                if (role == 86) return parser_ast.nccParserAst.materialTokenSame(material, token, "signal");
+                if (role == 87) return parser_ast.nccParserAst.materialTokenSame(material, token, "bus");
+                if (role == 88) return parser_ast.nccParserAst.materialTokenSame(material, token, "state");
+                if (role == 89) return parser_ast.nccParserAst.materialTokenSame(material, token, "timing");
+                if (role == 90) return parser_ast.nccParserAst.materialTokenSame(material, token, "emit");
+                if (role == 91) return parser_ast.nccParserAst.materialTokenSame(material, token, "sample");
+                if (role == 92) return parser_ast.nccParserAst.materialTokenSame(material, token, "latch");
+                if (role == 93) return parser_ast.nccParserAst.materialTokenSame(material, token, "assert");
+                if (role == 94) return parser_ast.nccParserAst.materialTokenSame(material, token, "rupture");
+                if (role == 95) return parser_ast.nccParserAst.materialTokenSame(material, token, "bridge");
+                if (role == 96) return parser_ast.nccParserAst.materialTokenSame(material, token, "seal");
+                if (role == 97) return parser_ast.nccParserAst.materialTokenSame(material, token, "reg");
+                if (role == 98) return parser_ast.nccParserAst.materialTokenSame(material, token, "flag");
+                if (role == 99) return parser_ast.nccParserAst.materialTokenSame(material, token, "label");
+                if (role == 100) return parser_ast.nccParserAst.materialTokenSame(material, token, "inst");
+                return false;
+            }
+
+            declarationTypeNode(material >> p<byte>, expression >> int) -> int {
+                guard expression >= 0 &&
+                    parser_ast.nccParserAst.materialNodeKind(material, expression) ==
+                    AST_EXPR_NAME else return -1;
+                expressionHash >> int <- parser_ast.nccParserAst.materialNodeNameHash(
+                    material, expression);
+                useFunction >> int <- functionOf(material, expression);
+                localMatch >> int <- -1;
+                globalMatch >> int <- -1;
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    declaration >> bool <- kind == AST_VALUE_DECL ||
+                        kind == AST_PARAMETER_DECL || kind == AST_GLOBAL_CONST ||
+                        kind == AST_FIELD_DECL;
+                    declarationHash >> int <- declaration ?
+                        parser_ast.nccParserAst.materialNodeNameHash(material, at) : 0;
+                    declarationRole >> int <- declaration ?
+                        parser_ast.nccParserAst.materialNodeRoleHash(material, at) : 0;
+                    expressionRole >> int <- parser_ast.nccParserAst.materialNodeRoleHash(
+                        material, expression);
+                    matches >> bool <- sameIdentity(material, at, expression) ||
+                        (expressionHash != 0 ?
+                            declarationHash == expressionHash :
+                            (declarationHash != 0 ?
+                                reservedSymbolSame(material, at, expression) :
+                                (declarationRole != 0 && declarationRole == expressionRole)));
+                    if (declaration && matches) {
+                        owner >> int <- functionOf(material, at);
+                        if (owner == useFunction && at <= expression) {
+                            localMatch <- at;
+                        }
+                        else if (owner < 0) {
+                            globalMatch <- at;
+                        }
+                    }
+                    at += 1;
+                }
+                selected >> int <- localMatch >= 0 ? localMatch : globalMatch;
+                return selected >= 0 ?
+                    parser_ast.nccParserAst.materialNodeFirstChild(material, selected) : -1;
+            }
+
+            callArgument(material >> p<byte>, call >> int, position >> int) -> int {
+                source >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, call);
+                guard source >= 0 else return -1;
+                argument >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material, source);
+                at >> int <- 0;
+                while (argument >= 0 && at < position) {
+                    argument <- parser_ast.nccParserAst.materialNodeNextSibling(material, argument);
+                    at += 1;
+                }
+                return argument;
+            }
+
+            sameIdentity(material >> p<byte>, left >> int, right >> int) -> bool {
+                leftToken >> int <- identityToken(material, left);
+                rightToken >> int <- identityToken(material, right);
+                if (leftToken < 0) leftToken <-
+                    parser_ast.nccParserAst.materialNodeFirstToken(material, left);
+                if (rightToken < 0) rightToken <-
+                    parser_ast.nccParserAst.materialNodeFirstToken(material, right);
+                guard leftToken >= 0 && rightToken >= 0 else return false;
+                leftBytes >> int <- parser_ast.nccParserAst.materialTokenBytes(
+                    material, leftToken);
+                rightBytes >> int <- parser_ast.nccParserAst.materialTokenBytes(
+                    material, rightToken);
+                return bytesEqual(
+                    parser_ast.nccParserAst.materialTokenData(material, leftToken), leftBytes,
+                    parser_ast.nccParserAst.materialTokenData(material, rightToken), rightBytes);
+            }
+
+            functionReturnTypeNode(material >> p<byte>, source >> int) -> int {
+                guard source >= 0 else return -1;
+                owner >> int <- containerNode(material, source);
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, at) ==
+                        AST_FUNCTION_DECL && containerNode(material, at) == owner &&
+                        sameIdentity(material, at, source)) {
+                        child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(
+                            material, at);
+                        while (child >= 0) {
+                            kind >> int <- parser_ast.nccParserAst.materialNodeKind(
+                                material, child);
+                            if (kind >= AST_TYPE_NAME && kind <= AST_TYPE_CONST)
+                                return child;
+                            child <- parser_ast.nccParserAst.materialNodeNextSibling(
+                                material, child);
+                        }
+                    }
+                    at += 1;
+                }
+                return -1;
+            }
+
+            lvalueTypeNode(material >> p<byte>, expression >> int, depth >> int) -> int {
+                guard expression >= 0 && depth < 64 else return -1;
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,expression);
+                if (kind == AST_EXPR_NAME) return declarationTypeNode(material,expression);
+                if (kind == AST_EXPR_INDEX) {
+                    base >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,expression);
+                    type >> int <- lvalueTypeNode(material,base,depth+1);
+                    typeKind >> int <- parser_ast.nccParserAst.materialNodeKind(material,type);
+                    if (typeKind == AST_TYPE_POINTER || typeKind == AST_TYPE_ARRAY)
+                        return parser_ast.nccParserAst.materialNodeFirstChild(material,type);
+                }
+                return -1;
+            }
+
+            pointerTypeCode(material >> p<byte>, expression >> int, target >> int,
+                depth >> int) -> int {
+                guard expression >= 0 && depth < 12 else return 0;
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, expression);
+                if (kind == AST_EXPR_UNARY && parser_ast.nccParserAst.materialNodeRoleHash(material,expression) == 43) {
+                    referred >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,expression);
+                    return scalarTypeCode(material,lvalueTypeNode(material,referred,0),target);
+                }
+                if (kind == AST_EXPR_NAME) {
+                    typeNode >> int <- declarationTypeNode(material, expression);
+                    guard typeNode >= 0 else return 0;
+                    typeKind >> int <- parser_ast.nccParserAst.materialNodeKind(material, typeNode);
+                    if (typeKind == AST_TYPE_POINTER)
+                        return scalarTypeCode(material,
+                            parser_ast.nccParserAst.materialNodeFirstChild(material, typeNode), target);
+                    if (typeKind == AST_TYPE_NAME &&
+                        materialNodeText(material, typeNode, "str")) return 1;
+                    return 0;
+                }
+                if (kind == AST_EXPR_CALL) {
+                    generic >> int <- callGenericTypeNode(material, expression);
+                    if (generic >= 0) return scalarTypeCode(material, generic, target);
+                    source >> int <- callSourceNode(material, expression);
+                    if (source >= 0 && (materialNodeText(material, source, "off") ||
+                        materialNodeText(material, source, "ptrOffset") ||
+                        materialNodeText(material, source, "poffset")))
+                        return pointerTypeCode(material,
+                            callArgument(material, expression, 0), target, depth + 1);
+                    if (source >= 0 && (materialNodeText(material, source, "cast") ||
+                        materialNodeText(material, source, "ptrCast") ||
+                        materialNodeText(material, source, "pcast") ||
+                        materialNodeText(material, source, "asptr"))) {
+                        parent >> int <- parser_ast.nccParserAst.materialNodeParent(
+                            material, expression);
+                        if (parent >= 0 &&
+                            parser_ast.nccParserAst.materialNodeKind(material, parent) ==
+                            AST_VALUE_DECL) {
+                            declared >> int <- parser_ast.nccParserAst.materialNodeFirstChild(
+                                material, parent);
+                            if (declared >= 0 &&
+                                parser_ast.nccParserAst.materialNodeKind(material, declared) ==
+                                AST_TYPE_POINTER)
+                                return scalarTypeCode(material,
+                                    parser_ast.nccParserAst.materialNodeFirstChild(
+                                    material, declared), target);
+                        }
+                        return pointerTypeCode(material,
+                            callArgument(material, expression, 0), target, depth + 1);
+                    }
+                    returnType >> int <- functionReturnTypeNode(material, source);
+                    if (returnType >= 0) {
+                        returnKind >> int <- parser_ast.nccParserAst.materialNodeKind(
+                            material, returnType);
+                        if (returnKind == AST_TYPE_POINTER)
+                            return scalarTypeCode(material,
+                                parser_ast.nccParserAst.materialNodeFirstChild(
+                                    material, returnType), target);
+                        if (returnKind == AST_TYPE_NAME &&
+                            materialNodeText(material, returnType, "str")) return 1;
+                    }
+                }
+                return 0;
+            }
+
+            intrinsicTypeCode(material >> p<byte>, index >> int, target >> int) -> int {
+                generic >> int <- callGenericTypeNode(material, index);
+                if (generic >= 0) return scalarTypeCode(material, generic, target);
+                source >> int <- callSourceNode(material, index);
+                if (source >= 0) {
+                    token >> int <- identityToken(material, source);
+                    id >> int <- token >= 0 ? intrinsics.nccIntrinsics.resolve(
+                        parser_ast.nccParserAst.materialTokenData(material, token),
+                        parser_ast.nccParserAst.materialTokenBytes(material, token)) : 0;
+                    if (intrinsics.nccIntrinsics.isLayoutSize(id))
+                        return scalarTypeCode(material,
+                            callArgument(material, index, 0), target);
+                }
+                return pointerTypeCode(material, callArgument(material, index, 0), target, 0);
+            }
+
+            intrinsicFor(material >> p<byte>, index >> int, target >> int) -> int {
+                source >> int <- callSourceNode(material, index);
+                guard source >= 0 else return 0;
+                token >> int <- identityToken(material, source);
+                guard token >= 0 else return 0;
+                value >> int <- intrinsics.nccIntrinsics.resolve(
+                    parser_ast.nccParserAst.materialTokenData(material, token),
+                    parser_ast.nccParserAst.materialTokenBytes(material, token));
+                guard intrinsics.nccIntrinsics.selected(value) else
+                    return 0;
+                return value;
+            }
+
+            qualifiedCallTarget(material >> p<byte>, index >> int) -> bool {
+                guard parser_ast.nccParserAst.materialNodeKind(material, index) ==
+                    AST_EXPR_MEMBER else return false;
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, index);
+                if (parent >= 0 && parser_ast.nccParserAst.materialNodeKind(material,parent) == AST_GENERIC_APPLY)
+                    parent = parser_ast.nccParserAst.materialNodeParent(material,parent);
+                return parent >= 0 &&
+                    (parser_ast.nccParserAst.materialNodeKind(material,parent) == AST_EXPR_CALL ||
+                        (parser_ast.nccParserAst.materialNodeKind(material,parent) == AST_EXPR_UNARY &&
+                            parser_ast.nccParserAst.materialNodeRoleHash(material,parent) == 43));
+            }
+
+            rightmostIdentityNode(material >> p<byte>, index >> int) -> int {
+                guard index >= 0 else return -1;
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, index);
+                if (child < 0) return index;
+                last >> int <- child;
+                next >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material, last);
+                while (next >= 0) {
+                    last <- next;
+                    next <- parser_ast.nccParserAst.materialNodeNextSibling(material, last);
+                }
+                return rightmostIdentityNode(material, last);
+            }
+
+            memberOwnerNode(material >> p<byte>, index >> int) -> int {
+                guard parser_ast.nccParserAst.materialNodeKind(material, index) ==
+                    AST_EXPR_MEMBER else return -1;
+                left >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, index);
+                return rightmostIdentityNode(material, left);
+            }
+
+            identityHash(material >> p<byte>, index >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeKind(material, index) == AST_ENTRY_REF ?
+                    parser_ast.nccParserAst.materialNodeRoleHash(material, index) :
+                    parser_ast.nccParserAst.materialNodeNameHash(material, index);
+            }
+
+            identityToken(material >> p<byte>, index >> int) -> int {
+                implicitKind >> int <- parser_ast.nccParserAst.materialNodeKind(material,index);
+                if (implicitKind == AST_TYPE_NAME || implicitKind == AST_GENERIC_PARAM) {
+                    token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,index);
+                    if (token >= 0 && parser_ast.nccParserAst.materialTokenKind(material,token) == 61) return token;
+                }
+                if (implicitKind == AST_FUNCTION_DECL || implicitKind == AST_ENTRY_REF) {
+                    if ((parser_ast.nccParserAst.materialNodeFlags(material,index) & 128) != 0)
+                        return parser_ast.nccParserAst.materialNodeFirstToken(material,index);
+                }
+                if (qualifiedCallTarget(material, index)) {
+                    nameNode >> int <- rightmostIdentityNode(material, index);
+                    if (nameNode >= 0 && nameNode != index)
+                        return identityToken(material, nameNode);
+                }
+                wanted >> int <- identityHash(material, index);
+                if (wanted == 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, index);
+                    if (identityKind(kind) != IDENTITY_NONE) {
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(
+                            material, index);
+                        if (token >= 0 && parser_ast.nccParserAst.materialIdentityBytes(
+                            material, token) > 0) return token;
+                    }
+                    return -1;
+                }
+                at >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, index);
+                end >> int <- parser_ast.nccParserAst.materialNodeEndToken(material, index);
+                if (at < 0) at <- 0;
+                if (end >= parser_ast.nccParserAst.materialTokenCount(material))
+                    end <- parser_ast.nccParserAst.materialTokenCount(material) - 1;
+                while (at <= end) {
+                    if (parser_ast.nccParserAst.materialIdentityHash(material, at) == wanted &&
+                        parser_ast.nccParserAst.materialIdentityBytes(material, at) > 0)
+                        return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            containerNode(material >> p<byte>, index >> int) -> int {
+                current >> int <- index;
+                while (current >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, current) ==
+                        AST_CONTAINER) return current;
+                    current <- parser_ast.nccParserAst.materialNodeParent(material, current);
+                }
+                return -1;
+            }
+
+            ownerIdentityToken(material >> p<byte>, index >> int) -> int {
+                if (qualifiedCallTarget(material, index)) {
+                    owner >> int <- memberOwnerNode(material, index);
+                    return owner >= 0 ? identityToken(material, owner) : -1;
+                }
+                owner >> int <- containerNode(material, index);
+                return owner >= 0 && owner != index ? identityToken(material, owner) : -1;
+            }
+
+            identitySpellingBytes(material >> p<byte>, runtimeOwners >> p<byte>) -> int {
+                total >> int <- 0;
+                index >> int <- 0;
+                while (index < parser_ast.nccParserAst.materialNodeCount(material)) {
+                    token >> int <- identityToken(material, index);
+                    if (token >= 0) total += parser_ast.nccParserAst.materialIdentityBytes(
+                        material, token);
+                    runtimeBytes >> int <- sema.nccSema.runtimeOwnerBytes(
+                        runtimeOwners, index);
+                    if (runtimeBytes > 0) total += runtimeBytes;
+                    else {
+                        ownerToken >> int <- ownerIdentityToken(material, index);
+                        if (ownerToken >= 0) total += parser_ast.nccParserAst.materialIdentityBytes(
+                            material, ownerToken);
+                    }
+                    index += 1;
+                }
+                return total;
+            }
+
+            copyToken(material >> p<byte>, token >> int, out >> p<byte>, at >> int) -> int {
+                guard token >= 0 else return 0;
+                count >> int <- parser_ast.nccParserAst.materialIdentityBytes(material, token);
+                if (count > 0) cp(off(out, at),
+                    parser_ast.nccParserAst.materialIdentityData(material, token), count);
+                return count;
+            }
+
+            fillIdentity(material >> p<byte>, graph >> p<byte>, runtimeOwners >> p<byte>,
+                index >> int, cursor >> int) -> int {
+                item >> p<byte> <- identity(graph, index);
+                token >> int <- identityToken(material, index);
+                nameBytes >> int <- copyToken(material, token, spellings(graph), cursor);
+                putInteger(item, I_NAME_OFFSET, cursor);
+                putInteger(item, I_NAME_BYTES, nameBytes);
+                cursor += nameBytes;
+
+                ownerBytes >> int <- 0;
+                putInteger(item, I_OWNER_OFFSET, cursor);
+                runtimeBytes >> int <- sema.nccSema.runtimeOwnerBytes(runtimeOwners, index);
+                if (runtimeBytes > 0) {
+                    cp(off(spellings(graph), cursor),
+                        sema.nccSema.runtimeOwnerData(runtimeOwners, index), runtimeBytes);
+                    ownerBytes <- runtimeBytes;
+                } else {
+                    ownerToken >> int <- ownerIdentityToken(material, index);
+                    if (ownerToken >= 0) {
+                        ownerBytes <- copyToken(material, ownerToken, spellings(graph), cursor);
+                    }
+                }
+                putInteger(item, I_OWNER_BYTES, ownerBytes);
+                cursor += ownerBytes;
+                putInteger(item, I_VISIBILITY,
+                    parser_ast.nccParserAst.materialNodeFlags(material, index) & 15);
+                putInteger(item, I_KIND,
+                    identityKind(parser_ast.nccParserAst.materialNodeKind(material, index)) +
+                    (runtimeBytes > 0 ? IDENTITY_RUNTIME : 0));
+                return cursor;
+            }
+
+            bytesEqual(left >> p<byte>, leftBytes >> int,
+                right >> p<byte>, rightBytes >> int) -> bool {
+                guard leftBytes == rightBytes else return false;
+                at >> int <- 0;
+                while (at < leftBytes) {
+                    if (rd<byte>(off(left, at)) != rd<byte>(off(right, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            unsignedByte(value >> int) -> int {
+                return value < 0 ? value + 256 : value;
+            }
+
+            fingerprint(graph >> p<byte>) -> int {
+                value >> int <- 104729;
+                value <- (value + integer(graph, H_TARGET) * 17) % 1000000007;
+                value <- (value + integer(graph, H_POINTER_BITS) * 19) % 1000000007;
+                value <- (value + integer(graph, H_OBJECT) * 23) % 1000000007;
+                at >> int <- 0;
+                while (at < integer(graph, H_NODES)) {
+                    item >> p<byte> <- record(graph, at);
+                    weight >> int <- (at % 97) + 1;
+                    value <- (value + stable(integer(item, R_OPCODE)) * weight) % 1000000007;
+                    value <- (value + stable(integer(item, R_AST_KIND)) * (weight + 3)) % 1000000007;
+                    value <- (value + stable(integer(item, R_TYPE_HASH)) * (weight + 5)) % 1000000007;
+                    value <- (value + stable(integer(item, R_NAME_HASH)) * (weight + 7)) % 1000000007;
+                    value <- (value + stable(integer(item, R_EFFECTS)) * (weight + 11)) % 1000000007;
+                    role >> int <- integer(item, R_ROLE_HASH);
+                    if ((role > 4096 && role < 4128) ||
+                        (role > 4160 && role < 4192) ||
+                        (role > 4224 && role < 4352) ||
+                        (role >= 12288 && role < 12320))
+                        value <- (value + stable(role) * (weight + 12)) % 1000000007;
+                    semantic >> int <- (integer(item, R_FLAGS) / FLAG_INTRINSIC_BASE) %
+                        FLAG_INTRINSIC_MOD;
+                    value <- (value + stable(semantic) * (weight + 13)) % 1000000007;
+                    optimized >> int <- (integer(item, R_FLAGS) &
+                        FLAG_OPTIMIZED_OUT) != 0 ? 1 : 0;
+                    value <- (value + optimized * (weight + 17)) % 1000000007;
+                    value <- (value + integer(item,R_LAYOUT_VALID)*(weight+19)) % 1000000007;
+                    value <- (value + stable(integer(item,R_LAYOUT_ALIGN))*(weight+21)) % 1000000007;
+                    value <- (value + stable(integer(item,R_GVN_SOURCE))*(weight+29)) % 1000000007;
+                    value <- (value + stable(integer(item,R_GVN_SLOT))*(weight+31)) % 1000000007;
+                    value <- (value + stable(integer(item,R_GVN_TYPE))*(weight+33)) % 1000000007;
+                    piece >> int <- 0;
+                    while (piece < 8) {
+                        value <- (value+unsignedByte(rd<byte>(off(item,R_LAYOUT_VALUE+piece)))*(weight+piece+23)) % 1000000007;
+                        piece += 1;
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (at < integer(graph, H_SEED_BYTES)) {
+                    value <- (value + unsignedByte(rd<byte>(off(graph, H_SEED + at))) *
+                        (at + 101)) % 1000000007;
+                    at += 1;
+                }
+                at <- 0;
+                while (at < integer(graph, H_NODES)) {
+                    item >> p<byte> <- identity(graph, at);
+                    weight >> int <- (at % 83) + 109;
+                    value <- (value + stable(integer(item, I_VISIBILITY)) * weight) % 1000000007;
+                    value <- (value + stable(integer(item, I_KIND)) * (weight + 5)) % 1000000007;
+                    at += 1;
+                }
+                at <- 0;
+                while (at < integer(graph, H_SPELLING_BYTES)) {
+                    value <- (value + unsignedByte(rd<byte>(off(spellings(graph), at))) *
+                        ((at % 251) + 131)) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            lowerMaterial(material >> p<byte>, target >> int) -> p<byte> {
+                return lowerMaterialFor(material,target,false);
+            }
+            lowerMaterialFor(material >> p<byte>, target >> int, project >> bool) -> p<byte> {
+                pendingLayouts >> bool <- project && type_contract_sema.nccTypeContractSema.projectTypesPending(material);
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(material);
+                runtimeOwners >> p<byte> <- sema.nccSema.runtimeOwnerTable(material);
+                guard runtimeOwners != null else return null;
+                spellingBytes >> int <- identitySpellingBytes(material, runtimeOwners);
+                recordsBytes >> int <- count * RECORD_BYTES;
+                identitiesBytes >> int <- count * IDENTITY_BYTES;
+                materialBytes >> int <- HEADER_BYTES + recordsBytes + identitiesBytes +
+                    spellingBytes;
+                graph >> p<byte> <- cast<byte>(alloc(materialBytes));
+                guard graph != null else {
+                    sema.nccSema.releaseRuntimeOwnerTable(runtimeOwners);
+                    return null;
+                }
+                layouts >> p<byte> <- binary_layout.nccBinaryLayout.open(material,target);
+                layoutResult >> p<byte> <- cast<byte>(alloc(24));
+                if (layouts == null || layoutResult == null) {
+                    binary_layout.nccBinaryLayout.close(layouts); free(layoutResult); free(graph);
+                    sema.nccSema.releaseRuntimeOwnerTable(runtimeOwners); return null;
+                }
+                at >> int <- 0;
+                while (at < materialBytes) {
+                    wr<byte>(off(graph, at), 0);
+                    at += 1;
+                }
+                putInteger(graph, H_MAGIC, IR_MAGIC);
+                putInteger(graph, H_VERSION, IR_VERSION);
+                putInteger(graph, H_TARGET, target);
+                putInteger(graph, H_POINTER_BITS, pointerBits(target));
+                putInteger(graph, H_ENDIAN, 1);
+                putInteger(graph, H_OBJECT, objectFormat(target));
+                putInteger(graph, H_ABI, abi(target));
+                putInteger(graph, H_NODES, count);
+                putInteger(graph, H_RECORD_BYTES, RECORD_BYTES);
+                wr<addr>(off(graph, H_RECORDS), adr(off(graph, HEADER_BYTES)));
+                wr<addr>(off(graph, H_IDENTITIES),
+                    adr(off(graph, HEADER_BYTES + recordsBytes)));
+                wr<addr>(off(graph, H_SPELLINGS),
+                    adr(off(graph, HEADER_BYTES + recordsBytes + identitiesBytes)));
+                putInteger(graph, H_SPELLING_BYTES, spellingBytes);
+                putInteger(graph, H_MATERIAL_BYTES, materialBytes);
+                putInteger(graph, H_SEED_BYTES, putSeed(graph, target));
+
+                at <- 0;
+                spellingAt >> int <- 0;
+                while (at < count) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    operation >> int <- opcode(kind);
+                    effect >> int <- effects(kind);
+                    if ((kind == AST_EXPR_BINARY || kind == AST_STMT_ASSIGN) &&
+                        sema.nccSema.runtimeOwnerBytes(runtimeOwners,at) > 0) {
+                        effect <- effect | EFFECT_READ | EFFECT_WRITE | EFFECT_CALL | EFFECT_MEMORY;
+                    }
+                    intrinsic >> int <- kind == AST_EXPR_CALL ?
+                        intrinsicFor(material, at, target) : 0;
+                    intrinsicType >> int <- intrinsic != 0 ?
+                        intrinsicTypeCode(material, at, target) : 0;
+                    if (intrinsic != 0) {
+                        operation <- IR_INTRINSIC;
+                        effect <- intrinsics.nccIntrinsics.effects(intrinsic);
+                    }
+                    item >> p<byte> <- record(graph, at);
+                    putInteger(item,R_GVN_SOURCE,-1);
+                    putInteger(item,R_GVN_SLOT,-1);
+                    if ((kind == 11 || kind == 13 || kind == 14 || (kind >= 18 && kind <= 24)) &&
+                        binary_layout.nccBinaryLayout.describe(layouts,at,layoutResult)) {
+                        wr<u64>(off(item,R_LAYOUT_VALUE),rd<u64>(off(layoutResult,kind == 14 ? 16 : 0)));
+                        putInteger(item,R_LAYOUT_ALIGN,rd<u64>(off(layoutResult,8)));
+                        putInteger(item,R_LAYOUT_VALID,2);
+                    }
+                    if (intrinsics.nccIntrinsics.isLayoutQuery(intrinsic)) {
+                        if (!binary_layout.nccBinaryLayout.query(layouts,at,intrinsic,layoutResult)) {
+                            if (!pendingLayouts) {
+                                binary_layout.nccBinaryLayout.close(layouts); free(layoutResult); free(graph);
+                                sema.nccSema.releaseRuntimeOwnerTable(runtimeOwners); return null;
+                            }
+                        } else {
+                            wr<u64>(off(item,R_LAYOUT_VALUE),rd<u64>(layoutResult));
+                            putInteger(item,R_LAYOUT_VALID,1);
+                        }
+                    }
+                    putInteger(item, R_OPCODE, operation);
+                    putInteger(item, R_AST_KIND, kind);
+                    putInteger(item, R_VALUE_ID, (isExpression(kind) || kind == AST_VALUE_DECL || kind == AST_PARAMETER_DECL) ? at : -1);
+                    putInteger(item, R_BLOCK_ID, blockOf(material, at));
+                    putInteger(item, R_PARENT, parser_ast.nccParserAst.materialNodeParent(material, at));
+                    putInteger(item, R_FIRST_CHILD, parser_ast.nccParserAst.materialNodeFirstChild(material, at));
+                    putInteger(item, R_NEXT_SIBLING, parser_ast.nccParserAst.materialNodeNextSibling(material, at));
+                    putInteger(item, R_TYPE_HASH, intrinsicType != 0 ? intrinsicType :
+                        parser_ast.nccParserAst.materialNodeTypeHash(material, at));
+                    putInteger(item, R_NAME_HASH, parser_ast.nccParserAst.materialNodeNameHash(material, at));
+                    roleHash >> int <- parser_ast.nccParserAst.materialNodeRoleHash(material, at);
+                    if (roleHash == 0 && identityKind(kind) != IDENTITY_NONE) {
+                        firstToken >> int <- parser_ast.nccParserAst.materialNodeFirstToken(
+                            material, at);
+                        if (firstToken >= 0) roleHash <-
+                            parser_ast.nccParserAst.materialTokenKind(material, firstToken);
+                    }
+                    putInteger(item, R_ROLE_HASH, roleHash);
+                    putInteger(item, R_LINE, parser_ast.nccParserAst.materialNodeLine(material, at));
+                    putInteger(item, R_COLUMN, parser_ast.nccParserAst.materialNodeColumn(material, at));
+                    putInteger(item, R_EFFECTS, effect);
+                    putInteger(item, R_FLAGS,
+                        parser_ast.nccParserAst.materialNodeFlags(material, at) +
+                        intrinsic * FLAG_INTRINSIC_BASE);
+                    putInteger(item, R_FIRST_TOKEN, parser_ast.nccParserAst.materialNodeFirstToken(material, at));
+                    putInteger(item, R_END_TOKEN, parser_ast.nccParserAst.materialNodeEndToken(material, at));
+                    spellingAt <- fillIdentity(material, graph, runtimeOwners, at, spellingAt);
+
+                    if (kind == AST_BLOCK || kind == AST_FUNCTION_DECL || kind == AST_PROGRAM) putInteger(graph, H_BLOCKS, integer(graph, H_BLOCKS) + 1);
+                    if (kind == AST_FUNCTION_DECL) putInteger(graph, H_FUNCTIONS, integer(graph, H_FUNCTIONS) + 1);
+                    if (isExpression(kind) || kind == AST_VALUE_DECL || kind == AST_PARAMETER_DECL) putInteger(graph, H_VALUES, integer(graph, H_VALUES) + 1);
+                    if (operation != IR_META && operation != IR_TYPE && operation != IR_BLOCK) putInteger(graph, H_OPERATIONS, integer(graph, H_OPERATIONS) + 1);
+                    if (isTerminator(kind)) putInteger(graph, H_TERMINATORS, integer(graph, H_TERMINATORS) + 1);
+                    if (isMemory(kind)) putInteger(graph, H_MEMORY, integer(graph, H_MEMORY) + 1);
+                    if (operation == IR_CALL || operation == IR_INTRINSIC)
+                        putInteger(graph, H_CALLS, integer(graph, H_CALLS) + 1);
+                    if (operation == IR_BRANCH) putInteger(graph, H_BRANCHES, integer(graph, H_BRANCHES) + 1);
+                    if (effect != 0) putInteger(graph, H_EFFECTS, integer(graph, H_EFFECTS) + 1);
+                    at += 1;
+                }
+                sema.nccSema.releaseRuntimeOwnerTable(runtimeOwners);
+                binary_layout.nccBinaryLayout.close(layouts); free(layoutResult);
+                putInteger(graph, H_FINGERPRINT, fingerprint(graph));
+                return graph;
+            }
+
+            compatibleGraph(left >> p<byte>, right >> p<byte>) -> bool {
+                return left != null && right != null &&
+                    integer(left, H_MAGIC) == IR_MAGIC &&
+                    integer(right, H_MAGIC) == IR_MAGIC &&
+                    integer(left, H_VERSION) == IR_VERSION &&
+                    integer(right, H_VERSION) == IR_VERSION &&
+                    integer(left, H_TARGET) == integer(right, H_TARGET) &&
+                    integer(left, H_POINTER_BITS) == integer(right, H_POINTER_BITS) &&
+                    integer(left, H_ENDIAN) == integer(right, H_ENDIAN) &&
+                    integer(left, H_OBJECT) == integer(right, H_OBJECT) &&
+                    integer(left, H_ABI) == integer(right, H_ABI);
+            }
+
+            rebaseRecordField(item >> p<byte>, field >> int, base >> int) -> void {
+                value >> int <- integer(item, field);
+                if (value >= 0) putInteger(item, field, value + base);
+            }
+
+            mergeGraphArray(graphs >> p<byte>, count >> int) -> p<byte> {
+                guard graphs != null && count > 0 else return null;
+                first >> p<byte> <- from<byte>(rd<addr>(graphs));
+                guard first != null && integer(first, H_MAGIC) == IR_MAGIC else
+                    return null;
+                totalNodes >> int <- 0;
+                totalSpellings >> int <- 0;
+                at >> int <- 0;
+                while (at < count) {
+                    source >> p<byte> <- from<byte>(rd<addr>(
+                        off(graphs, at * sizeOf<addr>())));
+                    guard compatibleGraph(first, source) else return null;
+                    totalNodes += integer(source, H_NODES);
+                    totalSpellings += integer(source, H_SPELLING_BYTES);
+                    at += 1;
+                }
+                recordsBytes >> int <- totalNodes * RECORD_BYTES;
+                identitiesBytes >> int <- totalNodes * IDENTITY_BYTES;
+                materialBytes >> int <- HEADER_BYTES + recordsBytes +
+                    identitiesBytes + totalSpellings;
+                merged >> p<byte> <- cast<byte>(alloc(materialBytes));
+                guard merged != null else return null;
+                clearAt >> int <- 0;
+                while (clearAt < materialBytes) {
+                    wr<byte>(off(merged, clearAt), 0);
+                    clearAt += 1;
+                }
+                putInteger(merged, H_MAGIC, IR_MAGIC);
+                putInteger(merged, H_VERSION, IR_VERSION);
+                putInteger(merged, H_TARGET, integer(first, H_TARGET));
+                putInteger(merged, H_POINTER_BITS, integer(first, H_POINTER_BITS));
+                putInteger(merged, H_ENDIAN, integer(first, H_ENDIAN));
+                putInteger(merged, H_OBJECT, integer(first, H_OBJECT));
+                putInteger(merged, H_ABI, integer(first, H_ABI));
+                putInteger(merged, H_NODES, totalNodes);
+                putInteger(merged, H_RECORD_BYTES, RECORD_BYTES);
+                wr<addr>(off(merged, H_RECORDS), adr(off(merged, HEADER_BYTES)));
+                wr<addr>(off(merged, H_IDENTITIES),
+                    adr(off(merged, HEADER_BYTES + recordsBytes)));
+                wr<addr>(off(merged, H_SPELLINGS),
+                    adr(off(merged, HEADER_BYTES + recordsBytes + identitiesBytes)));
+                putInteger(merged, H_SPELLING_BYTES, totalSpellings);
+                putInteger(merged, H_MATERIAL_BYTES, materialBytes);
+                putInteger(merged, H_SEED_BYTES,
+                    putSeed(merged, integer(first, H_TARGET)));
+
+                nodeBase >> int <- 0;
+                spellingBase >> int <- 0;
+                at <- 0;
+                while (at < count) {
+                    source >> p<byte> <- from<byte>(rd<addr>(
+                        off(graphs, at * sizeOf<addr>())));
+                    sourceNodes >> int <- integer(source, H_NODES);
+                    sourceSpellings >> int <- integer(source, H_SPELLING_BYTES);
+                    field >> int <- H_BLOCKS;
+                    while (field <= H_EFFECTS) {
+                        putInteger(merged, field,
+                            integer(merged, field) + integer(source, field));
+                        field += 4;
+                    }
+                    node >> int <- 0;
+                    while (node < sourceNodes) {
+                        sourceRecord >> p<byte> <- record(source, node);
+                        targetRecord >> p<byte> <- record(merged, nodeBase + node);
+                        cp(targetRecord, sourceRecord, RECORD_BYTES);
+                        if (integer(targetRecord, R_SIGNATURE_BYTES) > 0)
+                            putInteger(targetRecord, R_SIGNATURE_OFFSET,
+                                integer(targetRecord, R_SIGNATURE_OFFSET) + spellingBase);
+                        rebaseRecordField(targetRecord, R_VALUE_ID, nodeBase);
+                        rebaseRecordField(targetRecord, R_BLOCK_ID, nodeBase);
+                        rebaseRecordField(targetRecord, R_PARENT, nodeBase);
+                        rebaseRecordField(targetRecord, R_FIRST_CHILD, nodeBase);
+                        rebaseRecordField(targetRecord, R_NEXT_SIBLING, nodeBase);
+                        rebaseRecordField(targetRecord, R_GVN_SOURCE, nodeBase);
+                        if (integer(targetRecord,R_OPCODE) == IR_INTRINSIC && graphSignatureTypeNode(source,node,-1) >= 0) {
+                            encoded >> int <- integer(targetRecord,R_TYPE_HASH);
+                            if (encoded >= 100000 && encoded < 1000000000) putInteger(targetRecord,R_TYPE_HASH,encoded+nodeBase);
+                        }
+
+                        sourceIdentity >> p<byte> <- identity(source, node);
+                        targetIdentity >> p<byte> <- identity(merged, nodeBase + node);
+                        cp(targetIdentity, sourceIdentity, IDENTITY_BYTES);
+                        putInteger(targetIdentity, I_NAME_OFFSET,
+                            integer(sourceIdentity, I_NAME_OFFSET) + spellingBase);
+                        putInteger(targetIdentity, I_OWNER_OFFSET,
+                            integer(sourceIdentity, I_OWNER_OFFSET) + spellingBase);
+                        node += 1;
+                    }
+                    if (sourceSpellings > 0)
+                        cp(off(spellings(merged), spellingBase),
+                            spellings(source), sourceSpellings);
+                    node = 0;
+                    while (node < sourceNodes) {
+                        item >> p<byte> <- record(merged,nodeBase+node);
+                        bytes >> int <- integer(item,R_SIGNATURE_BYTES);
+                        if (bytes >= 16) {
+                            signature >> p<byte> <- off(spellings(merged),integer(item,R_SIGNATURE_OFFSET));
+                            arity >> int <- rd<int>(off(signature,4));
+                            if (bytes == 16+arity*8 && rd<int>(off(signature,8+arity*4)) == 1415137616) {
+                                parameter >> int <- -1;
+                                while (parameter < arity) {
+                                    location >> int <- 12+arity*4+(parameter+1)*4;
+                                    referenced >> int <- rd<int>(off(signature,location));
+                                    if (referenced >= 0) wr<int>(off(signature,location),referenced+nodeBase);
+                                    parameter += 1;
+                                }
+                            }
+                        }
+                        node += 1;
+                    }
+                    nodeBase += sourceNodes;
+                    spellingBase += sourceSpellings;
+                    at += 1;
+                }
+                putInteger(merged, H_FINGERPRINT, fingerprint(merged));
+                return merged;
+            }
+
+            emitSeed(graph >> p<byte>) -> bool {
+                print("[");
+                at >> int <- 0;
+                while (at < integer(graph, H_SEED_BYTES)) {
+                    if (at > 0) print(",");
+                    print(renderInt(unsignedByte(rd<byte>(off(graph, H_SEED + at)))));
+                    at += 1;
+                }
+                print("]");
+                return true;
+            }
+
+            emitGraph(graph >> p<byte>, json >> bool) -> bool {
+                if (!json) {
+                    print("IR target="); println(canonicalTarget(integer(graph, H_TARGET)));
+                    print("nodes="); print(renderInt(integer(graph, H_NODES)));
+                    print(" operations="); println(renderInt(integer(graph, H_OPERATIONS)));
+                    print("fingerprint="); println(renderInt(integer(graph, H_FINGERPRINT)));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.ir.material.v5\"");
+                print(",\"target\":\""); print(canonicalTarget(integer(graph, H_TARGET))); print("\"");
+                print(",\"target_id\":"); print(renderInt(integer(graph, H_TARGET)));
+                print(",\"pointer_bits\":"); print(renderInt(integer(graph, H_POINTER_BITS)));
+                print(",\"endian\":\"little\"");
+                print(",\"object\":\""); print(objectName(integer(graph, H_OBJECT))); print("\"");
+                print(",\"abi\":\""); print(abiName(integer(graph, H_ABI))); print("\"");
+                print(",\"header_bytes\":"); print(renderInt(HEADER_BYTES));
+                print(",\"record_bytes\":"); print(renderInt(RECORD_BYTES));
+                print(",\"identity_record_bytes\":"); print(renderInt(IDENTITY_BYTES));
+                print(",\"spelling_bytes\":"); print(renderInt(integer(graph, H_SPELLING_BYTES)));
+                print(",\"nodes\":"); print(renderInt(integer(graph, H_NODES)));
+                print(",\"blocks\":"); print(renderInt(integer(graph, H_BLOCKS)));
+                print(",\"functions\":"); print(renderInt(integer(graph, H_FUNCTIONS)));
+                print(",\"values\":"); print(renderInt(integer(graph, H_VALUES)));
+                print(",\"operations\":"); print(renderInt(integer(graph, H_OPERATIONS)));
+                print(",\"terminators\":"); print(renderInt(integer(graph, H_TERMINATORS)));
+                print(",\"memory_operations\":"); print(renderInt(integer(graph, H_MEMORY)));
+                print(",\"calls\":"); print(renderInt(integer(graph, H_CALLS)));
+                print(",\"branches\":"); print(renderInt(integer(graph, H_BRANCHES)));
+                print(",\"effectful_nodes\":"); print(renderInt(integer(graph, H_EFFECTS)));
+                print(",\"machine_seed\":"); emitSeed(graph);
+                print(",\"material_bytes\":"); print(renderInt(integer(graph, H_MATERIAL_BYTES)));
+                print(",\"fingerprint\":"); print(renderInt(integer(graph, H_FINGERPRINT)));
+                println("}");
+                return true;
+            }
+
+        internal:
+            graphFor(path >> str, targetName >> str) -> p<byte> {
+                return graphForMode(path,targetName,false);
+            }
+            graphForMode(path >> str, targetName >> str, project >> bool) -> p<byte> {
+                target >> int <- targetId(targetName);
+                guard target != 0 else return null;
+                material >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard material != null && parser_ast.nccParserAst.materialReady(material) else {
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return null;
+                }
+                code >> int <- project ? type_contract_sema.nccTypeContractSema.analyzeProjectMaterial(material,path) :
+                    type_contract_sema.nccTypeContractSema.analyzeMaterial(material,path,false,true);
+                if (code != 0) {
+                    parser_ast.nccParserAst.closeMaterial(material); return null;
+                }
+                graph >> p<byte> <- lowerMaterialFor(material,target,project);
+                parser_ast.nccParserAst.closeMaterial(material);
+                return graph;
+            }
+
+            targetCode(targetName >> str) -> int {
+                return targetId(targetName);
+            }
+
+            targetName(target >> int) -> str {
+                return canonicalTarget(target);
+            }
+
+            targetPointerBits(target >> int) -> int {
+                return pointerBits(target);
+            }
+
+            targetObject(target >> int) -> int {
+                return objectFormat(target);
+            }
+
+            targetAbi(target >> int) -> int {
+                return abi(target);
+            }
+
+            targetObjectName(target >> int) -> str {
+                return objectName(objectFormat(target));
+            }
+
+            targetAbiName(target >> int) -> str {
+                return abiName(abi(target));
+            }
+
+            graphTarget(graph >> p<byte>) -> int {
+                return integer(graph, H_TARGET);
+            }
+
+            graphPointerBits(graph >> p<byte>) -> int {
+                return integer(graph, H_POINTER_BITS);
+            }
+
+            graphObject(graph >> p<byte>) -> int {
+                return integer(graph, H_OBJECT);
+            }
+
+            graphAbi(graph >> p<byte>) -> int {
+                return integer(graph, H_ABI);
+            }
+
+            graphNodes(graph >> p<byte>) -> int {
+                return integer(graph, H_NODES);
+            }
+
+            graphFingerprint(graph >> p<byte>) -> int {
+                return integer(graph, H_FINGERPRINT);
+            }
+
+            graphNodeOpcode(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_OPCODE);
+            }
+
+            graphNodeEffects(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_EFFECTS);
+            }
+
+            graphNodeBlockId(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_BLOCK_ID);
+            }
+
+            graphNodeNameHash(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_NAME_HASH);
+            }
+
+            graphNodeAstKind(graph >> p<byte>, index >> int) -> int {
+                if (index < 0 || index >= graphNodes(graph)) return 0;
+                return integer(record(graph, index), R_AST_KIND);
+            }
+
+            graphNodeRoleHash(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_ROLE_HASH);
+            }
+
+            graphNodeGvnSource(graph >> p<byte>, index >> int) -> int {
+                return index >= 0 && index < graphNodes(graph) ? integer(record(graph,index),R_GVN_SOURCE) : -1;
+            }
+            graphNodeGvnSlot(graph >> p<byte>, index >> int) -> int {
+                return graphNodeGvnSource(graph,index) >= 0 ? integer(record(graph,index),R_GVN_SLOT) : -1;
+            }
+            graphNodeGvnType(graph >> p<byte>, index >> int) -> int {
+                return graphNodeGvnSource(graph,index) >= 0 ? integer(record(graph,index),R_GVN_TYPE) : 0;
+            }
+            graphSetNodeGvn(graph >> p<byte>, index >> int, source >> int, slot >> int, type >> int) -> bool {
+                guard index >= 0 && source >= 0 && source <= index && index < graphNodes(graph) &&
+                    slot >= 0 && slot < 2 && type > 0 && type < 100000 &&
+                    graphNodeBlockId(graph,index) == graphNodeBlockId(graph,source) else return false;
+                putInteger(record(graph,index),R_GVN_SOURCE,source);
+                putInteger(record(graph,index),R_GVN_SLOT,slot);
+                putInteger(record(graph,index),R_GVN_TYPE,type);
+                return true;
+            }
+
+            graphNodeParent(graph >> p<byte>, index >> int) -> int {
+                if (index < 0 || index >= graphNodes(graph)) return -1;
+                return integer(record(graph, index), R_PARENT);
+            }
+
+            graphNodeFirstChild(graph >> p<byte>, index >> int) -> int {
+                if (index < 0 || index >= graphNodes(graph)) return -1;
+                return integer(record(graph, index), R_FIRST_CHILD);
+            }
+
+            graphNodeNextSibling(graph >> p<byte>, index >> int) -> int {
+                if (index < 0 || index >= graphNodes(graph)) return -1;
+                return integer(record(graph, index), R_NEXT_SIBLING);
+            }
+
+            graphNodeTypeHash(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_TYPE_HASH);
+            }
+
+            graphNodeFlags(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_FLAGS);
+            }
+
+            graphNodeOptimizedOut(graph >> p<byte>, index >> int) -> bool {
+                return (graphNodeFlags(graph, index) & FLAG_OPTIMIZED_OUT) != 0;
+            }
+
+            graphNodeIntrinsicId(graph >> p<byte>, index >> int) -> int {
+                return (graphNodeFlags(graph, index) / FLAG_INTRINSIC_BASE) %
+                    FLAG_INTRINSIC_MOD;
+            }
+
+            graphNodeLayoutValid(graph >> p<byte>, index >> int) -> bool {
+                return index >= 0 && integer(record(graph,index),R_LAYOUT_VALID) == 1;
+            }
+
+            graphNodeLayoutValue(graph >> p<byte>, index >> int) -> u64 {
+                return rd<u64>(off(record(graph,index),R_LAYOUT_VALUE));
+            }
+            graphNodeStorageValid(graph >> p<byte>, index >> int) -> bool {
+                return index >= 0 && index < graphNodes(graph) && integer(record(graph,index),R_LAYOUT_VALID) == 2;
+            }
+            graphNodeStorageAlign(graph >> p<byte>, index >> int) -> int {
+                return graphNodeStorageValid(graph,index) ? integer(record(graph,index),R_LAYOUT_ALIGN) : 0;
+            }
+
+            graphTextValue(graph >> p<byte>, index >> int, value >> str) -> bool {
+                guard index >= 0 && graphNodeNameBytes(graph, index) ==
+                    strByteLen(value) else return false;
+                return bytesEqual(graphNodeName(graph, index), graphNodeNameBytes(graph, index),
+                    cast<byte>(value), strByteLen(value));
+            }
+
+            graphNodePositiveInteger(graph >> p<byte>, index >> int) -> int {
+                guard index >= 0 else return -1;
+                data >> p<byte> <- graphNodeName(graph, index);
+                bytes >> int <- graphNodeNameBytes(graph, index);
+                guard data != null && bytes > 0 else return -1;
+                value >> int <- 0;
+                digits >> int <- 0;
+                at >> int <- 0;
+                while (at < bytes) {
+                    code >> int <- rd<byte>(off(data, at));
+                    if (code != 95) {
+                        if (code < 48 || code > 57) return -1;
+                        value <- value * 10 + code - 48;
+                        digits += 1;
+                    }
+                    at += 1;
+                }
+                return digits > 0 && value > 0 ? value : -1;
+            }
+
+            graphNodeIntegerLiteral(graph >> p<byte>, index >> int) -> int {
+                guard index >= 0 && graphNodeAstKind(graph, index) ==
+                    AST_EXPR_LITERAL else return 0;
+                role >> int <- graphNodeRoleHash(graph, index);
+                if (role == 76) return 1;
+                if (role == 77) return 0;
+                if (role == 4) {
+                    decoded >> int <- graphNodeNameHash(graph, index) - 177574;
+                    return decoded >= 0 && decoded <= 255 ? decoded : 0;
+                }
+                guard role == 2 else return 0;
+                data >> p<byte> <- graphNodeName(graph, index);
+                bytes >> int <- graphNodeNameBytes(graph, index);
+                guard data != null && bytes > 0 else return 0;
+                base >> int <- 10;
+                at >> int <- 0;
+                if (bytes > 2 && rd<byte>(data) == 48) {
+                    marker >> int <- rd<byte>(off(data, 1));
+                    if (marker == 120 || marker == 88) base <- 16;
+                    else if (marker == 98 || marker == 66) base <- 2;
+                    else if (marker == 111 || marker == 79) base <- 8;
+                    if (base != 10) at <- 2;
+                }
+                value >> int <- 0;
+                digits >> int <- 0;
+                while (at < bytes) {
+                    code >> int <- rd<byte>(off(data, at));
+                    if (code != 95) {
+                        digit >> int <- code >= 48 && code <= 57 ? code - 48 :
+                            (code >= 65 && code <= 70 ? code - 55 :
+                            (code >= 97 && code <= 102 ? code - 87 : -1));
+                        if (digit < 0 || digit >= base) return 0;
+                        value <- value * base + digit;
+                        digits += 1;
+                    }
+                    at += 1;
+                }
+                return digits > 0 ? value : 0;
+            }
+
+            graphNodeIntrinsicTypeNode(graph >> p<byte>, index >> int) -> int {
+                guard graphNodeOpcode(graph, index) == IR_INTRINSIC else return -1;
+                bound >> int <- graphSignatureTypeNode(graph,index,-1);
+                if (bound >= 0) return graphCanonicalType(graph,bound);
+                source >> int <- graphNodeFirstChild(graph, index);
+                guard source >= 0 && graphNodeAstKind(graph, source) ==
+                    AST_GENERIC_APPLY else return -1;
+                name >> int <- graphNodeFirstChild(graph, source);
+                return name >= 0 ? graphNodeNextSibling(graph, name) : -1;
+            }
+
+            graphNodeIntrinsicTypeBytes(graph >> p<byte>, index >> int) -> int {
+                bound >> int <- graphSignatureTypeNode(graph,index,-1);
+                if (bound >= 0) {
+                    bound = graphCanonicalType(graph,bound);
+                    if (graphNodeAstKind(graph,bound) == AST_TYPE_POINTER || graphNodeAstKind(graph,bound) == AST_TYPE_FUNCTION)
+                        return graphPointerBits(graph)/8;
+                    if (graphNodeStorageValid(graph,bound)) return graphNodeLayoutValue(graph,bound);
+                }
+                if (graphNodeLayoutValid(graph,index)) return graphNodeLayoutValue(graph,index);
+                encoded >> int <- graphNodeTypeHash(graph, index);
+                if (graphNodeOpcode(graph, index) == IR_INTRINSIC &&
+                    encoded > 0 && encoded <= 24)
+                    return encoded > 16 ? encoded - 16 : encoded;
+                typeNode >> int <- graphNodeIntrinsicTypeNode(graph, index);
+                guard typeNode >= 0 else return 0;
+                if (graphTextValue(graph, typeNode, "bool") ||
+                    graphTextValue(graph, typeNode, "char") ||
+                    graphTextValue(graph, typeNode, "byte") ||
+                    graphTextValue(graph, typeNode, "u8") ||
+                    graphTextValue(graph, typeNode, "i8") ||
+                    graphTextValue(graph, typeNode, "sbyte")) return 1;
+                if (graphTextValue(graph, typeNode, "word") ||
+                    graphTextValue(graph, typeNode, "u16") ||
+                    graphTextValue(graph, typeNode, "i16") ||
+                    graphTextValue(graph, typeNode, "short") ||
+                    graphTextValue(graph, typeNode, "sword")) return 2;
+                if (graphTextValue(graph, typeNode, "int") ||
+                    graphTextValue(graph, typeNode, "i32") ||
+                    graphTextValue(graph, typeNode, "u32") ||
+                    graphTextValue(graph, typeNode, "dword") ||
+                    graphTextValue(graph, typeNode, "sdword") ||
+                    graphTextValue(graph, typeNode, "ft32")) return 4;
+                if (graphTextValue(graph, typeNode, "i64") ||
+                    graphTextValue(graph, typeNode, "u64") ||
+                    graphTextValue(graph, typeNode, "qword") ||
+                    graphTextValue(graph, typeNode, "sqword") ||
+                    graphTextValue(graph, typeNode, "ft64")) return 8;
+                if (graphTextValue(graph, typeNode, "addr") ||
+                    graphTextValue(graph, typeNode, "usize") ||
+                    graphTextValue(graph, typeNode, "isize") ||
+                    graphTextValue(graph, typeNode, "ptr") ||
+                    graphTextValue(graph, typeNode, "p"))
+                    return graphPointerBits(graph) / 8;
+                return 0;
+            }
+
+            graphNodeIntrinsicTypeSigned(graph >> p<byte>, index >> int) -> bool {
+                encoded >> int <- graphNodeTypeHash(graph, index);
+                if (graphNodeOpcode(graph, index) == IR_INTRINSIC &&
+                    encoded > 0 && encoded <= 24) return encoded > 16;
+                typeNode >> int <- graphNodeIntrinsicTypeNode(graph, index);
+                guard typeNode >= 0 else return false;
+                return graphTextValue(graph, typeNode, "i8") ||
+                    graphTextValue(graph, typeNode, "sbyte") ||
+                    graphTextValue(graph, typeNode, "i16") ||
+                    graphTextValue(graph, typeNode, "short") ||
+                    graphTextValue(graph, typeNode, "sword") ||
+                    graphTextValue(graph, typeNode, "int") ||
+                    graphTextValue(graph, typeNode, "i32") ||
+                    graphTextValue(graph, typeNode, "sdword") ||
+                    graphTextValue(graph, typeNode, "i64") ||
+                    graphTextValue(graph, typeNode, "sqword") ||
+                    graphTextValue(graph, typeNode, "isize");
+            }
+
+            graphNodeLine(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_LINE);
+            }
+
+            graphNodeColumn(graph >> p<byte>, index >> int) -> int {
+                return integer(record(graph, index), R_COLUMN);
+            }
+
+            graphNodeName(graph >> p<byte>, index >> int) -> p<byte> {
+                return off(spellings(graph), integer(identity(graph, index), I_NAME_OFFSET));
+            }
+
+            graphNodeNameBytes(graph >> p<byte>, index >> int) -> int {
+                return integer(identity(graph, index), I_NAME_BYTES);
+            }
+
+            graphNodeOwner(graph >> p<byte>, index >> int) -> p<byte> {
+                return off(spellings(graph), integer(identity(graph, index), I_OWNER_OFFSET));
+            }
+
+            graphNodeOwnerBytes(graph >> p<byte>, index >> int) -> int {
+                return integer(identity(graph, index), I_OWNER_BYTES);
+            }
+
+            graphNodeVisibility(graph >> p<byte>, index >> int) -> int {
+                return integer(identity(graph, index), I_VISIBILITY);
+            }
+
+            graphNodeIdentityKind(graph >> p<byte>, index >> int) -> int {
+                return integer(identity(graph, index), I_KIND);
+            }
+
+            graphNodeRuntimeIdentity(graph >> p<byte>, index >> int) -> bool {
+                return (integer(identity(graph, index), I_KIND) & IDENTITY_RUNTIME) != 0;
+            }
+
+            graphSetNodeVisibility(graph >> p<byte>, index >> int, value >> int) -> bool {
+                guard graph != null && index >= 0 && index < integer(graph, H_NODES) else
+                    return false;
+                putInteger(identity(graph, index), I_VISIBILITY, value);
+                return true;
+            }
+
+            graphSetNodeRoleHash(graph >> p<byte>, index >> int, value >> int) -> bool {
+                guard graph != null && index >= 0 && index < integer(graph, H_NODES) else
+                    return false;
+                putInteger(record(graph, index), R_ROLE_HASH, value);
+                return true;
+            }
+
+            graphSetNodeOptimizedOut(graph >> p<byte>, index >> int,
+                optimizedOut >> bool) -> bool {
+                guard graph != null && index >= 0 && index < integer(graph, H_NODES) else
+                    return false;
+                flags >> int <- integer(record(graph, index), R_FLAGS);
+                if (optimizedOut) flags <- flags | FLAG_OPTIMIZED_OUT;
+                else if ((flags & FLAG_OPTIMIZED_OUT) != 0)
+                    flags <- flags - FLAG_OPTIMIZED_OUT;
+                putInteger(record(graph, index), R_FLAGS, flags);
+                return true;
+            }
+
+            graphMarkProjectExport(graph >> p<byte>, index >> int) -> bool {
+                guard graph != null && index >= 0 && index < integer(graph, H_NODES) &&
+                    integer(record(graph, index), R_OPCODE) == IR_FUNCTION else return false;
+                putInteger(record(graph, index), R_FLAGS,
+                    integer(record(graph, index), R_FLAGS) | FLAG_PROJECT_EXPORT);
+                return true;
+            }
+
+            graphRefreshFingerprint(graph >> p<byte>) -> int {
+                value >> int <- fingerprint(graph);
+                putInteger(graph, H_FINGERPRINT, value);
+                return value;
+            }
+
+            graphNodeNameEqual(graph >> p<byte>, left >> int, right >> int) -> bool {
+                return bytesEqual(graphNodeName(graph, left), graphNodeNameBytes(graph, left),
+                    graphNodeName(graph, right), graphNodeNameBytes(graph, right));
+            }
+
+            graphNodeOwnerEqual(graph >> p<byte>, left >> int, right >> int) -> bool {
+                return bytesEqual(graphNodeOwner(graph,left), graphNodeOwnerBytes(graph,left),
+                    graphNodeOwner(graph,right), graphNodeOwnerBytes(graph,right));
+            }
+
+            graphSignature(graph >> p<byte>, node >> int) -> p<byte> {
+                guard node >= 0 && node < graphNodes(graph) else return null;
+                item >> p<byte> <- record(graph,node);
+                bytes >> int <- integer(item,R_SIGNATURE_BYTES);
+                start >> int <- integer(item,R_SIGNATURE_OFFSET);
+                guard bytes >= 8 && start >= 0 && start <= integer(graph,H_SPELLING_BYTES)-bytes else return null;
+                signature >> p<byte> <- off(spellings(graph),start);
+                arity >> int <- rd<int>(off(signature,4));
+                guard arity >= 0 && arity <= (bytes-8)/4 else return null;
+                if (bytes != 8+arity*4 &&
+                    !(bytes == 16+arity*8 && rd<int>(off(signature,8+arity*4)) == 1415137616)) return null;
+                return signature;
+            }
+
+            graphSignatureArity(graph >> p<byte>, node >> int) -> int {
+                signature >> p<byte> <- graphSignature(graph,node);
+                return signature == null ? -1 : rd<int>(off(signature,4));
+            }
+
+            graphSignatureCode(graph >> p<byte>, node >> int, parameter >> int) -> int {
+                signature >> p<byte> <- graphSignature(graph,node);
+                guard signature != null && parameter >= -1 && parameter < graphSignatureArity(graph,node) else return -1;
+                return rd<int>(off(signature,parameter < 0 ? 0 : 8+parameter*4));
+            }
+
+            graphSignatureTypeNode(graph >> p<byte>, node >> int, parameter >> int) -> int {
+                signature >> p<byte> <- graphSignature(graph,node);
+                arity >> int <- graphSignatureArity(graph,node);
+                guard signature != null && parameter >= -1 && parameter < arity &&
+                    integer(record(graph,node),R_SIGNATURE_BYTES) == 16+arity*8 else return -1;
+                type >> int <- rd<int>(off(signature,12+arity*4+(parameter+1)*4));
+                return type >= 0 && type < graphNodes(graph) ? type : -1;
+            }
+
+            graphCanonicalType(graph >> p<byte>, node >> int) -> int {
+                depth >> int <- 0;
+                while (node >= 0 && node < graphNodes(graph) &&
+                    (graphNodeFlags(graph,node) & FLAG_TYPE_EDGE) != 0 && depth < 128) {
+                    node = integer(record(graph,node),R_VALUE_ID); depth += 1;
+                }
+                return depth < 128 && node >= 0 && node < graphNodes(graph) ? node : -1;
+            }
+            bindType(graph >> p<byte>, node >> int, type >> int) -> bool {
+                guard node >= 0 && node < graphNodes(graph) && (graphNodeAstKind(graph,node) == 18 || graphNodeAstKind(graph,node) == 30) &&
+                    type >= 0 && type < graphNodes(graph) && graphCanonicalType(graph,type) == type else return false;
+                putInteger(record(graph,node),R_FLAGS,graphNodeFlags(graph,node) | FLAG_TYPE_EDGE);
+                putInteger(record(graph,node),R_VALUE_ID,type);
+                return true;
+            }
+
+            graphSpellingBytes(graph >> p<byte>) -> int {
+                return integer(graph, H_SPELLING_BYTES);
+            }
+
+            graphMaterialBytes(graph >> p<byte>) -> int {
+                return integer(graph, H_MATERIAL_BYTES);
+            }
+
+            graphCopyInto(graph >> p<byte>, destination >> p<byte>) -> void {
+                cp(destination, graph, integer(graph, H_MATERIAL_BYTES));
+                count >> int <- integer(graph, H_NODES);
+                wr<addr>(off(destination, H_RECORDS), HEADER_BYTES);
+                wr<addr>(off(destination, H_IDENTITIES), HEADER_BYTES + count * RECORD_BYTES);
+                wr<addr>(off(destination, H_SPELLINGS), HEADER_BYTES + count * (RECORD_BYTES + IDENTITY_BYTES));
+            }
+
+            graphRebase(graph >> p<byte>) -> void {
+                count >> int <- integer(graph, H_NODES);
+                wr<addr>(off(graph, H_RECORDS), adr(off(graph, HEADER_BYTES)));
+                wr<addr>(off(graph, H_IDENTITIES), adr(off(graph, HEADER_BYTES + count * RECORD_BYTES)));
+                wr<addr>(off(graph, H_SPELLINGS), adr(off(graph,
+                    HEADER_BYTES + count * (RECORD_BYTES + IDENTITY_BYTES))));
+            }
+
+            releaseGraph(graph >> p<byte>) -> void {
+                if (graph != null) free(graph);
+            }
+
+        public:
+            projectBindType(graph >> p<byte>, node >> int, type >> int) -> bool {
+                return bindType(graph,node,type);
+            }
+            projectRenameNode(graph >> p<byte>, node >> int, name >> str) -> bool {
+                guard node >= 0 && node < graphNodes(graph) else return false;
+                bytes >> int <- strByteLen(name); cursor >> int <- graphSpellingBytes(graph);
+                base >> int <- HEADER_BYTES+graphNodes(graph)*(RECORD_BYTES+IDENTITY_BYTES);
+                guard bytes > 0 && bytes <= graphMaterialBytes(graph)-base-cursor else return false;
+                cp(off(spellings(graph),cursor),cast<byte>(name),bytes);
+                putInteger(identity(graph,node),I_NAME_OFFSET,cursor); putInteger(identity(graph,node),I_NAME_BYTES,bytes);
+                hash >> int <- 5381; at >> int <- 0;
+                while (at < bytes) { hash = hash*33+rd<byte>(off(cast<byte>(name),at)); at += 1; }
+                putInteger(record(graph,node),R_NAME_HASH,hash);
+                putInteger(graph,H_SPELLING_BYTES,cursor+bytes); return true;
+            }
+            projectFunctionAncestor(graph >> p<byte>, node >> int) -> int {
+                while (node >= 0) {
+                    if (graphNodeAstKind(graph,node) == AST_FUNCTION_DECL) return node;
+                    node = graphNodeParent(graph,node);
+                }
+                return -1;
+            }
+            projectFunctionNodes(graph >> p<byte>, function >> int, limit >> int) -> int {
+                count >> int <- 0; at >> int <- 0;
+                while (at < limit) { if (projectFunctionAncestor(graph,at) == function) count += 1; at += 1; }
+                return count;
+            }
+            projectGenericFunction(graph >> p<byte>, function >> int) -> bool {
+                child >> int <- graphNodeFirstChild(graph,function);
+                while (child >= 0) { if (graphNodeAstKind(graph,child) == 72) return true; child = graphNodeNextSibling(graph,child); }
+                return false;
+            }
+            projectHideFunction(graph >> p<byte>, function >> int) -> void {
+                graphSetNodeOptimizedOut(graph,function,true);
+            }
+            projectTrimNodes(graph >> p<byte>, count >> int) -> p<byte> {
+                guard graph != null && count > 0 && count <= graphNodes(graph) else return null;
+                bytes >> int <- graphMaterialBytes(graph)-(graphNodes(graph)-count)*(RECORD_BYTES+IDENTITY_BYTES);
+                out >> p<byte> <- cast<byte>(calloc(1,bytes));
+                guard out != null else return null;
+                cp(out,graph,HEADER_BYTES);
+                cp(off(out,HEADER_BYTES),records(graph),count*RECORD_BYTES);
+                cp(off(out,HEADER_BYTES+count*RECORD_BYTES),identities(graph),count*IDENTITY_BYTES);
+                cp(off(out,HEADER_BYTES+count*(RECORD_BYTES+IDENTITY_BYTES)),spellings(graph),graphSpellingBytes(graph));
+                putInteger(out,H_NODES,count); putInteger(out,H_MATERIAL_BYTES,bytes); graphRebase(out);
+                return out;
+            }
+            projectCloneGeneric(graph >> p<byte>, function >> int, base >> int, limit >> int,
+                arguments >> int, typeBase >> int, name >> str) -> int {
+                map >> p<int> <- cast<int>(alloc(limit*sizeOf(int)));
+                if (map == null) return -1;
+                at >> int <- 0; cursor >> int <- base;
+                while (at < limit) {
+                    wr(off(map,at),projectFunctionAncestor(graph,at) == function ? cursor : -1);
+                    if (rd(off(map,at)) >= 0) cursor += 1;
+                    at += 1;
+                }
+                if (cursor > graphNodes(graph)) { free(map); return -1; }
+                roots >> int <- jsonObjectBorrow(arguments,"parameters");
+                generic >> int <- graphNodeFirstChild(graph,function);
+                while (generic >= 0 && graphNodeAstKind(graph,generic) != 72) { generic = graphNodeNextSibling(graph,generic); }
+                at = 0;
+                while (at < limit) {
+                    destination >> int <- rd(off(map,at));
+                    if (destination >= 0) {
+                        item >> p<byte> <- record(graph,destination); cp(item,record(graph,at),RECORD_BYTES);
+                        cp(identity(graph,destination),identity(graph,at),IDENTITY_BYTES);
+                        field >> int <- R_VALUE_ID;
+                        while (field <= R_NEXT_SIBLING) {
+                            reference >> int <- integer(item,field);
+                            if (reference >= 0 && reference < limit && rd(off(map,reference)) >= 0)
+                                putInteger(item,field,rd(off(map,reference)));
+                            else if (field == R_NEXT_SIBLING) putInteger(item,field,-1);
+                            field += 4;
+                        }
+                        putInteger(item,R_GVN_SOURCE,-1); putInteger(item,R_GVN_SLOT,-1); putInteger(item,R_GVN_TYPE,0);
+                        putInteger(item,R_FLAGS,integer(item,R_FLAGS) & ~FLAG_OPTIMIZED_OUT);
+                        if (graphNodeAstKind(graph,at) == 18) {
+                            formal >> int <- graphNodeFirstChild(graph,generic); parameter >> int <- 0;
+                            while (formal >= 0) {
+                                if (graphNodeAstKind(graph,formal) == 73) {
+                                    if (graphNodeNameEqual(graph,at,formal)) {
+                                        root >> int <- jsonArrayBorrow(roots,parameter); supplied >> int <- jsonGetIntOr(root,-1); jsonRelease(root);
+                                        if (supplied < 0 || !projectBindType(graph,destination,typeBase+supplied)) { jsonRelease(roots); free(map); return -1; }
+                                    }
+                                    parameter += 1;
+                                }
+                                formal = graphNodeNextSibling(graph,formal);
+                            }
+                        }
+                        kind >> int <- graphNodeAstKind(graph,at);
+                        operation >> int <- graphNodeOpcode(graph,at);
+                        if (kind == AST_FUNCTION_DECL) putInteger(graph,H_FUNCTIONS,integer(graph,H_FUNCTIONS)+1);
+                        if (kind == AST_FUNCTION_DECL || kind == AST_BLOCK) putInteger(graph,H_BLOCKS,integer(graph,H_BLOCKS)+1);
+                        if (isExpression(kind) || kind == AST_VALUE_DECL || kind == AST_PARAMETER_DECL) putInteger(graph,H_VALUES,integer(graph,H_VALUES)+1);
+                        if (operation != IR_META && operation != IR_TYPE && operation != IR_BLOCK) putInteger(graph,H_OPERATIONS,integer(graph,H_OPERATIONS)+1);
+                        if (isTerminator(kind)) putInteger(graph,H_TERMINATORS,integer(graph,H_TERMINATORS)+1);
+                        if (isMemory(kind)) putInteger(graph,H_MEMORY,integer(graph,H_MEMORY)+1);
+                        if (operation == IR_CALL || operation == IR_INTRINSIC) putInteger(graph,H_CALLS,integer(graph,H_CALLS)+1);
+                        if (operation == IR_BRANCH) putInteger(graph,H_BRANCHES,integer(graph,H_BRANCHES)+1);
+                        if (graphNodeEffects(graph,at) != 0) putInteger(graph,H_EFFECTS,integer(graph,H_EFFECTS)+1);
+                    }
+                    at += 1;
+                }
+                cloned >> int <- rd(off(map,function));
+                at = 0;
+                while (at < limit) {
+                    destination >> int <- rd(off(map,at));
+                    if (destination >= 0 && graphNodeAstKind(graph,at) == AST_EXPR_CALL) {
+                        callee >> int <- graphNodeFirstChild(graph,at);
+                        if (graphNodeAstKind(graph,callee) == 74) callee = graphNodeFirstChild(graph,callee);
+                        if (graphNodeAstKind(graph,callee) == AST_EXPR_NAME && graphNodeNameEqual(graph,callee,function)) {
+                            target >> int <- rd(off(map,callee));
+                            if (target < 0 || !projectRenameNode(graph,target,name)) { jsonRelease(roots); free(map); return -1; }
+                        }
+                    }
+                    at += 1;
+                }
+                jsonRelease(roots); free(map);
+                if (!projectRenameNode(graph,cloned,name)) return -1;
+                parent >> int <- graphNodeParent(graph,cloned);
+                if (parent >= 0) {
+                    sibling >> int <- graphNodeFirstChild(graph,parent);
+                    if (sibling < 0) putInteger(record(graph,parent),R_FIRST_CHILD,cloned);
+                    else {
+                        while (graphNodeNextSibling(graph,sibling) >= 0) {
+                            sibling <- graphNodeNextSibling(graph,sibling);
+                        }
+                        putInteger(record(graph,sibling),R_NEXT_SIBLING,cloned);
+                    }
+                }
+                return cloned;
+            }
+            projectMaterialTypeCode(material >> p<byte>, declaration >> int) -> int {
+                return projectMaterialTypeCodeFor(material,declaration,TARGET_X86_64_SYSV);
+            }
+            projectMaterialTypeCodeFor(material >> p<byte>, declaration >> int, target >> int) -> int {
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,declaration);
+                while (child >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,child);
+                    if (kind >= 18 && kind <= 24) {
+                        if (kind == AST_TYPE_APPLY && materialNodeText(material,child,"Result")) {
+                            payload >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,child);
+                            error >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material,payload);
+                            if (materialNodeText(material,payload,"bool") && materialNodeText(material,error,"FsError") &&
+                                parser_ast.nccParserAst.materialNodeNextSibling(material,error) < 0) return 8;
+                            return -1;
+                        }
+                        if (kind == AST_TYPE_POINTER || kind == AST_TYPE_FUNCTION ||
+                            materialNodeText(material,child,"addr") || materialNodeText(material,child,"usize")) return 65;
+                        if (materialNodeText(material,child,"isize")) return 81;
+                        if (materialNodeText(material,child,"void")) return 0;
+                        if (materialNodeText(material,child,"bool")) return 33;
+                        if (materialNodeText(material,child,"str")) return 34;
+                        if (materialNodeText(material,child,"char")) return 35;
+                        if (materialNodeText(material,child,"ft32") || materialNodeText(material,child,"f32")) return 40;
+                        if (materialNodeText(material,child,"ft64") || materialNodeText(material,child,"f64")) return 41;
+                        code >> int <- scalarTypeCode(material,child,target);
+                        return code > 0 ? code : binary_layout.nccBinaryLayout.nativeSignatureFor(material,child,target);
+                    }
+                    child <- parser_ast.nccParserAst.materialNodeNextSibling(material,child);
+                }
+                return 0;
+            }
+
+            projectTargetCode(targetName >> str) -> int { return targetId(targetName); }
+
+            projectReserveSignatures(graph >> p<byte>, bytes >> int) -> p<byte> {
+                return projectReserveTypes(graph,0,bytes);
+            }
+
+            projectReserveTypes(graph >> p<byte>, added >> int, bytes >> int) -> p<byte> {
+                guard graph != null && added >= 0 && bytes >= 0 &&
+                    added <= (2147483647-graphMaterialBytes(graph))/(RECORD_BYTES+IDENTITY_BYTES) else return null;
+                size >> int <- graphMaterialBytes(graph)+added*(RECORD_BYTES+IDENTITY_BYTES);
+                guard bytes <= 2147483647-size else return null;
+                out >> p<byte> <- cast<byte>(calloc(1,size+bytes));
+                guard out != null else return null;
+                old >> int <- graphNodes(graph); count >> int <- old+added;
+                cp(out,graph,HEADER_BYTES);
+                cp(off(out,HEADER_BYTES),records(graph),old*RECORD_BYTES);
+                cp(off(out,HEADER_BYTES+count*RECORD_BYTES),identities(graph),old*IDENTITY_BYTES);
+                cp(off(out,HEADER_BYTES+count*(RECORD_BYTES+IDENTITY_BYTES)),spellings(graph),graphSpellingBytes(graph));
+                at >> int <- old;
+                while (at < count) {
+                    putInteger(off(out,HEADER_BYTES+at*RECORD_BYTES),R_GVN_SOURCE,-1);
+                    putInteger(off(out,HEADER_BYTES+at*RECORD_BYTES),R_GVN_SLOT,-1);
+                    at += 1;
+                }
+                putInteger(out,H_NODES,count);
+                graphRebase(out);
+                putInteger(out,H_MATERIAL_BYTES,size+bytes);
+                return out;
+            }
+
+            shapeInt(object >> int, key >> str, fallback >> int) -> int {
+                item >> int <- jsonObjectBorrow(object,key);
+                value >> int <- jsonGetIntOr(item,fallback); jsonRelease(item); return value;
+            }
+
+            projectTypeNodes(signature >> int) -> int {
+                types >> int <- jsonObjectBorrow(signature,"types");
+                count >> int <- jsonArrayLen(types); total >> int <- count;
+                at >> int <- 0;
+                while (at < count) {
+                    type >> int <- jsonArrayBorrow(types,at);
+                    children >> int <- jsonObjectBorrow(type,"children");
+                    total += jsonArrayLen(children);
+                    jsonRelease(children); jsonRelease(type); at += 1;
+                }
+                jsonRelease(types); return total;
+            }
+
+            projectTypeSpellingBytes(signature >> int) -> int {
+                types >> int <- jsonObjectBorrow(signature,"types");
+                bytes >> int <- 0; at >> int <- 0;
+                while (at < jsonArrayLen(types)) {
+                    item >> int <- jsonArrayBorrow(types,at);
+                    value >> int <- jsonObjectBorrow(item,"name");
+                    name >> str <- jsonGetStringOr(value,"");
+                    bytes += strByteLen(name); strRelease(name);
+                    jsonRelease(value); jsonRelease(item); at += 1;
+                }
+                jsonRelease(types); return bytes;
+            }
+
+            projectImportTypes(graph >> p<byte>, signature >> int, base >> int) -> bool {
+                guard graph != null && signature != 0 && shapeInt(signature,"valid",0) == 1 &&
+                    shapeInt(signature,"target",0) == graphTarget(graph) && base >= 0 &&
+                    base <= graphNodes(graph)-projectTypeNodes(signature) else return false;
+                types >> int <- jsonObjectBorrow(signature,"types");
+                count >> int <- jsonArrayLen(types); at >> int <- 0;
+                while (at < count) {
+                    item >> int <- jsonArrayBorrow(types,at);
+                    r >> p<byte> <- record(graph,base+at);
+                    putInteger(r,R_OPCODE,IR_TYPE); putInteger(r,R_AST_KIND,shapeInt(item,"kind",0));
+                    putInteger(r,R_PARENT,-1); putInteger(r,R_FIRST_CHILD,-1); putInteger(r,R_NEXT_SIBLING,-1);
+                    putInteger(r,R_ROLE_HASH,shapeInt(item,"role",0)); putInteger(r,R_FLAGS,shapeInt(item,"flags",0));
+                    wr<u64>(off(r,R_LAYOUT_VALUE),shapeInt(item,"kind",0) == 14 ? shapeInt(item,"offset",0) : shapeInt(item,"bytes",0));
+                    putInteger(r,R_LAYOUT_VALID,shapeInt(item,"layout_valid",0) == 1 ? 2 : 0); putInteger(r,R_LAYOUT_ALIGN,shapeInt(item,"align",0));
+                    value >> int <- jsonObjectBorrow(item,"name"); name >> str <- jsonGetStringOr(value,"");
+                    bytes >> int <- strByteLen(name); cursor >> int <- graphSpellingBytes(graph);
+                    destination >> int <- HEADER_BYTES+graphNodes(graph)*(RECORD_BYTES+IDENTITY_BYTES)+cursor;
+                    if (bytes > graphMaterialBytes(graph)-destination) {
+                        strRelease(name); jsonRelease(value); jsonRelease(item); jsonRelease(types); return false;
+                    }
+                    cp(off(spellings(graph),cursor),cast<byte>(name),bytes);
+                    i >> p<byte> <- identity(graph,base+at);
+                    putInteger(i,I_NAME_OFFSET,cursor); putInteger(i,I_NAME_BYTES,bytes);
+                    putInteger(i,I_KIND,IDENTITY_TYPE); putInteger(graph,H_SPELLING_BYTES,cursor+bytes);
+                    strRelease(name); jsonRelease(value); jsonRelease(item); at += 1;
+                }
+                edge >> int <- base+count; at = 0;
+                while (at < count) {
+                    item >> int <- jsonArrayBorrow(types,at);
+                    children >> int <- jsonObjectBorrow(item,"children");
+                    index >> int <- 0; previous >> int <- -1;
+                    while (index < jsonArrayLen(children)) {
+                        child >> int <- jsonArrayBorrow(children,index); referenced >> int <- jsonGetIntOr(child,-1); jsonRelease(child);
+                        if (referenced < 0 || referenced >= count || edge >= graphNodes(graph)) {
+                            jsonRelease(children); jsonRelease(item); jsonRelease(types); return false;
+                        }
+                        cp(record(graph,edge),record(graph,base+referenced),RECORD_BYTES);
+                        cp(identity(graph,edge),identity(graph,base+referenced),IDENTITY_BYTES);
+                        putInteger(record(graph,edge),R_FLAGS,graphNodeFlags(graph,edge) | FLAG_TYPE_EDGE);
+                        putInteger(record(graph,edge),R_VALUE_ID,base+referenced);
+                        putInteger(record(graph,edge),R_PARENT,base+at); putInteger(record(graph,edge),R_NEXT_SIBLING,-1);
+                        if (previous < 0) putInteger(record(graph,base+at),R_FIRST_CHILD,edge);
+                        else putInteger(record(graph,previous),R_NEXT_SIBLING,edge);
+                        previous = edge; edge += 1; index += 1;
+                    }
+                    jsonRelease(children); jsonRelease(item); at += 1;
+                }
+                at = base+count;
+                while (at < edge) {
+                    canonical >> int <- graphCanonicalType(graph,at);
+                    putInteger(record(graph,at),R_FIRST_CHILD,graphNodeFirstChild(graph,canonical)); at += 1;
+                }
+                jsonRelease(types); return true;
+            }
+
+            projectAppendSignature(graph >> p<byte>, node >> int, codes >> p<int>, arity >> int) -> bool {
+                return projectAppendTypedSignature(graph,node,codes,arity,null);
+            }
+            projectAppendTypedSignature(graph >> p<byte>, node >> int, codes >> p<int>, arity >> int, typeNodes >> p<int>) -> bool {
+                guard graph != null && node >= 0 && node < graphNodes(graph) && codes != null && arity >= 0 else return false;
+                bytes >> int <- typeNodes == null ? 8+arity*4 : 16+arity*8;
+                cursor >> int <- integer(graph,H_SPELLING_BYTES);
+                base >> int <- HEADER_BYTES+graphNodes(graph)*(RECORD_BYTES+IDENTITY_BYTES);
+                guard bytes >= 8 && cursor <= graphMaterialBytes(graph)-base-bytes else return false;
+                putInteger(record(graph,node),R_SIGNATURE_OFFSET,cursor);
+                putInteger(record(graph,node),R_SIGNATURE_BYTES,bytes);
+                signature >> p<byte> <- off(spellings(graph),cursor);
+                putInteger(signature,4,arity);
+                at >> int <- -1;
+                while (at < arity) {
+                    code >> int <- rd<int>(off(codes,at+1));
+                    if (code == 65 || code == 81) code <- graphPointerBits(graph)/8+(code == 81 ? 16 : 0);
+                    putInteger(signature,at < 0 ? 0 : 8+at*4,code);
+                    at += 1;
+                }
+                if (typeNodes != null) {
+                    putInteger(signature,8+arity*4,1415137616); at = -1;
+                    while (at < arity) {
+                        putInteger(signature,12+arity*4+(at+1)*4,rd(off(typeNodes,at+1))); at += 1;
+                    }
+                }
+                putInteger(graph,H_SPELLING_BYTES,cursor+bytes);
+                return true;
+            }
+
+            projectSetIntrinsicType(graph >> p<byte>, node >> int, type >> int, code >> int) -> bool {
+                guard graphNodeIntrinsicId(graph,node) > 0 else return false;
+                codes >> array<int,1> <- [code]; types >> array<int,1> <- [type];
+                putInteger(record(graph,node),R_TYPE_HASH,code);
+                return projectAppendTypedSignature(graph,node,cast<int>(&codes),0,cast<int>(&types));
+            }
+
+            projectGraphFor(path >> str, targetName >> str) -> p<byte> {
+                return graphForMode(path,targetName,true);
+            }
+            projectImportedOffset(graph >> p<byte>, m >> p<byte>, call >> int, out >> p<byte>) -> bool {
+                callee >> int <- parser_ast.nccParserAst.materialNodeFirstChild(m,call);
+                generic >> bool <- parser_ast.nccParserAst.materialNodeKind(m,callee) == 74;
+                type >> int <- generic ? parser_ast.nccParserAst.materialNodeNextSibling(m,parser_ast.nccParserAst.materialNodeFirstChild(m,callee)) :
+                    parser_ast.nccParserAst.materialNodeNextSibling(m,callee);
+                member >> int <- parser_ast.nccParserAst.materialNodeNextSibling(m,generic ? callee : type);
+                bound >> int <- graphCanonicalType(graph,type);
+                if (bound < parser_ast.nccParserAst.materialNodeCount(m) || !graphNodeStorageValid(graph,bound) || member < 0 ||
+                    parser_ast.nccParserAst.materialNodeNextSibling(m,member) >= 0) return false;
+                selected >> int <- graphNodeFirstChild(graph,bound);
+                while (selected >= 0) {
+                    if (graphNodeAstKind(graph,selected) == 14 && graphNodeNameEqual(graph,selected,member) && graphNodeStorageValid(graph,selected)) {
+                        wr<u64>(out,graphNodeLayoutValue(graph,selected)); return true;
+                    }
+                    selected <- graphNodeNextSibling(graph,selected);
+                }
+                return false;
+            }
+            projectRefreshLayouts(graph >> p<byte>, path >> str) -> bool {
+                m >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                if (m == null || !parser_ast.nccParserAst.materialReady(m)) { parser_ast.nccParserAst.closeMaterial(m); return false; }
+                if (!type_contract_sema.nccTypeContractSema.projectTypesPending(m)) { parser_ast.nccParserAst.closeMaterial(m); return true; }
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(m);
+                c >> p<byte> <- binary_layout.nccBinaryLayout.open(m,graphTarget(graph));
+                out >> p<byte> <- alloc(24);
+                valid >> bool <- c != null && out != null && count <= graphNodes(graph);
+                at >> int <- 0;
+                while (valid && at < count) {
+                    bound >> int <- graphCanonicalType(graph,at);
+                    if ((graphNodeAstKind(graph,at) == 18 || graphNodeAstKind(graph,at) == 30) && bound >= count) {
+                        valid <- graphNodeStorageValid(graph,bound) && binary_layout.nccBinaryLayout.bindType(c,at,
+                            graphNodeLayoutValue(graph,bound),graphNodeStorageAlign(graph,bound));
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (valid && at < count) {
+                    k >> int <- graphNodeAstKind(graph,at);
+                    if (k == 11 || k == 13 || k == 14 || (k >= 18 && k <= 24)) {
+                        if (binary_layout.nccBinaryLayout.describe(c,at,out)) {
+                            wr<u64>(off(record(graph,at),R_LAYOUT_VALUE),rd<u64>(off(out,k == 14 ? 16 : 0)));
+                            putInteger(record(graph,at),R_LAYOUT_ALIGN,rd<u64>(off(out,8)));
+                            putInteger(record(graph,at),R_LAYOUT_VALID,2);
+                        }
+                    }
+                    id >> int <- graphNodeIntrinsicId(graph,at);
+                    if (intrinsics.nccIntrinsics.isLayoutQuery(id)) {
+                        valid <- binary_layout.nccBinaryLayout.query(c,at,id,out);
+                        if (!valid && id == 26) valid <- projectImportedOffset(graph,m,at,out);
+                        if (valid) { wr<u64>(off(record(graph,at),R_LAYOUT_VALUE),rd<u64>(out)); putInteger(record(graph,at),R_LAYOUT_VALID,1); }
+                        else { print("linked layout query rejected at line "); println(parser_ast.nccParserAst.materialNodeLine(m,at)); }
+                    }
+                    at += 1;
+                }
+                binary_layout.nccBinaryLayout.close(c); free(out); parser_ast.nccParserAst.closeMaterial(m);
+                if (valid) projectGraphRefreshFingerprint(graph);
+                return valid;
+            }
+
+            projectMergeGraphs(graphs >> p<byte>, count >> int) -> p<byte> {
+                return mergeGraphArray(graphs, count);
+            }
+
+            projectGraphNodes(graph >> p<byte>) -> int { return graphNodes(graph); }
+            projectGraphNodeOpcode(graph >> p<byte>, index >> int) -> int {
+                return graphNodeOpcode(graph, index);
+            }
+            projectGraphNodeAstKind(graph >> p<byte>, index >> int) -> int { return graphNodeAstKind(graph,index); }
+            projectGraphNodeRoleHash(graph >> p<byte>, index >> int) -> int { return graphNodeRoleHash(graph,index); }
+            projectGraphNodeVisibility(graph >> p<byte>, index >> int) -> int {
+                return graphNodeVisibility(graph, index);
+            }
+            projectGraphNodeFirstChild(graph >> p<byte>, index >> int) -> int {
+                return graphNodeFirstChild(graph, index);
+            }
+            projectGraphNodeOwner(graph >> p<byte>, index >> int) -> p<byte> {
+                return graphNodeOwner(graph, index);
+            }
+            projectGraphNodeOwnerBytes(graph >> p<byte>, index >> int) -> int {
+                return graphNodeOwnerBytes(graph, index);
+            }
+            projectGraphNodeName(graph >> p<byte>, index >> int) -> p<byte> {
+                return graphNodeName(graph, index);
+            }
+            projectGraphNodeNameBytes(graph >> p<byte>, index >> int) -> int {
+                return graphNodeNameBytes(graph, index);
+            }
+            projectGraphSetNodeVisibility(graph >> p<byte>, index >> int,
+                value >> int) -> bool {
+                return graphSetNodeVisibility(graph, index, value);
+            }
+            projectGraphMarkExport(graph >> p<byte>, index >> int) -> bool {
+                return graphMarkProjectExport(graph, index);
+            }
+            projectGraphRefreshFingerprint(graph >> p<byte>) -> int {
+                return graphRefreshFingerprint(graph);
+            }
+            projectGraphFingerprint(graph >> p<byte>) -> int {
+                return graph == null ? 0 : integer(graph, H_FINGERPRINT);
+            }
+            projectWriteGraph(graph >> p<byte>, path >> str) -> bool {
+                guard graph != null else return false;
+                bytes >> int <- integer(graph, H_MATERIAL_BYTES);
+                guard bytes >= HEADER_BYTES else return false;
+                serialized >> p<byte> <- cast<byte>(alloc(bytes));
+                guard serialized != null else return false;
+                graphCopyInto(graph,serialized);
+                written >> bool <- fsWriteFrom(path, serialized, bytes, false) == bytes;
+                free(serialized);
+                return written;
+            }
+            projectGraphChainsValid(graph >> p<byte>, field >> int) -> bool {
+                count >> int <- graphNodes(graph);
+                states >> p<byte> <- cast<byte>(calloc(count,1));
+                if (states == null) return false;
+                at >> int <- 0;
+                while (at < count) {
+                    cursor >> int <- at;
+                    while (cursor >= 0 && rd(off(states,cursor)) == 0) {
+                        wr(off(states,cursor),1);
+                        cursor = integer(record(graph,cursor),field);
+                    }
+                    if (cursor >= 0 && rd(off(states,cursor)) == 1) { free(states); return false; }
+                    cursor = at;
+                    while (cursor >= 0 && rd(off(states,cursor)) == 1) {
+                        wr(off(states,cursor),2);
+                        cursor = integer(record(graph,cursor),field);
+                    }
+                    at += 1;
+                }
+                free(states);
+                return true;
+            }
+            projectReadGraph(path >> str, targetName >> str) -> p<byte> {
+                fileBytes >> i64 <- fsSize(path);
+                target >> int <- targetId(targetName);
+                if (target == 0 || fileBytes < HEADER_BYTES || fileBytes > 2147483647) return null;
+                bytes >> int <- fileBytes;
+                graph >> p<byte> <- cast<byte>(alloc(bytes));
+                if (graph == null) return null;
+                if (fsReadInto(path,graph,bytes) != bytes) { free(graph); return null; }
+                count >> int <- integer(graph,H_NODES);
+                names >> int <- integer(graph,H_SPELLING_BYTES);
+                if (integer(graph,H_MAGIC) != IR_MAGIC || integer(graph,H_VERSION) != IR_VERSION ||
+                    integer(graph,H_TARGET) != target || integer(graph,H_POINTER_BITS) != pointerBits(target) ||
+                    integer(graph,H_OBJECT) != objectFormat(target) || integer(graph,H_ABI) != abi(target) ||
+                    integer(graph,H_ENDIAN) != 1 || integer(graph,H_RECORD_BYTES) != RECORD_BYTES ||
+                    integer(graph,H_MATERIAL_BYTES) != bytes || count <= 0 || names < 0 ||
+                    count > (bytes-HEADER_BYTES)/(RECORD_BYTES+IDENTITY_BYTES)) { free(graph); return null; }
+                tableEnd >> int <- HEADER_BYTES+count*(RECORD_BYTES+IDENTITY_BYTES);
+                if (names > bytes-tableEnd || rd<u64>(off(graph,H_RECORDS)) != HEADER_BYTES ||
+                    rd<u64>(off(graph,H_IDENTITIES)) != HEADER_BYTES+count*RECORD_BYTES ||
+                    rd<u64>(off(graph,H_SPELLINGS)) != tableEnd) { free(graph); return null; }
+                graphRebase(graph);
+                at >> int <- 0;
+                while (at < count) {
+                    item >> p<byte> <- record(graph,at);
+                    parent >> int <- integer(item,R_PARENT);
+                    child >> int <- integer(item,R_FIRST_CHILD);
+                    sibling >> int <- integer(item,R_NEXT_SIBLING);
+                    value >> int <- integer(item,R_VALUE_ID);
+                    if (parent < -1 || parent >= count || child < -1 || child >= count ||
+                        sibling < -1 || sibling >= count || value < -1 || value >= count) { free(graph); return null; }
+                    source >> int <- integer(item,R_GVN_SOURCE);
+                    slot >> int <- integer(item,R_GVN_SLOT);
+                    type >> int <- integer(item,R_GVN_TYPE);
+                    if (source < -1 || source > at || (source < 0 && (slot != -1 || type != 0))) { free(graph); return null; }
+                    if (source >= 0) {
+                        kind >> int <- integer(item,R_AST_KIND);
+                        origin >> p<byte> <- record(graph,source);
+                        if ((kind != AST_EXPR_UNARY && kind != AST_EXPR_BINARY) || slot < 0 || slot >= 2 || type <= 0 || type >= 100000 ||
+                            integer(origin,R_GVN_SOURCE) != source || integer(origin,R_GVN_SLOT) != slot || integer(origin,R_GVN_TYPE) != type ||
+                            integer(origin,R_AST_KIND) != kind || integer(origin,R_ROLE_HASH) != integer(item,R_ROLE_HASH) ||
+                            integer(origin,R_BLOCK_ID) < 0 || integer(origin,R_BLOCK_ID) != integer(item,R_BLOCK_ID) ||
+                            (integer(origin,R_FLAGS) & FLAG_OPTIMIZED_OUT) != 0) { free(graph); return null; }
+                    }
+                    if (integer(item,R_AST_KIND) == AST_TYPE_NAME && (integer(item,R_FLAGS) & FLAG_TYPE_EDGE) != 0 &&
+                        (value < 0 || (integer(record(graph,value),R_FLAGS) & FLAG_TYPE_EDGE) != 0)) { free(graph); return null; }
+                    id >> p<byte> <- identity(graph,at);
+                    nameStart >> int <- integer(id,I_NAME_OFFSET); nameBytes >> int <- integer(id,I_NAME_BYTES);
+                    ownerStart >> int <- integer(id,I_OWNER_OFFSET); ownerBytes >> int <- integer(id,I_OWNER_BYTES);
+                    if (nameStart < 0 || nameBytes < 0 || nameBytes > names || nameStart > names-nameBytes ||
+                        ownerStart < 0 || ownerBytes < 0 || ownerBytes > names || ownerStart > names-ownerBytes) { free(graph); return null; }
+                    signatureBytes >> int <- integer(item,R_SIGNATURE_BYTES);
+                    if (signatureBytes < 0) { free(graph); return null; }
+                    if (signatureBytes > 0) {
+                        signature >> p<byte> <- graphSignature(graph,at);
+                        if (signature == null) { free(graph); return null; }
+                        arity >> int <- rd<int>(off(signature,4));
+                        if (signatureBytes == 16+arity*8) {
+                            argument >> int <- -1;
+                            while (argument < arity) {
+                                referenced >> int <- rd<int>(off(signature,12+arity*4+(argument+1)*4));
+                                if (referenced < -1 || referenced >= count) { free(graph); return null; }
+                                argument += 1;
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                if (!projectGraphChainsValid(graph,R_PARENT) || !projectGraphChainsValid(graph,R_NEXT_SIBLING)) { free(graph); return null; }
+                return graph;
+            }
+            projectReleaseGraph(graph >> p<byte>) -> void { releaseGraph(graph); }
+
+            emitFile(path >> str, targetName >> str, json >> bool, quiet >> bool) -> int {
+                target >> int <- targetId(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                graph >> p<byte> <- graphFor(path, targetName);
+                guard graph != null else return diagnostics.nccDiagnostics.emitIrGraph(path);
+                if (!quiet) emitGraph(graph, json);
+                lowerings += 1;
+                lastTarget <- target;
+                lastFingerprint <- integer(graph, H_FINGERPRINT);
+                lastNodes <- integer(graph, H_NODES);
+                lastIdentityBytes <- integer(graph, H_SPELLING_BYTES);
+                free(graph);
+                return 0;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedTarget >> int,
+                expectedPointerBits >> int, expectedObject >> int,
+                expectedAbi >> int, expectedSeedBytes >> int) -> int {
+                target >> int <- targetId(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                graph >> p<byte> <- graphFor(path, targetName);
+                guard graph != null else return diagnostics.nccDiagnostics.emitIrGraph(path);
+                valid >> bool <- integer(graph, H_MAGIC) == IR_MAGIC &&
+                    integer(graph, H_VERSION) == IR_VERSION &&
+                    integer(graph, H_TARGET) == expectedTarget &&
+                    integer(graph, H_POINTER_BITS) == expectedPointerBits &&
+                    integer(graph, H_OBJECT) == expectedObject &&
+                    integer(graph, H_ABI) == expectedAbi &&
+                    integer(graph, H_SEED_BYTES) == expectedSeedBytes &&
+                    integer(graph, H_NODES) > 0 && integer(graph, H_OPERATIONS) > 0 &&
+                    integer(graph, H_FINGERPRINT) > 0;
+                free(graph);
+                return valid ? 0 : diagnostics.nccDiagnostics.emitIrShape(path);
+            }
+
+            selfTest() -> bool {
+                return HEADER_BYTES == 128 && RECORD_BYTES == 104 && IDENTITY_BYTES == 24 &&
+                    pointerBits(TARGET_I386_SYSV) == 32 &&
+                    pointerBits(TARGET_RISCV64) == 64 &&
+                    objectFormat(TARGET_X86_64_WIN64) == OBJECT_COFF64 &&
+                    abi(TARGET_AARCH64_SYSV) == ABI_AAPCS64;
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,43 @@
+
+fsIoHost {
+    fn:
+        private:
+            interrupted() -> bool { return rd<i32>(from<i32>(osL__errno_location())) == 4; }
+        public:
+            writeBytes(path >> str, data >> p<byte>, bytes >> int, append >> bool) -> int {
+                flags >> int <- append ? 1089 : 577;
+                fd >> int <- osLopen(adr(path),flags,438);
+                if (fd < 0) return -1;
+                at >> int <- 0;
+                while (at < bytes) {
+                    count >> u64 <- bytes-at;
+                    got >> i64 <- osLwrite(fd,adr(off(data,at)),count);
+                    if (got < 0 && interrupted()) continue;
+                    if (got <= 0) { osLclose(fd); return -1; }
+                    at += got;
+                }
+                return osLclose(fd) == 0 ? at : -1;
+            }
+            readBytes(path >> str, data >> p<byte>, bytes >> int) -> int {
+                fd >> int <- osLopen(adr(path),0,0);
+                if (fd < 0) return -1;
+                at >> int <- 0;
+                while (at < bytes) {
+                    count >> u64 <- bytes-at;
+                    got >> i64 <- osLread(fd,adr(off(data,at)),count);
+                    if (got < 0 && interrupted()) continue;
+                    if (got < 0) { osLclose(fd); return -1; }
+                    if (got == 0) break;
+                    at += got;
+                }
+                return osLclose(fd) == 0 ? at : -1;
+            }
+            size(path >> str) -> int {
+                fd >> int <- osLopen(adr(path),0,0);
+                if (fd < 0) return -1;
+                bytes >> i64 <- osLlseek(fd,0,2);
+                closed >> int <- osLclose(fd);
+                return closed == 0 && bytes >= 0 && bytes <= 2147483647 ? bytes : -1;
+            }
+    fa: return true;
+}

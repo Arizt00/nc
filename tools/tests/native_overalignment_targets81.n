@@ -1,0 +1,55 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:parser_ast, type_shapes>;
+
+nativeOveralignmentTargets81 {
+    stc: checks >> int <- 0; failures >> int <- 0;
+    integer(object >> int, key >> str) -> int {
+        value >> int <- jsonObjectBorrow(object,key);
+        result >> int <- jsonGetIntOr(value,-1); jsonRelease(value); return result;
+    }
+    expect(valid >> bool) -> void { checks += 1; if (!valid) failures += 1; }
+    inspect(shape >> int, bytes >> int, alignment >> int) -> void {
+        types >> int <- jsonObjectBorrow(shape,"types");
+        root >> int <- jsonArrayBorrow(types,integer(shape,"result"));
+        expect(integer(root,"layout_valid") == 1);
+        expect(integer(root,"bytes") == bytes); expect(integer(root,"align") == alignment);
+        jsonRelease(root); jsonRelease(types);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 64;
+        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(argsAt(arguments,1)+"/tools/tests/native_overalignment81.n");
+        if (!parser_ast.nccParserAst.materialReady(material)) return 65;
+        target >> int <- 1;
+        while (target <= 10) {
+            node >> int <- 0; seen >> int <- 0;
+            while (node < parser_ast.nccParserAst.materialNodeCount(material)) {
+                if (parser_ast.nccParserAst.materialNodeKind(material,node) == 13) {
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,node);
+                    count >> int <- parser_ast.nccParserAst.materialIdentityBytes(material,token);
+                    name >> p<byte> <- parser_ast.nccParserAst.materialIdentityData(material,token);
+                    shape >> int <- type_shapes.nccTypeShapes.signature(material,node,target);
+                    if (count >= 3 && rd(name) == 65) {
+                        alignment >> int <- 0; at >> int <- 1;
+                        while (at < count) { alignment <- alignment*10+rd(off(name,at))-48; at += 1; }
+                        inspect(shape,alignment,alignment); seen += 1;
+                    } else if (count == 6 && rd(name) == 78) { inspect(shape,1536,512); seen += 1; }
+                    jsonRelease(shape);
+                }
+                node += 1;
+            }
+            expect(seen == 10); target += 1;
+        }
+        report >> int <- jsonNewObject(); value >> int <- jsonNewInt(checks);
+        jsonObjectSet(report,"checks",value); jsonRelease(value); value <- jsonNewInt(failures);
+        jsonObjectSet(report,"failures",value); jsonRelease(value); value <- jsonNewBool(failures == 0);
+        jsonObjectSet(report,"passed",value); jsonRelease(value);
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,2),2);
+        jsonRelease(report); parser_ast.nccParserAst.closeMaterial(material); argsRelease(arguments);
+        if (!saved || failures != 0) return 1;
+        println("native-overalignment-target-layouts-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

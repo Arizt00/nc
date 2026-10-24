@@ -1,0 +1,149 @@
+use <data:json>;
+use <io:output>;
+use <process:args, env>;
+use <project:release_io, cert_json, tool_cli, ide43_core, ide43_signal>;
+
+ide43Fixture {
+    fn:
+        private:
+            word(arguments >> addr, index >> int) -> str {
+                if (index < 0 || index >= argsCount(arguments)) return "";
+                return argsAt(arguments,index);
+            }
+            fault(value >> str) -> bool {
+                data >> p<byte> <- cast(alloc(4096));
+                size >> int <- envGet("IDE43_FAULT",adr(data),4095);
+                if (size < 0 || size >= 4095) { free(data); return false; }
+                wr(off(data,size),0); text >> str <- cast(data);
+                result >> bool <- text == value; free(data); return result;
+            }
+            home() -> str {
+                data >> p<byte> <- cast(alloc(32768)); count >> int <- envGet("NCUP_HOME",adr(data),32767);
+                if (count < 0 || count >= 32767) { free(data); return ""; } wr(off(data,count),0); return cast(data);
+            }
+            printPayload(payload >> int) -> int {
+                if (fault("malformed")) println("{broken"); else println(cert_json.certJson.stringify(payload));
+                jsonRelease(payload); return 0;
+            }
+            resolution(binary >> str) -> int {
+                value >> int <- jsonNewObject();
+                cert_json.certJson.put(value,"schema",jsonNewString(fault("which-schema") ? "bad" : "ncup.which.v1"));
+                cert_json.certJson.put(value,"bin",jsonNewString("ncc"));
+                if (!fault("which-missing")) cert_json.certJson.put(value,"path",fault("which-null") ? jsonNewNull() :
+                    (fault("which-number") ? jsonNewInt(17) : jsonNewString(fault("which-empty") ? "" :
+                    (fault("which-path") ? "/missing/ide43-ncc" : binary))));
+                if (!fault("which-optional")) {
+                    cert_json.certJson.put(value,"toolchain_id",jsonNewString("ide43-test-chain"));
+                    cert_json.certJson.put(value,"source",jsonNewString("fixture"));
+                }
+                return value;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); cmd >> str <- word(args,1);
+                binary >> str <- tool_cli.toolCli.absolute(word(args,0));
+                if (cmd == "buildPlugin" && argsCount(args) == 2) return 13;
+                if (cmd == "--yes" && argsCount(args) == 5 && word(args,2) == "@vscode/vsce" &&
+                    word(args,3) == "package" && word(args,4) == "--no-dependencies") return 17;
+                if (cmd == "build") {
+                    if (argsCount(args) != 8 && argsCount(args) != 10) return 92;
+                    if (word(args,2) != "-p" || word(args,3) != "ncc-cli" || word(args,4) != "--bin" ||
+                        word(args,5) != "ncc" || word(args,6) != "--bin" || word(args,7) != "ncup") return 92;
+                    return fault("build-exit") ? 19 : 0;
+                }
+                action >> str <- cmd;
+                if (cmd == "ncup") action <- word(args,2);
+                if (action == "init") {
+                    home >> str <- release_io.releaseIo.option(args,"--home","");
+                    profile >> str <- release_io.releaseIo.option(args,"--profile","");
+                    if (home == "" || (profile != "default" && profile != "complete")) return 93;
+                    if (fault("init-exit")) return 23;
+                    if (!fault("manifest")) {
+                        if (!release_io.releaseIo.write(home+"/toolchains/ide43-test-chain/runtime_stdlib.v1.json","{}\n")) return 94;
+                    }
+                    return 0;
+                }
+                if (action == "which") {
+                    expected >> int <- cmd == "ncup" ? 3 : 2;
+                    if (word(args,expected) != "ncc") return 95;
+                    if (fault("which-exit")) return 29;
+                    return printPayload(resolution(binary));
+                }
+                if (strStartsWith(cmd,"route-")) {
+                    if (cmd != "route-vscode" && cmd != "route-ghidra" && cmd != "route-jetbrains") return 96;
+                    file >> str <- release_io.releaseIo.option(args,"--file","");
+                    if (release_io.releaseIo.fileType(file) != 1 || release_io.releaseIo.option(args,"--ncup","") == "") return 96;
+                    if (fault("router-exit")) return 31;
+                    if (fault("router-signal")) ide43_signal.ide43Signal.trigger();
+                    low >> bool <- strEndsWith(file,".nb") || strEndsWith(file,".ncp");
+                    payload >> int <- jsonNewObject();
+                    cert_json.certJson.put(payload,"backend",jsonNewString(fault("router-backend") ? "wrong" : (low ? "nc-sys-lsp" : (cmd == "route-vscode" ? "nide" : "nclsp"))));
+                    cert_json.certJson.put(payload,"low_level",jsonNewBool(fault("router-level") ? !low : low));
+                    cert_json.certJson.put(payload,"version",jsonNewString(fault("router-version") ? "2.0.0" : "1.0.0.21v"));
+                    cert_json.certJson.put(payload,"semantic_authority",jsonNewString("ncc"));
+                    cert_json.certJson.put(payload,"transport",jsonNewString(low ? "lsp-direct" : "broker-nide"));
+                    cert_json.certJson.put(payload,"professional_ide_parity",ide43_core.ide43Core.list(fault("router-parity") ? "c|cpp|rust" : "c|cpp|rust|java"));
+                    return printPayload(payload);
+                }
+                if (cmd == "check") {
+                    if (argsCount(args) != 3 || release_io.releaseIo.fileType(word(args,2)) != 1) return 97;
+                    return fault("check-exit") ? 37 : 0;
+                }
+                if (cmd == "nclsp" && word(args,2) == "validate") {
+                    file >> str <- word(args,3);
+                    if (release_io.releaseIo.fileType(file) != 1) return 98;
+                    if (fault("validate-exit")) return 41;
+                    ext >> str <- ".nc"; lane >> str <- "high-level";
+                    if (strEndsWith(file,".nb")) { ext <- ".nb"; lane <- "sovereign-core"; }
+                    if (strEndsWith(file,".nm")) { ext <- ".nm"; lane <- "machine-core"; }
+                    if (strEndsWith(file,".ncp")) { ext <- ".ncp"; lane <- "primitive-core"; }
+                    payload >> int <- jsonNewObject();
+                    cert_json.certJson.put(payload,"status",jsonNewString("ok"));
+                    cert_json.certJson.put(payload,"actual_extension",jsonNewString(ext));
+                    cert_json.certJson.put(payload,"required_extension",jsonNewString(ext));
+                    cert_json.certJson.put(payload,"required_lane",jsonNewString(fault("lane") ? "wrong-lane" : lane));
+                    cert_json.certJson.put(payload,"editorial_profile_min",jsonNewString(fault("editorial") ? "novice" : "expert"));
+                    cert_json.certJson.put(payload,"requested_editorial_profile",jsonNewString(release_io.releaseIo.option(args,"--profile","")));
+                    cert_json.certJson.put(payload,"accepted_extensions",ide43_core.ide43Core.list(fault("accepted") ? ".n" : ".n|.nc|.nb|.nm|.ncp"));
+                    return printPayload(payload);
+                }
+                if (cmd == "stdlib-model" && word(args,2) == "--json") {
+                    payload >> int <- jsonNewObject(); resolved >> int <- jsonNewObject();
+                    cert_json.certJson.put(resolved,"source",jsonNewString(fault("stdlib-source") ? "repository" : "toolchain_installation"));
+                    cert_json.certJson.put(resolved,"toolchain_id",jsonNewString("ide43-test-chain"));
+                    cert_json.certJson.put(resolved,"manifest_path",jsonNewString(home()+"/toolchains/ide43-test-chain/runtime_stdlib.v1.json"));
+                    cert_json.certJson.put(payload,"resolution",resolved); return printPayload(payload);
+                }
+                if (cmd == "run" && word(args,2) == "tools/nc-sys-lsp/main.go" && word(args,3) == "analyze") {
+                    if (release_io.releaseIo.fileType(word(args,4)) != 1) return 99;
+                    if (fault("go-exit")) return 43;
+                    payload >> int <- jsonNewObject();
+                    cert_json.certJson.put(payload,"schema",jsonNewString(fault("go-schema") ? "bad" : "nc.sys.lsp.analyze.v1"));
+                    cert_json.certJson.put(payload,"family",jsonNewString("primitive-low-level"));
+                    cert_json.certJson.put(payload,"lane",jsonNewString("primitive-lane"));
+                    cert_json.certJson.put(payload,"status",jsonNewString(fault("go-status") ? "error" : "warning")); return printPayload(payload);
+                }
+                if (cmd == "tools/vscode/nc-language/src/smoke_test.js") {
+                    if (release_io.releaseIo.fileType(cmd) != 1 || argsCount(args) != 2) return 100;
+                    return fault("smoke-exit") ? 47 : 0;
+                }
+                if (cmd == "ide43-bundle") {
+                    if (release_io.releaseIo.fileType("tools/ncc/nc/src/verification/ide43_bundle.n") != 1) return 101;
+                    if (fault("bundle-exit")) return 53;
+                    if (!fault("bundle-missing")) {
+                        release_io.releaseIo.write("var/releases/v2_0_0/phase10_ide_dist/ghidra/nc-ghidra-extension-v2_0_0.zip","fixture-not-a-real-zip");
+                        release_io.releaseIo.write("var/releases/v2_0_0/phase10_ide_dist/ghidra/ghidra_extension_manifest.v1.json","{}");
+                    }
+                    return 0;
+                }
+                if (cmd == "ide43-distribution") {
+                    if (release_io.releaseIo.fileType("tools/ncc/nc/src/verification/ide43_distribution.n") != 1) return 102;
+                    release_io.releaseIo.write("docs/status/F10_P20_ide_distribution_report.json",fault("dist-status") ? "{\"status\":\"error\"}" : "{\"status\":\"partial\"}");
+                    return fault("dist-exit") ? 59 : 0;
+                }
+                println("ide43 fixture rejected unknown invocation"); return 91;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

@@ -1,0 +1,35 @@
+filesystemRawManual :: runtime {
+    const:
+        SOURCE >> str <- ".ncc-filesystem-raw.bin";
+        RENAMED >> str <- ".ncc-filesystem-raw-renamed.bin";
+
+    fn:
+        run() -> bool {
+            delete_file(SOURCE);
+            delete_file(RENAMED);
+
+            mark >> p<byte> <- stackMark();
+            payload >> p<byte> <- from(adr(b"uno\ndos"));
+            buffer >> p<byte> <- stackAlloc(32, 8);
+            names >> p<byte> <- stackAlloc(4096, 8);
+
+            written >> int <- fsWriteFrom(SOURCE, payload, 7, false);
+            fileBytes >> int <- fsSize(SOURCE);
+            bytesRead >> int <- fsReadInto(SOURCE, buffer, 32);
+            listed >> int <- listDirInto(".", names, 4096);
+            moved >> bool <- rename_file(SOURCE, RENAMED);
+            visible >> bool <- exists(RENAMED);
+            removed >> bool <- delete_file(RENAMED);
+
+            stackRestore(mark);
+            return written == 7 && fileBytes == 7 && bytesRead == 7 && listed >= 0 &&
+                moved && visible && removed;
+        }
+
+    ref main ->> run;
+
+    fa:
+        delete_file(SOURCE);
+        delete_file(RENAMED);
+        return true;
+}

@@ -1,0 +1,141 @@
+use <io:output, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildHeapProvider48 {
+    const:
+        SOURCE_LIMIT >> int <- 1048576;
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == name) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return fallback;
+            }
+            directory(path >> str) -> str {
+                index >> int <- strByteLen(path)-1;
+                data >> p<byte> <- cast<byte>(path);
+                while (index >= 0) {
+                    value >> byte <- rd(off(data,index));
+                    if (value == 47 || value == 92) return index == 0 ? "/" : strSubstring(path,0,index);
+                    index -= 1;
+                }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent == path || !mkdir(parent)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                // Reject shell metacharacter escapes instead of inventing a shell command.
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            write(path >> str, text >> str) -> bool {
+                bytes >> int <- strByteLen(text);
+                return fsWriteFrom(path,cast<byte>(text),bytes,false) == bytes;
+            }
+            read(path >> str) -> str {
+                bytes >> int <- fsSize(path);
+                if (bytes <= 0 || bytes > SOURCE_LIMIT) return "";
+                data >> p<byte> <- cast<byte>(alloc(bytes+1));
+                if (data == null) return "";
+                if (fsReadInto(path,data,bytes) != bytes) { free(data); return ""; }
+                wr(off(data,bytes),0);
+                borrowed >> str <- cast(data);
+                result >> str <- strSubstring(borrowed,0,bytes);
+                free(data); return result;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+                    windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child);
+                waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child);
+                commandRelease(child);
+                if (!started || waited != 0 || code != 0) {
+                    println("provider build failed: "+line); return false;
+                }
+                return true;
+            }
+            linuxProfile(text >> str) -> bool {
+                marker >> str <- "PAGE_RW >> int <- 4;";
+                bytes >> int <- strByteLen(text);
+                width >> int <- strByteLen(marker);
+                data >> p<byte> <- cast<byte>(text);
+                pattern >> p<byte> <- cast<byte>(marker);
+                index >> int <- 0;
+                matched >> int <- 0;
+                while (index+width <= bytes) {
+                    part >> int <- 0;
+                    while (part < width && rd(off(data,index+part)) == rd(off(pattern,part))) { part += 1; }
+                    if (part == width) { wr(off(data,index+width-2),51); matched += 1; }
+                    index += 1;
+                }
+                return matched == 1;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                source >> str <- option(arguments,"--source","runtime/nc/heap_provider.n");
+                out >> str <- option(arguments,"--out","target/frontend48/providers");
+                ncc >> str <- option(arguments,"--ncc",windows ? "target/debug/ncc.exe" : "ncc");
+                clang >> str <- option(arguments,"--clang",windows ? "C:/Program Files/LLVM/bin/clang.exe" : "clang");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                kernel32 >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                if (quote(source) == "" || quote(out) == "" || quote(ncc) == "" || quote(clang) == "" ||
+                    quote(objcopy) == "" || quote(linker) == "" || quote(kernel32) == "") return 64;
+                if (!mkdir(out)) return 73;
+                text >> str <- read(source);
+                if (!strContains(text,"PAGE_RW >> int <- 4;")) return 65;
+                if (!windows && !linuxProfile(text)) return 65;
+                input >> str <- out+"/heap_provider.n";
+                llvm >> str <- out+"/heap.ll";
+                object >> str <- out+(windows ? "/heap.obj" : "/heap.o");
+                exported >> str <- out+(windows ? "/heap.exports.obj" : "/heap.exports.o");
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                if (!write(input,text)) return 74;
+                if (!invoke(quote(ncc)+" mct emit-llvm "+quote(input)+" --cc "+
+                    (windows ? "nC.win64" : "nC.sysv64")+" --opt-level 3 --out "+quote(llvm),windows)) return 1;
+                if (!invoke(quote(clang)+" -O2 -ffunction-sections -fdata-sections "+
+                    (windows ? "--target=x86_64-pc-windows-msvc " : "-fPIC ")+
+                    "-c "+quote(llvm)+" -o "+quote(object),windows)) return 1;
+                rename >> str <- " --redefine-sym heapProvider_provider_heap_alloc=nC.runtime.heap.alloc"+
+                    " --redefine-sym heapProvider_provider_heap_calloc=nC.runtime.heap.calloc"+
+                    " --redefine-sym heapProvider_provider_heap_realloc=nC.runtime.heap.realloc"+
+                    " --redefine-sym heapProvider_provider_heap_free=nC.runtime.heap.free"+
+                    " --redefine-sym heapProvider_byteCopy=memcpy --redefine-sym heapProvider_byteFill=memset ";
+                if (!invoke(quote(objcopy)+rename+quote(object)+" "+quote(exported),windows)) return 1;
+                if (windows) {
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64"+
+                        " /export:nC.runtime.heap.alloc /export:nC.runtime.heap.calloc"+
+                        " /export:nC.runtime.heap.realloc /export:nC.runtime.heap.free /out:"+
+                        quote(artifact)+" "+quote(exported)+" "+quote(kernel32),windows)) return 1;
+                } else {
+                    exports >> str <- out+"/heap.exports.map";
+                    if (!write(exports,"NC_HEAP_48 { global: \"nC.runtime.heap.alloc\"; \"nC.runtime.heap.calloc\"; "+
+                        "\"nC.runtime.heap.realloc\"; \"nC.runtime.heap.free\"; local: *; };\n")) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs --gc-sections -soname libncruntime.so.2 --version-script "+
+                        quote(exports)+" -o "+quote(artifact)+" "+quote(exported)+" -lc",windows)) return 1;
+                }
+                if (fsSize(artifact) <= 0) return 74;
+                println("heap provider built from nC: "+artifact);
+                println("scope: four heap exports; not the complete Stage3 runtime provider bundle");
+                return 0;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

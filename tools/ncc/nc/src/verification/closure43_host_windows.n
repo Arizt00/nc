@@ -1,0 +1,27 @@
+use foreign { c };
+
+closure43Host {
+    foreign:
+        c symbol "GetComputerNameExW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr,addr) -> i32; }
+        c symbol "WideCharToMultiByte" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(u32,u32,addr,i32,addr,i32,addr,addr) -> i32; }
+        c symbol "GetSystemTimePreciseAsFileTime" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> void; }
+    fn:
+        public:
+            name() -> str {
+                wide >> p<u16> <- cast(alloc(65536)); size >> p<u32> <- cast(alloc(4)); data >> p<byte> <- cast(alloc(131072));
+                if (wide == null || size == null || data == null) { free(wide); free(size); free(data); return ""; }
+                wr<u32>(size,32767); status >> i32 <- GetComputerNameExW(1,adr(wide),adr(size));
+                result >> str <- "";
+                if (status != 0) {
+                    count >> i32 <- WideCharToMultiByte(65001,128,adr(wide),-1,adr(data),131072,null,null);
+                    if (count > 0) { view >> str <- cast(data); result <- strSubstring(view,0,count-1); }
+                }
+                free(wide); free(size); free(data); return result;
+            }
+            micros() -> i64 {
+                data >> p<u64> <- cast(alloc(8)); if (data == null) return 0;
+                GetSystemTimePreciseAsFileTime(adr(data)); ticks >> u64 <- rd<u64>(data); free(data);
+                return (ticks-116444736000000000)/10;
+            }
+    fa: return true;
+}

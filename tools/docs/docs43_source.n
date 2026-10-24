@@ -1,0 +1,54 @@
+use <project:release_io, docs43_books, cert_json, docs43_utf8>;
+
+docs43Source {
+    stc:
+        good >> bool <- true;
+    fn:
+        public:
+            reset() -> void { good <- true; }
+            ok() -> bool { return good; }
+            readBytes(root >> str, relative >> str, strict >> bool) -> str {
+                path >> str <- root+"/"+relative;
+                if (release_io.releaseIo.fileType(path) == 0) return "[missing source: "+relative+"]";
+                guard release_io.releaseIo.fileType(path) == 1 else { good <- false; return ""; }
+                size >> int <- fsSize(path); guard size >= 0 && size < 134217728 else { good <- false; return ""; }
+                bytes >> p<byte> <- cast(alloc(size+1)); guard bytes != null else { good <- false; return ""; }
+                if (fsReadInto(path,bytes,size) != size) { free(bytes); good <- false; return ""; }
+                scan >> int <- 0;
+                while (scan < size) {
+                    if (rd(off(bytes,scan)) == 0) {
+                        if (strict) { free(bytes); good <- false; return ""; }
+                        wr(off(bytes,scan),1);
+                    }
+                    scan += 1;
+                }
+                text >> str <- docs43_utf8.docs43Utf8.decode(bytes,size); free(bytes);
+                if (strict && !docs43_utf8.docs43Utf8.valid()) { good <- false; strRelease(text); return ""; }
+                return text;
+            }
+            read(root >> str, relative >> str, maxLines >> int) -> str {
+                text >> str <- readBytes(root,relative,false);
+                normalized >> str <- docs43_books.docs43Books.replace(text,"\r\n","\n"); strRelease(text);
+                text <- docs43_books.docs43Books.replace(normalized,"\r","\n"); strRelease(normalized);
+                separators >> str <- "\x0b\x0c\x1c\x1d\x1e";
+                scan <- 0; while (scan < 5) { normalized <- docs43_books.docs43Books.replace(text,strSubstring(separators,scan,1),"\n"); strRelease(text); text <- normalized; scan += 1; }
+                normalized <- docs43_books.docs43Books.replace(text,"\u{0085}","\n"); strRelease(text);
+                text <- docs43_books.docs43Books.replace(normalized,"\u{2028}","\n"); strRelease(normalized);
+                normalized <- docs43_books.docs43Books.replace(text,"\u{2029}","\n"); strRelease(text); text <- normalized;
+                at >> int <- 0; lines >> int <- 0; end >> int <- strByteLen(text);
+                data >> p<byte> <- cast(text);
+                while (at < strByteLen(text)) {
+                    if (rd(off(data,at)) == 10) {
+                        lines += 1; if (lines == maxLines) { end <- at; break; }
+                    }
+                    at += 1;
+                }
+                sliced >> str <- strSubstring(text,0,end);
+                if (end+1 < strByteLen(text)) sliced <- cert_json.certJson.append(sliced,"\n...");
+                result >> str <- docs43_utf8.docs43Utf8.trim(sliced); strRelease(text); strRelease(sliced);
+                data <- cast(result); scan <- 0;
+                while (scan < strByteLen(result)) { code >> int <- docs43_utf8.docs43Utf8.point(data,scan); if ((code < 32 && code != 9 && code != 10 && code != 13) || code == 65534 || code == 65535) good <- false; scan += docs43_utf8.docs43Utf8.span(rd(off(data,scan)) & 255); }
+                return result;
+            }
+    fa: return true;
+}

@@ -1,0 +1,30 @@
+kernelPhysicalSmpAarch64 :: kernel {
+    fn:
+        prepare() -> bool {
+            guard bootValid() && smpDiscover() else return false;
+            guard smpConfigureFirmware() else return false;
+            guard smpInterruptInitFirmware(0) else return false;
+            guard gicEnable(1, 0x80, 1) else return false;
+            return cpuCountPhysical() > 0 && cpuCurrentPhysical() >= 0;
+        }
+
+        start(cpu >> int, stack >> addr, entry >> addr, context >> addr) -> bool {
+            guard cpuSetStackPhysical(cpu, stack) else return false;
+            return cpuStartPhysicalWait(cpu, entry, context, 10_000_000);
+        }
+
+        secondary(cpu >> int) -> bool {
+            return cpuMarkOnline(cpu) && smpInterruptInitFirmware(cpu);
+        }
+
+        interrupt() -> bool {
+            irq >> int <- gicAck();
+            return irq < 1020 && gicEoi(irq);
+        }
+
+        invalidate(address >> addr, bytes >> int, asid >> int) -> bool {
+            return tlbShootdown(address, bytes, asid, 1);
+        }
+
+    ref main ->> prepare;
+}

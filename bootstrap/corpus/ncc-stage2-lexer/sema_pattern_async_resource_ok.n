@@ -1,0 +1,75 @@
+use <io:output>;
+
+semaPatternAsyncResourceOk {
+    const:
+        LIMIT >> int <- 4;
+
+    type:
+        Packet {
+            public:
+                tag >> int;
+                flags >> byte;
+        }
+
+    stc:
+        runs >> u64 <- 0;
+
+    local:
+        cleaned >> bool <- false;
+
+    fn:
+        run() -> bool {
+            enabled >> bool <- true;
+            packet >> Packet <- Packet { tag: 7, flags: 1 };
+            result >> Result<int, str> <- ok(9);
+            values >> array<int, 3> <- [1, 2, 3];
+            pending >> Future<int> <- futureReady(11);
+            capturedSeed >> int <- LIMIT;
+
+            stream >> fn(int) -> AsyncStream<int> <- async |value >> int| -> AsyncStream<int>
+                captures(ref capturedSeed) {
+                    yield value;
+                    return await pending;
+                };
+
+            defer {
+                cleaned <- true;
+            }
+
+            propagated >> int <- result?;
+            task >> Task<int> <- spawn(pending);
+
+            match enabled {
+                true => cleaned <- true;
+                false => cleaned <- false;
+            }
+
+            match result {
+                Ok(value) => cleaned <- value > 0;
+                Err(message) => cleaned <- false;
+            }
+
+            match packet {
+                Packet { tag: 7, flags, .. } => cleaned <- flags > 0;
+                _ => cleaned <- false;
+            }
+
+            match values {
+                [1, middle, ..rest] => cleaned <- middle > 0;
+                _ => cleaned <- false;
+            }
+
+            match propagated {
+                1..=100 => cleaned <- true;
+                _ => cleaned <- false;
+            }
+
+            runs += 1;
+            return cleaned && task != null && stream != null;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

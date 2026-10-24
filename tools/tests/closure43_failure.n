@@ -1,0 +1,68 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output, render>;
+use <project:closure43_core, release_io, tool_cli>;
+
+closure43Failure {
+    fn:
+        private:
+            seedTree(source >> str, destination >> str) -> bool {
+                source <- closure43_core.closure43Core.diskPath(source); destination <- closure43_core.closure43Core.diskPath(destination);
+                kind >> int <- release_io.releaseIo.fileType(source);
+                if (kind == 1) {
+                    bytes >> int <- fsSize(source); if (bytes < 0 || !release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(destination))) return false;
+                    data >> p<byte> <- cast(alloc(bytes+1)); guard data != null else return false;
+                    good >> bool <- fsReadInto(source,data,bytes) == bytes && fsWriteFrom(destination,data,bytes,false) == bytes; free(data); return good;
+                }
+                if (kind != 2) return true;
+                if (!release_io.releaseIo.makeDirectories(destination)) return false;
+                names >> int <- release_io.releaseIo.names(source); index >> int <- 0; good >> bool <- true;
+                while (index < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayGet(names,index); name >> str <- jsonGetString(item);
+                    if (name != "runtime") { if (!seedTree(source+"/"+name,destination+"/"+name)) good <- false; }
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(names); return good;
+            }
+            clear() -> void {
+                envRemove("CLOSURE43_FIXTURE_FAIL"); envRemove("CLOSURE43_FIXTURE_BAD_JSON"); envRemove("CLOSURE43_FIXTURE_ZERO_TESTS"); envRemove("CLOSURE43_FIXTURE_FAULT"); envRemove("CLOSURE43_TRACE");
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) != 7) return 2;
+                binary >> str <- argsAt(args,1); fixture >> str <- argsAt(args,2); stage0 >> str <- argsAt(args,3); seeds >> str <- argsAt(args,4); lab >> str <- argsAt(args,5); destination >> str <- argsAt(args,6);
+                cases >> int <- jsonParse("[[\"compiler-command-failure\",\"compiler\",\"fail\",1],[\"compiler-zero-tests\",\"compiler\",\"zero\",1],[\"compiler-invalid-json\",\"compiler\",\"json\",1],[\"runtime-command-failure\",\"runtime\",\"fail\",1],[\"runtime-invalid-json\",\"runtime\",\"json\",1],[\"runtime-identity\",\"runtime\",\"identity\",1],[\"runtime-missing-capabilities\",\"runtime\",\"capabilities\",0],[\"runtime-missing-policies\",\"runtime\",\"policies\",0],[\"runtime-mixed-queue\",\"runtime\",\"mixed-queue\",0],[\"runtime-anti-marker\",\"runtime\",\"marker\",1],[\"machine-command-failure\",\"machine\",\"fail\",1],[\"primitive-nonzero-capture\",\"primitive_real\",\"fail\",0],[\"primitive-invalid-json-fallback\",\"primitive_real\",\"json\",0],[\"compiler-full-gates\",\"compiler\",\"full\",0],[\"compiler-scoped-gates\",\"compiler\",\"scoped\",0],[\"runtime-full-gates\",\"runtime\",\"full\",0],[\"runtime-scoped-gates\",\"runtime\",\"scoped\",0]]");
+                rows >> int <- jsonNewArray(); index >> int <- 0; passed >> bool <- true;
+                extra >> int <- jsonParse("[[\"runtime-late-doctor\",\"runtime\",\"late-doctor\",1],[\"runtime-late-json\",\"runtime\",\"late-json\",1],[\"runtime-list-report\",\"runtime\",\"list-report\",1],[\"runtime-runnable\",\"runtime\",\"runnable\",1]]");
+                while (index < jsonArrayLen(extra)) { closure43_core.closure43Core.push(cases,jsonArrayGet(extra,index)); index += 1; } jsonRelease(extra); index <- 0;
+                envSet("CLOSURE43_DATA_ROOT",closure43_core.closure43Core.packageRoot()); envSet("CLOSURE43_NCC",fixture); envSet("CLOSURE43_CARGO",fixture); envSet("CLOSURE43_FIXTURE_NCC",stage0); envSet("CLOSURE43_FIXTURE_SMALL","1"); envSet("CLOSURE43_EPOCH","1791244800");
+                while (index < jsonArrayLen(cases)) {
+                    clear(); testcase >> int <- jsonArrayGet(cases,index); nameNode >> int <- jsonArrayGet(testcase,0); familyNode >> int <- jsonArrayGet(testcase,1); faultNode >> int <- jsonArrayGet(testcase,2); expected >> int <- jsonArrayGet(testcase,3);
+                    name >> str <- jsonGetString(nameNode); family >> str <- jsonGetString(familyNode); fault >> str <- jsonGetString(faultNode); root >> str <- lab+"/"+name; seed >> str <- seeds+"/"+family;
+                    good >> bool <- release_io.releaseIo.makeDirectories(root);
+                    if (family != "machine") { good <- seedTree(seed+"/examples",root+"/examples") && seedTree(seed+"/_archive",root+"/_archive") && good; }
+                    envSet("CLOSURE43_ROOT",root);
+                    if (fault == "fail") envSet("CLOSURE43_FIXTURE_FAIL","1");
+                    else if (fault == "json") envSet("CLOSURE43_FIXTURE_BAD_JSON","1");
+                    else if (fault == "zero") envSet("CLOSURE43_FIXTURE_ZERO_TESTS","1");
+                    else if (fault != "marker" && fault != "full" && fault != "scoped") envSet("CLOSURE43_FIXTURE_FAULT",fault);
+                    if (fault == "marker") { if (!release_io.releaseIo.write(root+"/examples/runtime/positive.txt","place"+"holder\n")) good <- false; }
+                    words >> int <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString("generate-"+(family == "primitive_real" ? "primitive-real" : family)+"-closure"));
+                    if (fault == "full" || fault == "scoped") closure43_core.closure43Core.push(words,jsonNewString(fault == "full" ? "--full-gates" : "--release-scoped-gates"));
+                    record >> int <- tool_cli.toolCli.execute(words,"",3600000); code >> int <- release_io.releaseIo.number(record,"code",-1);
+                    good <- good && tool_cli.toolCli.clean(record) && code == jsonGetIntOr(expected,-1);
+                    if (fault == "capabilities" || fault == "policies" || fault == "mixed-queue") {
+                        text >> str <- release_io.releaseIo.text(root+"/reports/runtime_closure/runtime_family_closure_matrix.json"); matrix >> int <- jsonParse(text); counts >> int <- jsonObjectGet(matrix,"status_counts");
+                        good <- good && release_io.releaseIo.number(counts,"broken",0) > 0; jsonRelease(counts); jsonRelease(matrix); strRelease(text);
+                    }
+                    if (!good) passed <- false;
+                    row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"name",name); closure43_core.closure43Core.set(row,"family",family); closure43_core.closure43Core.set(row,"fault",fault); closure43_core.closure43Core.set(row,"root",root); jsonObjectSet(row,"expected",expected); closure43_core.closure43Core.put(row,"actual",jsonNewInt(code)); closure43_core.closure43Core.put(row,"passed",jsonNewBool(good)); closure43_core.closure43Core.set(row,"stderr",closure43_core.closure43Core.field(record,"stderr")); closure43_core.closure43Core.set(row,"stdout_sha256",closure43_core.closure43Core.hash(closure43_core.closure43Core.field(record,"stdout"))); closure43_core.closure43Core.push(rows,row);
+                    println(name+": "+renderInt(code)+(good ? " passed" : " FAILED")); jsonRelease(testcase); jsonRelease(nameNode); jsonRelease(familyNode); jsonRelease(faultNode); jsonRelease(expected); jsonRelease(words); jsonRelease(record); index += 1;
+                }
+                clear(); envRemove("CLOSURE43_FIXTURE_SMALL"); report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.execution-negative.v1"); closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed)); closure43_core.closure43Core.put(report,"cases",rows); closure43_core.closure43Core.stamp(report,"evidence_hash");
+                if (!release_io.releaseIo.write(destination,closure43_core.closure43Core.pretty(report)+"\n")) passed <- false;
+                jsonRelease(report); jsonRelease(cases); argsRelease(args); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

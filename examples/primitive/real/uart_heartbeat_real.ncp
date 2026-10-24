@@ -1,0 +1,43 @@
+primitive[@] target x86_64:
+    capability hardware_uart_material:
+        allow port.write;
+        deny host.console.write;
+
+    bus port_io_legacy:
+        kind port_io;
+        width 8;
+        endian little;
+        volatile true;
+
+    port uart.com1.data:
+        bus port_io_legacy;
+        addr ioaddr(0x03F8);
+        width 8;
+        access rw;
+
+    operation kernelEntry():
+        capability hardware_uart_material;
+        writes uart.com1.data;
+        write uart.com1.data <- 0x48;
+        write uart.com1.data <- 0x42;
+        barrier io;
+        haltLoop;
+
+    anchor boot0:
+        at physaddr(0x0000_7C00);
+        size bytes(512);
+        align 16;
+
+    entry kernelEntry:
+        anchor boot0;
+        offset 0;
+        mode real16;
+
+    bridge:
+        root.policy.bind;
+        root.policy.guard;
+        root.memory.resolve;
+        machine.machineCore;
+
+    seal:
+        primitiveClosed;

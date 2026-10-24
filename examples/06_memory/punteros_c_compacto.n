@@ -1,0 +1,45 @@
+/*
+ * Punteros compactos nC.
+ * `T*` es la escritura directa de `ptr<T>`; Read*, Write* y Offset* se
+ * normalizan a los builtins tipados del runtime antes del lowering.
+ */
+use <collections:result>;
+use <io:output, render>;
+use <memory:ptr, region, map>;
+
+punterosCEstilo :: runtime {
+    stc:
+        pagina >> p<byte>;
+        base >> p<int>;
+        vista >> memRegion<int>;
+        dato >> p<int>;
+        valor     >> int <- 0;
+        distancia >> int <- 0;
+
+    fn:
+        run() -> bool {
+            pagina <- unwrap(map(4096));
+            base <- from(adr(pagina));
+            vista <- pRegion(base, 4);
+
+            wr(base, 11);
+            dato <- off(base, 2);
+            wr(dato, 29);
+
+            valor <- rd(dato);
+            distancia <- Diff*(dato, base);
+
+            println("valor = " + renderInt(valor));
+            println("offset = " + renderInt(distancia));
+            println("region[2] = " + renderInt(regionRead(vista, 2)));
+
+            liberada >> bool <- unwrap(unmap(pagina));
+            return valor == 29 && distancia == 2 && liberada;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

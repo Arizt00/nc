@@ -1,0 +1,53 @@
+{
+  "schema": "ncc.machine.vfio_dma_exercise.v1",
+  "acknowledge_exclusive_device_control": true,
+  "device": {
+    "bdf": "0000:03:00.0",
+    "vendor": "0x1af4",
+    "device": "0x1000"
+  },
+  "mmio": {
+    "region_index": 0,
+    "operations": [
+      { "op": "write", "offset": 0, "width": 4, "value": "dma_iova_low" },
+      { "op": "write", "offset": 4, "width": 4, "value": "dma_iova_high" },
+      { "op": "write", "offset": 8, "width": 4, "value": "dma_bytes" },
+      { "op": "fence" },
+      { "op": "poll", "offset": 12, "width": 4, "mask": 1, "equals": 1, "timeout_ms": 5000, "interval_us": 50 }
+    ]
+  },
+  "dma": {
+    "bytes": 16384,
+    "seed_byte": 90,
+    "completion": {
+      "expect_changed": true,
+      "checks": [
+        { "offset": 0, "width": 4, "mask": "0xffffffff", "equals": "0x12345678" }
+      ]
+    }
+  },
+  "interrupt": {
+    "mode": "msix",
+    "vector": 0,
+    "minimum_count": 1,
+    "timeout_ms": 5000,
+    "require_vfio_interrupt_remapping": true
+  },
+  "recovery": {
+    "retry_limit": 3,
+    "timeout_ms": 10000,
+    "quiesce_device": true,
+    "mask_msix": true,
+    "disable_bus_master": true,
+    "flush_iotlb": true,
+    "function_level_reset": true,
+    "secondary_bus_reset_allowed": true,
+    "reenable_bus_master": true,
+    "unmask_msix": true,
+    "verify_device_alive_after_reset": true
+  },
+  "reset": {
+    "before": true,
+    "after": true
+  }
+}

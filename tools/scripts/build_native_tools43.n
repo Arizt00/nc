@@ -1,0 +1,187 @@
+use <data:json>;
+use <io:output, std>;
+use <process:args, command, env>;
+use <fs:dir>;
+
+buildNativeTools43 {
+    const:
+        MAX_FILE >> int <- 134217728;
+    fn:
+        private:
+            field(object >> int, key >> str) -> str {
+                item >> int <- jsonObjectGet(object,key);
+                result >> str <- strSubstring(jsonGetStringOr(item,""),0,strLen(jsonGetStringOr(item,"")));
+                jsonRelease(item); return result;
+            }
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == name) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return fallback;
+            }
+            directory(path >> str) -> str {
+                data >> p<byte> <- cast(path); index >> int <- strByteLen(path)-1;
+                while (index >= 0) {
+                    value >> int <- rd(off(data,index));
+                    if (value == 47 || value == 92) return index == 0 ? "/" : strSubstring(path,0,index);
+                    index -= 1;
+                }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent == path || !mkdir(parent)) return false;
+                createDir(path); return exists(path);
+            }
+            safe(relative >> str) -> bool {
+                return relative != "" && !strStartsWith(relative,"/") && !strContains(relative,"..") &&
+                    !strContains(relative,":") && !strContains(relative,"\\");
+            }
+            copyFile(source >> str, destination >> str) -> bool {
+                size >> int <- fsSize(source);
+                if (size < 0 || size > MAX_FILE || !mkdir(directory(destination))) return false;
+                data >> p<byte> <- cast(alloc(size+1));
+                if (data == null) return false;
+                good >> bool <- fsReadInto(source,data,size) == size;
+                if (good) good <- fsWriteFrom(destination,data,size,false) == size;
+                free(data); return good;
+            }
+            readModel(path >> str) -> int {
+                size >> int <- fsSize(path);
+                if (size < 0 || size > MAX_FILE) return 0;
+                data >> p<byte> <- cast(alloc(size+1));
+                if (data == null) return 0;
+                if (fsReadInto(path,data,size) != size) { free(data); return 0; }
+                wr(off(data,size),0);
+                text >> str <- cast(data); model >> int <- jsonParse(text);
+                free(data); return model;
+            }
+            absolute(path >> str) -> str {
+                data >> p<byte> <- cast(alloc(32768));
+                if (data == null) return "";
+                count >> int <- absolutePathInto(path,data,32767);
+                if (count < 0 || count >= 32767) { free(data); return ""; }
+                wr(off(data,count),0);
+                text >> str <- cast(data); result >> str <- strSubstring(text,0,count);
+                free(data); return result;
+            }
+            quoted(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                count >> int <- strByteLen(value);
+                data >> p<byte> <- cast(alloc(count*2+3));
+                if (data == null) return "";
+                wr(data,34); written >> int <- 1; index >> int <- 0;
+                windows >> bool <- envHas("WINDIR");
+                while (index < count) {
+                    valueByte >> int <- rd(off(source,index));
+                    if (windows && valueByte == 92) {
+                        slashes >> int <- 0;
+                        while (index < count) {
+                            if (rd(off(source,index)) != 92) break;
+                            slashes += 1; index += 1;
+                        }
+                        emitted >> int <- slashes;
+                        if (index == count) emitted *= 2;
+                        else if (rd(off(source,index)) == 34) emitted *= 2;
+                        while (emitted > 0) { wr(off(data,written),92); written += 1; emitted -= 1; }
+                        continue;
+                    }
+                    if (valueByte == 34 || valueByte == 92) { wr(off(data,written),92); written += 1; }
+                    wr(off(data,written),valueByte); written += 1; index += 1;
+                }
+                wr(off(data,written),34); wr(off(data,written+1),0);
+                text >> str <- cast(data); result >> str <- strSubstring(text,0,written+1);
+                free(data); return result;
+            }
+            invoke(line >> str, root >> str) -> bool {
+                windows >> bool <- envHas("WINDIR");
+                child >> addr <- commandOpen(line,root,windows ? stdIn() : null,
+                    windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) { println("native tools: could not create process: "+line); return false; }
+                good >> bool <- commandStarted(child);
+                if (!good) println("native tools: process did not start: "+line);
+                if (good) {
+                    waited >> int <- commandWait(child,28800000);
+                    if (waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                    code >> int <- commandExitCode(child);
+                    good <- waited == 0 && code == 0;
+                    if (!good) println("native tools: process failed: wait="+renderInt(waited)+" exit="+renderInt(code)+" command="+line);
+                }
+                commandRelease(child); return good;
+            }
+            build(row >> int, platform >> str, root >> str, out >> str, ncc >> str, cc >> str, target >> str) -> bool {
+                name >> str <- field(row,"name");
+                if (!safe(name)) return false;
+                project >> str <- out+"/projects/"+name;
+                sources >> int <- jsonObjectGet(row,"sources");
+                if (jsonKind(sources) != 5 || jsonArrayLen(sources) == 0) { if (sources != 0) jsonRelease(sources); return false; }
+                index >> int <- 0; ready >> bool <- true;
+                while (index < jsonArrayLen(sources) && ready) {
+                    item >> int <- jsonArrayBorrow(sources,index);
+                    source >> str <- field(item,"source"); destination >> str <- field(item,"destination");
+                    override >> str <- field(item,platform);
+                    if (override != "") {
+                        strRelease(source); source <- override; override <- "";
+                    }
+                    ready <- safe(source) && safe(destination) && copyFile(root+"/"+source,project+"/"+destination);
+                    strRelease(source); strRelease(destination); strRelease(override); jsonRelease(item); index += 1;
+                }
+                jsonRelease(sources);
+                if (!ready) { println("native tools: source copy failed: "+name); return false; }
+                suffix >> str <- platform == "windows" ? ".exe" : "";
+                selectedLinker >> str <- field(row,"linker");
+                linker >> str <- selectedLinker == "mobile" ? out+"/bin/gcc"+suffix : cc;
+                line >> str <- quoted(ncc)+" project sync "+quoted(project)+" --main main.n --target "+target;
+                if (!invoke(line,root)) return false;
+                artifact >> str <- out+"/bin/"+name+suffix;
+                mkdir(out+"/bin");
+                line <- quoted(ncc)+" project link "+quoted(project)+" --main main.n --target "+target+
+                    " --out "+quoted(artifact)+" --linker "+quoted(linker);
+                if (!invoke(line,root)) return false;
+                if (platform == "windows" && selectedLinker == "mobile") {
+                    provider >> str <- directory(cc);
+                    if (!copyFile(provider+"/libssl-3-x64.dll",out+"/bin/libssl-3-x64.dll") ||
+                        !copyFile(provider+"/libcrypto-3-x64.dll",out+"/bin/libcrypto-3-x64.dll")) return false;
+                }
+                return exists(artifact);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                root >> str <- option(arguments,"--root",".");
+                out >> str <- option(arguments,"--out","target/native-tools-v43");
+                manifest >> str <- option(arguments,"--manifest","bootstrap/native-tools-v43.json");
+                platform >> str <- envHas("WINDIR") ? "windows" : "linux";
+                ncc >> str <- option(arguments,"--ncc","ncc");
+                cc >> str <- option(arguments,"--cc",platform == "windows" ? "C:/msys64/mingw64/bin/gcc.exe" : "/usr/bin/gcc");
+                selected >> str <- option(arguments,"--family","");
+                target >> str <- option(arguments,"--target",platform == "windows" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu");
+                if (argsCount(arguments) == 2 && argsAt(arguments,1) == "--help") {
+                    println("build-native-tools --manifest JSON --root DIR --out DIR --ncc NCC --cc CC [--family NAME] [--target TRIPLE]");
+                    argsRelease(arguments); return 0;
+                }
+                root <- absolute(root); out <- absolute(out); manifest <- absolute(manifest);
+                if (strContains(ncc,"/") || strContains(ncc,"\\")) ncc <- absolute(ncc);
+                model >> int <- readModel(manifest);
+                if (model == 0) { println("native tools: cannot read build manifest"); argsRelease(arguments); return 2; }
+                rows >> int <- jsonObjectGet(model,"families");
+                valid >> bool <- jsonKind(rows) == 5 && jsonArrayLen(rows) > 0;
+                if (!valid) { println("native tools: invalid build manifest"); if (rows != 0) jsonRelease(rows); jsonRelease(model); argsRelease(arguments); return 2; }
+                envSet("NC_MOBILE_CC",cc);
+                index >> int <- 0; found >> bool <- selected == "";
+                while (index < jsonArrayLen(rows) && valid) {
+                    row >> int <- jsonArrayBorrow(rows,index); name >> str <- field(row,"name");
+                    needed >> bool <- selected == "" || selected == name || name == "gcc" && strStartsWith(selected,"ncc-mobile-");
+                    if (selected == name) found <- true;
+                    if (needed) valid <- build(row,platform,root,out,ncc,cc,target);
+                    strRelease(name); jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows); jsonRelease(model); argsRelease(arguments);
+                return valid && found ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,184 @@
+use <collections:result>;
+use <io:output, render>;
+
+controlFlowComplete :: runtime {
+    stc:
+        values >> array<int, 3>;
+        sum >> int;
+        i >> int;
+        j >> int;
+        k >> int;
+        r >> int;
+        q >> int;
+        outerCount >> int;
+        rangeEndCalls >> int;
+        rangeStepCalls >> int;
+        repeatCountCalls >> int;
+        dynamicStep >> int;
+        passed >> bool;
+
+    fn:
+        classify(value >> int) -> int {
+            if (value < 0) {
+                return -1;
+            } elseIf (value == 0) {
+                return 0;
+            } else if (value == 1) {
+                return 1;
+            } else {
+                return 2;
+            }
+        }
+
+        nextRangeEnd() -> int {
+            rangeEndCalls <- rangeEndCalls + 1;
+            return 3;
+        }
+
+        nextRangeStep() -> int {
+            rangeStepCalls <- rangeStepCalls + 1;
+            return dynamicStep;
+        }
+
+        nextRepeatCount() -> int {
+            repeatCountCalls <- repeatCountCalls + 1;
+            return 4;
+        }
+
+        run() -> bool {
+            values <- [2, 4, 6];
+            sum <- classify(-1) + classify(0) + classify(1) + classify(2);
+            i <- 0;
+            j <- 0;
+            k <- 0;
+            r <- 0;
+            q <- 0;
+            outerCount <- 0;
+            rangeEndCalls <- 0;
+            rangeStepCalls <- 0;
+            repeatCountCalls <- 0;
+            dynamicStep <- -2;
+
+            while (i < 6) {
+                i <- i + 1;
+                if (i == 2) {
+                    continue;
+                }
+                if (i == 5) {
+                    break;
+                }
+                sum <- sum + i;
+            }
+
+            do {
+                j <- j + 1;
+                sum <- sum + 2;
+            } while (j < 2);
+
+            for (k <- 0; k < 4; k <- k + 1) {
+                if (k == 1) {
+                    continue;
+                }
+                sum <- sum + k;
+            }
+
+            for up in 1..=nextRangeEnd() {
+                sum <- sum + up;
+            }
+
+            for down in 3..=1 {
+                sum <- sum + down;
+            }
+
+            for stepped in 5..=1 step nextRangeStep() {
+                sum <- sum + stepped;
+            }
+
+            for value in values {
+                sum <- sum + value;
+            }
+
+            same in copied: values {
+                sum <- sum + copied;
+            }
+
+            repeat {
+                r <- r + 1;
+                sum <- sum + r;
+            } until (r == 3);
+
+            same for (nextRepeatCount()) {
+                q <- q + 1;
+                if (q == 2) {
+                    continue;
+                }
+                sum <- sum + q;
+            }
+
+            outer: loop {
+                outerCount <- outerCount + 1;
+                inner: loop {
+                    if (outerCount < 3) {
+                        continue outer;
+                    }
+                    break outer;
+                }
+            }
+            sum <- sum + outerCount;
+
+            each current in values do {
+                sum <- sum + current;
+                if (current == 2) {
+                    continue;
+                }
+            } while (current < 4);
+
+            unless (false) {
+                sum <- sum + 1;
+            }
+
+            when (true) {
+                sum <- sum + 1;
+            }
+
+            notif (false) {
+                sum <- sum + 1;
+            } else {
+                sum <- 0;
+            }
+
+            while let ok(value: int) <- ok(5) {
+                sum <- sum + value;
+                break;
+            }
+
+            async for asyncValue in values {
+                sum <- sum + asyncValue;
+            }
+
+            parallel for parallelValue in 0..3 {
+                sum <- sum + parallelValue;
+            }
+
+            comptime for compileValue in 0..=2 {
+                sum <- sum + compileValue;
+            }
+
+            same for (0) {
+                sum <- 0;
+            }
+
+            passed <- sum == 113
+                && rangeEndCalls == 1
+                && rangeStepCalls == 1
+                && repeatCountCalls == 1;
+            println("control_flow_complete=" + renderBool(passed));
+            return passed;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

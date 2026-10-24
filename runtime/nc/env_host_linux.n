@@ -1,0 +1,45 @@
+
+envHost {
+    fn:
+        private:
+            length(text >> p<byte>) -> int { at >> int <- 0; while (rd(off(text,at)) != 0) { at += 1; } return at; }
+            clone(text >> p<byte>) -> p<byte> {
+                bytes >> int <- length(text)+1; copy >> p<byte> <- cast<byte>(alloc(bytes));
+                if (copy == null) return null;
+                at >> int <- 0; while (at < bytes) { wr(off(copy,at),rd(off(text,at))); at += 1; } return copy;
+            }
+        public:
+            lastError() -> int { return rd<i32>(from<i32>(osL__errno_location())); }
+            setError(code >> int) -> void { wr<i32>(from<i32>(osL__errno_location()),code); }
+            value(name >> str) -> p<byte> {
+                borrowed >> p<byte> <- from<byte>(osLgetenv(adr(name)));
+                if (borrowed == null) { setError(2); return null; }
+                result >> p<byte> <- clone(borrowed); setError(result == null ? 12 : 0); return result;
+            }
+            set(name >> str, value >> str) -> bool {
+                result >> int <- osLsetenv(adr(name),adr(value),1); if (result == 0) setError(0); return result == 0;
+            }
+            remove(name >> str) -> bool {
+                result >> int <- osLunsetenv(adr(name)); if (result == 0) setError(0); return result == 0;
+            }
+            capture(data >> p<byte>) -> int {
+                slot >> addr <- osLdlsym(null,adr("environ")); if (slot == null) return 38;
+                source >> p<addr> <- from<addr>(rd<addr>(from<addr>(slot)));
+                count >> int <- 0;
+                if (source != null) { while (rd(off(source,count)) != null) { count += 1; } }
+                vector >> p<addr> <- cast<addr>(calloc(count+1,8)); if (vector == null) return 12;
+                at >> int <- 0; total >> u64 <- 0; status >> int <- 0;
+                while (at < count) {
+                    text >> p<byte> <- clone(from<byte>(rd(off(source,at))));
+                    if (text == null) { status <- 12; break; }
+                    bytes >> int <- length(text)+1;
+                    if (total+bytes > 2147483647) { free(text); status <- 75; break; }
+                    wr(off(vector,at),adr(text)); total += bytes; at += 1;
+                }
+                if (status != 0) {
+                    while (at > 0) { at -= 1; free(from<byte>(rd(off(vector,at)))); } free(vector); return status;
+                }
+                wr<u64>(data,count); wr<addr>(off(data,8),adr(vector)); wr<u64>(off(data,16),total); return 0;
+            }
+    fa: return true;
+}

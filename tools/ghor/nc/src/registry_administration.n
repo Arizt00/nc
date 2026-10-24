@@ -1,0 +1,660 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args>;
+use <project:text, transport, registry, registry_mutation, sha256>;
+
+registryAdministration[@runtime] {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                width >> int <- length(cast(left));
+                if (width > 0 && separator(rd(off(cast(left), width - 1)))) return left + right;
+                if (width >= 2 && rd(off(cast(left), 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            urlBase(value >> str) -> str {
+                if (starts(value, "sparse+")) return cast(off(cast(value), 7));
+                if (starts(value, "git+")) return cast(off(cast(value), 4));
+                return value;
+            }
+
+            urlJoin(left >> str, right >> str) -> str {
+                width >> int <- length(cast(left));
+                if (width > 0 && rd(off(cast(left), width - 1)) == 47) return left + right;
+                return left + "/" + right;
+            }
+
+            slice(value >> str, begin >> int, count >> int) -> str {
+                source >> p<byte> <- cast(value);
+                output >> p<byte> <- cast(alloc(count + 1));
+                guard output != null else return "";
+                at >> int <- 0;
+                while (at < count) {
+                    wr(off(output, at), rd(off(source, begin + at)));
+                    at += 1;
+                }
+                wr(off(output, count), 0);
+                return cast(output);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (argsAt(handle, at) == name) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (argsAt(handle, at) == name) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionWithValue(value >> str) -> bool {
+                return value == "--manifest" || value == "--manifest-path" ||
+                    value == "--path" || value == "--registry" ||
+                    value == "--registry-protocol" || value == "--token" ||
+                    value == "--version" || value == "--vers" ||
+                    value == "--action" || value == "--reason" ||
+                    value == "--role" || value == "--out" ||
+                    value == "--sha256";
+            }
+
+            positional(handle >> addr, wanted >> int) -> str {
+                count >> int <- argsCount(handle);
+                found >> int <- 0;
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (starts(value, "-")) at += optionWithValue(value) ? 2 : 1;
+                    else {
+                        if (found == wanted) return value;
+                        found += 1;
+                        at += 1;
+                    }
+                }
+                return "";
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            requireAdministrativeMutation(
+                selectedRegistry >> str,
+                selectedToken >> str,
+                operation >> str,
+                diagnostics >> int
+            ) -> bool {
+                if (transport.transport.kind(selectedRegistry) == "git") return
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_GIT_001",
+                        "git registry mutation requires an explicit VCS transaction") && false;
+                if (selectedToken == "") return addDiagnostic(diagnostics,
+                    "E_GHOR_AUTH_001", operation + " requires registry auth token") && false;
+                return true;
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            failure(schema >> str, diagnostics >> int) -> int {
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "status", jsonNewString("error"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                printModel(report);
+                return 2;
+            }
+
+            baseReport(schema >> str, selectedRegistry >> str) -> int {
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "status", jsonNewString("ok"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "registry", jsonNewString(selectedRegistry));
+                jsonObjectSet(report, "registry_transport", jsonNewString(
+                    transport.transport.kind(selectedRegistry)));
+                return report;
+            }
+
+            defaultGovernance() -> int {
+                root >> int <- jsonNewObject();
+                policies >> int <- jsonNewObject();
+                reserved >> int <- jsonNewArray();
+                jsonArrayPush(reserved, jsonNewString("std"));
+                jsonArrayPush(reserved, jsonNewString("core"));
+                jsonArrayPush(reserved, jsonNewString("nC"));
+                jsonArrayPush(reserved, jsonNewString("machine"));
+                jsonArrayPush(reserved, jsonNewString("basal"));
+                jsonArrayPush(reserved, jsonNewString("primitive"));
+                jsonArrayPush(reserved, jsonNewString("kernel"));
+                jsonObjectSet(policies, "publish_requires_auth", jsonNewBool(true));
+                jsonObjectSet(policies, "owner_mutation_requires_auth", jsonNewBool(true));
+                jsonObjectSet(policies, "yank_requires_auth", jsonNewBool(true));
+                jsonObjectSet(policies, "moderation_requires_auth", jsonNewBool(true));
+                jsonObjectSet(policies, "reserved_namespaces", reserved);
+                jsonObjectSet(policies, "audit_log_required", jsonNewBool(true));
+                jsonObjectSet(policies, "token_redaction", jsonNewBool(true));
+                jsonObjectSet(policies, "credential_permissions",
+                    jsonNewString("0600_file_0700_dir"));
+                jsonObjectSet(policies, "checksum_required", jsonNewBool(true));
+                jsonObjectSet(policies, "corrupt_package_rejected", jsonNewBool(true));
+                jsonObjectSet(policies, "yank_moderation_policy",
+                    jsonNewString("audited_authenticated_remote_mutation"));
+                jsonObjectSet(root, "schema", jsonNewString("ghor.registry.governance.v1"));
+                jsonObjectSet(root, "status", jsonNewString("closed"));
+                jsonObjectSet(root, "roles", jsonNewObject());
+                jsonObjectSet(root, "policies", policies);
+                jsonObjectSet(root, "audit", jsonNewArray());
+                return root;
+            }
+
+            defaultModeration() -> int {
+                root >> int <- jsonNewObject();
+                jsonObjectSet(root, "schema", jsonNewString("ghor.registry.moderation.v1"));
+                jsonObjectSet(root, "status", jsonNewString("closed"));
+                jsonObjectSet(root, "packages", jsonNewObject());
+                jsonObjectSet(root, "audit", jsonNewArray());
+                return root;
+            }
+
+            loadOptional(
+                handle >> addr,
+                selectedRegistry >> str,
+                selectedToken >> str,
+                relative >> str,
+                fallback >> int,
+                diagnostics >> int
+            ) -> int {
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard root != "" else { jsonRelease(fallback); return 0; }
+                path >> str <- join(root, relative);
+                kind >> str <- transport.transport.kind(selectedRegistry);
+                if (!exists(path) && (kind == "http" || kind == "sparse-http")) {
+                    transport.transport.downloadAuthorized(handle,
+                        urlJoin(urlBase(selectedRegistry), relative), path, selectedToken);
+                }
+                if (!exists(path)) return fallback;
+                parsed >> int <- jsonParseFile(path);
+                if (parsed == 0 || jsonKind(parsed) != 6) {
+                    jsonRelease(fallback);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                        "registry JSON is invalid at '" + relative + "'");
+                    return 0;
+                }
+                jsonRelease(fallback);
+                return parsed;
+            }
+
+            appendGovernanceAudit(policy >> int, token >> str) -> bool {
+                audit >> int <- jsonObjectGet(policy, "audit");
+                if (audit == 0 || jsonKind(audit) != 5) audit <- jsonNewArray();
+                event >> int <- jsonNewObject();
+                actor >> str <- token == "" ? "anonymous" :
+                    sha256.sha256.bytes(cast(token), length(cast(token)));
+                jsonObjectSet(event, "action", jsonNewString("governance.update"));
+                jsonObjectSet(event, "package", jsonNewNull());
+                jsonObjectSet(event, "actor_hash", jsonNewString(actor));
+                jsonObjectSet(event, "timestamp", jsonNewString("deterministic-local"));
+                jsonArrayPush(audit, event);
+                return jsonObjectSet(policy, "audit", audit);
+            }
+
+            appendModerationAudit(
+                moderation >> int,
+                package >> str,
+                version >> str,
+                action >> str,
+                reason >> str
+            ) -> bool {
+                audit >> int <- jsonObjectGet(moderation, "audit");
+                if (audit == 0 || jsonKind(audit) != 5) audit <- jsonNewArray();
+                event >> int <- jsonNewObject();
+                jsonObjectSet(event, "package", jsonNewString(package));
+                jsonObjectSet(event, "version", jsonNewString(version));
+                jsonObjectSet(event, "action", jsonNewString(action));
+                jsonObjectSet(event, "reason", jsonNewString(reason));
+                jsonObjectSet(event, "timestamp", jsonNewString("deterministic-local"));
+                jsonArrayPush(audit, event);
+                return jsonObjectSet(moderation, "audit", audit);
+            }
+
+            moderationStatus(action >> str) -> str {
+                if (action == "review") return "under_review";
+                if (action == "approve" || action == "allow") return "approved";
+                if (action == "flag") return "flagged";
+                if (action == "quarantine") return "quarantined";
+                if (action == "block" || action == "ban") return "blocked";
+                if (action == "restore" || action == "unblock") return "restored";
+                return "";
+            }
+
+            updateModeratedEntries(
+                entries >> int,
+                package >> str,
+                version >> str,
+                status >> str
+            ) -> bool {
+                touched >> bool <- false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "");
+                    selectedVersion >> str <- jsonGetStringOr(jsonObjectGet(entry, "version"),
+                        jsonGetStringOr(jsonObjectGet(entry, "vers"), ""));
+                    if (name == package && (version == "*" || selectedVersion == version)) {
+                        yanked >> bool <- status == "blocked" || status == "quarantined";
+                        clearYank >> bool <- status == "approved" || status == "restored";
+                        jsonObjectSet(entry, "moderation_status", jsonNewString(status));
+                        if (yanked || clearYank) jsonObjectSet(entry, "yanked", jsonNewBool(yanked));
+                        metadata >> int <- jsonObjectGet(entry, "metadata");
+                        if (metadata != 0) {
+                            jsonObjectSet(metadata, "moderation_status", jsonNewString(status));
+                            if (yanked || clearYank) jsonObjectSet(
+                                metadata, "yanked", jsonNewBool(yanked));
+                            jsonObjectSet(entry, "metadata", metadata);
+                            jsonRelease(metadata);
+                        }
+                        removed >> int <- jsonArrayRemove(entries, at);
+                        if (removed != 0) jsonRelease(removed);
+                        jsonArrayInsert(entries, at, entry);
+                        jsonRelease(entry);
+                        touched <- true;
+                    }
+                    at += 1;
+                }
+                return touched;
+            }
+
+            executeCdn(handle >> addr) -> int {
+                action >> str <- positional(handle, 0);
+                if (action == "") action <- "build";
+                output >> str <- option(handle, "--out");
+                if (output == "") output <- "target/ghor-cdn";
+                diagnostics >> int <- jsonNewArray();
+                if (action == "status" || action == "inspect") {
+                    path >> str <- join(output, "cdn-manifest.json");
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.cdn.status.v1"));
+                    jsonObjectSet(report, "status", jsonNewString(exists(path) ? "ok" : "missing"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "out", jsonNewString(output));
+                    manifestValue >> int <- exists(path) ? jsonParseFile(path) : jsonNewNull();
+                    jsonObjectSet(report, "manifest", manifestValue == 0 ? jsonNewNull() : manifestValue);
+                    jsonRelease(diagnostics);
+                    return printModel(report);
+                }
+                if (action == "purge") {
+                    hash >> str <- option(handle, "--sha256");
+                    if (hash == "") hash <- positional(handle, 1);
+                    if (hash == "") {
+                        addDiagnostic(diagnostics, "E_GHOR_CDN_001",
+                            "cdn purge expects --sha256 <hash>");
+                        return failure("ghor.cdn.purge.v1", diagnostics);
+                    }
+                    blob >> str <- join(join(output, "blobs/sha256"), hash + ".crate");
+                    removed >> bool <- exists(blob);
+                    if (removed) removed <- delete_file(blob);
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.cdn.purge.v1"));
+                    jsonObjectSet(report, "status", jsonNewString("ok"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "sha256", jsonNewString(hash));
+                    jsonObjectSet(report, "removed", jsonNewBool(removed));
+                    jsonRelease(diagnostics);
+                    return printModel(report);
+                }
+                if (action != "build" && action != "mirror") {
+                    addDiagnostic(diagnostics, "E_GHOR_CDN_001",
+                        "unsupported cdn action '" + action + "'");
+                    return failure("ghor.cdn.operation.v1", diagnostics);
+                }
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard root != "" && ensureDirectory(output) else return
+                    failure("ghor.cdn.build.v1", diagnostics);
+                index >> int <- registry.registry.loadIndex(
+                    handle, selectedRegistry, selectedToken, diagnostics);
+                guard index != 0 else return failure("ghor.cdn.build.v1", diagnostics);
+                packages >> int <- jsonObjectGet(index, "packages");
+                entries >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    package >> int <- jsonArrayGet(packages, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(package, "name"), "");
+                    version >> str <- jsonGetStringOr(jsonObjectGet(package, "version"),
+                        jsonGetStringOr(jsonObjectGet(package, "vers"), ""));
+                    if (name != "" && version != "") {
+                        relative >> str <- jsonGetStringOr(jsonObjectGet(package, "archive"),
+                            jsonGetStringOr(jsonObjectGet(package, "ghor_archive"),
+                                "packages/" + name + "/" + version + "/" +
+                                name + "-" + version + ".crate"));
+                        if (!transport.transport.ensureRegistryFile(handle,
+                            selectedRegistry, root, relative, diagnostics)) {
+                            jsonRelease(package); jsonRelease(index);
+                            return failure("ghor.cdn.build.v1", diagnostics);
+                        }
+                        source >> str <- join(root, relative);
+                        hash >> str <- sha256.sha256.file(source);
+                        blobRelative >> str <- "blobs/sha256/" + hash + ".crate";
+                        packageRelative >> str <- "packages/" + name + "/" + version +
+                            "/" + name + "-" + version + ".crate";
+                        blob >> str <- join(output, blobRelative);
+                        target >> str <- join(output, packageRelative);
+                        guard ensureDirectory(directory(blob)) && ensureDirectory(directory(target)) &&
+                            fsCopy(source, blob) == fsSize(source) &&
+                            fsCopy(source, target) == fsSize(source) else {
+                            jsonRelease(package); jsonRelease(index);
+                            addDiagnostic(diagnostics, "E_GHOR_CDN_001",
+                                "registry package could not be copied into CDN");
+                            return failure("ghor.cdn.build.v1", diagnostics);
+                        }
+                        entry >> int <- jsonNewObject();
+                        jsonObjectSet(entry, "name", jsonNewString(name));
+                        jsonObjectSet(entry, "version", jsonNewString(version));
+                        jsonObjectSet(entry, "source", jsonNewString(relative));
+                        jsonObjectSet(entry, "blob", jsonNewString(blobRelative));
+                        jsonObjectSet(entry, "package_path", jsonNewString(packageRelative));
+                        jsonObjectSet(entry, "sha256", jsonNewString(hash));
+                        jsonObjectSet(entry, "size", jsonNewInt(fsSize(source)));
+                        jsonObjectSet(entry, "immutable", jsonNewBool(true));
+                        jsonObjectSet(entry, "cache_control",
+                            jsonNewString("max-age=31536000, immutable"));
+                        jsonArrayPush(entries, entry);
+                    }
+                    jsonRelease(package);
+                    at += 1;
+                }
+                manifestValue >> int <- jsonNewObject();
+                policy >> int <- jsonNewObject();
+                revalidation >> int <- jsonNewArray();
+                jsonArrayPush(revalidation, jsonNewString("ETag"));
+                jsonArrayPush(revalidation, jsonNewString("Last-Modified"));
+                jsonArrayPush(revalidation, jsonNewString("304 Not Modified"));
+                jsonObjectSet(policy, "checksum", jsonNewString("sha256"));
+                jsonObjectSet(policy, "immutable_blobs", jsonNewBool(true));
+                jsonObjectSet(policy, "origin_revalidation", revalidation);
+                jsonObjectSet(policy, "purge_supported", jsonNewBool(true));
+                jsonObjectSet(manifestValue, "schema", jsonNewString("ghor.cdn.manifest.v1"));
+                jsonObjectSet(manifestValue, "status", jsonNewString("closed"));
+                jsonObjectSet(manifestValue, "registry", jsonNewString(selectedRegistry));
+                jsonObjectSet(manifestValue, "registry_transport", jsonNewString(
+                    transport.transport.kind(selectedRegistry)));
+                jsonObjectSet(manifestValue, "origin_index_hash", jsonNewString(
+                    sha256.sha256.file(join(root, "index.json"))));
+                jsonObjectSet(manifestValue, "content_addressed", jsonNewBool(true));
+                jsonObjectSet(manifestValue, "entries", entries);
+                jsonObjectSet(manifestValue, "entry_count", jsonNewInt(jsonArrayLen(entries)));
+                jsonObjectSet(manifestValue, "policy", policy);
+                guard jsonSaveFile(manifestValue, join(output, "cdn-manifest.json"), 2) else {
+                    jsonRelease(index); jsonRelease(manifestValue);
+                    addDiagnostic(diagnostics, "E_GHOR_CDN_001", "CDN manifest could not be saved");
+                    return failure("ghor.cdn.build.v1", diagnostics);
+                }
+                config >> int <- jsonNewObject();
+                jsonObjectSet(config, "dl", jsonNewString(
+                    "packages/{crate}/{version}/{crate}-{version}.crate"));
+                jsonObjectSet(config, "api", jsonNewNull());
+                jsonObjectSet(config, "auth-required", jsonNewBool(false));
+                jsonObjectSet(config, "cdn-manifest", jsonNewString("cdn-manifest.json"));
+                guard jsonSaveFile(config, join(output, "config.json"), 2) else {
+                    jsonRelease(config); jsonRelease(index); jsonRelease(manifestValue);
+                    addDiagnostic(diagnostics, "E_GHOR_CDN_001", "CDN config could not be saved");
+                    return failure("ghor.cdn.build.v1", diagnostics);
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.cdn.build.v1"));
+                jsonObjectSet(report, "status", jsonNewString("ok"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "out", jsonNewString(output));
+                jsonObjectSet(report, "manifest", jsonClone(manifestValue));
+                jsonRelease(config); jsonRelease(index); jsonRelease(manifestValue);
+                jsonRelease(diagnostics);
+                return printModel(report);
+            }
+
+            executeGovernance(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                initialize >> bool <- hasFlag(handle, "--init");
+                role >> str <- option(handle, "--role");
+                if ((initialize || role != "") && !requireAdministrativeMutation(
+                    selectedRegistry, selectedToken, "governance mutation", diagnostics)) {
+                    return failure("ghor.governance.v1", diagnostics);
+                }
+                policy >> int <- loadOptional(handle, selectedRegistry, selectedToken,
+                    "governance.json", defaultGovernance(), diagnostics);
+                guard policy != 0 else return failure("ghor.governance.v1", diagnostics);
+                mutated >> bool <- false;
+                if (initialize) {
+                    jsonRelease(policy);
+                    policy <- defaultGovernance();
+                    mutated <- true;
+                }
+                if (role != "") {
+                    colon >> int <- 0;
+                    roleBytes >> p<byte> <- cast(role);
+                    width >> int <- length(roleBytes);
+                    while (colon < width && rd(off(roleBytes, colon)) != 58) { colon += 1; }
+                    if (colon == 0 || colon >= width - 1) {
+                        jsonRelease(policy);
+                        addDiagnostic(diagnostics, "E_GHOR_GOVERNANCE_001",
+                            "--role expects USER:ROLE");
+                        return failure("ghor.governance.v1", diagnostics);
+                    }
+                    user >> str <- slice(role, 0, colon);
+                    roleName >> str <- slice(role, colon + 1, width - colon - 1);
+                    roles >> int <- jsonObjectGet(policy, "roles");
+                    if (roles == 0 || jsonKind(roles) != 6) roles <- jsonNewObject();
+                    jsonObjectSet(roles, user, jsonNewString(roleName));
+                    jsonObjectSet(policy, "roles", roles);
+                    mutated <- true;
+                }
+                if (mutated) {
+                    appendGovernanceAudit(policy, selectedToken);
+                    saved >> bool <- registry_mutation.registryMutation.writeJson(
+                        handle, selectedRegistry, selectedToken, "governance.json", policy) &&
+                        registry_mutation.registryMutation.writeAudit(handle, selectedRegistry,
+                            selectedToken, "governance.update", "", "", "governance policy updated");
+                    if (!saved) {
+                        jsonRelease(policy);
+                        addDiagnostic(diagnostics, "E_GHOR_REGISTRY_TRANSACTION_001",
+                            "governance transaction did not commit");
+                        return failure("ghor.governance.v1", diagnostics);
+                    }
+                }
+                report >> int <- baseReport("ghor.governance.v1", selectedRegistry);
+                jsonObjectSet(report, "policy", jsonClone(policy));
+                jsonObjectSet(report, "mutated", jsonNewBool(mutated));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(policy);
+                return printModel(report);
+            }
+
+            executeModeration(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                package >> str <- positional(handle, 0);
+                if (package == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_MODERATION_001",
+                        "moderation expects <package>");
+                    return failure("ghor.moderation.v1", diagnostics);
+                }
+                version >> str <- option(handle, "--version");
+                if (version == "") version <- option(handle, "--vers");
+                if (version == "") version <- "*";
+                action >> str <- option(handle, "--action");
+                if (action == "") action <- "review";
+                reason >> str <- option(handle, "--reason");
+                if (reason == "") reason <- "not specified";
+                status >> str <- moderationStatus(action);
+                if (status == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_MODERATION_001",
+                        "unsupported moderation action '" + action + "'");
+                    return failure("ghor.moderation.v1", diagnostics);
+                }
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                selectedToken >> str <- registry.registry.authToken(handle, selectedRegistry);
+                if (action != "review" && !requireAdministrativeMutation(selectedRegistry,
+                    selectedToken, "moderation mutation", diagnostics)) {
+                    return failure("ghor.moderation.v1", diagnostics);
+                }
+                moderation >> int <- loadOptional(handle, selectedRegistry, selectedToken,
+                    "moderation.json", defaultModeration(), diagnostics);
+                guard moderation != 0 else return failure("ghor.moderation.v1", diagnostics);
+                packages >> int <- jsonObjectGet(moderation, "packages");
+                if (packages == 0 || jsonKind(packages) != 6) packages <- jsonNewObject();
+                versions >> int <- jsonObjectGet(packages, package);
+                if (versions == 0 || jsonKind(versions) != 6) versions <- jsonNewObject();
+                entry >> int <- jsonNewObject();
+                actor >> str <- selectedToken == "" ? "anonymous" :
+                    sha256.sha256.bytes(cast(selectedToken), length(cast(selectedToken)));
+                jsonObjectSet(entry, "status", jsonNewString(status));
+                jsonObjectSet(entry, "action", jsonNewString(action));
+                jsonObjectSet(entry, "reason", jsonNewString(reason));
+                jsonObjectSet(entry, "moderator_hash", jsonNewString(actor));
+                jsonObjectSet(entry, "updated", jsonNewString("deterministic-local"));
+                jsonObjectSet(versions, version, entry);
+                jsonObjectSet(packages, package, versions);
+                jsonObjectSet(moderation, "packages", packages);
+                appendModerationAudit(moderation, package, version, action, reason);
+                mutated >> bool <- action != "review";
+                if (mutated) {
+                    index >> int <- registry.registry.loadIndex(
+                        handle, selectedRegistry, selectedToken, diagnostics);
+                    guard index != 0 else { jsonRelease(moderation); return
+                        failure("ghor.moderation.v1", diagnostics); }
+                    entries >> int <- jsonObjectGet(index, "packages");
+                    guard updateModeratedEntries(entries, package, version, status) else {
+                        jsonRelease(index); jsonRelease(moderation);
+                        addDiagnostic(diagnostics, "E_GHOR_MODERATION_001",
+                            "package/version was not found in registry");
+                        return failure("ghor.moderation.v1", diagnostics);
+                    }
+                    jsonObjectSet(index, "packages", entries);
+                    saved >> bool <- registry_mutation.registryMutation.writeJson(
+                        handle, selectedRegistry, selectedToken, "moderation.json", moderation) &&
+                        registry_mutation.registryMutation.writeJson(
+                            handle, selectedRegistry, selectedToken, "index.json", index) &&
+                        registry_mutation.registryMutation.writePackageIndex(
+                            handle, selectedRegistry, selectedToken, package, entries) &&
+                        registry_mutation.registryMutation.writeAudit(handle, selectedRegistry,
+                            selectedToken, "moderation.update", package, version, reason);
+                    jsonRelease(index);
+                    if (!saved) {
+                        jsonRelease(moderation);
+                        addDiagnostic(diagnostics, "E_GHOR_REGISTRY_TRANSACTION_001",
+                            "moderation transaction did not commit");
+                        return failure("ghor.moderation.v1", diagnostics);
+                    }
+                }
+                report >> int <- baseReport("ghor.moderation.v1", selectedRegistry);
+                jsonObjectSet(report, "package", jsonNewString(package));
+                jsonObjectSet(report, "version", jsonNewString(version));
+                jsonObjectSet(report, "moderation_status", jsonNewString(status));
+                jsonObjectSet(report, "action", jsonNewString(action));
+                jsonObjectSet(report, "reason", jsonNewString(reason));
+                jsonObjectSet(report, "mutated", jsonNewBool(mutated));
+                jsonObjectSet(report, "moderation", jsonClone(moderation));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(moderation);
+                return printModel(report);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                if (argsCount(handle) <= 1) return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "cdn" || selected == "governance" ||
+                    selected == "moderation" || selected == "moderate";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "cdn") return executeCdn(handle);
+                if (selected == "governance") return executeGovernance(handle);
+                if (selected == "moderation" || selected == "moderate")
+                    return executeModeration(handle);
+                return 64;
+            }
+
+            selfTest() -> bool {
+                return separator(47) && separator(92) &&
+                    optionWithValue("--sha256") && !optionWithValue("--json");
+            }
+
+    fa:
+        return true;
+}

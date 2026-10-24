@@ -1,0 +1,104 @@
+use <io:output>;
+
+astAdvanced {
+    type:
+        Packet {
+            public:
+                tag >> int;
+                flags >> byte;
+        }
+
+    fn:
+        private:
+            twice(value >> int) -> int {
+                return value * 2;
+            }
+
+        public:
+            run() -> bool {
+                base >> int <- 4;
+                packet >> Packet <- Packet { tag: 7, flags: 1 };
+                maybe >> Result<int, str> <- ok(9);
+                values >> array<int, 3> <- [1, 2, 3];
+
+                mapper >> fn(int) -> int <- move |value >> int| -> int
+                    captures(move base) {
+                        return value + base;
+                    };
+
+                worker >> fn(int) -> int <- async |value >> int| -> int
+                    captures(base) {
+                        yield value;
+                        return await twice(value);
+                    };
+
+                propagated >> int <- maybe?;
+                chosen >> int <- if (base > 0) { packet.tag } else { 0 };
+                total >> int <- mapper(propagated) + chosen;
+
+                for value in values {
+                    total += value;
+                }
+
+                for index in 0..=2 step 1 {
+                    total += index;
+                }
+
+                async for value in values {
+                    total += value;
+                }
+
+                repeat {
+                    total += 1;
+                } until (total > 0);
+
+                do {
+                    total += 1;
+                } while (total < 0);
+
+                unless (false) {
+                    total += 1;
+                }
+
+                loop {
+                    break;
+                }
+
+                match (maybe) {
+                    Ok(value) if value > 0 => {
+                        total += value;
+                    }
+                    Err(message) => return false;
+                }
+
+                match (values) {
+                    [1, middle, ..rest] => {
+                        total += middle;
+                    }
+                    _ => {
+                        total <- 0;
+                    }
+                }
+
+                match (packet) {
+                    Packet { tag: 7, flags, .. } => {
+                        total += flags;
+                    }
+                    _ => return false;
+                }
+
+                match (total) {
+                    1..=100 => {
+                        total += 1;
+                    }
+                    _ => return false;
+                }
+
+                return total > 0;
+            }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

@@ -1,0 +1,248 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:ptr, heap, region>;
+
+extendedDriverMemMejorado :: runtime {
+    stc:
+        ring >> array<int, 16>;
+        packets >> list<int>;
+        regionA >> memRegion<int>;
+        metrics >> memRegion<int>;
+        p >> p<int>;
+        pSlot >> p<int>;
+        /*
+         * metrics slots:
+         * 0 idx, 1 valueOut, 2 pointerOut, 3 producidos,
+         * 4 sobrescritos, 5 checksum, 6 ringChecksum, 7 listChecksum,
+         * 8 pointerChecksum, 9 pointerDistance, 10 ultimo, 11 categoria.
+         */
+        i        >> int  <- 0;
+        packet   >> int  <- 0;
+        ok       >> bool <- false;
+        liberado >> bool <- false;
+
+    fn:
+        boot() -> bool {
+            initEstructuras();
+            initMetricas();
+            initHeap();
+            limpiarRegionDoWhile();
+            limpiarHeapDoWhile();
+            return true;
+        }
+
+        initEstructuras() -> bool {
+            ring <- [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            packets <- [1, 2, 3, 4, 5, 6, 7, 8];
+            regionA <- regionCreate<int>(16);
+            metrics <- regionCreate<int>(16);
+            return true;
+        }
+
+        initHeap() -> bool {
+            p !> p<int> : alloc(128);
+            pSlot <- p;
+            return true;
+        }
+
+        initMetricas() -> bool {
+            for metricSlot in 0..12 {
+                mw(metricSlot, 0);
+            }
+            liberado <- false;
+            return true;
+        }
+
+        m(metricSlot >> int) -> int {
+            return regionRead(metrics, metricSlot);
+        }
+
+        mw(metricSlot >> int, value >> int) -> bool {
+            regionWrite(metrics, metricSlot, value);
+            return true;
+        }
+
+        incMetric(metricSlot >> int, value >> int) -> bool {
+            mw(metricSlot, m(metricSlot) + value);
+            return true;
+        }
+
+        usarSlot(index >> int) -> bool {
+            pSlot <- p.offset(index);
+            return true;
+        }
+
+        escribirHeap(index >> int, value >> int) -> bool {
+            usarSlot(index);
+            wr(pSlot, value);
+            return true;
+        }
+
+        leerHeap(index >> int) -> int {
+            usarSlot(index);
+            return pSlot.read();
+        }
+
+        limpiarHeapDoWhile() -> bool {
+            i <- 0;
+            do {
+                escribirHeap(i, 0);
+                i <- i + 1;
+            } while (i < 16);
+            return true;
+        }
+
+        limpiarRegionDoWhile() -> bool {
+            i <- 0;
+            do {
+                regionWrite(regionA, i, 0);
+                i <- i + 1;
+            } while (i < 16);
+            return true;
+        }
+
+        avanzarRing() -> bool {
+            mw(0, m(0) + 1);
+            if (m(0) >= 16) {
+                mw(0, 0);
+            }
+            return true;
+        }
+
+        pushPacket(packet >> int) -> bool {
+            if (m(3) >= 16) {
+                incMetric(4, 1);
+            }
+
+            ring[m(0)] <- packet;
+            packets.push(packet);
+            regionWrite(regionA, m(0), packet);
+            escribirHeap(m(0), packet);
+
+            mw(1, regionRead(regionA, m(0)));
+            mw(2, leerHeap(m(0)));
+
+            if (m(1) != packet) {
+                return false;
+            }
+            if (m(2) != packet) {
+                return false;
+            }
+
+            return confirmarPacketProcesado();
+        }
+
+        confirmarPacketProcesado() -> bool {
+            incMetric(3, 1);
+            incMetric(5, m(1));
+            incMetric(8, m(2));
+            mw(10, m(1));
+            avanzarRing();
+            return true;
+        }
+
+        runBatch(start >> int, count >> int) -> bool {
+            for n in 0..count {
+                packet <- start + n;
+                if (!pushPacket(packet)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        calcularRingChecksumClasico() -> bool {
+            mw(6, 0);
+            for (i >> int <- 0; i < 16; i += 1) {
+                incMetric(6, ring[i]);
+            }
+            return m(6) == 2104;
+        }
+
+        calcularListaForIn() -> bool {
+            mw(7, 0);
+            for item in packets {
+                incMetric(7, item);
+            }
+            return m(7) == 4816;
+        }
+
+        validarPunterosReales() -> bool {
+            usarSlot(15);
+            mw(9, pSlot.diff(p));
+            mw(2, leerHeap(0));
+            guard (m(9) == 15) else { return false; }
+            guard (m(2) == 132) else { return false; }
+            mw(2, leerHeap(15));
+            guard (m(2) == 131) else { return false; }
+            return m(8) == m(5);
+        }
+
+        clasificarPresionConMatch() -> bool {
+            match (m(4)) {
+                case 0 => {
+                    mw(11, 0);
+                }
+                case 24 => {
+                    mw(11, 2);
+                }
+                default => {
+                    mw(11, 1);
+                }
+            }
+            return m(11) == 2;
+        }
+
+        validarEstadoFinal() -> bool {
+            guard (m(3) == 40) else { return false; }
+            guard (m(10) == 139) else { return false; }
+            guard (packets.len() == 48) else { return false; }
+            guard (m(4) == 24) else { return false; }
+            guard (calcularRingChecksumClasico()) else { return false; }
+            guard (calcularListaForIn()) else { return false; }
+            guard (validarPunterosReales()) else { return false; }
+            guard (clasificarPresionConMatch()) else { return false; }
+            return m(1) == 139;
+        }
+
+        imprimirResumen() -> bool {
+            println(colorBold("===== DRIVER MEM MEJORADO =====", "cyan"));
+            println("ultimo valor: " + renderInt(m(10)));
+            println("paquetes totales en lista: " + renderInt(packets.len()));
+            println("paquetes producidos: " + renderInt(m(3)));
+            println("sobrescrituras de ring: " + renderInt(m(4)));
+            println("checksum de lote: " + renderInt(m(5)));
+            println("checksum ring actual: " + renderInt(m(6)));
+            println("checksum lista completa: " + renderInt(m(7)));
+            println("checksum heap por puntero: " + renderInt(m(8)));
+            println("distancia pSlot - p: " + renderInt(m(9)));
+            println("categoria de presion: " + renderInt(m(11)));
+            println(colorBold("validacion runtime: OK", "green"));
+            return true;
+        }
+
+        liberarHeap() -> bool {
+            liberado <- free(p);
+            println("heap liberado: " + renderBool(liberado));
+            return liberado;
+        }
+
+        run() -> bool {
+            boot();
+            ok <- runBatch(100, 40);
+            if (ok) {
+                ok <- validarEstadoFinal();
+            }
+            imprimirResumen();
+            if (ok) {
+                ok <- liberarHeap();
+            }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

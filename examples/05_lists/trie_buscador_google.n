@@ -1,0 +1,758 @@
+/*
+ * Ejercicio: buscador tipo Google con Arbol Trie.
+ *
+ * Idea central:
+ * - Un Trie no guarda palabras como una lista plana.
+ * - Cada nodo representa un caracter.
+ * - Cada arista apunta al siguiente caracter posible.
+ * - Buscar un prefijo cuesta O(k), donde k es el numero de letras del prefijo.
+ * - Despues solo se recorren las ramas que cuelgan de ese prefijo.
+ *
+ * Comparacion:
+ * - Con una lista normal habria que comprobar todas las palabras: O(n * k).
+ * - Con Trie se camina letra a letra: O(k + sugerencias).
+ */
+use <collections:queue>;
+use <io:output, render, input>;
+use <memory:region, heap>;
+
+trieBuscadorGoogle :: runtime {
+    /*
+     * Forma conceptual de un nodo Trie.
+     * No la usamos como almacenamiento directo porque este ejemplo busca
+     * eficiencia: el layout material esta en regiones paralelas.
+     * En C seria una struct; en C++ podria ser struct TrieNode.
+     */
+    TrieNode :: type {
+            letter >> int;
+            terminal >> bool;
+            wordId >> int;
+        constructure:
+            static(letter >> int, terminal >> bool, wordId >> int) -> TrieNode;
+    }
+
+    /*
+     * Constantes locales: documentan el layout del Trie.
+     * La ruta material de region usa literales porque el ejecutor runtime
+     * actual todavia es mas estable con valores inmediatos en regionCreate
+     * y en indices de memRegion.
+     * En C seria #define o const int; en C++ seria constexpr int.
+     */
+    const:
+        ROOT >> int <- 0;
+        ALPHABET >> int <- 26;
+        MAX_NODES >> int <- 128;
+
+    stc:
+
+        /*
+         * children almacena las aristas del Trie.
+         * Indice <- nodo * 26 + letra, donde letra: a<-0, b<-1, ..., z<-25.
+         *
+         * Se usa memRegion<int> porque queremos una tabla compacta y tipada.
+         * En C seria int children[MAX_NODES][26].
+         * En C++ podria ser vector<array<int, 26>>.
+         */
+        children >> memRegion<int>;
+
+        /*
+         * terminal[nodo] <- 1 si el nodo cierra una palabra completa.
+         * wordId[nodo] guarda que palabra del diccionario termina ahi.
+         * nodeChar[nodo] conserva el caracter que representa el nodo.
+         */
+        terminal >> memRegion<int>;
+        wordId >> memRegion<int>;
+        nodeChar >> memRegion<int>;
+
+        /*
+         * La cola permite recorrer las sugerencias sin recursion.
+         * En C se implementaria con un buffer circular manual.
+         * En C++ seria std::queue<int>.
+         */
+        pendientes >> queue<int>;
+        pendientesStorage >> p<int>;
+
+        nodeCount >> int;
+        prefix >> str;
+        seguir >> bool;
+
+    fn:
+        boot() -> bool {
+            /*
+             * Reservamos 128 nodos y 26 aristas por nodo.
+             * El nodo 0 es la raiz y no representa caracter.
+             */
+            /*
+             * regionCreate en el ejecutor actual materializa mejor con
+             * longitud literal. 3328 <- MAX_NODES * ALPHABET <- 128 * 26.
+             */
+            children <- regionCreate<int>(3328);
+            terminal <- regionCreate<int>(128);
+            wordId <- regionCreate<int>(128);
+            nodeChar <- regionCreate<int>(128);
+            pendientesStorage <- cast(alloc(MAX_NODES * sizeOf(int)));
+            pendientes <- queueAt(pendientesStorage, MAX_NODES);
+
+            nodeCount <- 0;
+            prefix <- "";
+            seguir <- true;
+
+            cargarDiccionario();
+            return true;
+        }
+
+        edgeIndex(node >> int, letter >> int) -> int {
+            /*
+             * Transformacion de matriz 2D a region lineal.
+             * children[node][letter] se codifica como children[node * 26 + letter].
+             */
+            return (node * 26) + letter;
+        }
+
+        child(node >> int, letter >> int) -> int {
+            /*
+             * Si devuelve 0, no existe rama para esa letra.
+             * Esto funciona porque la raiz es 0, pero nunca se guarda como hijo.
+             */
+            return regionRead(children, edgeIndex(node, letter));
+        }
+
+        ensureChild(node >> int, letter >> int) -> int {
+            /*
+             * Crea el nodo hijo solo si falta.
+             * Esta es la operacion clave del Trie al insertar palabras.
+             */
+            slot >> int <- edgeIndex(node, letter);
+            next >> int <- regionRead(children, slot);
+
+            if (next == 0) {
+                nodeCount <- nodeCount + 1;
+                next >> int <- nodeCount;
+
+                regionWrite(children, slot, next);
+                regionWrite(nodeChar, next, letter);
+            }
+
+            return next;
+        }
+
+        codeAt(i >> int, c0 >> int, c1 >> int, c2 >> int, c3 >> int, c4 >> int, c5 >> int, c6 >> int, c7 >> int) -> int {
+            /*
+             * La build actual no tiene charAt(str, index) cerrado.
+             * Por eso las palabras de demo se codifican como secuencias numericas.
+             * El Trie sigue siendo real: cada numero representa un caracter.
+             */
+            if (i == 0) { return c0; }
+            if (i == 1) { return c1; }
+            if (i == 2) { return c2; }
+            if (i == 3) { return c3; }
+            if (i == 4) { return c4; }
+            if (i == 5) { return c5; }
+            if (i == 6) { return c6; }
+            return c7;
+        }
+
+        insertar(id >> int, len >> int, c0 >> int, c1 >> int, c2 >> int, c3 >> int, c4 >> int, c5 >> int, c6 >> int, c7 >> int) -> bool {
+            /*
+             * Insercion:
+             * raiz -> caracter 1 -> caracter 2 -> ... -> final de palabra.
+             * Al terminar, se marca el ultimo nodo como terminal.
+             */
+            node >> int <- 0;
+            i >> int <- 0;
+
+            while (i < len) {
+                letter >> int <- codeAt(i, c0, c1, c2, c3, c4, c5, c6, c7);
+                node >> int <- ensureChild(node, letter);
+                i >> int <- i + 1;
+            }
+
+            regionWrite(terminal, node, 1);
+            regionWrite(wordId, node, id);
+            return true;
+        }
+
+        buscarRuta(len >> int, c0 >> int, c1 >> int, c2 >> int, c3 >> int, c4 >> int, c5 >> int, c6 >> int, c7 >> int) -> int {
+            /*
+             * Busqueda del prefijo.
+             * Si una letra no tiene hijo, el prefijo no existe.
+             */
+            node >> int <- 0;
+            i >> int <- 0;
+
+            while (i < len) {
+                letter >> int <- codeAt(i, c0, c1, c2, c3, c4, c5, c6, c7);
+                node >> int <- child(node, letter);
+
+                if (node == 0) {
+                    return -1;
+                }
+
+                i >> int <- i + 1;
+            }
+
+            return node;
+        }
+
+        palabra(id >> int) -> str {
+            /*
+             * Diccionario de salida.
+             * El Trie guarda estructura; esta funcion solo traduce ids a texto.
+             */
+            if (id == 0) { return "casa"; }
+            if (id == 1) { return "casco"; }
+            if (id == 2) { return "cascada"; }
+            if (id == 3) { return "cafe"; }
+            if (id == 4) { return "calle"; }
+            if (id == 5) { return "carro"; }
+            if (id == 6) { return "gato"; }
+            if (id == 7) { return "gafas"; }
+            if (id == 8) { return "google"; }
+            if (id == 9) { return "gol"; }
+            if (id == 10) { return "goma"; }
+            if (id == 11) { return "programa"; }
+            return "<desconocida>";
+        }
+
+        cargarDiccionario() -> bool {
+            /*
+             * a<-0 b<-1 c<-2 d<-3 e<-4 f<-5 g<-6 h<-7 i<-8 j<-9 k<-10 l<-11
+             * m<-12 n<-13 o<-14 p<-15 q<-16 r<-17 s<-18 t<-19 u<-20 v<-21 w<-22
+             * x<-23 y<-24 z<-25
+             */
+            insertar(0, 4, 2, 0, 18, 0, 0, 0, 0, 0);      /* casa */
+            insertar(1, 5, 2, 0, 18, 2, 14, 0, 0, 0);     /* casco */
+            insertar(2, 7, 2, 0, 18, 2, 0, 3, 0, 0);      /* cascada */
+            insertar(3, 4, 2, 0, 5, 4, 0, 0, 0, 0);       /* cafe */
+            insertar(4, 5, 2, 0, 11, 11, 4, 0, 0, 0);     /* calle */
+            insertar(5, 5, 2, 0, 17, 17, 14, 0, 0, 0);    /* carro */
+            insertar(6, 4, 6, 0, 19, 14, 0, 0, 0, 0);     /* gato */
+            insertar(7, 5, 6, 0, 5, 0, 18, 0, 0, 0);      /* gafas */
+            insertar(8, 6, 6, 14, 14, 6, 11, 4, 0, 0);    /* google */
+            insertar(9, 3, 6, 14, 11, 0, 0, 0, 0, 0);     /* gol */
+            insertar(10, 4, 6, 14, 12, 0, 0, 0, 0, 0);    /* goma */
+            insertar(11, 8, 15, 17, 14, 6, 17, 0, 12, 0); /* programa */
+
+            return true;
+        }
+
+        nodoDePrefijo(texto >> str) -> int {
+            /*
+             * Adaptador de entrada humana a codigos del Trie.
+             * Esta tabla existe porque no hay charAt runtime cerrado en esta build.
+             */
+            if (texto == "") { return 0; }
+            if (texto == "c") { return buscarRuta(1, 2, 0, 0, 0, 0, 0, 0, 0); }
+            if (texto == "ca") { return buscarRuta(2, 2, 0, 0, 0, 0, 0, 0, 0); }
+            if (texto == "caf") { return buscarRuta(3, 2, 0, 5, 0, 0, 0, 0, 0); }
+            if (texto == "cafe") { return buscarRuta(4, 2, 0, 5, 4, 0, 0, 0, 0); }
+            if (texto == "cas") { return buscarRuta(3, 2, 0, 18, 0, 0, 0, 0, 0); }
+            if (texto == "casa") { return buscarRuta(4, 2, 0, 18, 0, 0, 0, 0, 0); }
+            if (texto == "casc") { return buscarRuta(4, 2, 0, 18, 2, 0, 0, 0, 0); }
+            if (texto == "casca") { return buscarRuta(5, 2, 0, 18, 2, 0, 0, 0, 0); }
+            if (texto == "cascad") { return buscarRuta(6, 2, 0, 18, 2, 0, 3, 0, 0); }
+            if (texto == "cascada") { return buscarRuta(7, 2, 0, 18, 2, 0, 3, 0, 0); }
+            if (texto == "casco") { return buscarRuta(5, 2, 0, 18, 2, 14, 0, 0, 0); }
+            if (texto == "cal") { return buscarRuta(3, 2, 0, 11, 0, 0, 0, 0, 0); }
+            if (texto == "call") { return buscarRuta(4, 2, 0, 11, 11, 0, 0, 0, 0); }
+            if (texto == "calle") { return buscarRuta(5, 2, 0, 11, 11, 4, 0, 0, 0); }
+            if (texto == "car") { return buscarRuta(3, 2, 0, 17, 0, 0, 0, 0, 0); }
+            if (texto == "carr") { return buscarRuta(4, 2, 0, 17, 17, 0, 0, 0, 0); }
+            if (texto == "carro") { return buscarRuta(5, 2, 0, 17, 17, 14, 0, 0, 0); }
+            if (texto == "g") { return buscarRuta(1, 6, 0, 0, 0, 0, 0, 0, 0); }
+            if (texto == "ga") { return buscarRuta(2, 6, 0, 0, 0, 0, 0, 0, 0); }
+            if (texto == "gaf") { return buscarRuta(3, 6, 0, 5, 0, 0, 0, 0, 0); }
+            if (texto == "gafa") { return buscarRuta(4, 6, 0, 5, 0, 0, 0, 0, 0); }
+            if (texto == "gafas") { return buscarRuta(5, 6, 0, 5, 0, 18, 0, 0, 0); }
+            if (texto == "gat") { return buscarRuta(3, 6, 0, 19, 0, 0, 0, 0, 0); }
+            if (texto == "gato") { return buscarRuta(4, 6, 0, 19, 14, 0, 0, 0, 0); }
+            if (texto == "go") { return buscarRuta(2, 6, 14, 0, 0, 0, 0, 0, 0); }
+            if (texto == "goo") { return buscarRuta(3, 6, 14, 14, 0, 0, 0, 0, 0); }
+            if (texto == "goog") { return buscarRuta(4, 6, 14, 14, 6, 0, 0, 0, 0); }
+            if (texto == "googl") { return buscarRuta(5, 6, 14, 14, 6, 11, 0, 0, 0); }
+            if (texto == "google") { return buscarRuta(6, 6, 14, 14, 6, 11, 4, 0, 0); }
+            if (texto == "gol") { return buscarRuta(3, 6, 14, 11, 0, 0, 0, 0, 0); }
+            if (texto == "gom") { return buscarRuta(3, 6, 14, 12, 0, 0, 0, 0, 0); }
+            if (texto == "goma") { return buscarRuta(4, 6, 14, 12, 0, 0, 0, 0, 0); }
+            if (texto == "p") { return buscarRuta(1, 15, 0, 0, 0, 0, 0, 0, 0); }
+            if (texto == "pr") { return buscarRuta(2, 15, 17, 0, 0, 0, 0, 0, 0); }
+            if (texto == "pro") { return buscarRuta(3, 15, 17, 14, 0, 0, 0, 0, 0); }
+            if (texto == "prog") { return buscarRuta(4, 15, 17, 14, 6, 0, 0, 0, 0); }
+            if (texto == "progr") { return buscarRuta(5, 15, 17, 14, 6, 17, 0, 0, 0); }
+            if (texto == "progra") { return buscarRuta(6, 15, 17, 14, 6, 17, 0, 0, 0); }
+            if (texto == "program") { return buscarRuta(7, 15, 17, 14, 6, 17, 0, 12, 0); }
+            if (texto == "programa") { return buscarRuta(8, 15, 17, 14, 6, 17, 0, 12, 0); }
+            return -1;
+        }
+
+        sugerir(prefixNode >> int) -> bool {
+            /*
+             * Recorremos solo el subarbol del prefijo.
+             * Esto es lo que hace eficiente al Trie.
+             */
+            while (!pendientes.isEmpty()) {
+                trash >> int <- pendientes.dequeue();
+            }
+
+            pendientes.enqueue(prefixNode);
+            encontradas >> int <- 0;
+
+            while (!pendientes.isEmpty()) {
+                node >> int <- pendientes.dequeue();
+
+                if (regionRead(terminal, node) == 1) {
+                    id >> int <- regionRead(wordId, node);
+                    println("  - " + palabra(id));
+                    encontradas >> int <- encontradas + 1;
+                }
+
+                letter >> int <- 0;
+                while (letter < 26) {
+                    next >> int <- child(node, letter);
+
+                    if (next != 0) {
+                        pendientes.enqueue(next);
+                    }
+
+                    letter >> int <- letter + 1;
+                }
+            }
+
+            if (encontradas == 0) {
+                println("  sin sugerencias");
+            }
+
+            println("  sugerencias encontradas: " + renderInt(encontradas));
+
+            return true;
+        }
+
+        buscar(texto >> str) -> bool {
+            node >> int <- nodoDePrefijo(texto);
+
+            println("");
+            println("prefijo: " + texto);
+
+            if (node < 0) {
+                println("  sin sugerencias");
+                return false;
+            }
+
+            sugerir(node);
+            return true;
+        }
+
+        demo() -> bool {
+            println("===== Demo Trie =====");
+            buscar("ca");
+            buscar("cas");
+            buscar("go");
+            buscar("prog");
+            buscar("z");
+            return true;
+        }
+
+        pedir(etiqueta >> str) -> str {
+            /*
+             * Entrada centralizada para que todos los submenus tengan el
+             * mismo patron: pintar prompt, vaciar salida y leer texto.
+             * En C seria printf + fflush + fgets. En C++ seria cout + getline.
+             */
+            print(etiqueta);
+            flush();
+            valor >> str <- readLine();
+            return valor;
+        }
+
+        navegar(op >> str) -> bool {
+            /*
+             * Devuelve true si la opcion significa cerrar el submenu actual.
+             * "salir" cierra tambien el programa completo.
+             */
+            if (op == "0") { return true; }
+            if (op == "volver") { return true; }
+
+            if (op == "salir") {
+                seguir <- false;
+                return true;
+            }
+
+            return false;
+        }
+
+        listarDiccionario() -> bool {
+            println("");
+            println("===== Diccionario completo =====");
+
+            i >> int <- 0;
+            while (i < 12) {
+                println("  " + renderInt(i + 1) + ". " + palabra(i));
+                i >> int <- i + 1;
+            }
+
+            return true;
+        }
+
+        listarGrupo(letra >> str) -> bool {
+            println("");
+            println("===== Palabras por inicial =====");
+
+            if (letra == "c") {
+                println("  - casa");
+                println("  - casco");
+                println("  - cascada");
+                println("  - cafe");
+                println("  - calle");
+                println("  - carro");
+                return true;
+            }
+
+            if (letra == "g") {
+                println("  - gato");
+                println("  - gafas");
+                println("  - google");
+                println("  - gol");
+                println("  - goma");
+                return true;
+            }
+
+            if (letra == "p") {
+                println("  - programa");
+                return true;
+            }
+
+            println("  no hay grupo para esa inicial");
+            return false;
+        }
+
+        verEstadisticas() -> bool {
+            /*
+             * nodeCount cuenta nodos creados despues de la raiz.
+             * Sumamos 1 para incluir la raiz conceptual del Trie.
+             */
+            totalNodos >> int <- nodeCount + 1;
+
+            println("");
+            println("===== Estado del Trie =====");
+            println("  palabras guardadas: 12");
+            println("  nodos materializados: " + renderInt(totalNodos));
+            println("  aristas posibles reservadas: 3328");
+            println("  complejidad de prefijo: O(k)");
+            println("  complejidad de sugerencias: O(k + resultados)");
+            return true;
+        }
+
+        verPrefijos() -> bool {
+            println("");
+            println("===== Prefijos de prueba =====");
+            println("  c, ca, caf, cafe");
+            println("  cas, casa, casc, casca, cascad, cascada, casco");
+            println("  cal, call, calle, car, carr, carro");
+            println("  g, ga, gaf, gafa, gafas, gat, gato");
+            println("  go, goo, goog, googl, google, gol, gom, goma");
+            println("  p, pr, pro, prog, progr, progra, program, programa");
+            return true;
+        }
+
+        demoExactos() -> bool {
+            println("===== Demo de palabras completas =====");
+            buscar("casa");
+            buscar("casco");
+            buscar("cascada");
+            buscar("google");
+            buscar("programa");
+            return true;
+        }
+
+        demoFallos() -> bool {
+            println("===== Demo sin resultados =====");
+            buscar("x");
+            buscar("zz");
+            buscar("python");
+            return true;
+        }
+
+        verModeloTecnico() -> bool {
+            println("");
+            println("===== Modelo tecnico =====");
+            println("  1. Cada caracter es un paso desde la raiz.");
+            println("  2. children[nodo * 26 + letra] apunta al siguiente nodo.");
+            println("  3. terminal[nodo] marca fin de palabra.");
+            println("  4. wordId[nodo] enlaza el nodo final con el texto visible.");
+            println("  5. La cola recorre el subarbol del prefijo sin recursion.");
+            return true;
+        }
+
+        verMemoriaTecnica() -> bool {
+            println("");
+            println("===== Memoria y layout =====");
+            println("  children: memRegion<int>[3328]");
+            println("  terminal: memRegion<int>[128]");
+            println("  wordId: memRegion<int>[128]");
+            println("  nodeChar: memRegion<int>[128]");
+            println("  pendientes: queue<int>");
+            println("  TrieNode existe como type conceptual; las regiones son el layout eficiente.");
+            return true;
+        }
+
+        menuBuscar() -> bool {
+            activo >> bool <- true;
+
+            while (activo) {
+                println("");
+                println("===== Buscar =====");
+                println("  1. Introducir prefijo");
+                println("  2. Ver prefijos disponibles");
+                println("  3. Buscar varios ejemplos");
+                println("  0. Volver");
+                println("  salir. Cerrar programa");
+
+                op >> str <- pedir("buscar> ");
+                hecho >> bool <- false;
+
+                if (navegar(op)) {
+                    activo >> bool <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (op == "1") {
+                    prefix <- pedir("prefijo> ");
+                    buscar(prefix);
+                    hecho >> bool <- true;
+                }
+
+                if (op == "2") {
+                    verPrefijos();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "3") {
+                    buscar("ca");
+                    buscar("go");
+                    buscar("programa");
+                    hecho >> bool <- true;
+                }
+
+                if (!hecho) {
+                    println("opcion no reconocida");
+                }
+
+                if (!seguir) {
+                    activo >> bool <- false;
+                }
+            }
+
+            return true;
+        }
+
+        menuDiccionario() -> bool {
+            activo >> bool <- true;
+
+            while (activo) {
+                println("");
+                println("===== Diccionario =====");
+                println("  1. Ver todas las palabras");
+                println("  2. Filtrar por inicial");
+                println("  3. Ver estadisticas");
+                println("  0. Volver");
+                println("  salir. Cerrar programa");
+
+                op >> str <- pedir("diccionario> ");
+                hecho >> bool <- false;
+
+                if (navegar(op)) {
+                    activo >> bool <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (op == "1") {
+                    listarDiccionario();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "2") {
+                    letra >> str <- pedir("inicial c/g/p> ");
+                    listarGrupo(letra);
+                    hecho >> bool <- true;
+                }
+
+                if (op == "3") {
+                    verEstadisticas();
+                    hecho >> bool <- true;
+                }
+
+                if (!hecho) {
+                    println("opcion no reconocida");
+                }
+
+                if (!seguir) {
+                    activo >> bool <- false;
+                }
+            }
+
+            return true;
+        }
+
+        menuDemos() -> bool {
+            activo >> bool <- true;
+
+            while (activo) {
+                println("");
+                println("===== Demos =====");
+                println("  1. Demo de prefijos");
+                println("  2. Demo de palabras completas");
+                println("  3. Demo sin resultados");
+                println("  0. Volver");
+                println("  salir. Cerrar programa");
+
+                op >> str <- pedir("demos> ");
+                hecho >> bool <- false;
+
+                if (navegar(op)) {
+                    activo >> bool <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (op == "1") {
+                    demo();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "2") {
+                    demoExactos();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "3") {
+                    demoFallos();
+                    hecho >> bool <- true;
+                }
+
+                if (!hecho) {
+                    println("opcion no reconocida");
+                }
+
+                if (!seguir) {
+                    activo >> bool <- false;
+                }
+            }
+
+            return true;
+        }
+
+        menuTecnico() -> bool {
+            activo >> bool <- true;
+
+            while (activo) {
+                println("");
+                println("===== Tecnico =====");
+                println("  1. Ver modelo Trie");
+                println("  2. Ver memoria y regiones");
+                println("  3. Ver estadisticas");
+                println("  0. Volver");
+                println("  salir. Cerrar programa");
+
+                op >> str <- pedir("tecnico> ");
+                hecho >> bool <- false;
+
+                if (navegar(op)) {
+                    activo >> bool <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (op == "1") {
+                    verModeloTecnico();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "2") {
+                    verMemoriaTecnica();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "3") {
+                    verEstadisticas();
+                    hecho >> bool <- true;
+                }
+
+                if (!hecho) {
+                    println("opcion no reconocida");
+                }
+
+                if (!seguir) {
+                    activo >> bool <- false;
+                }
+            }
+
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+
+            while (seguir) {
+                println("");
+                println("====================================");
+                println("        Buscador Google Trie        ");
+                println("====================================");
+                println("  1. Buscar sugerencias");
+                println("  2. Diccionario");
+                println("  3. Demos");
+                println("  4. Tecnico");
+                println("  5. Salir");
+
+                op >> str <- pedir("menu> ");
+                hecho >> bool <- false;
+
+                if (op == "1") {
+                    menuBuscar();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "2") {
+                    menuDiccionario();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "3") {
+                    menuDemos();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "4") {
+                    menuTecnico();
+                    hecho >> bool <- true;
+                }
+
+                if (op == "5") {
+                    seguir <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (op == "salir") {
+                    seguir <- false;
+                    hecho >> bool <- true;
+                }
+
+                if (!hecho) {
+                    println("opcion no reconocida");
+                }
+            }
+
+            println("buscador cerrado");
+            return true;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+            regionInvalidate(children);
+            regionInvalidate(terminal);
+            regionInvalidate(wordId);
+            regionInvalidate(nodeChar);
+            free(pendientesStorage);
+            return true;
+        }
+
+}

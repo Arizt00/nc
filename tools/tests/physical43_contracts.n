@@ -1,0 +1,175 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:physical43_common, physical43_exact, physical43_portable, physical43_primitive, physical43_stages, physical43_final, physical43_boards, physical43_json, release_io, tool_cli, sha256>;
+
+physical43Contracts {
+    stc:
+        results >> int <- 0;
+        passed >> bool <- true;
+        repo >> str <- "";
+        work >> str <- "";
+    fn:
+        private:
+            record(name >> str, valid >> bool) -> void { physical43_common.physical43Common.put(results,name,jsonNewBool(valid)); passed <- passed && valid; if (!valid) println("FAIL "+name+": "+physical43_common.physical43Common.diagnostic()); physical43_common.physical43Common.reset(); }
+            set(model >> int, name >> str, value >> int) -> void { physical43_common.physical43Common.put(model,name,value); }
+            get(model >> int, name >> str) -> str { return physical43_common.physical43Common.field(model,name); }
+            invoke(exe >> str, tail >> int, cwd >> str) -> int { jsonArrayInsert(tail,0,jsonNewString(exe)); result >> int <- physical43_common.physical43Common.command(tail,cwd,180000); jsonRelease(tail); return result; }
+            git(cwd >> str, text >> str) -> str { row >> int <- invoke("git",jsonParse(text),cwd); result >> str <- physical43_common.physical43Common.stdoutText(row); if (!physical43_common.physical43Common.succeeded(row)) passed <- false; jsonRelease(row); return result; }
+            portableCompare(root >> str, label >> str, expected >> bool) -> void {
+                requirements >> int <- jsonNewArray(); native >> int <- physical43_portable.physical43Portable.verify(root,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",requirements); jsonRelease(requirements); record(label+"-frozen-exit-parity",(native != 0) == expected);
+                if (expected) {
+                    golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/physical43-goldens.json",false); reference >> int <- jsonObjectGet(golden,"portable_manifest"); jsonRelease(golden); rows >> int <- jsonObjectBorrow(reference,"certificates"); normalized >> int <- jsonNewArray(); at >> int <- 0;
+                    while (at < jsonArrayLen(rows)) { item >> int <- jsonArrayGet(rows,at); set(item,"path",jsonNewString(physical43_common.physical43Common.nativePath(root+"/"+get(item,"id")+"/certificate.json"))); physical43_common.physical43Common.push(normalized,item); at += 1; }
+                    jsonRelease(rows); set(reference,"certificates",normalized); checksum >> int <- jsonNewObject(); set(checksum,"path",jsonNewString(physical43_common.physical43Common.nativePath(root+"/SHA256SUMS"))); set(checksum,"files_verified",jsonNewInt(8)); normalized <- jsonNewArray(); physical43_common.physical43Common.push(normalized,checksum); set(reference,"checksum_files",normalized);
+                    record(label+"-frozen-json-parity",physical43_common.physical43Common.equal(native,reference)); jsonRelease(reference);
+                }
+                jsonRelease(native);
+            }
+            resign(path >> str, model >> int) -> void { schema >> str <- get(model,"schema"); if (schema == "ncc.machine.hypervisor_backend_certificate.v1" || schema == "ncc.machine.x86_virtualization_hardware_certificate.v1") { if (jsonObjectHas(model,"attestation")) { removed >> int <- jsonObjectRemove(model,"attestation"); jsonRelease(removed); } hash >> str <- physical43_common.physical43Common.digest(schema,model,false,false); attest >> int <- jsonNewObject(); set(attest,"payload_sha256",jsonNewString(hash)); set(model,"attestation",attest); } else { payload >> int <- jsonObjectBorrow(model,"payload"); set(model,"payload_sha256",jsonNewString(physical43_common.physical43Common.digest("ncc.machine.iommu_vfio_certificate.v1",payload,false,true))); jsonRelease(payload); } record("save-"+physical43_common.physical43Common.basename(path),physical43_common.physical43Common.save(path,model)); }
+            setPointer(model >> int, pointer >> str, value >> int) -> void {
+                data >> p<byte> <- cast(pointer); at >> int <- strByteLen(pointer)-1; while (at > 0 && rd(off(data,at)) != 47) { at -= 1; }
+                parentPath >> str <- strSubstring(pointer,0,at); name >> str <- strSubstring(pointer,at+1,strByteLen(pointer)-at-1);
+                // jsonPointer clones; rebuild ancestors explicitly rather than mutating a detached child.
+                parent >> int <- parentPath == "" ? jsonClone(model) : jsonPointer(model,parentPath); set(parent,name,value);
+                if (parentPath == "") { child >> int <- jsonObjectBorrow(parent,name); set(model,name,child); }
+                else setPointer(model,parentPath,jsonClone(parent));
+                jsonRelease(parent);
+            }
+            crypto() -> void {
+                record("sha256-known-vectors",sha256.nccSha256.selfTest());
+                logName >> str <- physical43_json.physical43Json.scalarText(233)+physical43_json.physical43Json.scalarText(8212)+physical43_json.physical43Json.scalarText(128578)+"a-1"; normalizedName >> str <- physical43_stages.physical43Stages.safeName(logName); record("final-log-name-unicode-alnum",normalizedName == physical43_json.physical43Json.scalarText(233)+"__a_1"); strRelease(normalizedName); strRelease(logName);
+                orderRoot >> str <- work+"/sort-contract"; physical43_common.physical43Common.write(orderRoot+"/a/file.log","nested\n"); physical43_common.physical43Common.write(orderRoot+"/a.z","flat\n"); excluded >> int <- jsonNewArray(); inventory >> int <- physical43_common.physical43Common.orderedInventory(orderRoot,excluded,false,false,true); record("exact-inventory-posix-string-order",physical43_common.physical43Common.textAt(inventory,"/0/path") == "a.z" && physical43_common.physical43Common.textAt(inventory,"/1/path") == "a/file.log"); jsonRelease(inventory); inventory <- physical43_common.physical43Common.inventory(orderRoot,excluded,false,false); record("final-inventory-path-component-order",physical43_common.physical43Common.textAt(inventory,"/0/path") == "a/file.log" && physical43_common.physical43Common.textAt(inventory,"/1/path") == "a.z"); jsonRelease(inventory); jsonRelease(excluded);
+                wide >> i64 <- 9223372036854775807; wideNode >> int <- physical43_common.physical43Common.integer64(wide); wideText >> str <- physical43_common.physical43Common.canonical(wideNode,true,0); record("json-signed-64-bit-integer",wideText == "9223372036854775807"); strRelease(wideText); jsonRelease(wideNode);
+                model >> int <- physical43_json.physical43Json.parse("{\"z\":\"\\b\\t\\n\\f\\r\",\"a\":\"\\u00e9\\ud83d\\ude42\",\"literal\":\"\\\\u000a\"}"); ascii >> str <- physical43_common.physical43Common.canonical(model,true,0);
+                record("canonical-ascii-control-unicode",ascii == "{\"a\":\"\\u00e9\\ud83d\\ude42\",\"literal\":\"\\\\u000a\",\"z\":\"\\b\\t\\n\\f\\r\"}");
+                utf >> str <- physical43_common.physical43Common.canonical(model,false,0); parsed >> int <- physical43_json.physical43Json.parse(utf); record("canonical-utf8-roundtrip",physical43_common.physical43Common.equal(model,parsed)); jsonRelease(parsed);
+                certificate >> int <- physical43_exact.physical43Exact.envelope("ncc.ci.exact_head_capture.v1",model,"selftest-key"); record("hmac-positive",physical43_exact.physical43Exact.verifyEnvelope(certificate,"ncc.ci.exact_head_capture.v1","selftest-key",true) == 1); record("hmac-wrong-key",physical43_exact.physical43Exact.verifyEnvelope(certificate,"ncc.ci.exact_head_capture.v1","wrong",true) < 0);
+                path >> str <- work+"/unicode-envelope.json"; physical43_common.physical43Common.save(path,certificate);
+                golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/physical43-goldens.json",false);
+                record("hmac-unicode-frozen-oracle",physical43_common.physical43Common.textAt(certificate,"/attestation/tag") == physical43_common.physical43Common.textAt(golden,"/hmac/unicode_tag") && physical43_common.physical43Common.textAt(certificate,"/integrity/payload_sha256") == physical43_common.physical43Common.textAt(golden,"/hmac/payload_sha256"));
+                longKey >> str <- ""; at >> int <- 0; while (at < 131) { longKey <- longKey+"a"; at += 1; } jsonRelease(certificate); certificate <- physical43_exact.physical43Exact.envelope("ncc.ci.exact_head_capture.v1",model,longKey); physical43_common.physical43Common.save(work+"/long-key.json",certificate);
+                record("hmac-long-key-frozen-oracle",physical43_common.physical43Common.textAt(certificate,"/attestation/tag") == physical43_common.physical43Common.textAt(golden,"/hmac/long_key_tag")); jsonRelease(golden);
+                jsonRelease(certificate); jsonRelease(model); strRelease(ascii); strRelease(utf);
+            }
+            invalidUtf8(name >> str, a >> int, b >> int, c >> int, d >> int, count >> int) -> void {
+                data >> p<byte> <- cast(alloc(8)); if (data == null) { record(name,false); return; }
+                wr<byte>(data,34); wr<byte>(off<byte>(data,1),a);
+                if (count > 1) wr<byte>(off<byte>(data,2),b); if (count > 2) wr<byte>(off<byte>(data,3),c); if (count > 3) wr<byte>(off<byte>(data,4),d);
+                wr<byte>(off<byte>(data,count+1),34); wr<byte>(off<byte>(data,count+2),0); text >> str <- cast(data); value >> int <- physical43_json.physical43Json.parse(text);
+                record(name,value == 0); if (value != 0) jsonRelease(value); free(data);
+            }
+            jsonBoundary() -> void {
+                key >> str <- physical43_json.physical43Json.scalarText(233)+physical43_json.physical43Json.scalarText(25991)+physical43_json.physical43Json.scalarText(128578);
+                value >> int <- physical43_json.physical43Json.parse("{\""+key+"\":1,\""+key+"\":2}");
+                child >> int <- jsonObjectBorrow(value,key); record("json-raw-unicode-duplicate-last-wins",jsonObjectLen(value) == 1 && jsonGetNumberText(child) == "2"); if (child != 0) jsonRelease(child); if (value != 0) jsonRelease(value); strRelease(key);
+                invalidUtf8("json-invalid-utf8-continuation",128,0,0,0,1);
+                invalidUtf8("json-invalid-utf8-overlong",192,175,0,0,2);
+                invalidUtf8("json-invalid-utf8-surrogate",237,160,128,0,3);
+                invalidUtf8("json-invalid-utf8-over-max",244,144,128,128,4);
+                invalidUtf8("json-invalid-utf8-truncated",226,130,0,0,2);
+                invalid >> int <- jsonNewArray();
+                physical43_common.physical43Common.push(invalid,jsonNewString("{\"x\":\"\\ud800\"}"));
+                physical43_common.physical43Common.push(invalid,jsonNewString("{\"x\":\"\\ud800\\u"));
+                physical43_common.physical43Common.push(invalid,jsonNewString("{\"x\":}"));
+                at >> int <- 0; while (at < jsonArrayLen(invalid)) { item >> int <- jsonArrayBorrow(invalid,at); value <- physical43_json.physical43Json.parse(jsonStringView(item,"")); record("json-invalid-boundary-"+renderInt(at),value == 0); if (value != 0) jsonRelease(value); jsonRelease(item); at += 1; } jsonRelease(invalid);
+            }
+            schemaNumbers() -> void {
+                golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/physical43-schema-goldens.json",false); envelopes >> int <- jsonObjectBorrow(golden,"exact_envelopes"); at >> int <- 0;
+                while (at < jsonArrayLen(envelopes)) {
+                    input >> int <- jsonArrayBorrow(envelopes,at); expected >> int <- physical43_json.physical43Json.parse(jsonStringView(input,"")); jsonRelease(input); payload >> int <- jsonObjectBorrow(expected,"payload"); schema >> str <- get(expected,"schema");
+                    record("exact-float-frozen-envelope-accepted-"+renderInt(at),physical43_exact.physical43Exact.verifyEnvelope(expected,schema,"physical43-native-key",true) == 1);
+                    had >> bool <- envHas("NCC_CI_EVIDENCE_HMAC_KEY_ID"); old >> str <- physical43_common.physical43Common.env("NCC_CI_EVIDENCE_HMAC_KEY_ID"); keyId >> str <- physical43_common.physical43Common.textAt(expected,"/attestation/key_id"); envSet("NCC_CI_EVIDENCE_HMAC_KEY_ID",keyId);
+                    actual >> int <- physical43_exact.physical43Exact.envelope(schema,payload,"physical43-native-key"); if (had) envSet("NCC_CI_EVIDENCE_HMAC_KEY_ID",old); else envRemove("NCC_CI_EVIDENCE_HMAC_KEY_ID");
+                    record("exact-float-frozen-envelope-equal-"+renderInt(at),physical43_common.physical43Common.equal(actual,expected)); jsonRelease(actual); jsonRelease(payload); jsonRelease(expected); strRelease(schema); strRelease(old); strRelease(keyId); at += 1;
+                }
+                jsonRelease(envelopes); rows >> int <- jsonObjectBorrow(golden,"portable_certificates"); at <- 0;
+                while (at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,at); id >> str <- get(row,"id"); inputText >> str <- get(row,"document_input"); document >> int <- physical43_json.physical43Json.parse(inputText); expectedRecord >> int <- jsonObjectBorrow(row,"record"); path >> str <- work+"/schema-numbers/"+id+"/certificate.json";
+                    record("portable-float-fixture-save-"+id,physical43_common.physical43Common.save(path,document)); actualRecord >> int <- physical43_portable.physical43Portable.certificate(path,document,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); record("portable-float-frozen-certificate-accepted-"+id,actualRecord != 0);
+                    set(expectedRecord,"path",jsonNewString(physical43_common.physical43Common.nativePath(path))); record("portable-float-frozen-record-equal-"+id,physical43_common.physical43Common.equal(actualRecord,expectedRecord));
+                    if (actualRecord != 0) jsonRelease(actualRecord); jsonRelease(expectedRecord); jsonRelease(document); jsonRelease(row); strRelease(id); strRelease(inputText); strRelease(path); at += 1;
+                }
+                jsonRelease(rows); jsonRelease(golden);
+            }
+            exactCompatibility(root >> str, sha >> str, roles >> int) -> void {
+                original >> int <- physical43_common.physical43Common.read(root+"/evidence-certificate.json",false); suffixes >> int <- jsonParse("[\".0\",\"e0\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(suffixes)) {
+                    payload >> int <- jsonObjectGet(original,"payload"); entries >> int <- jsonObjectBorrow(payload,"files"); changed >> int <- jsonNewArray(); index >> int <- 0; suffix >> int <- jsonArrayBorrow(suffixes,at);
+                    while (index < jsonArrayLen(entries)) { entry >> int <- jsonArrayGet(entries,index); value >> int <- jsonObjectBorrow(entry,"bytes"); size >> str <- jsonGetNumberText(value); set(entry,"bytes",jsonParse(size+jsonStringView(suffix,""))); physical43_common.physical43Common.push(changed,entry); jsonRelease(value); strRelease(size); index += 1; }
+                    jsonRelease(entries); jsonRelease(suffix); set(payload,"files",changed); metadata >> int <- physical43_json.physical43Json.parseCertification("{\"label\\u0000tail\":\"fixture\\u0000only\",\"minus_zero\":-0.0}"); set(payload,"compatibility_metadata",metadata);
+                    certificate >> int <- physical43_exact.physical43Exact.envelope("ncc.ci.exact_head_evidence_certificate.v1",payload,"fixture-key"); record("exact-semantic-size-save-"+renderInt(at),physical43_common.physical43Common.save(root+"/evidence-certificate.json",certificate)); jsonRelease(certificate); jsonRelease(payload);
+                    record("exact-semantic-size-sums-"+renderInt(at),physical43_exact.physical43Exact.writeSums(root));
+                    verified >> int <- physical43_exact.physical43Exact.verify(root,sha,"fixture-key",true,false,roles); record("exact-NUL-signed-float-size-"+renderInt(at),verified != 0); if (verified != 0) jsonRelease(verified);
+                    if (at == 1) {
+                        retained >> str <- work+"/exact-valid"; names >> int <- physical43_common.physical43Common.files(root,true); index <- 0;
+                        while (index < jsonArrayLen(names)) { name >> int <- jsonArrayBorrow(names,index); path >> str <- jsonStringView(name,""); physical43_common.physical43Common.directories(release_io.releaseIo.directory(retained+"/"+path)); record("exact-paired-copy-"+path,physical43_common.physical43Common.copy(root+"/"+path,retained+"/"+path)); jsonRelease(name); index += 1; } jsonRelease(names);
+                        physical43_common.physical43Common.write(retained+"/../exact-valid-sha.txt",sha);
+                    }
+                    at += 1;
+                }
+                record("exact-restore-integer-certificate",physical43_common.physical43Common.save(root+"/evidence-certificate.json",original)); record("exact-restore-sums",physical43_exact.physical43Exact.writeSums(root)); jsonRelease(original); jsonRelease(suffixes);
+            }
+            exact() -> void {
+                lab >> str <- work+"/git-repo"; root >> str <- lab+"/evidence"; physical43_common.physical43Common.directories(lab); git(lab,"[\"init\",\"-q\"]"); git(lab,"[\"config\",\"user.name\",\"physical43 fixtures\"]"); git(lab,"[\"config\",\"user.email\",\"fixtures@ncc.invalid\"]"); physical43_common.physical43Common.write(lab+"/.gitignore","/evidence/\n"); physical43_common.physical43Common.write(lab+"/source.n","fixture bytes\n"); git(lab,"[\"add\",\".gitignore\",\"source.n\"]"); git(lab,"[\"commit\",\"-q\",\"-m\",\"fixture\"]"); sha >> str <- git(lab,"[\"rev-parse\",\"HEAD\"]");
+                model >> int <- physical43_exact.physical43Exact.capture(lab,root+"/exact-head.json",sha,"controlled-fixture","hosted","fixture-key"); record("exact-native-capture",model != 0); jsonRelease(model); physical43_common.physical43Common.write(root+"/boot.log","fixture only\n"); physical43_common.physical43Common.write(root+"/image.o","fixture object bytes (not material evidence)\n"); physical43_common.physical43Common.write(root+"/image.disasm.txt","fixture disassembly\n"); model <- physical43_exact.physical43Exact.sealBundle(root,sha,"fixture-key",lab); record("exact-native-seal",model != 0); jsonRelease(model);
+                roles >> int <- jsonParse("[\"image\",\"disassembly\",\"log\"]"); native >> int <- physical43_exact.physical43Exact.verify(root,sha,"fixture-key",true,false,roles); record("exact-native-verify",native != 0);
+                expected >> int <- jsonParse("{\"schema\":\"ncc.ci.exact_head_evidence_verification.v1\",\"status\":\"verified\",\"lane\":\"controlled-fixture\",\"runner_class\":\"hosted\",\"files\":4,\"roles\":[\"disassembly\",\"image\",\"log\",\"metadata\"],\"capture_hmac_verified\":true,\"certificate_hmac_verified\":true}"); set(expected,"exact_head",jsonNewString(sha)); record("exact-frozen-oracle-verification",physical43_common.physical43Common.equal(native,expected)); jsonRelease(expected); jsonRelease(native);
+                exactCompatibility(root,sha,roles);
+                native <- physical43_exact.physical43Exact.verify(root,sha,"fixture-key",true,true,roles); record("exact-hosted-not-physical",native == 0); jsonRelease(native);
+                physical43_common.physical43Common.write(root+"/unindexed.txt","extra\n"); native <- physical43_exact.physical43Exact.verify(root,sha,"fixture-key",true,false,roles); record("exact-extra-file-rejected",native == 0); jsonRelease(native); delete_file(root+"/unindexed.txt");
+                physical43_common.physical43Common.write(root+"/boot.log","tampered\n"); native <- physical43_exact.physical43Exact.verify(root,sha,"fixture-key",true,false,roles); record("exact-tamper-rejected",native == 0); jsonRelease(native);
+                physical43_common.physical43Common.write(lab+"/dirty.txt","dirty\n"); model <- physical43_exact.physical43Exact.capture(lab,work+"/dirty-capture.json",sha,"fixture","hosted",""); record("exact-dirty-capture-rejected",model == 0); jsonRelease(model); jsonRelease(roles);
+                record("safe-traversal-rejected",!physical43_common.physical43Common.safeRelative("../escape")); record("safe-drive-rejected",!physical43_common.physical43Common.safeRelative("C:/escape")); record("safe-backslash-rejected",!physical43_common.physical43Common.safeRelative("a\\b")); record("safe-relative-accepted",physical43_common.physical43Common.safeRelative("nested/boot.log"));
+                physical43_common.physical43Common.write(work+"/bad-sums","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  boot.log\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  boot.log\n"); model <- physical43_exact.physical43Exact.sums(work+"/bad-sums"); record("duplicate-checksums-rejected",model == 0); jsonRelease(model);
+            }
+            portable() -> void {
+                root >> str <- work+"/portable"; physical43_common.physical43Common.directories(root); paths >> int <- jsonParse("[\"backend\",\"hardware\",\"viommu\",\"control\",\"physical\"]"); at >> int <- 0;
+                backend >> int <- physical43_json.physical43Json.parse("{\"schema\":\"ncc.machine.hypervisor_backend_certificate.v1\",\"provider\":\"controlled-fixture\",\"status\":\"fixture-only\",\"truth_boundary\":{\"provider_api_executed\":true,\"guest_code_executed_on_cpu\":true},\"execution\":{\"provider_api_executed\":true,\"guest_code_executed\":true,\"final_halt\":true,\"deadline_enforced\":true},\"source\":{\"github_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"git_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"exact_head_match\":true},\"fixture_label\":\"NOT physical or CI evidence: \\u00e9 \\ud83d\\ude42\"}");
+                hardware >> int <- jsonParse("{\"schema\":\"ncc.machine.x86_virtualization_hardware_certificate.v1\",\"status\":\"fixture-only\",\"host\":{\"architecture\":\"x86_64\",\"cpuid\":{\"vendor\":\"GenuineIntel\"}},\"truth_boundary\":{\"cpu_backed_execution\":true,\"kvm_acceleration\":true,\"bare_metal_board\":true,\"physical_board_certificate\":true,\"blocked_run_recovery_executed\":true,\"multi_vcpu_delivery_executed\":true},\"execution\":{\"results\":{\"unmapped_gpa_mmio_write_exit\":true,\"unmapped_gpa_mmio_read_exit\":true,\"final_halt\":true,\"deadline_enforced\":true,\"invalid_opcode_exception_delivered\":true,\"external_interrupt_vector_0x20_delivered\":true},\"failure_recovery\":{\"kvm_run_interrupted\":true,\"vcpu_reentered_after_interrupt\":true},\"direct_platform\":{\"smp\":{\"passed\":true}}}}");
+                source >> int <- jsonObjectBorrow(backend,"source"); jsonObjectSet(hardware,"source",source); jsonRelease(source); models >> int <- jsonNewArray(); jsonArrayPush(models,backend); jsonArrayPush(models,hardware);
+                kinds >> int <- jsonParse("[\"viommu_material_model\",\"vfio_control_plane\",\"vfio_physical_passthrough\"]"); fields >> int <- jsonParse("[\"physical_iommu_executed\",\"vfio_passthrough_executed\",\"iommu_dma_map_unmap_executed\",\"provider_api_executed\",\"dma_map_unmap_executed\",\"teardown_complete\",\"device_generated_dma_executed\",\"device_reset_performed\",\"msix_eventfd_delivered\",\"vfio_interrupt_remapping_path_executed\",\"iova_isolation_executed\",\"iommu_group_isolation_verified\",\"hardware_iommu_architecture_identified\"]");
+                while (at < 3) { payload >> int <- jsonParse("{\"schema\":\"ncc.machine.iommu_vfio_certificate.v1\",\"status\":\"fixture-only\",\"truth_boundary\":{\"software_viommu_executed\":true,\"dma_translation_materialized\":true,\"fault_and_invalidation_queues_executed\":true},\"model\":{\"material_execution\":true},\"exercise\":{\"schema\":\"ncc.machine.vfio_dma_exercise.v1\"},\"vfio\":{\"mode\":\"controlled-fixture\"}}"); set(payload,"kind",jsonArrayGet(kinds,at)); set(payload,"source",jsonObjectGet(backend,"source")); boundary >> int <- jsonObjectGet(payload,"truth_boundary"); vfio >> int <- jsonObjectGet(payload,"vfio"); index >> int <- 0; while (index < jsonArrayLen(fields)) { name >> int <- jsonArrayBorrow(fields,index); set(boundary,jsonStringView(name,""),jsonNewBool(true)); set(vfio,jsonStringView(name,""),jsonNewBool(true)); jsonRelease(name); index += 1; } set(payload,"truth_boundary",boundary); set(payload,"vfio",vfio); document >> int <- jsonNewObject(); set(document,"payload",payload); physical43_common.physical43Common.push(models,document); at += 1; }
+                at <- 0; while (at < 5) { model >> int <- jsonArrayGet(models,at); pathNode >> int <- jsonArrayBorrow(paths,at); path >> str <- root+"/"+jsonStringView(pathNode,"")+"/certificate.json"; resign(path,model); jsonRelease(model); jsonRelease(pathNode); at += 1; }
+                targets >> int <- jsonParse("[\"aarch64-unknown-none\",\"riscv64-unknown-elf\",\"riscv32imac-unknown-elf\"]"); at <- 0; while (at < 3) { item >> int <- jsonArrayBorrow(targets,at); physical43_common.physical43Common.write(root+"/"+jsonStringView(item,"")+"/fixture.o","controlled fixture bytes, not an object certification\n"); jsonRelease(item); at += 1; }
+                physical43_exact.physical43Exact.writeSums(root); portableCompare(root,"portable-all-five-kinds",true);
+                frozenContracts >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/physical43-contracts.json",false); requiredFlags >> int <- jsonObjectBorrow(frozenContracts,"portable_required_flags"); negativeValues >> int <- jsonObjectBorrow(frozenContracts,"negative_values"); at <- 0;
+                while (at < 5) {
+                    requiredForKind >> int <- jsonArrayBorrow(requiredFlags,at); pathNode >> int <- jsonArrayBorrow(paths,at); fixturePath >> str <- root+"/"+jsonStringView(pathNode,"")+"/certificate.json"; flagAt >> int <- 0;
+                    while (flagAt < jsonArrayLen(requiredForKind)) {
+                        pointerNode >> int <- jsonArrayBorrow(requiredForKind,flagAt); mutationAt >> int <- 0;
+                        while (mutationAt < jsonArrayLen(negativeValues)) {
+                            changed >> int <- jsonArrayGet(models,at); setPointer(changed,jsonStringView(pointerNode,""),jsonArrayGet(negativeValues,mutationAt)); resign(fixturePath,changed);
+                            rejected >> int <- physical43_portable.physical43Portable.certificate(fixturePath,changed,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); record("portable-required-"+jsonStringView(pathNode,"")+"-"+renderInt(flagAt)+"-type-"+renderInt(mutationAt),rejected == 0); jsonRelease(rejected); jsonRelease(changed); mutationAt += 1;
+                        }
+                        jsonRelease(pointerNode); flagAt += 1;
+                    }
+                    changed >> int <- jsonArrayGet(models,at); resign(fixturePath,changed); jsonRelease(changed); jsonRelease(pathNode); jsonRelease(requiredForKind); at += 1;
+                }
+                jsonRelease(negativeValues); jsonRelease(requiredFlags); jsonRelease(frozenContracts); physical43_exact.physical43Exact.writeSums(root);
+                pointers >> int <- jsonParse("[\"/truth_boundary/provider_api_executed\",\"/execution/results/external_interrupt_vector_0x20_delivered\",\"/payload/truth_boundary/software_viommu_executed\",\"/payload/vfio/teardown_complete\",\"/payload/truth_boundary/device_generated_dma_executed\"]"); at <- 0;
+                while (at < 5) { model >> int <- jsonArrayGet(models,at); pathNode >> int <- jsonArrayBorrow(paths,at); pointer >> int <- jsonArrayBorrow(pointers,at); path >> str <- root+"/"+jsonStringView(pathNode,"")+"/certificate.json"; setPointer(model,jsonStringView(pointer,""),jsonNewString("true")); resign(path,model); physical43_exact.physical43Exact.writeSums(root); portableCompare(root,"portable-false-typed-"+jsonStringView(pathNode,""),false); jsonRelease(model); model <- jsonArrayGet(models,at); resign(path,model); physical43_exact.physical43Exact.writeSums(root); jsonRelease(model); jsonRelease(pathNode); jsonRelease(pointer); at += 1; }
+                physical43_common.physical43Common.write(root+"/riscv32imac-unknown-elf/fixture.o",""); physical43_exact.physical43Exact.writeSums(root); portableCompare(root,"portable-incomplete-targets",false);
+                jsonRelease(backend); jsonRelease(hardware); jsonRelease(models); jsonRelease(kinds); jsonRelease(fields); jsonRelease(paths); jsonRelease(targets); jsonRelease(pointers);
+            }
+            finalContracts() -> void {
+                phases >> int <- physical43_stages.physical43Stages.phases(); matrix >> int <- jsonNewObject(); set(matrix,"schema",jsonNewString("ncc.final_certification.target_matrix.v1")); jsonObjectSet(matrix,"required_pipeline_phases",phases); set(matrix,"routes",jsonNewArray()); path >> str <- work+"/matrix.json"; physical43_common.physical43Common.save(path,matrix); model >> int <- physical43_stages.physical43Stages.matrix(path,repo); record("final-valid-matrix",model != 0); jsonRelease(model);
+                set(matrix,"schema",jsonNewString("wrong")); physical43_common.physical43Common.save(path,matrix); model <- physical43_stages.physical43Stages.matrix(path,repo); record("final-schema-rejected",model == 0); jsonRelease(model);
+                set(matrix,"schema",jsonNewString("ncc.final_certification.target_matrix.v1")); set(matrix,"required_pipeline_phases",jsonParse("[\"parser\"]")); physical43_common.physical43Common.save(path,matrix); model <- physical43_stages.physical43Stages.matrix(path,repo); record("final-incomplete-phases-rejected",model == 0); jsonRelease(model);
+                native >> int <- jsonParse("[{\"status\":\"passed\"}]"); stress >> int <- jsonClone(native); routes >> int <- jsonParse("[{\"id\":\"board\",\"physical_required\":true,\"material_status\":\"passed\",\"execution_status\":\"not_executed_runner_mismatch\"}]"); physical >> int <- jsonNewArray(); summary >> int <- physical43_final.physical43Final.summarize(native,routes,stress,physical); record("physical-not-certified-without-manifest",get(summary,"physical_status") == "not_executed_no_hardware_manifest" && get(summary,"certification_status") == "software_certified_execution_partial"); jsonRelease(summary);
+                row >> int <- jsonParse("{\"status\":\"passed\",\"route_id\":\"unrelated\"}"); jsonArrayPush(physical,row); summary <- physical43_final.physical43Final.summarize(native,routes,stress,physical); record("physical-unrelated-route-not-certified",get(summary,"physical_status") == "failed"); jsonRelease(summary); jsonRelease(row);
+                contract >> int <- jsonParse("{\"command\":[],\"serial_log\":\"unused\",\"expected_serial_sequence\":[\"BOOT\"]}"); model <- physical43_stages.physical43Stages.qemu("invalid",contract,repo,work); record("qemu-command-contract",get(model,"status") == "failed" && get(model,"diagnostic") == "E_FINAL_CERT_QEMU_CONTRACT_001: invalid command array"); jsonRelease(model); set(contract,"command",jsonParse("[\"physical43-unavailable-runner\"]")); set(contract,"timeout_seconds",jsonNewInt(121)); model <- physical43_stages.physical43Stages.qemu("invalid",contract,repo,work); record("qemu-timeout-contract",get(model,"diagnostic") == "E_FINAL_CERT_QEMU_CONTRACT_004: invalid timeout"); jsonRelease(model);
+                set(contract,"timeout_seconds",jsonNewInt(1)); model <- physical43_stages.physical43Stages.qemu("unavailable",contract,repo,work); record("qemu-unavailable-not-passed",get(model,"status") == "not_executed_runner_mismatch"); jsonRelease(model);
+                evidence >> int <- jsonParse("{\"primitive-image-size\":\"512\",\"primitive-boot-signature\":\"55aa\",\"primitive-opcodes\":\"ba,ee,ec,a8,f4\",\"primitive-elf-magic\":\"7f454c46\"}"); physical43_common.physical43Common.write(work+"/serial.log","n.C .primitive\x1b[malive\n"); record("primitive-serial-negative",!physical43_primitive.physical43Primitive.fields(evidence,work+"/serial.log")); physical43_common.physical43Common.write(work+"/serial.log","n.C .primitive alive\n"); record("primitive-fields-positive",physical43_primitive.physical43Primitive.fields(evidence,work+"/serial.log")); set(evidence,"primitive-image-size",jsonNewInt(512)); record("primitive-string-field-required",!physical43_primitive.physical43Primitive.fields(evidence,work+"/serial.log"));
+                jsonRelease(evidence); jsonRelease(contract); jsonRelease(native); jsonRelease(stress); jsonRelease(routes); jsonRelease(physical); jsonRelease(matrix); jsonRelease(phases);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(arguments,"|--repo|--work|","");
+                repo <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--repo",".")); work <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--work","target/tmp/physical43/contracts-"+renderInt(nowMs())));
+                physical43_common.physical43Common.directories(work); results <- jsonNewObject(); jsonBoundary(); crypto(); schemaNumbers(); exact(); portable(); finalContracts();
+                report >> int <- jsonNewObject(); set(report,"schema",jsonNewString("nc.physical43.contract-tests.v1")); set(report,"scope",jsonNewString("native frozen-oracle regressions; no Python dependency, physical or CI certification")); set(report,"passed",jsonNewBool(passed)); jsonObjectSet(report,"checks",results); record("report-written",physical43_common.physical43Common.save(work+"/tests.json",report)); physical43_common.physical43Common.print(report); jsonRelease(report); jsonRelease(results); jsonRelease(options); argsRelease(arguments); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

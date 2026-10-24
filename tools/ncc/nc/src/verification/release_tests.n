@@ -1,0 +1,233 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, release_layout, release_notes, machine_ci_verify, sha256>;
+
+releaseTests {
+    local:
+        checks >> int <- 0;
+        failed >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, valid >> bool) -> void {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"name",jsonNewString(name));
+                jsonObjectSet(row,"passed",jsonNewBool(valid));
+                jsonArrayPush(checks,row);
+                if (!valid) failed += 1;
+                println((valid ? "PASS " : "FAIL ")+name);
+            }
+            layoutFixture(directory >> str) -> int {
+                release_io.releaseIo.makeDirectories(directory+"/bin");
+                logical >> int <- jsonNewObject();
+                bins >> int <- release_layout.releaseLayout.bins();
+                index >> int <- 0;
+                while (index < jsonArrayLen(bins)) {
+                    name >> str <- jsonGetString(jsonArrayGet(bins,index));
+                    jsonObjectSet(logical,name,jsonNewString("bin/"+name));
+                    release_io.releaseIo.write(directory+"/bin/"+name,"fixture, not an executable\n");
+                    index += 1;
+                }
+                data >> int <- jsonNewObject();
+                jsonObjectSet(data,"schema",jsonNewString("nc.phase10.toolchain.layout.v1"));
+                jsonObjectSet(data,"logical_layout_id",jsonNewString("nc.toolchain.layout.v1"));
+                jsonObjectSet(data,"logical_bins",logical);
+                jsonObjectSet(data,"version",jsonNewString("2.0.0"));
+                jsonObjectSet(data,"target",jsonNewString("test-target"));
+                jsonObjectSet(data,"os",jsonNewString("fixture"));
+                release_io.releaseIo.save(directory+"/layout.v1.json",data);
+                release_io.releaseIo.write(directory+"/manifest.v1.json","{}");
+                jsonRelease(bins);
+                return data;
+            }
+            layoutPass(data >> int, directory >> str) -> bool {
+                row >> int <- release_layout.releaseLayout.inspect(data,directory,directory+"/layout.v1.json");
+                valid >> bool <- release_io.releaseIo.field(row,"status") == "ok";
+                jsonRelease(row);
+                return valid;
+            }
+            layouts(work >> str) -> void {
+                dir >> str <- work+"/staging/linux/toolchain";
+                data >> int <- layoutFixture(dir);
+                expect("layout-valid",layoutPass(data,dir));
+                list >> int <- release_layout.releaseLayout.bins();
+                index >> int <- 0;
+                while (index < jsonArrayLen(list)) {
+                    name >> str <- jsonGetString(jsonArrayGet(list,index));
+                    file >> str <- dir+"/bin/"+name;
+                    delete_file(file);
+                    expect("layout-missing-"+name,!layoutPass(data,dir));
+                    release_io.releaseIo.write(file,"fixture");
+                    index += 1;
+                }
+                broken >> int <- jsonClone(data);
+                jsonObjectSet(broken,"schema",jsonNewString("wrong"));
+                expect("layout-schema",!layoutPass(broken,dir)); jsonRelease(broken);
+                broken <- jsonClone(data); jsonObjectRemove(broken,"logical_layout_id");
+                expect("layout-id",!layoutPass(broken,dir)); jsonRelease(broken);
+                broken <- jsonClone(data); jsonObjectSet(broken,"logical_bins",jsonNewArray());
+                expect("layout-map-type",!layoutPass(broken,dir)); jsonRelease(broken);
+                broken <- jsonClone(data);
+                bins >> int <- jsonObjectGet(broken,"logical_bins");
+                jsonObjectSet(bins,"ncc",jsonNewString("../escape")); jsonObjectSet(broken,"logical_bins",bins);
+                expect("layout-escape",!layoutPass(broken,dir)); jsonRelease(broken);
+                broken <- jsonClone(data);
+                bins <- jsonObjectGet(broken,"logical_bins");
+                jsonObjectSet(bins,"ncc",jsonNewString("bin\\ncc")); jsonObjectSet(broken,"logical_bins",bins);
+                expect("layout-windows-relative-path",layoutPass(broken,dir)); jsonRelease(broken);
+                release_io.releaseIo.write(dir+"/bin/ncc..exe","fixture");
+                broken <- jsonClone(data);
+                bins <- jsonObjectGet(broken,"logical_bins");
+                jsonObjectSet(bins,"ncc",jsonNewString("bin/ncc..exe")); jsonObjectSet(broken,"logical_bins",bins);
+                expect("layout-dots-in-basename",layoutPass(broken,dir)); jsonRelease(broken);
+                delete_file(dir+"/manifest.v1.json");
+                expect("layout-metadata",!layoutPass(data,dir));
+                release_io.releaseIo.write(dir+"/manifest.v1.json","{}");
+                report >> int <- release_layout.releaseLayout.verify(work+"/staging");
+                expect("layout-enumeration",release_io.releaseIo.number(report,"exit_code",-1) == 0); jsonRelease(report);
+                report <- release_layout.releaseLayout.verify(work+"/absent");
+                expect("layout-absent",release_io.releaseIo.number(report,"exit_code",-1) == 2); jsonRelease(report);
+                release_io.releaseIo.write(dir+"/layout.v1.json","broken");
+                report <- release_layout.releaseLayout.verify(work+"/staging");
+                expect("layout-malformed-json",release_io.releaseIo.number(report,"exit_code",-1) == 1); jsonRelease(report);
+                release_io.releaseIo.save(dir+"/layout.v1.json",data);
+                expect("layout-after-atomic-replace",layoutPass(data,dir));
+                jsonRelease(list); jsonRelease(data);
+            }
+            requirement(kind >> str, target >> str) -> int {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item,"kind",jsonNewString(kind));
+                jsonObjectSet(item,"target",jsonNewString(target));
+                jsonObjectSet(item,"status",jsonNewString("passed"));
+                return item;
+            }
+            laneFixture(lane >> str) -> int {
+                spec >> int <- machine_ci_verify.machineCiVerify.spec(lane);
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"lane_id",jsonNewString(lane));
+                jsonObjectSet(row,"host",jsonObjectGet(spec,"host"));
+                jsonObjectSet(row,"arch",jsonObjectGet(spec,"arch"));
+                jsonObjectSet(row,"toolchain",jsonObjectGet(spec,"toolchain"));
+                jsonObjectSet(row,"status",jsonNewString("passed"));
+                jsonObjectSet(row,"fixture",jsonNewBool(true));
+                jsonObjectSet(row,"evidence_hash",jsonNewString("synthetic-test-only"));
+                jsonObjectSet(row,"head_sha",jsonNewString("fixture-head"));
+                requirements >> int <- jsonNewArray();
+                target >> str <- release_io.releaseIo.field(spec,"target");
+                jsonArrayPush(requirements,requirement("link_smoke",target));
+                jsonArrayPush(requirements,requirement("link_smoke","wasm32-unknown-unknown"));
+                if (jsonGetBoolOr(jsonObjectGet(spec,"loader"),false)) jsonArrayPush(requirements,requirement("system_loader_smoke",target));
+                jsonObjectSet(row,"required",requirements);
+                jsonRelease(spec);
+                return row;
+            }
+            lanePass(lane >> str, row >> int, head >> str) -> bool {
+                errors >> int <- jsonNewArray();
+                machine_ci_verify.machineCiVerify.validate(lane,row,head,errors);
+                valid >> bool <- jsonArrayLen(errors) == 0;
+                jsonRelease(errors);
+                return valid;
+            }
+            machines(work >> str) -> void {
+                lanes >> int <- machine_ci_verify.machineCiVerify.lanes();
+                root >> str <- work+"/evidence";
+                index >> int <- 0;
+                while (index < jsonArrayLen(lanes)) {
+                    lane >> str <- jsonGetString(jsonArrayGet(lanes,index));
+                    row >> int <- laneFixture(lane);
+                    expect("ci-valid-"+lane,lanePass(lane,row,"fixture-head"));
+                    fields >> int <- jsonParse("[\"host\",\"arch\",\"toolchain\",\"status\",\"evidence_hash\",\"required\"]");
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(fields)) {
+                        key >> str <- jsonGetString(jsonArrayGet(fields,at));
+                        bad >> int <- jsonClone(row); jsonObjectRemove(bad,key);
+                        expect("ci-missing-"+lane+"-"+key,!lanePass(lane,bad,"fixture-head"));
+                        jsonRelease(bad); at += 1;
+                    }
+                    expect("ci-wrong-head-"+lane,!lanePass(lane,row,"other-head"));
+                    file >> str <- root+"/"+lane+"/machine_ci_evidence.json";
+                    expect("ci-save-"+lane,release_io.releaseIo.save(file,row));
+                    jsonRelease(fields); jsonRelease(row); index += 1;
+                }
+                summary >> int <- machine_ci_verify.machineCiVerify.aggregate(root,"fixture-head","2026-01-01T00:00:00Z");
+                expect("ci-aggregate",release_io.releaseIo.field(summary,"status") == "passed");
+                hash >> str <- release_io.releaseIo.field(summary,"evidence_hash");
+                jsonObjectRemove(summary,"evidence_hash");
+                serialized >> str <- jsonStringify(summary);
+                expect("ci-aggregate-hash",hash == sha256.nccSha256.bytes(cast<byte>(serialized),strByteLen(serialized)));
+                strRelease(serialized); jsonRelease(summary);
+                duplicate >> int <- laneFixture("linux-gnu-x86_64");
+                release_io.releaseIo.save(root+"/duplicate/machine_ci_evidence.json",duplicate);
+                summary <- machine_ci_verify.machineCiVerify.aggregate(root,"fixture-head","fixed");
+                expect("ci-duplicate",release_io.releaseIo.field(summary,"status") == "failed"); jsonRelease(summary);
+                delete_file(root+"/duplicate/machine_ci_evidence.json");
+                release_io.releaseIo.write(root+"/duplicate/machine_ci_evidence.json","{");
+                summary <- machine_ci_verify.machineCiVerify.aggregate(root,"fixture-head","fixed");
+                expect("ci-malformed-json",release_io.releaseIo.field(summary,"status") == "failed"); jsonRelease(summary);
+                delete_file(root+"/duplicate/machine_ci_evidence.json");
+                delete_file(root+"/linux-gnu-x86_64/machine_ci_evidence.json");
+                summary <- machine_ci_verify.machineCiVerify.aggregate(root,"fixture-head","fixed");
+                expect("ci-missing-lane",release_io.releaseIo.field(summary,"status") == "failed"); jsonRelease(summary);
+                release_io.releaseIo.save(root+"/linux-gnu-x86_64/machine_ci_evidence.json",duplicate);
+                jsonRelease(duplicate); jsonRelease(lanes);
+            }
+            notes(work >> str) -> void {
+                root >> str <- work+"/notes-root";
+                output >> str <- work+"/notes-output";
+                stamp >> str <- "2026-01-01T00:00:00Z";
+                expect("notes-missing-generated",release_notes.releaseNotes.generate(root,output,stamp));
+                md >> str <- release_io.releaseIo.text(output+"/v2_0_0_release_notes.md");
+                expect("notes-missing-status",strContains(md,"missing/error"));
+                strRelease(md);
+                names >> int <- release_notes.releaseNotes.reportNames();
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> str <- jsonGetString(jsonArrayGet(names,index));
+                    release_io.releaseIo.write(root+"/docs/status/"+name,"{\"status\":\"ok\"}");
+                    index += 1;
+                }
+                release_io.releaseIo.write(root+"/docs/status/F10_external_publish_report.json","{\"status\":\"ok\"}");
+                expect("notes-complete-generated",release_notes.releaseNotes.generate(root,output,stamp));
+                md <- release_io.releaseIo.text(output+"/v2_0_0_release_announcement.md");
+                expect("notes-complete-announcement",strContains(md,"informes suministrados declaran completos")); strRelease(md);
+                name >> str <- jsonGetString(jsonArrayGet(names,0));
+                release_io.releaseIo.write(root+"/docs/status/"+name,"{\"status\":\"partial\"}");
+                release_notes.releaseNotes.generate(root,output,stamp);
+                md <- release_io.releaseIo.text(output+"/v2_0_0_release_announcement.md");
+                expect("notes-partial-not-announced",strContains(md,"Borrador")); strRelease(md);
+                release_io.releaseIo.write(root+"/docs/status/F10_external_publish_report.json","bad-json");
+                release_notes.releaseNotes.generate(root,output,stamp);
+                md <- release_io.releaseIo.text(output+"/v2_0_0_release_notes.md");
+                expect("notes-invalid-external",strContains(md,"`invalid`")); strRelease(md);
+                jsonRelease(names);
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                guard release_io.releaseIo.optionsValid(arguments,"|--work|") else return 2;
+                work >> str <- release_io.releaseIo.option(arguments,"--work","");
+                guard work != "" && !exists(work) else { println("Require --work pointing to a new directory"); return 2; }
+                guard release_io.releaseIo.makeDirectories(work) else return 2;
+                checks <- jsonNewArray(); failed <- 0;
+                expect("utc-epoch",release_io.releaseIo.utc(0) == "1970-01-01T00:00:00Z");
+                expect("utc-leap",release_io.releaseIo.utc(1709164800) == "2024-02-29T00:00:00Z");
+                expect("sha256-native",sha256.nccSha256.selfTest());
+                good >> int <- jsonParse("{\"checks\":{\"one\":true,\"two\":true}}");
+                expect("report-boolean-checks",release_io.releaseIo.reportOk(good,false)); jsonRelease(good);
+                good <- jsonParse("{\"checks\":{\"one\":\"true\"}}");
+                expect("report-no-truthy-strings",!release_io.releaseIo.reportOk(good,false)); jsonRelease(good);
+                good <- jsonParse("{\"status\":\"error\",\"checks\":{\"one\":true}}");
+                expect("report-status-authority",!release_io.releaseIo.reportOk(good,false)); jsonRelease(good);
+                good <- jsonParse("{\"status\":\"partial\"}");
+                expect("report-partial-explicit",release_io.releaseIo.reportOk(good,true) && !release_io.releaseIo.reportOk(good,false)); jsonRelease(good);
+                layouts(work); machines(work); notes(work);
+                report >> int <- release_io.releaseIo.report("nc.python-retirement.release-tests.v38");
+                jsonObjectSet(report,"checks",checks);
+                jsonObjectSet(report,"failed",jsonNewInt(failed));
+                jsonObjectSet(report,"passed",jsonNewBool(failed == 0));
+                jsonObjectSet(report,"physical_execution_performed",jsonNewBool(false));
+                saved >> bool <- release_io.releaseIo.save(work+"/report.json",report);
+                jsonRelease(report);
+                return failed == 0 && saved ? 0 : 1;
+            }
+    fa:
+        return true;
+}

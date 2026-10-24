@@ -1,0 +1,86 @@
+use <project:cert_json>;
+
+docs43Utf8 {
+    stc:
+        clean >> bool <- true;
+    fn:
+        public:
+            jsonAscii(text >> str) -> str {
+                output >> str <- ""; data >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) {
+                    code >> int <- point(data,at); size >> int <- span(rd(off(data,at)) & 255);
+                    if (code < 128) {
+                        start >> int <- at;
+                        while (at < strByteLen(text) && (rd(off(data,at)) & 255) < 128) { at += 1; }
+                        output <- cert_json.certJson.append(output,strSubstring(text,start,at-start)); size <- 0;
+                    }
+                    else if (code <= 65535) output <- cert_json.certJson.append(output,"\\u"+hex(code,4));
+                    else { surrogate >> str <- utf16(code); output <- cert_json.certJson.append(output,"\\u"+strSubstring(surrogate,0,4)+"\\u"+strSubstring(surrogate,4,4)); }
+                    at += size;
+                }
+                return output;
+            }
+            valid() -> bool { return clean; }
+            whitespace(code >> int) -> bool {
+                return (code >= 9 && code <= 13) || (code >= 28 && code <= 32) || code == 133 || code == 160 || code == 5760 || (code >= 8192 && code <= 8202) || code == 8232 || code == 8233 || code == 8239 || code == 8287 || code == 12288;
+            }
+            trim(text >> str) -> str {
+                data >> p<byte> <- cast(text); at >> int <- 0; end >> int <- 0;
+                while (at < strByteLen(text)) {
+                    code >> int <- point(data,at); at += span(rd(off(data,at)) & 255);
+                    if (!whitespace(code)) end <- at;
+                }
+                at <- 0; while (at < strByteLen(text) && whitespace(point(data,at))) { at += span(rd(off(data,at)) & 255); }
+                if (at >= end) return "";
+                return strSubstring(text,at,end-at);
+            }
+            span(first >> int) -> int { return first < 128 ? 1 : (first < 224 ? 2 : (first < 240 ? 3 : 4)); }
+            point(data >> p<byte>, at >> int) -> int {
+                first >> int <- rd(off(data,at)) & 255; width >> int <- span(first);
+                if (width == 1) return first;
+                value >> int <- first & (127 >>> width); i >> int <- 1;
+                while (i < width) { value <- value*64+(rd(off(data,at+i)) & 63); i += 1; }
+                return value;
+            }
+            hex(value >> int, digits >> int) -> str {
+                output >> str <- ""; i >> int <- digits-1;
+                while (i >= 0) { output <- output+strSubstring("0123456789ABCDEF",(value >>> (i*4)) & 15,1); i -= 1; }
+                return output;
+            }
+            utf16(code >> int) -> str {
+                if (code <= 65535) return hex(code,4);
+                shifted >> int <- code-65536; return hex(55296+(shifted >>> 10),4)+hex(56320+(shifted & 1023),4);
+            }
+            string16(text >> str) -> str {
+                output >> str <- "<FEFF"; data >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) { output <- output+utf16(point(data,at)); at += span(rd(off(data,at)) & 255); }
+                return output+">";
+            }
+            // UTF-8 replacement follows maximal valid prefixes, like read_text(errors="replace").
+            decode(data >> p<byte>, size >> int) -> str {
+                clean <- true;
+                output >> p<byte> <- cast(alloc(size*3+1)); guard output != null else return "";
+                at >> int <- 0; written >> int <- 0;
+                while (at < size) {
+                    first >> int <- rd(off(data,at)) & 255; width >> int <- 1; consumed >> int <- 1; valid >> bool <- first < 128;
+                    if (first >= 194 && first <= 244) {
+                        width <- span(first); valid <- true; j >> int <- 1;
+                        while (j < width && valid) {
+                            if (at+j >= size) valid <- false;
+                            else {
+                                next >> int <- rd(off(data,at+j)) & 255;
+                                if (next < 128 || next > 191 || (j == 1 && ((first == 224 && next < 160) || (first == 237 && next > 159) || (first == 240 && next < 144) || (first == 244 && next > 143)))) valid <- false;
+                                else consumed += 1;
+                            }
+                            j += 1;
+                        }
+                    }
+                    if (valid) {
+                        j >> int <- 0; while (j < width) { wr(off(output,written),rd(off(data,at+j))); written += 1; j += 1; }
+                    } else { clean <- false; wr(off(output,written),239); wr(off(output,written+1),191); wr(off(output,written+2),189); written += 3; }
+                    at += consumed;
+                }
+                wr(off(output,written),0); return cast(output);
+            }
+    fa: return true;
+}

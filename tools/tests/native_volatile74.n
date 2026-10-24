@@ -1,0 +1,35 @@
+use <io:output>;
+
+nativeVolatile74 {
+    run() -> int {
+        data >> array<byte,32>;
+        base >> p<byte> <- cast<byte>(&data);
+        cp(base,adr("0123456789abcdefghijklmnopqrstuv"),32);
+        volatileWrite<byte>(off(base,1),255);
+        volatileStore<u16>(off(base,3),0xABCD);
+        volatileWrite<u32>(off(base,7),0x89ABCDEF);
+        volatileStore<u64>(off(base,15),0xFEDCBA9876543210);
+        if (volatileRead<byte>(off(base,1)) != 255 || volatileRead<i8>(off(base,1)) != -1) return 1;
+        if (volatileLoad<u16>(off(base,3)) != 0xABCD || volatileLoad<i16>(off(base,3)) != -21555) return 2;
+        if (volatileRead<u32>(off(base,7)) != 0x89ABCDEF || volatileRead<i32>(off(base,7)) != -1985229329) return 3;
+        if (volatileLoad<u64>(off(base,15)) != 0xFEDCBA9876543210) return 4;
+        if (rd(base) != 48 || rd(off(base,2)) != 50 || rd(off(base,5)) != 53 ||
+            rd(off(base,11)) != 98 || rd(off(base,14)) != 101 || rd(off(base,23)) != 110) return 5;
+        index >> int <- 0;
+        checksum >> int <- 0;
+        while (index < 2048) {
+            volatileWrite<int>(base,index);
+            first >> int <- volatileRead<int>(base);
+            volatileWrite<int>(base,index+1);
+            second >> int <- volatileRead<int>(base);
+            if (first != index || second != index+1) return 6;
+            checksum += first+second;
+            index += 1;
+        }
+        if (checksum != 4194304) return 7;
+        println("native-volatile-ok");
+        return 250;
+    }
+    ref main ->> run;
+    fa: return true;
+}

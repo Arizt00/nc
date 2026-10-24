@@ -1,0 +1,73 @@
+use <collections:list, result>;
+use <io:output>;
+use <process:args, env, spawn, wait>;
+use <project:text>;
+
+systemAdapters[@runtime] {
+    fn:
+        private:
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            compiler() -> str {
+                selected >> str <- envText("NC_GHOR_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            subsystem(name >> str) -> bool {
+                return name == "machine" || name == "basal" ||
+                    name == "runtime" || name == "compiler" ||
+                    name == "primitive";
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                return argsCount(handle) > 1 && subsystem(argsAt(handle, 1));
+            }
+
+            execute(handle >> addr) -> int {
+                guard supports(handle) else return 64;
+                count >> int <- argsCount(handle);
+                selected >> str <- argsAt(handle, 1);
+                arguments >> list<str> <- listCreateWithCapacity<str>(count);
+                listAdd(arguments, selected);
+                if (count == 2 && (selected == "machine" || selected == "basal")) {
+                    listAdd(arguments, "doctor");
+                } else {
+                    at >> int <- 2;
+                    while (at < count) {
+                        listAdd(arguments, argsAt(handle, at));
+                        at += 1;
+                    }
+                }
+                process >> Result<ProcessHandle, ProcessError> <- spawn(compiler(), arguments);
+                if (!isOk(process)) {
+                    println("error[E_GHOR_SUBSYSTEM_001]: ncc subsystem process could not start");
+                    return 127;
+                }
+                status >> Result<int, ProcessError> <- wait(process);
+                if (!isOk(status)) {
+                    println("error[E_GHOR_SUBSYSTEM_001]: ncc subsystem process could not be joined");
+                    return 126;
+                }
+                return unwrap(status);
+            }
+
+            selfTest() -> bool {
+                return subsystem("machine") && subsystem("basal") &&
+                    subsystem("runtime") && subsystem("compiler") &&
+                    subsystem("primitive") && !subsystem("interop");
+            }
+
+    fa:
+        return true;
+}

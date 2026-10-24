@@ -1,0 +1,36 @@
+use <data:json>;
+use <project:ncup_session, release_io>;
+
+ncupDisk {
+    fn:
+        public:
+            inspect() -> void {
+                init >> int <- ncup_session.ncupSession.run("[\"ncup\",\"init\",\"--home\",\"$home\",\"--profile\",\"minimal\",\"--force\"]");
+                ncup_session.ncupSession.record("ncup_init_ok",ncup_session.ncupSession.ok(init));
+                home >> str <- ncup_session.ncupSession.homePath();
+                project >> str <- ncup_session.ncupSession.projectPath();
+                directories >> int <- jsonParse("[\"toolchains\",\"downloads\",\"tmp\",\"manifests\",\"keys\",\"logs\",\"bin\"]");
+                present >> bool <- true;
+                index >> int <- 0;
+                while (index < jsonArrayLen(directories)) {
+                    item >> int <- jsonArrayGet(directories,index);
+                    present <- present && release_io.releaseIo.fileType(home+"/"+jsonGetString(item)) == 2;
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(directories);
+                ncup_session.ncupSession.record("official_dirs_present",present);
+                ncup_session.ncupSession.record("manifests_present",release_io.releaseIo.fileType(home+"/manifests/toolchains.v1.json") == 1 && release_io.releaseIo.fileType(home+"/manifests/ncup-config.v1.json") == 1);
+                ncup_session.ncupSession.record("env_scripts_present",release_io.releaseIo.fileType(home+"/env.sh") == 1 && release_io.releaseIo.fileType(home+"/env.bat") == 1);
+                env >> str <- release_io.releaseIo.forwardPath(release_io.releaseIo.text(home+"/env.sh"));
+                ncup_session.ncupSession.record("env_sh_exports_path_bin",strContains(env,release_io.releaseIo.forwardPath(home)+"/bin"));
+                beta >> int <- ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"install\",\"--home\",\"$home\",\"--channel\",\"beta\",\"--target\",\"x86_64-unknown-linux-gnu\",\"--profile\",\"minimal\"]");
+                ncup_session.ncupSession.record("install_beta_ok",ncup_session.ncupSession.ok(beta));
+                written >> bool <- release_io.releaseIo.write(project+"/nc-toolchain.toml","[toolchain]\nid = \"beta-x86_64-unknown-linux-gnu\"\n");
+                which >> int <- ncup_session.ncupSession.run("[\"ncup\",\"toolchain\",\"which\",\"--home\",\"$home\",\"--cwd\",\"$project\"]");
+                output >> str <- release_io.releaseIo.forwardPath(strTrim(release_io.releaseIo.field(which,"stdout")));
+                ncup_session.ncupSession.record("which_override_ok",written && ncup_session.ncupSession.ok(which) && strEndsWith(output,"toolchains/beta-x86_64-unknown-linux-gnu/bin"));
+                doctor >> int <- ncup_session.ncupSession.run("[\"ncup\",\"doctor\",\"--home\",\"$home\"]");
+                ncup_session.ncupSession.record("doctor_ok",ncup_session.ncupSession.ok(doctor));
+            }
+    fa: return true;
+}

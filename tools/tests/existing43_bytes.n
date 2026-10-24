@@ -1,0 +1,63 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:editor_json, editor_rpc, release_io>;
+
+existing43Bytes {
+    local:
+        checks >> int;
+        failures >> int;
+    fn:
+        private:
+            check(name >> str, passed >> bool) -> void {
+                jsonObjectSet(checks,name,jsonNewBool(passed));
+                if (!passed) { failures += 1; println("FAIL "+name); }
+            }
+            decoded(wire >> str, expected >> str, name >> str) -> void {
+                doc >> int <- editor_json.editorJson.parse(wire);
+                value >> str <- editor_json.editorJson.field(doc,"text");
+                check(name,jsonKind(doc) == 6 && value == expected && strByteLen(value) == strByteLen(expected));
+                frame >> str <- editor_rpc.editorRpc.frame(doc); messages >> int <- editor_rpc.editorRpc.decode(frame);
+                first >> int <- jsonArrayGet(messages,0);
+                check(name+"-frame",jsonArrayLen(messages) == 1 && editor_json.editorJson.field(first,"text") == expected);
+                jsonRelease(first); jsonRelease(messages); strRelease(frame); jsonRelease(doc);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 2) return 2;
+                checks <- jsonNewObject(); failures <- 0;
+                decoded("{\"text\":\"\\u0001\"}","\u{1}","utf8-0001");
+                decoded("{\"text\":\"\\u007f\"}","\u{7f}","utf8-007f");
+                decoded("{\"text\":\"\\u0080\"}","\u{80}","utf8-0080");
+                decoded("{\"text\":\"\\u07ff\"}","\u{7ff}","utf8-07ff");
+                decoded("{\"text\":\"\\u0800\"}","\u{800}","utf8-0800");
+                decoded("{\"text\":\"\\uffff\"}","\u{ffff}","utf8-ffff");
+                decoded("{\"text\":\"\\ud800\\udc00\"}","\u{10000}","utf8-10000");
+                decoded("{\"text\":\"\\udbff\\udfff\"}","\u{10ffff}","utf8-10ffff");
+                decoded("{\"text\":\"\\u00e9\\u20ac\\ud83d\\ude00\"}","\u{e9}\u{20ac}\u{1f600}","utf8-mixed");
+                bad >> int <- editor_json.editorJson.parse("{\"text\":\"\\udc00\"}"); check("low-surrogate",bad == 0); jsonRelease(bad);
+                bad <- editor_json.editorJson.parse("{\"text\":\"\\ud800\\u0041\"}"); check("wrong-surrogate",bad == 0); jsonRelease(bad);
+                bad <- editor_json.editorJson.parse("{\"text\":\"\\u0000\"}"); check("nul-fail-closed",bad == 0); jsonRelease(bad);
+                lengths >> int <- jsonParse("[0,1,127,128,255,256,257,65535,65536,65537,16777215,16777216,2147483647]");
+                data >> p<byte> <- cast(alloc(4)); index >> int <- 0;
+                while (index < jsonArrayLen(lengths)) {
+                    item >> int <- jsonArrayGet(lengths,index); value >> int <- jsonGetInt(item);
+                    a >> int <- value%256; b >> int <- (value/256)%256;
+                    c >> int <- (value/65536)%256; d >> int <- (value/16777216)%256;
+                    wr(data,a); wr(off(data,1),b); wr(off(data,2),c); wr(off(data,3),d);
+                    check("length-"+renderInt(value),(rd(data) & 255) == a && (rd(off(data,1)) & 255) == b && (rd(off(data,2)) & 255) == c && (rd(off(data,3)) & 255) == d);
+                    jsonRelease(item); index += 1;
+                }
+                value >> int <- -1; wr(data,value); wr(off(data,1),value); wr(off(data,2),value); wr(off(data,3),value);
+                check("u32-max-bits",(rd(data) & 255) == 255 && (rd(off(data,1)) & 255) == 255 && (rd(off(data,2)) & 255) == 255 && (rd(off(data,3)) & 255) == 255);
+                free(data); jsonRelease(lengths);
+                report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.bytes.v43"));
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+                jsonObjectSet(report,"failures",jsonNewInt(failures));
+                written >> bool <- release_io.releaseIo.save(argsAt(arguments,1),report);
+                println("existing43 byte checks="+renderInt(jsonObjectLen(checks))+" failures="+renderInt(failures));
+                jsonRelease(checks); jsonRelease(report); argsRelease(arguments); return failures == 0 && written ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

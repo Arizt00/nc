@@ -1,0 +1,58 @@
+use <io:output, render>;
+
+swapNumerosImplicito :: runtime {
+    stc:
+        first >> int;
+        second >> int;
+        ok >> bool;
+
+    fn:
+        boot() -> bool {
+            first >> int <- 5;
+            second >> int <- 10;
+            ok >> bool <- false;
+            return true;
+        }
+
+        imprimirEstado(titulo >> str) -> bool {
+            println(colorBold(titulo, "cyan"));
+            println("First number  = " + renderInt(first));
+            println("Second number = " + renderInt(second));
+            return true;
+        }
+
+        /*
+     * Swap implicito: no declaramos temporary.
+     * La informacion queda "codificada" en la suma de ambos valores:
+     * 1. first <- first + second  -> first contiene los dos valores.
+     * 2. second <- first - second -> recupera el first original.
+     * 3. first <- first - second  -> recupera el second original.
+     *
+     * Ventaja: menos estado auxiliar.
+     * Coste: solo conviene cuando no hay riesgo de overflow.
+     */
+    fn:
+        intercambiarImplicito() -> bool {
+            first >> int <- first + second;
+            second >> int <- first - second;
+            first >> int <- first - second;
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+            imprimirEstado("--Before implicit swap--");
+            intercambiarImplicito();
+            ok >> bool <- first == 10 && second == 5;
+            println("");
+            imprimirEstado("--After implicit swap--");
+            println("Swap implicito correcto = " + renderBool(ok));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

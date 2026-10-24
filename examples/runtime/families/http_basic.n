@@ -1,0 +1,42 @@
+use <io:output>;
+use <net:http>;
+
+httpBasic :: runtime {
+    fn:
+        run() -> bool {
+            response >> addr <- httpGet("http://127.0.0.1:18765/nc-http");
+            status >> int <- httpStatus(response);
+            bodyData >> addr <- httpBodyData(response);
+            body >> p<byte> <- from(bodyData);
+            bytes >> int <- httpBodyBytes(response);
+            error >> int <- httpError(response);
+
+            ok >> bool <-
+                response != null &&
+                status == 200 &&
+                error == 0 &&
+                bytes == 10 &&
+                rd(off(body, 0)) == 110 &&
+                rd(off(body, 1)) == 67 &&
+                rd(off(body, 2)) == 45 &&
+                rd(off(body, 3)) == 104 &&
+                rd(off(body, 4)) == 116 &&
+                rd(off(body, 5)) == 116 &&
+                rd(off(body, 6)) == 112 &&
+                rd(off(body, 7)) == 45 &&
+                rd(off(body, 8)) == 111 &&
+                rd(off(body, 9)) == 107;
+
+            print("manual nC WinHTTP backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+
+            released >> bool <- httpRelease(response);
+            return ok && released;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

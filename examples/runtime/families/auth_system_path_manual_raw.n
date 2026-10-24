@@ -1,0 +1,49 @@
+use <auth.system:path>;
+use <memory:stack>;
+use <io:output>;
+
+authSystemPathManualRaw {
+    fn:
+        strideCheck() -> bool { return authPathStride() == 64; }
+
+        writeCopy(table >> p<byte>, pathBytes >> p<byte>) -> bool {
+            wr(off(pathBytes, 0), 0x6E);
+            wr(off(pathBytes, 1), 0x43);
+            written >> bool <- authPathWrite(table, 0, 801, 701, pathBytes, 2, 7, 4, 55, 1);
+            copied >> bool <- authPathCopy(table, 1, table, 0);
+            return written && copied;
+        }
+
+        identity(table >> p<byte>, pathBytes >> p<byte>) -> bool {
+            return authPathKey(table, 1) == 801 &&
+                authPathBaseKey(table, 1) == 701 &&
+                authPathData(table, 1) == pathBytes &&
+                authPathBytes(table, 1) == 2 &&
+                authPathOwner(table, 1) == 55;
+        }
+
+        authority(table >> p<byte>) -> bool {
+            return authPathRights(table, 1) == 7 &&
+                authPathFlags(table, 1) == 4 &&
+                authPathState(table, 1) == 1 && authPathAllows(table, 1, 3);
+        }
+
+        clearRecord(table >> p<byte>) -> bool {
+            cleared >> bool <- authPathClear(table, 1);
+            return cleared && authPathState(table, 1) == 0;
+        }
+
+        run() -> bool {
+            table >> p<byte> <- stackAlloc(authPathStride() * 2, 8);
+            pathBytes >> p<byte> <- stackAlloc(2, 1);
+            ok >> bool <- strideCheck() && writeCopy(table, pathBytes) &&
+                identity(table, pathBytes) && authority(table) && clearRecord(table);
+            println("manual nC auth system path backend: " + (ok ? "true" : "false"));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

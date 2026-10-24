@@ -1,0 +1,71 @@
+use <data:json>;
+use <project:release_io, ide43_core>;
+
+ide43Vscode {
+    fn:
+        public:
+            evaluate(root >> str) -> int {
+                checks >> int <- ide43_core.ide43Core.initialize("ncup_which_ncc_json_ok|vscode_router_high_level_uses_nide_broker|vscode_router_low_level_uses_nc_sys_lsp_direct|vscode_extension_commands_present|vscode_extension_settings_present|vscode_extension_lsp_mode_setting_present|vscode_semantic_token_contract_present|vscode_task_definition_present|vscode_provider_surface_present|vscode_plugin_fixtures_present|vscode_base_registry_present|vscode_plugin_smoke_tests_pass|vscode_contract_consistent|plugin_product_version_1_0_0_21v|professional_ide_parity_contract");
+                if (!ide43_core.ide43Core.files(root,"tools/vscode/nc-language/README.md|tools/vscode/nc-language/package.json|tools/vscode/nc-language/tsconfig.json|tools/vscode/nc-language/src/extension.js|tools/vscode/nc-language/src/nc_semantic.js|tools/vscode/nc-language/src/smoke_test.js|tools/vscode/nc-language/language-configuration.json|tools/vscode/nc-language/syntaxes/nc.tmLanguage.json|tools/vscode/nc-language/data/nc_base_registry.json|tools/ncc/nc/src/verification/ide_router.n",true)) {
+                    ide43_core.ide43Core.fail("vscode extension artifacts missing"); return checks;
+                }
+                ide43_core.ide43Core.record(checks,"vscode_plugin_fixtures_present",ide43_core.ide43Core.files(root,
+                    "tools/vscode/nc-language/test-fixtures/high_level.n|tools/vscode/nc-language/test-fixtures/root_mode.nb|tools/vscode/nc-language/test-fixtures/machine_mode.nm|tools/vscode/nc-language/test-fixtures/primitive_mode.ncp",true));
+                package >> int <- ide43_core.ide43Core.read(root,"tools/vscode/nc-language/package.json");
+                ide43_core.ide43Core.record(checks,"plugin_product_version_1_0_0_21v",
+                    ide43_core.ide43Core.is(package,"version","1.0.0-21v") &&
+                    ide43_core.ide43Core.is(package,"ncProductVersion","1.0.0.21v") &&
+                    strContains(ide43_core.ide43Core.field(package,"scripts|package:vsix"),"nc-language-1.0.0-21v.vsix"));
+                ide43_core.ide43Core.record(checks,"professional_ide_parity_contract",
+                    ide43_core.ide43Core.is(package,"ncProfessionalIdeParity|tier","c_cpp_rust_java_grade") &&
+                    ide43_core.ide43Core.is(package,"ncProfessionalIdeParity|semanticAuthority","ncc") &&
+                    ide43_core.ide43Core.members(package,"ncProfessionalIdeParity|referenceLanguages","c|cpp|rust|java",false) &&
+                    ide43_core.ide43Core.members(package,"ncProfessionalIdeParity|surfaces","safeRename|inlayHints|predictiveCompletions|codeLensRunDebug|nccKitResolution|lowLevelMachinePrimitiveRouting",false));
+                declared >> int <- ide43_core.ide43Core.lookup(package,"contributes|commands");
+                titles >> int <- jsonNewObject(); index >> int <- 0;
+                while (index < jsonArrayLen(declared)) {
+                    row >> int <- jsonArrayGet(declared,index);
+                    jsonObjectSet(titles,ide43_core.ide43Core.field(row,"title"),jsonNewBool(true));
+                    jsonRelease(row); index += 1;
+                }
+                ide43_core.ide43Core.record(checks,"vscode_extension_commands_present",
+                    jsonObjectHas(titles,"nC: Run") && jsonObjectHas(titles,"nC: Check") && jsonObjectHas(titles,"nC: Format") &&
+                    jsonObjectHas(titles,"nC: Debug Current File") && jsonObjectHas(titles,"nC: Create ncc Kit") &&
+                    jsonObjectHas(titles,"nC: Select ncc Kit") && jsonObjectHas(titles,"nC: Select Toolchain"));
+                properties >> int <- ide43_core.ide43Core.lookup(package,"contributes|configuration|properties");
+                settings >> int <- ide43_core.ide43Core.list("nc.kit|nc.kitTransport|nc.nccPath|nc.ncupPath|nc.toolchain|nc.profile|nc.target|nc.formatter|nc.inlayHints.parameters|nc.inlayHints.types");
+                ok >> bool <- true; index <- 0;
+                while (index < jsonArrayLen(settings)) {
+                    key >> int <- jsonArrayGet(settings,index); ok <- jsonObjectHas(properties,jsonStringView(key,"")) && ok;
+                    jsonRelease(key); index += 1;
+                }
+                ide43_core.ide43Core.record(checks,"vscode_extension_settings_present",ok);
+                ide43_core.ide43Core.record(checks,"vscode_extension_lsp_mode_setting_present",jsonObjectHas(properties,"nc.lspMode"));
+                ide43_core.ide43Core.record(checks,"vscode_semantic_token_contract_present",
+                    ide43_core.ide43Core.nonempty(package,"contributes|semanticTokenTypes") && ide43_core.ide43Core.nonempty(package,"contributes|semanticTokenScopes"));
+                ide43_core.ide43Core.record(checks,"vscode_task_definition_present",ide43_core.ide43Core.nonempty(package,"contributes|taskDefinitions"));
+                source >> str <- ide43_core.ide43Core.readText(root+"/tools/vscode/nc-language/src/extension.js");
+                ide43_core.ide43Core.record(checks,"vscode_provider_surface_present",ide43_core.ide43Core.markers(source,
+                    "registerHoverProvider|registerCompletionItemProvider|registerDefinitionProvider|registerReferenceProvider|registerDocumentSymbolProvider|registerDocumentSemanticTokensProvider|registerCodeActionsProvider|registerRenameProvider|registerInlayHintsProvider|registerCodeLensProvider|createStatusBarItem|registerTaskProvider|registerCommand('nc.debug'|registerCommand('nc.createKit'|registerCommand('nc.selectKit'|discoverNccKits|workspaceNccCandidates|callExpressionAtPosition|nccCommandPredictions"));
+                registry >> int <- ide43_core.ide43Core.read(root,"tools/vscode/nc-language/data/nc_base_registry.json");
+                ide43_core.ide43Core.record(checks,"vscode_base_registry_present",ide43_core.ide43Core.references(root,registry,"source_docs",true));
+                jsonRelease(package); jsonRelease(registry); jsonRelease(declared);
+                jsonRelease(titles); jsonRelease(properties); jsonRelease(settings); strRelease(source);
+                return checks;
+            }
+            finalize(root >> str, checks >> int) -> void {
+                contract >> int <- ide43_core.ide43Core.read(root,"docs/spec/release/v2_0_0_phase10_vscode_integration_contract.json");
+                ide43_core.ide43Core.record(checks,"vscode_contract_consistent",
+                    ide43_core.ide43Core.is(contract,"schema","nc.phase10.vscode.integration.contract.v1") &&
+                    ide43_core.ide43Core.is(contract,"plugin_product_version","1.0.0.21v") &&
+                    ide43_core.ide43Core.is(contract,"vscode_manifest_version","1.0.0-21v") &&
+                    ide43_core.ide43Core.sequence(contract,"vscode|toolchain_autodetect_command","ncup|which|ncc|--json") &&
+                    ide43_core.ide43Core.is(contract,"vscode|professional_ide_parity|tier","c_cpp_rust_java_grade") &&
+                    ide43_core.ide43Core.members(contract,"vscode|professional_ide_parity|required_surfaces","inlay_hints|predictive_completions|code_lens_run_debug|ncc_kit_resolution",false) &&
+                    ide43_core.ide43Core.members(contract,"vscode|low_level_runtime_installers","ncc.vscode.windows.exe|ncc.vscode.linux.sh|ncc.vscode.macos.pkg",true) &&
+                    ide43_core.ide43Core.members(contract,"required_gates","release_phase10_vscode_gate_tests",false));
+                jsonRelease(contract);
+            }
+    fa: return true;
+}
+

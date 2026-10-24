@@ -1,0 +1,57 @@
+use <collections:list, result>;
+use <fs:path>;
+use <io:output, render, input>;
+use <text:string>;
+
+fileManagerProfiler :: runtime {
+    stc:
+        root >> str <- ".";
+
+    fn:
+        phase(name >> str, started >> int) -> bool {
+            elapsedNs >> int <- monotonicNs() - started;
+            println(color(name + ": " + renderInt(elapsedNs) + " ns", "cyan"));
+            return true;
+        }
+
+        run() -> bool {
+            println(color("GESTOR DE ARCHIVOS + PROFILER", "cyan"));
+            print("Directorio [.]: ");
+            root <- readLine();
+            if (root == "") {
+                root <- ".";
+            }
+
+            started >> int <- monotonicNs();
+            listed >> Result<list<str>, FsError> <- listDir(root);
+            if (isErr(listed)) {
+                println(color("No se pudo leer el directorio.", "red"));
+                return false;
+            }
+
+            entries >> int <- 0;
+            characters >> int <- 0;
+            valid >> int <- 0;
+            println(color("\nPrimeras entradas", "green"));
+            for name in unwrap(listed) {
+                if (entries < 20) {
+                    println("  " + renderInt(entries + 1) + ". " + name);
+                }
+                entries++;
+                characters += strLen(name);
+                if (exists(pathJoin(root, name))) { valid++; }
+            }
+            phase("Lectura y validacion", started);
+
+            println(colorBold("\nResumen", "blue"));
+            println("Entradas: " + renderInt(entries));
+            println("Rutas validas: " + renderInt(valid));
+            println("Caracteres en nombres: " + renderInt(characters));
+            return valid == entries;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

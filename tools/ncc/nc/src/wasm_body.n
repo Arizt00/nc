@@ -1,0 +1,562 @@
+use <io:output, render>;
+use <project:ir, mct_values, wasm_bytes, wasm_model, native_types>;
+
+nccWasmBody {
+    fn:
+        private:
+            fail(out >> p<byte>, g >> p<byte>, node >> int) -> int {
+                if (wasm_bytes.nccWasmBytes.healthy(out)) {
+                    print("WASM lowering rejected node "); print(renderInt(node));
+                    print(" kind="); print(renderInt(ir.nccIr.graphNodeAstKind(g,node)));
+                    print(" line="); println(renderInt(ir.nccIr.graphNodeLine(g,node)));
+                }
+                wasm_bytes.nccWasmBytes.reject(out);
+                return -1;
+            }
+            constant(out >> p<byte>, value >> int) -> void {
+                wasm_bytes.nccWasmBytes.put(out,0x41);
+                wasm_bytes.nccWasmBytes.sleb(out,value);
+            }
+            constant64(out >> p<byte>, value >> u64) -> void {
+                signedValue >> i64 <- value;
+                wasm_bytes.nccWasmBytes.put(out,0x42);
+                wasm_bytes.nccWasmBytes.sleb64(out,signedValue);
+            }
+            coerce(ctx >> p<byte>, out >> p<byte>, node >> int, actual >> int, expected >> int) -> int {
+                if (actual == expected) return actual;
+                if (actual == 0x7E && expected == 0x7F) {
+                    wasm_bytes.nccWasmBytes.put(out,0xA7); return expected;
+                }
+                if (actual == 0x7F && expected == 0x7E) {
+                    signedValue >> bool <- native_types.nccNativeTypes.signed(native_types.nccNativeTypes.expression(wasm_model.nccWasmModel.graph(ctx),node,0));
+                    wasm_bytes.nccWasmBytes.put(out,signedValue ? 0xAC : 0xAD); return expected;
+                }
+                return fail(out,wasm_model.nccWasmModel.graph(ctx),node);
+            }
+            expressionAs(ctx >> p<byte>, out >> p<byte>, node >> int, depth >> int, expected >> int) -> int {
+                return coerce(ctx,out,node,expression(ctx,out,node,depth),expected);
+            }
+            numericCode(op >> int, type >> int) -> int {
+                opcode >> int <- operatorCode(op);
+                if (!native_types.nccNativeTypes.signed(type)) {
+                    if (op == 27) opcode <- 0x49;
+                    if (op == 26) opcode <- 0x4B;
+                    if (op == 29) opcode <- 0x4D;
+                    if (op == 28) opcode <- 0x4F;
+                    if (op == 41) opcode <- 0x6E;
+                    if (op == 42) opcode <- 0x70;
+                    if (op == 21) opcode <- 0x76;
+                }
+                if (opcode >= 0 && wasm_model.nccWasmModel.valueType(type) == 0x7E)
+                    opcode += opcode >= 0x46 && opcode <= 0x4F ? 11 : 18;
+                return opcode;
+            }
+            indexed(out >> p<byte>, opcode >> int, index >> int) -> void {
+                wasm_bytes.nccWasmBytes.put(out,opcode);
+                wasm_bytes.nccWasmBytes.uleb(out,index);
+            }
+            operatorCode(op >> int) -> int {
+                if (op == 35 || op == 37) return 0x6A;
+                if (op == 38 || op == 40) return 0x6B;
+                if (op == 18 || op == 47) return 0x6C;
+                if (op == 41) return 0x6D;
+                if (op == 42) return 0x6F;
+                if (op == 31) return 0x46;
+                if (op == 32) return 0x47;
+                if (op == 27) return 0x48;
+                if (op == 26) return 0x4A;
+                if (op == 29) return 0x4C;
+                if (op == 28) return 0x4E;
+                if (op == 43) return 0x71;
+                if (op == 25) return 0x72;
+                if (op == 44) return 0x73;
+                if (op == 46) return 0x74;
+                if (op == 21) return 0x75;
+                if (op == 22) return 0x76;
+                return -1;
+            }
+            frameAddress(ctx >> p<byte>, out >> p<byte>, node >> int) -> int {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                frameOffset >> int <- wasm_model.nccWasmModel.get(ctx,node,24);
+                owner >> int <- wasm_model.nccWasmModel.functionOf(g,node);
+                if (frameOffset < 0 || owner < 0) return fail(out,g,node);
+                indexed(out,0x20,wasm_model.nccWasmModel.get(ctx,owner,32));
+                constant(out,frameOffset); wasm_bytes.nccWasmBytes.put(out,0x6A);
+                return 0x7F;
+            }
+            loadMemory(ctx >> p<byte>, out >> p<byte>, node >> int, type >> int) -> int {
+                if (native_types.nccNativeTypes.aggregate(type)) return 0x7F;
+                width >> int <- type == 34 ? 4 : native_types.nccNativeTypes.width(type);
+                if (width == 8) {
+                    wasm_bytes.nccWasmBytes.put(out,0x29);
+                    wasm_bytes.nccWasmBytes.uleb(out,0); wasm_bytes.nccWasmBytes.uleb(out,0); return 0x7E;
+                }
+                if (width != 1 && width != 2 && width != 4) return fail(out,wasm_model.nccWasmModel.graph(ctx),node);
+                signed >> bool <- native_types.nccNativeTypes.signed(type);
+                wasm_bytes.nccWasmBytes.put(out,width == 1 ? (signed ? 0x2C : 0x2D) : (width == 2 ? (signed ? 0x2E : 0x2F) : 0x28));
+                wasm_bytes.nccWasmBytes.uleb(out,0); wasm_bytes.nccWasmBytes.uleb(out,0);
+                return 0x7F;
+            }
+            storeMemory(ctx >> p<byte>, out >> p<byte>, node >> int, type >> int) -> void {
+                if (native_types.nccNativeTypes.aggregate(type)) {
+                    constant(out,native_types.nccNativeTypes.aggregateBytes(wasm_model.nccWasmModel.graph(ctx),type));
+                    wasm_bytes.nccWasmBytes.put(out,0xFC); wasm_bytes.nccWasmBytes.uleb(out,10);
+                    wasm_bytes.nccWasmBytes.uleb(out,0); wasm_bytes.nccWasmBytes.uleb(out,0); return;
+                }
+                width >> int <- type == 34 ? 4 : native_types.nccNativeTypes.width(type);
+                if (width == 8) {
+                    wasm_bytes.nccWasmBytes.put(out,0x37);
+                    wasm_bytes.nccWasmBytes.uleb(out,0); wasm_bytes.nccWasmBytes.uleb(out,0); return;
+                }
+                if (width != 1 && width != 2 && width != 4) { fail(out,wasm_model.nccWasmModel.graph(ctx),node); return; }
+                wasm_bytes.nccWasmBytes.put(out,width == 1 ? 0x3A : (width == 2 ? 0x3B : 0x36));
+                wasm_bytes.nccWasmBytes.uleb(out,0); wasm_bytes.nccWasmBytes.uleb(out,0);
+            }
+            restoreFrame(ctx >> p<byte>, out >> p<byte>, node >> int) -> void {
+                owner >> int <- wasm_model.nccWasmModel.functionOf(wasm_model.nccWasmModel.graph(ctx),node);
+                indexed(out,0x20,wasm_model.nccWasmModel.get(ctx,owner,32));
+                constant(out,wasm_model.nccWasmModel.get(ctx,owner,28));
+                wasm_bytes.nccWasmBytes.put(out,0x6A); indexed(out,0x24,rd<int>(off(ctx,32)));
+            }
+            location(ctx >> p<byte>, out >> p<byte>, node >> int, depth >> int) -> int {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                kind >> int <- ir.nccIr.graphNodeAstKind(g,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                if (kind == 26) return frameAddress(ctx,out,mct_values.nccMctValues.resolve(g,node));
+                if (kind == 30) {
+                    selected >> int <- native_types.nccNativeTypes.member(g,node,0);
+                    if (selected < 0 || expression(ctx,out,first,depth+1) != 0x7F) return fail(out,g,node);
+                    constant(out,ir.nccIr.graphNodeLayoutValue(g,selected));
+                    wasm_bytes.nccWasmBytes.put(out,0x6A); return 0x7F;
+                }
+                if (kind == 31) {
+                    element >> int <- native_types.nccNativeTypes.expression(g,node,0);
+                    bytes >> int <- native_types.nccNativeTypes.aggregate(element) ? native_types.nccNativeTypes.aggregateBytes(g,element) :
+                        (element == 34 ? 4 : native_types.nccNativeTypes.width(element));
+                    if (bytes <= 0 || expression(ctx,out,first,depth+1) != 0x7F ||
+                        expression(ctx,out,ir.nccIr.graphNodeNextSibling(g,first),depth+1) != 0x7F) return fail(out,g,node);
+                    constant(out,bytes); wasm_bytes.nccWasmBytes.put(out,0x6C);
+                    wasm_bytes.nccWasmBytes.put(out,0x6A); return 0x7F;
+                }
+                return fail(out,g,node);
+            }
+            stringEqual(ctx >> p<byte>, out >> p<byte>, node >> int, left >> int, right >> int, depth >> int, unequal >> bool) -> int {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                owner >> int <- wasm_model.nccWasmModel.functionOf(g,node);
+                base >> int <- wasm_model.nccWasmModel.get(ctx,owner,32);
+                if (expression(ctx,out,left,depth+1) != 0x7F) return fail(out,g,node);
+                if (expression(ctx,out,right,depth+1) != 0x7F) return fail(out,g,node);
+                indexed(out,0x21,base+2);
+                indexed(out,0x21,base+1);
+                wasm_bytes.nccWasmBytes.put(out,0x02); wasm_bytes.nccWasmBytes.put(out,0x7F);
+                wasm_bytes.nccWasmBytes.put(out,0x03); wasm_bytes.nccWasmBytes.put(out,0x40);
+                indexed(out,0x20,base+1); loadMemory(ctx,out,node,1);
+                indexed(out,0x20,base+2); loadMemory(ctx,out,node,1);
+                wasm_bytes.nccWasmBytes.put(out,0x47);
+                wasm_bytes.nccWasmBytes.put(out,0x04); wasm_bytes.nccWasmBytes.put(out,0x40);
+                constant(out,unequal ? 1 : 0); indexed(out,0x0C,2); wasm_bytes.nccWasmBytes.put(out,0x0B);
+                indexed(out,0x20,base+1); loadMemory(ctx,out,node,1); wasm_bytes.nccWasmBytes.put(out,0x45);
+                wasm_bytes.nccWasmBytes.put(out,0x04); wasm_bytes.nccWasmBytes.put(out,0x40);
+                constant(out,unequal ? 0 : 1); indexed(out,0x0C,2); wasm_bytes.nccWasmBytes.put(out,0x0B);
+                indexed(out,0x20,base+1); constant(out,1); wasm_bytes.nccWasmBytes.put(out,0x6A); indexed(out,0x21,base+1);
+                indexed(out,0x20,base+2); constant(out,1); wasm_bytes.nccWasmBytes.put(out,0x6A); indexed(out,0x21,base+2);
+                indexed(out,0x0C,0); wasm_bytes.nccWasmBytes.put(out,0x0B);
+                wasm_bytes.nccWasmBytes.put(out,0x00); wasm_bytes.nccWasmBytes.put(out,0x0B);
+                return 0x7F;
+            }
+            readVariable(ctx >> p<byte>, out >> p<byte>, declaration >> int) -> int {
+                if (wasm_model.nccWasmModel.get(ctx,declaration,24) >= 0) {
+                    frameAddress(ctx,out,declaration);
+                    return loadMemory(ctx,out,declaration,wasm_model.nccWasmModel.materialCode(wasm_model.nccWasmModel.graph(ctx),declaration));
+                }
+                localIndex >> int <- wasm_model.nccWasmModel.get(ctx,declaration,4);
+                globalIndex >> int <- wasm_model.nccWasmModel.get(ctx,declaration,8);
+                if (localIndex >= 0) indexed(out,0x20,localIndex);
+                else if (globalIndex >= 0) indexed(out,0x23,globalIndex);
+                else return fail(out,wasm_model.nccWasmModel.graph(ctx),declaration);
+                return wasm_model.nccWasmModel.get(ctx,declaration,12);
+            }
+            writeVariable(ctx >> p<byte>, out >> p<byte>, declaration >> int) -> void {
+                localIndex >> int <- wasm_model.nccWasmModel.get(ctx,declaration,4);
+                globalIndex >> int <- wasm_model.nccWasmModel.get(ctx,declaration,8);
+                if (localIndex >= 0) indexed(out,0x21,localIndex);
+                else if (globalIndex >= 0) indexed(out,0x24,globalIndex);
+                else fail(out,wasm_model.nccWasmModel.graph(ctx),declaration);
+            }
+            callIntrinsic(ctx >> p<byte>, out >> p<byte>, node >> int, depth >> int) -> int {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                id >> int <- ir.nccIr.graphNodeIntrinsicId(g,node);
+                source >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                arg >> int <- ir.nccIr.graphNodeNextSibling(g,source);
+                width >> int <- ir.nccIr.graphNodeIntrinsicTypeBytes(g,node);
+                signedValue >> bool <- ir.nccIr.graphNodeIntrinsicTypeSigned(g,node);
+                if (id >= 24 && id <= 26) {
+                    if (!ir.nccIr.graphNodeLayoutValid(g,node)) return fail(out,g,node);
+                    constant(out,ir.nccIr.graphNodeLayoutValue(g,node)); return 0x7F;
+                }
+                if (id == 1 || id == 2 || id == 60 || id == 61) {
+                    if (width != 1 && width != 2 && width != 4 && width != 8) return fail(out,g,node);
+                    if (expression(ctx,out,arg,depth+1) != 0x7F) return fail(out,g,node);
+                    isStore >> bool <- id == 2 || id == 61;
+                    if (isStore) {
+                        arg <- ir.nccIr.graphNodeNextSibling(g,arg);
+                        if (expressionAs(ctx,out,arg,depth+1,width == 8 ? 0x7E : 0x7F) < 0) return fail(out,g,node);
+                    }
+                    opcode >> int <- isStore ? (width == 8 ? 0x37 : (width == 1 ? 0x3A : (width == 2 ? 0x3B : 0x36))) :
+                        (width == 8 ? 0x29 :
+                        (width == 1 ? (signedValue ? 0x2C : 0x2D) :
+                        (width == 2 ? (signedValue ? 0x2E : 0x2F) : 0x28)));
+                    wasm_bytes.nccWasmBytes.put(out,opcode);
+                    wasm_bytes.nccWasmBytes.uleb(out,0);
+                    wasm_bytes.nccWasmBytes.uleb(out,0);
+                    return isStore ? 0x40 : (width == 8 ? 0x7E : 0x7F);
+                }
+                if (id >= 3 && id <= 8) {
+                    if (expression(ctx,out,arg,depth+1) != 0x7F) return fail(out,g,node);
+                    if (id == 3 || id == 4) {
+                        arg <- ir.nccIr.graphNodeNextSibling(g,arg);
+                        if (width <= 0 || expression(ctx,out,arg,depth+1) != 0x7F) return fail(out,g,node);
+                        if (id == 3) { constant(out,width); wasm_bytes.nccWasmBytes.put(out,0x6C); wasm_bytes.nccWasmBytes.put(out,0x6A); }
+                        else { wasm_bytes.nccWasmBytes.put(out,0x6B); constant(out,width); wasm_bytes.nccWasmBytes.put(out,0x6D); }
+                    }
+                    if (id == 5) wasm_bytes.nccWasmBytes.put(out,0x45);
+                    return 0x7F;
+                }
+                if (id == 20 || id == 21 || id == 22) {
+                    count >> int <- 0;
+                    while (arg >= 0) {
+                        if (expression(ctx,out,arg,depth+1) != 0x7F) return fail(out,g,node);
+                        count += 1; arg <- ir.nccIr.graphNodeNextSibling(g,arg);
+                    }
+                    if (count != 3) return fail(out,g,node);
+                    wasm_bytes.nccWasmBytes.put(out,0xFC);
+                    wasm_bytes.nccWasmBytes.uleb(out,id == 22 ? 11 : 10);
+                    wasm_bytes.nccWasmBytes.uleb(out,0);
+                    if (id != 22) wasm_bytes.nccWasmBytes.uleb(out,0);
+                    return 0x40;
+                }
+                return fail(out,g,node);
+            }
+
+        internal:
+            expression(ctx >> p<byte>, out >> p<byte>, node >> int, depth >> int) -> int {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                if (node < 0 || depth > 192 || !wasm_bytes.nccWasmBytes.healthy(out)) return -1;
+                values >> p<byte> <- wasm_model.nccWasmModel.constants(ctx);
+                kind >> int <- ir.nccIr.graphNodeAstKind(g,node);
+                op >> int <- ir.nccIr.graphNodeRoleHash(g,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                if (kind == 25 && op == 2) {
+                    if (native_types.nccNativeTypes.wideLiteral(g,node)) {
+                        constant64(out,native_types.nccNativeTypes.literal(g,node)); return 0x7E;
+                    }
+                    constant(out,ir.nccIr.graphNodeIntegerLiteral(g,node)); return 0x7F;
+                }
+                if (kind == 25 && mct_values.nccMctValues.status(values,node) == 2) {
+                    constant(out,mct_values.nccMctValues.value(values,node)); return 0x7F;
+                }
+                if (kind == 25 && op == 3) {
+                    constant(out,wasm_model.nccWasmModel.get(ctx,node,16)); return 0x7F;
+                }
+                if (kind == 26) {
+                    target >> int <- mct_values.nccMctValues.resolve(g,node);
+                    if (target < 0) return fail(out,g,node);
+                    if (mct_values.nccMctValues.isConstant(g,target))
+                        return expression(ctx,out,mct_values.nccMctValues.initializer(g,target),depth+1);
+                    return readVariable(ctx,out,target);
+                }
+                if (kind == 27 && op == 43) return location(ctx,out,first,depth+1);
+                if (kind == 30 || kind == 31) {
+                    if (location(ctx,out,node,depth+1) != 0x7F) return fail(out,g,node);
+                    return loadMemory(ctx,out,node,native_types.nccNativeTypes.expression(g,node,0));
+                }
+                if (kind == 33 || kind == 45) {
+                    if (wasm_model.nccWasmModel.get(ctx,node,24) < 0) return fail(out,g,node);
+                    type >> int <- wasm_model.nccWasmModel.materialCode(g,node);
+                    declaration >> int <- type-100000;
+                    supplied >> int <- kind == 45 ? ir.nccIr.graphNodeNextSibling(g,first) : first;
+                    element >> int <- kind == 33 ? native_types.nccNativeTypes.code(g,ir.nccIr.graphNodeFirstChild(g,declaration)) : -1;
+                    index >> int <- 0;
+                    while (supplied >= 0) {
+                        selected >> int <- kind == 45 ? native_types.nccNativeTypes.field(g,declaration,supplied) : -1;
+                        value >> int <- kind == 45 ? ir.nccIr.graphNodeFirstChild(g,supplied) : supplied;
+                        cell >> int <- kind == 45 ? native_types.nccNativeTypes.code(g,native_types.nccNativeTypes.typeNode(g,selected)) : element;
+                        stride >> int <- native_types.nccNativeTypes.aggregate(cell) ? native_types.nccNativeTypes.aggregateBytes(g,cell) :
+                            (cell == 34 ? 4 : native_types.nccNativeTypes.width(cell));
+                        displacement >> int <- kind == 45 ? ir.nccIr.graphNodeLayoutValue(g,selected) : index*stride;
+                        if ((kind == 45 && selected < 0) || stride <= 0) return fail(out,g,node);
+                        frameAddress(ctx,out,node); constant(out,displacement); wasm_bytes.nccWasmBytes.put(out,0x6A);
+                        if (expressionAs(ctx,out,value,depth+1,wasm_model.nccWasmModel.valueType(cell)) < 0) return fail(out,g,node);
+                        storeMemory(ctx,out,node,cell); index += 1;
+                        supplied <- ir.nccIr.graphNodeNextSibling(g,supplied);
+                    }
+                    if (kind == 33) {
+                        cellBytes >> int <- native_types.nccNativeTypes.aggregate(element) ? native_types.nccNativeTypes.aggregateBytes(g,element) :
+                            (element == 34 ? 4 : native_types.nccNativeTypes.width(element));
+                        if (cellBytes <= 0 || index*cellBytes != native_types.nccNativeTypes.aggregateBytes(g,type)) return fail(out,g,node);
+                    } else {
+                        field >> int <- ir.nccIr.graphNodeFirstChild(g,declaration);
+                        while (field >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(g,field) == 14) {
+                                matches >> int <- 0;
+                                supplied <- ir.nccIr.graphNodeNextSibling(g,first);
+                                while (supplied >= 0) {
+                                    if (native_types.nccNativeTypes.field(g,declaration,supplied) == field) matches += 1;
+                                    supplied <- ir.nccIr.graphNodeNextSibling(g,supplied);
+                                }
+                                if (matches != 1) return fail(out,g,node);
+                            }
+                            field <- ir.nccIr.graphNodeNextSibling(g,field);
+                        }
+                    }
+                    return frameAddress(ctx,out,node);
+                }
+                if (kind == 27 && (op == 35 || op == 38 || op == 33 || op == 34)) {
+                    type >> int <- wasm_model.nccWasmModel.valueType(native_types.nccNativeTypes.expression(g,first,0));
+                    if (op == 38) { if (type == 0x7E) constant64(out,0); else constant(out,0); }
+                    if (expressionAs(ctx,out,first,depth+1,type) < 0) return fail(out,g,node);
+                    if (op == 38) wasm_bytes.nccWasmBytes.put(out,type == 0x7E ? 0x7D : 0x6B);
+                    if (op == 33) { wasm_bytes.nccWasmBytes.put(out,type == 0x7E ? 0x50 : 0x45); return 0x7F; }
+                    if (op == 34) {
+                        if (type == 0x7E) constant64(out,0xFFFFFFFFFFFFFFFF); else constant(out,-1);
+                        wasm_bytes.nccWasmBytes.put(out,type == 0x7E ? 0x85 : 0x73);
+                    }
+                    return type;
+                }
+                if (kind == 28) {
+                    second >> int <- ir.nccIr.graphNodeNextSibling(g,first);
+                    if ((op == 31 || op == 32) && native_types.nccNativeTypes.expression(g,first,0) == 34 &&
+                        native_types.nccNativeTypes.expression(g,second,0) == 34)
+                        return stringEqual(ctx,out,node,first,second,depth,op == 32);
+                    if (native_types.nccNativeTypes.expression(g,first,0) == 34 ||
+                        native_types.nccNativeTypes.expression(g,second,0) == 34) return fail(out,g,node);
+                    if (op == 48 || op == 49) {
+                        if (expression(ctx,out,first,depth+1) != 0x7F) return fail(out,g,node);
+                        wasm_bytes.nccWasmBytes.put(out,0x04); wasm_bytes.nccWasmBytes.put(out,0x7F);
+                        if (op == 49) constant(out,1);
+                        else {
+                            if (expression(ctx,out,second,depth+1) != 0x7F) return fail(out,g,node);
+                            wasm_bytes.nccWasmBytes.put(out,0x45); wasm_bytes.nccWasmBytes.put(out,0x45);
+                        }
+                        wasm_bytes.nccWasmBytes.put(out,0x05);
+                        if (op == 48) constant(out,0);
+                        else {
+                            if (expression(ctx,out,second,depth+1) != 0x7F) return fail(out,g,node);
+                            wasm_bytes.nccWasmBytes.put(out,0x45); wasm_bytes.nccWasmBytes.put(out,0x45);
+                        }
+                        wasm_bytes.nccWasmBytes.put(out,0x0B); return 0x7F;
+                    }
+                    type >> int <- native_types.nccNativeTypes.common(native_types.nccNativeTypes.expression(g,first,0),
+                        native_types.nccNativeTypes.expression(g,second,0));
+                    valueType >> int <- wasm_model.nccWasmModel.valueType(type);
+                    opcode >> int <- numericCode(op,type);
+                    if (opcode < 0 || expressionAs(ctx,out,first,depth+1,valueType) < 0 ||
+                        expressionAs(ctx,out,second,depth+1,valueType) < 0) return fail(out,g,node);
+                    wasm_bytes.nccWasmBytes.put(out,opcode);
+                    return op == 31 || op == 32 || op == 27 || op == 26 || op == 29 || op == 28 ? 0x7F : valueType;
+                }
+                if (kind == 32) {
+                    yes >> int <- ir.nccIr.graphNodeNextSibling(g,first);
+                    no >> int <- ir.nccIr.graphNodeNextSibling(g,yes);
+                    if (expression(ctx,out,first,depth+1) != 0x7F) return fail(out,g,node);
+                    type >> int <- wasm_model.nccWasmModel.valueType(native_types.nccNativeTypes.expression(g,node,0));
+                    wasm_bytes.nccWasmBytes.put(out,0x04); wasm_bytes.nccWasmBytes.put(out,type);
+                    if (expressionAs(ctx,out,yes,depth+1,type) < 0) return fail(out,g,node);
+                    wasm_bytes.nccWasmBytes.put(out,0x05);
+                    if (expressionAs(ctx,out,no,depth+1,type) < 0) return fail(out,g,node);
+                    wasm_bytes.nccWasmBytes.put(out,0x0B); return type;
+                }
+                if (kind == 29) {
+                    if (ir.nccIr.graphNodeIntrinsicId(g,node) != 0) return callIntrinsic(ctx,out,node,depth);
+                    callee >> int <- first;
+                    if (ir.nccIr.graphNodeAstKind(g,callee) == 73) callee <- ir.nccIr.graphNodeFirstChild(g,callee);
+                    target >> int <- mct_values.nccMctValues.resolve(g,callee);
+                    functionIndex >> int <- wasm_model.nccWasmModel.get(ctx,target,0);
+                    result >> int <- wasm_model.nccWasmModel.get(ctx,target,12);
+                    arity >> int <- target >= 0 ? wasm_model.nccWasmModel.parameterCount(g,target) : -1;
+                    if (functionIndex < 0) {
+                        functionIndex <- wasm_model.nccWasmModel.get(ctx,node,0);
+                        result <- wasm_model.nccWasmModel.runtimeResult(g,callee);
+                        arity <- wasm_model.nccWasmModel.runtimeArity(g,callee);
+                    }
+                    if (functionIndex < 0 || result < 0 || arity < 0) return fail(out,g,node);
+                    arg >> int <- ir.nccIr.graphNodeNextSibling(g,first);
+                    parameter >> int <- target >= 0 ? ir.nccIr.graphNodeFirstChild(g,target) : -1;
+                    count >> int <- 0;
+                    while (arg >= 0) {
+                        while (parameter >= 0 && ir.nccIr.graphNodeAstKind(g,parameter) != 16)
+                            { parameter <- ir.nccIr.graphNodeNextSibling(g,parameter); }
+                        wanted >> int <- parameter >= 0 ? wasm_model.nccWasmModel.get(ctx,parameter,12) : 0x7F;
+                        if (expressionAs(ctx,out,arg,depth+1,wanted) < 0) return fail(out,g,node);
+                        if (parameter >= 0) parameter <- ir.nccIr.graphNodeNextSibling(g,parameter);
+                        count += 1; arg <- ir.nccIr.graphNodeNextSibling(g,arg);
+                    }
+                    if (count != arity) return fail(out,g,node);
+                    indexed(out,0x10,functionIndex); return result;
+                }
+                return fail(out,g,node);
+            }
+
+            statement(ctx >> p<byte>, out >> p<byte>, node >> int, depth >> int,
+                breakDepth >> int, continueDepth >> int, result >> int) -> void {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                if (node < 0 || depth > 192 || !wasm_bytes.nccWasmBytes.healthy(out)) {
+                    wasm_bytes.nccWasmBytes.reject(out); return;
+                }
+                kind >> int <- ir.nccIr.graphNodeAstKind(g,node);
+                child >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                if (kind == 34) {
+                    while (child >= 0) {
+                        statement(ctx,out,child,depth+1,breakDepth,continueDepth,result);
+                        child <- ir.nccIr.graphNodeNextSibling(g,child);
+                    }
+                    return;
+                }
+                if (kind == 12) {
+                    if (mct_values.nccMctValues.isConstant(g,node)) return;
+                    initial >> int <- mct_values.nccMctValues.initializer(g,node);
+                    if (initial >= 0) {
+                        if (wasm_model.nccWasmModel.get(ctx,node,24) >= 0) frameAddress(ctx,out,node);
+                        if (expressionAs(ctx,out,initial,depth+1,wasm_model.nccWasmModel.get(ctx,node,12)) < 0) { fail(out,g,node); return; }
+                        if (wasm_model.nccWasmModel.get(ctx,node,24) >= 0)
+                            storeMemory(ctx,out,node,wasm_model.nccWasmModel.materialCode(g,node));
+                        else writeVariable(ctx,out,node);
+                    }
+                    return;
+                }
+                if (kind == 35) {
+                    t >> int <- expression(ctx,out,child,depth+1);
+                    if (t == 0x7F || t == 0x7E) wasm_bytes.nccWasmBytes.put(out,0x1A);
+                    return;
+                }
+                if (kind == 36) {
+                    target >> int <- mct_values.nccMctValues.resolve(g,child);
+                    valueNode >> int <- ir.nccIr.graphNodeNextSibling(g,child);
+                    op >> int <- ir.nccIr.graphNodeRoleHash(g,node);
+                    type >> int <- native_types.nccNativeTypes.expression(g,child,0);
+                    valueType >> int <- wasm_model.nccWasmModel.valueType(type);
+                    memory >> bool <- ir.nccIr.graphNodeAstKind(g,child) == 30 || ir.nccIr.graphNodeAstKind(g,child) == 31 ||
+                        wasm_model.nccWasmModel.get(ctx,target,24) >= 0;
+                    if ((!memory && target < 0) || mct_values.nccMctValues.isConstant(g,target)) { fail(out,g,node); return; }
+                    if (memory && location(ctx,out,child,depth+1) != 0x7F) return;
+                    if (op != 30 && op != 24) {
+                        if (memory) {
+                            owner >> int <- wasm_model.nccWasmModel.functionOf(g,node);
+                            scratch >> int <- wasm_model.nccWasmModel.get(ctx,owner,32)+3;
+                            indexed(out,0x22,scratch);
+                            indexed(out,0x20,scratch);
+                            loadMemory(ctx,out,node,native_types.nccNativeTypes.expression(g,child,0));
+                        } else readVariable(ctx,out,target);
+                    }
+                    if (op == 36 || op == 39) { if (valueType == 0x7E) constant64(out,1); else constant(out,1); }
+                    else if (expressionAs(ctx,out,valueNode,depth+1,valueType) < 0) { fail(out,g,node); return; }
+                    if (op != 30 && op != 24) {
+                        opcode >> int <- numericCode(op == 36 ? 35 : (op == 39 ? 38 : op),type);
+                        if (opcode < 0) { fail(out,g,node); return; }
+                        wasm_bytes.nccWasmBytes.put(out,opcode);
+                    }
+                    if (memory) storeMemory(ctx,out,node,native_types.nccNativeTypes.expression(g,child,0));
+                    else writeVariable(ctx,out,target);
+                    return;
+                }
+                if (kind == 37) {
+                    if (child >= 0) {
+                        t >> int <- expression(ctx,out,child,depth+1);
+                        if (result == 0x40 && (t == 0x7F || t == 0x7E)) wasm_bytes.nccWasmBytes.put(out,0x1A);
+                        else if (coerce(ctx,out,child,t,result) < 0) { fail(out,g,node); return; }
+                    }
+                    else if (result != 0x40) { fail(out,g,node); return; }
+                    restoreFrame(ctx,out,node); wasm_bytes.nccWasmBytes.put(out,0x0F); return;
+                }
+                if (kind == 38 || kind == 41 || kind == 58) {
+                    if (expression(ctx,out,child,depth+1) != 0x7F) { fail(out,g,node); return; }
+                    if (kind == 41 || kind == 58) wasm_bytes.nccWasmBytes.put(out,0x45);
+                    wasm_bytes.nccWasmBytes.put(out,0x04); wasm_bytes.nccWasmBytes.put(out,0x40);
+                    child <- ir.nccIr.graphNodeNextSibling(g,child);
+                    statement(ctx,out,child,depth+1,breakDepth < 0 ? -1 : breakDepth+1,
+                        continueDepth < 0 ? -1 : continueDepth+1,result);
+                    child <- ir.nccIr.graphNodeNextSibling(g,child);
+                    if (child >= 0) {
+                        wasm_bytes.nccWasmBytes.put(out,0x05);
+                        statement(ctx,out,child,depth+1,breakDepth < 0 ? -1 : breakDepth+1,
+                            continueDepth < 0 ? -1 : continueDepth+1,result);
+                    }
+                    wasm_bytes.nccWasmBytes.put(out,0x0B); return;
+                }
+                if (kind == 39 || kind == 55) {
+                    wasm_bytes.nccWasmBytes.put(out,0x02); wasm_bytes.nccWasmBytes.put(out,0x40);
+                    wasm_bytes.nccWasmBytes.put(out,0x03); wasm_bytes.nccWasmBytes.put(out,0x40);
+                    if (kind == 39) {
+                        if (expression(ctx,out,child,depth+1) != 0x7F) { fail(out,g,node); return; }
+                        wasm_bytes.nccWasmBytes.put(out,0x45); indexed(out,0x0D,1);
+                        child <- ir.nccIr.graphNodeNextSibling(g,child);
+                    }
+                    statement(ctx,out,child,depth+1,1,0,result);
+                    indexed(out,0x0C,0);
+                    wasm_bytes.nccWasmBytes.put(out,0x0B); wasm_bytes.nccWasmBytes.put(out,0x0B); return;
+                }
+                if (kind == 43 || kind == 44) {
+                    labelIndex >> int <- kind == 43 ? breakDepth : continueDepth;
+                    if (labelIndex < 0) { fail(out,g,node); return; }
+                    indexed(out,0x0C,labelIndex); return;
+                }
+                fail(out,g,node);
+            }
+
+            functionBody(ctx >> p<byte>, node >> int) -> p<byte> {
+                g >> p<byte> <- wasm_model.nccWasmModel.graph(ctx);
+                out >> p<byte> <- wasm_bytes.nccWasmBytes.create();
+                guard out != null else return null;
+                parameters >> int <- wasm_model.nccWasmModel.parameterCount(g,node);
+                locals >> int <- wasm_model.nccWasmModel.get(ctx,node,20) - parameters;
+                wasm_bytes.nccWasmBytes.uleb(out,locals);
+                index >> int <- parameters;
+                while (index < parameters + locals) {
+                    if (index >= wasm_model.nccWasmModel.get(ctx,node,32)) {
+                        wasm_bytes.nccWasmBytes.uleb(out,1); wasm_bytes.nccWasmBytes.put(out,0x7F); index += 1; continue;
+                    }
+                    found >> int <- -1;
+                    scan >> int <- 0;
+                    while (scan < ir.nccIr.graphNodes(g)) {
+                        if (wasm_model.nccWasmModel.get(ctx,scan,4) == index &&
+                            wasm_model.nccWasmModel.functionOf(g,scan) == node) found <- scan;
+                        scan += 1;
+                    }
+                    type >> int <- wasm_model.nccWasmModel.get(ctx,found,12);
+                    if (found < 0 || (type != 0x7F && type != 0x7E)) { fail(out,g,node); return out; }
+                    wasm_bytes.nccWasmBytes.uleb(out,1); wasm_bytes.nccWasmBytes.put(out,type);
+                    index += 1;
+                }
+                indexed(out,0x23,rd<int>(off(ctx,32)));
+                constant(out,wasm_model.nccWasmModel.get(ctx,node,28));
+                wasm_bytes.nccWasmBytes.put(out,0x6B);
+                indexed(out,0x22,wasm_model.nccWasmModel.get(ctx,node,32));
+                indexed(out,0x24,rd<int>(off(ctx,32)));
+                index <- 0;
+                child >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g,child) == 16) {
+                        frameAddress(ctx,out,child); indexed(out,0x20,index);
+                        storeMemory(ctx,out,child,wasm_model.nccWasmModel.materialCode(g,child)); index += 1;
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(g,child);
+                }
+                child <- ir.nccIr.graphNodeFirstChild(g,node);
+                foundBody >> bool <- false;
+                result >> int <- wasm_model.nccWasmModel.get(ctx,node,12);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g,child) == 34) {
+                        statement(ctx,out,child,0,-1,-1,result); foundBody <- true;
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(g,child);
+                }
+                if (!foundBody) fail(out,g,node);
+                if (result == 0x40) restoreFrame(ctx,out,node);
+                // A non-void fallthrough traps; it must never invent a return value.
+                if (result != 0x40) wasm_bytes.nccWasmBytes.put(out,0x00);
+                wasm_bytes.nccWasmBytes.put(out,0x0B);
+                return out;
+            }
+    fa:
+        return true;
+}

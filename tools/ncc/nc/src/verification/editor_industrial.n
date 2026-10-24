@@ -1,0 +1,248 @@
+use <data:json>;
+use <io:output>;
+use <project:release_io, tool_cli, contract_checks, editor_json>;
+
+editorIndustrial {
+    const:
+        VSCODE >> str <- "tools/vscode/nc-language/";
+        JETBRAINS >> str <- "tools/jetbrains/nc-language-plugin/";
+        REPORT >> str <- "reports/high_level/ide_release/high_level_ide_release_industrial_closed.json";
+    fn:
+        private:
+            field(object >> int, key >> str, expected >> str) -> bool {
+                return editor_json.editorJson.field(object,key) == expected;
+            }
+            record(checks >> int, name >> str, value >> bool) -> void {
+                contract_checks.contractChecks.record(checks,name,value);
+            }
+            subset(array >> int, encoded >> str) -> bool {
+                wanted >> int <- jsonParse(encoded);
+                good >> bool <- jsonKind(array) == 5;
+                index >> int <- 0;
+                while (index < jsonArrayLen(wanted)) {
+                    item >> int <- jsonArrayGet(wanted,index);
+                    if (!release_io.releaseIo.contains(array,jsonStringView(item,""))) good <- false;
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(wanted); return good;
+            }
+            keys(object >> int, encoded >> str) -> bool {
+                wanted >> int <- jsonParse(encoded);
+                good >> bool <- jsonKind(object) == 6;
+                index >> int <- 0;
+                while (index < jsonArrayLen(wanted)) {
+                    item >> int <- jsonArrayGet(wanted,index);
+                    if (!jsonObjectHas(object,jsonStringView(item,""))) good <- false;
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(wanted); return good;
+            }
+            phrases(content >> str, encoded >> str) -> bool {
+                wanted >> int <- jsonParse(encoded);
+                good >> bool <- contract_checks.contractChecks.phrases(content,wanted);
+                jsonRelease(wanted); return good;
+            }
+            paths(root >> str, encoded >> str) -> bool {
+                wanted >> int <- jsonParse(encoded);
+                good >> bool <- true;
+                index >> int <- 0;
+                while (index < jsonArrayLen(wanted)) {
+                    item >> int <- jsonArrayGet(wanted,index);
+                    if (!exists(root+jsonStringView(item,""))) good <- false;
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(wanted); return good;
+            }
+            column(array >> int, key >> str) -> int {
+                values >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(array)) {
+                    row >> int <- jsonArrayGet(array,index);
+                    jsonArrayPush(values,jsonObjectGet(row,key));
+                    jsonRelease(row); index += 1;
+                }
+                return values;
+            }
+            defaults(properties >> int, key >> str) -> bool {
+                value >> int <- jsonObjectGet(properties,key);
+                good >> bool <- contract_checks.contractChecks.boolean(value,"default",true);
+                jsonRelease(value); return good;
+            }
+            text(path >> str) -> str {
+                // Python read_text uses universal newlines, including lone CR.
+                original >> str <- release_io.releaseIo.text(path);
+                count >> int <- strByteLen(original);
+                data >> p<byte> <- cast(alloc(count+1));
+                guard data != null else return "";
+                source >> p<byte> <- cast(original);
+                index >> int <- 0;
+                cursor >> int <- 0;
+                while (index < count) {
+                    byte >> int <- rd(off(source,index));
+                    if (byte == 13) {
+                        byte <- 10;
+                        if (index+1 < count) { if (rd(off(source,index+1)) == 10) index += 1; }
+                    }
+                    wr(off(data,cursor),byte); cursor += 1; index += 1;
+                }
+                wr(off(data,cursor),0); free(cast<byte>(original));
+                result >> str <- cast(data); return result;
+            }
+            kotlin(root >> str) -> str {
+                directory >> str <- root+JETBRAINS+"src/main/kotlin/dev/nc/jetbrains";
+                names >> int <- release_io.releaseIo.names(directory);
+                content >> str <- "";
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayGet(names,index);
+                    name >> str <- jsonStringView(item,"");
+                    if (strEndsWith(name,".kt")) {
+                        part >> str <- text(directory+"/"+name);
+                        content <- content+"\n"+part; free(cast<byte>(part));
+                    }
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(names); return content;
+            }
+            command(checks >> int, commands >> int, root >> str, node >> str, file >> str, syntax >> bool) -> void {
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,node);
+                if (syntax) tool_cli.toolCli.append(words,"--check");
+                tool_cli.toolCli.append(words,VSCODE+"src/"+file);
+                row >> int <- tool_cli.toolCli.execute(words,root,120000);
+                // Preserve the oracle command spelling; keep argv as additional evidence.
+                jsonObjectSet(row,"cmd",jsonNewString(node+(syntax ? " --check " : " ")+VSCODE+"src/"+file));
+                out >> str <- editor_json.editorJson.field(row,"stdout");
+                err >> str <- editor_json.editorJson.field(row,"stderr");
+                jsonObjectSet(row,"stdout",jsonNewString(strTrim(out)));
+                jsonObjectSet(row,"stderr",jsonNewString(strTrim(err)));
+                
+                jsonObjectSet(row,"argv",words);
+                record(checks,"cmd_tools_vscode_nc-language_src_"+file,tool_cli.toolCli.hasFlag(row,"ok"));
+                jsonArrayPush(commands,row);
+            }
+        public:
+            inspect(rootPath >> str, node >> str) -> int {
+                root >> str <- rootPath+"/";
+                vscode >> str <- root+VSCODE;
+                jetbrains >> str <- root+JETBRAINS;
+                checks >> int <- jsonNewObject();
+                package >> int <- jsonParseFile(vscode+"package.json");
+                snippets >> int <- jsonParseFile(vscode+"snippets/nc.code-snippets");
+                syntax >> int <- jsonParseFile(vscode+"syntaxes/nc.tmLanguage.json");
+                palette >> int <- jsonParseFile(root+"tools/theme/nc_colors.json");
+                semantic >> int <- jsonParseFile(root+"tools/theme/nc_semantic_tokens.json");
+                identity >> int <- jsonParseFile(root+"tools/theme/nc_visual_identity.json");
+                caps >> int <- jsonParseFile(jetbrains+"capabilities.contract.json");
+                colors >> int <- jsonParseFile(jetbrains+"resources/nc_colors.json");
+                if (jsonKind(package) != 6 || jsonKind(snippets) != 6 || jsonKind(syntax) != 6 || jsonKind(palette) != 6 || jsonKind(semantic) != 6 || jsonKind(identity) != 6 || jsonKind(caps) != 6 || jsonKind(colors) != 6) {
+                    failure >> int <- jsonParse("{\"schema\":\"nc.high_level.ide_release_industrial.report.v1\",\"status\":\"error\",\"scope\":\"normal_nc_high_level_ide_surface\",\"checks\":{\"input_json_objects\":false},\"commands\":[],\"error\":\"Missing, invalid or non-object JSON input\"}");
+                    jsonRelease(checks); jsonRelease(package); jsonRelease(snippets); jsonRelease(syntax); jsonRelease(palette); jsonRelease(semantic); jsonRelease(identity); jsonRelease(caps); jsonRelease(colors);
+                    return failure;
+                }
+                contrib >> int <- jsonObjectGet(package,"contributes");
+                config >> int <- jsonObjectGet(contrib,"configuration");
+                properties >> int <- jsonObjectGet(config,"properties");
+                parity >> int <- jsonObjectGet(package,"ncProfessionalIdeParity");
+                languages >> int <- jsonObjectGet(parity,"referenceLanguages");
+                record(checks,"vscode_package_version_2_0_0_2",field(package,"version","2.0.0-2") && field(package,"ncProductVersion","2.0.0.2") && field(parity,"tier","c_cpp_rust_java_grade"));
+                record(checks,"vscode_professional_parity_reference_languages",subset(languages,"[\"c\",\"cpp\",\"rust\",\"java\"]"));
+                record(checks,"vscode_editor_assist_config",defaults(properties,"nc.editorAssistHints"));
+                record(checks,"vscode_inlay_hints_config",defaults(properties,"nc.inlayHints.parameters") && defaults(properties,"nc.inlayHints.types") && !jsonObjectHas(properties,"nc.inlayHints.entrypoints"));
+                record(checks,"vscode_ncc_kit_config",keys(properties,"[\"nc.kit\",\"nc.kitTransport\",\"nc.nccPath\",\"nc.ncupPath\"]"));
+                tokens >> int <- jsonObjectGet(contrib,"semanticTokenTypes");
+                tokenIds >> int <- column(tokens,"id");
+                record(checks,"vscode_semantic_tokens_industrial",subset(tokenIds,"[\"basalEntity\",\"kernelEntity\",\"pointerType\",\"rawHazard\",\"importHint\",\"ffiSymbol\",\"machineInstruction\",\"primitiveEntity\"]"));
+                themes >> int <- jsonObjectGet(contrib,"themes");
+                themePaths >> int <- column(themes,"path");
+                record(checks,"vscode_systems_spectrum_theme",release_io.releaseIo.contains(themePaths,"./themes/nc-systems-spectrum-color-theme.json"));
+                record(checks,"vscode_theme_file_present",exists(vscode+"themes/nc-systems-spectrum-color-theme.json"));
+                record(checks,"vscode_polyglot_systems_theme",release_io.releaseIo.contains(themePaths,"./themes/nc-polyglot-systems-color-theme.json"));
+                polyglot >> int <- jsonParseFile(vscode+"themes/nc-polyglot-systems-color-theme.json");
+                textColors >> int <- jsonObjectGet(polyglot,"colors");
+                tokenColors >> int <- jsonObjectGet(polyglot,"semanticTokenColors");
+                record(checks,"vscode_polyglot_text_colors",field(textColors,"editor.foreground","#D9E6F2") && field(tokenColors,"section","#3776AB") && field(tokenColors,"type","#FFD43B") && field(tokenColors,"function","#3776AB") && field(tokenColors,"machineInstruction","#00599C") && field(tokenColors,"rawHazard","#CE412B"));
+                record(checks,"vscode_package_icon_declared",field(package,"icon","assets/nc-logo-128.png"));
+                logo >> str <- text(vscode+"assets/nc-logo.svg");
+                siteLogo >> str <- text(root+"site/public/assets/nc-logo.svg");
+                record(checks,"vscode_logo_matches_site_asset",release_io.releaseIo.fileType(vscode+"assets/nc-logo.svg") == 1 && release_io.releaseIo.fileType(root+"site/public/assets/nc-logo.svg") == 1 && logo == siteLogo);
+                record(checks,"vscode_logo_png_assets_present",paths(vscode,"[\"assets/nc-logo-128.png\",\"assets/nc-logo-256.png\",\"assets/marketplace/nc-logo-128.png\",\"assets/marketplace/nc-logo-256.png\"]"));
+                record(checks,"vscode_logo_png_assets_non_empty",fsSize(vscode+"assets/nc-logo-128.png") > 1024 && fsSize(vscode+"assets/nc-logo-256.png") > 2048);
+                record(checks,"vscode_pointer_ffi_snippets",keys(snippets,"[\"ptrNullable\",\"refMutable\",\"ffiPointerContract\",\"pointerFfiContractFull\",\"pointerRegionFromPtr\",\"riskRawPointer\",\"importRuntimeInput\",\"importRuntimeOutput\",\"importRuntimeRegion\",\"importRuntimePtr\",\"basalRoutineRawReport\"]"));
+                grammar >> str <- jsonStringify(syntax);
+                record(checks,"vscode_grammar_official_sections",phrases(grammar,"[\"const\",\"routine\",\"verify\",\"report\",\"seal\"]"));
+                record(checks,"vscode_grammar_pointer_types",strContains(grammar,"support.type.nc.pointer"));
+                record(checks,"vscode_grammar_pointer_diagnostics_raw_hazards",phrases(grammar,"[\"E_(?:PTR\",\"rawPtr\",\"nullability\",\"lifetime\"]") && strContains(grammar,"evidence\\\\s+boundary"));
+                extension >> str <- text(vscode+"src/extension.js");
+                semanticSource >> str <- text(vscode+"src/nc_semantic.js");
+                record(checks,"vscode_auto_import_code_actions",phrases(extension,"[\"missingImportSuggestions\",\"Add import:\",\"WorkspaceEdit\",\"createMissingImportAction\"]"));
+                record(checks,"vscode_completion_time_auto_imports",phrases(extension,"[\"additionalTextEdits\",\"missingImportEditForCompletion\",\"regionFromPtr bounded memRegion\"]"));
+                record(checks,"vscode_editor_assist_hints",phrases(extension,"[\"editorAssistHints\",\"parseEditorAssistDiagnostics\"]") && strContains(semanticSource,"NC_EDITOR_IMPORT_HINT_001"));
+                record(checks,"vscode_inlay_hints_run_debug_codelens",phrases(extension,"[\"registerInlayHintsProvider\",\"registerCodeLensProvider\",\"buildInlayHints\",\"buildCodeLenses\",\"registerCommand('nc.debug'\",\"registerCommand('nc.createKit'\",\"registerCommand('nc.selectKit'\",\"createTerminalDebugCommand\",\"discoverNccKits\",\"workspaceNccCandidates\"]"));
+                record(checks,"vscode_predictive_completion_surface",phrases(extension+semanticSource,"[\"nccCommandPredictions\",\"callExpressionAtPosition\",\"lookupCallSignature\",\"typedSymbolMap\",\"inlayHintRows\"]"));
+                surfaces >> int <- jsonObjectGet(parity,"surfaces");
+                record(checks,"vscode_professional_surface_manifest",subset(surfaces,"[\"inlayHints\",\"predictiveCompletions\",\"codeLensRunDebug\",\"nccKitResolution\"]"));
+                record(checks,"vscode_pointer_and_diagnostic_hovers",phrases(extension,"[\"lookupPointerBase\",\"lookupDiagnosticHelp\"]") && strContains(semanticSource,"E_PTR_PROVENANCE_001"));
+                record(checks,"vscode_auto_import_rules",phrases(semanticSource,"[\"readInt\",\"println\",\"regionFromPtr\",\"regionCreate\",\"listAsRegion\",\"ptrFromAddr\",\"addrOf\",\"spanOf\",\"sliceOf\"]"));
+                paletteColors >> int <- jsonObjectGet(palette,"colors");
+                record(checks,"theme_palette_industrial_keys",keys(paletteColors,"[\"mode.basal\",\"mode.kernel\",\"type.pointer\",\"raw.hazard\",\"import.hint\"]"));
+                record(checks,"theme_palette_polyglot_keys",keys(paletteColors,"[\"polyglot.java.primary\",\"polyglot.java.secondary\",\"polyglot.c.primary\",\"polyglot.cpp.primary\",\"polyglot.cpp.secondary\",\"polyglot.rust.primary\",\"polyglot.rust.hazard\"]"));
+                tokenTypes >> int <- jsonObjectGet(semantic,"token_types");
+                record(checks,"theme_semantic_assignments",keys(tokenTypes,"[\"basalEntity\",\"kernelEntity\",\"pointerType\",\"rawHazard\",\"importHint\"]"));
+                identityPalettes >> int <- jsonObjectGet(identity,"palettes");
+                identityLogo >> int <- jsonObjectGet(identity,"logo");
+                identitySystems >> int <- jsonObjectGet(identity,"polyglot_systems");
+                hasPalette >> bool <- jsonKind(identityPalettes) == 6 ? jsonObjectHas(identityPalettes,"nC Polyglot Systems") : release_io.releaseIo.contains(identityPalettes,"nC Polyglot Systems");
+                record(checks,"visual_identity_polyglot_contract",hasPalette && field(identityLogo,"official_svg","site/public/assets/nc-logo.svg") && field(identitySystems,"java_primary","#F89820") && field(identitySystems,"rust_hazard","#CE412B"));
+                kotlinSource >> str <- kotlin(root);
+                record(checks,"jetbrains_color_lanes",phrases(kotlinSource,"[\"NC_MODE_BASAL\",\"NC_MODE_KERNEL\",\"NC_POINTER_TYPE\",\"NC_RAW_HAZARD\"]"));
+                record(checks,"jetbrains_logo_file_type_icon",phrases(kotlinSource,"[\"IconLoader.getIcon(\\\"/icons/nc-logo.svg\\\"\",\"NcIcons.SourceFile\",\"NcIcons.BasalFile\",\"NcIcons.BasalBinaryFile\",\"NcIcons.MachineFile\",\"NcIcons.PrimitiveFile\",\"override fun getIcon(): Icon = icon\"]"));
+                record(checks,"jetbrains_logo_resources_present",paths(jetbrains,"[\"src/main/resources/icons/nc-logo.svg\",\"src/main/resources/META-INF/pluginIcon.svg\",\"src/main/resources/META-INF/pluginIcon_dark.svg\"]"));
+                market >> int <- jsonObjectGet(caps,"marketplace_capabilities");
+                record(checks,"jetbrains_capability_contract",subset(market,"[\"auto_import_suggestions_runtime_and_pointer_helpers\",\"pointer_ref_site_memregion_highlighting\",\"raw_hazard_highlighting\",\"basal_machine_primitive_kernel_color_lanes\"]"));
+                jbParity >> int <- jsonObjectGet(caps,"professional_ide_parity");
+                jbLanguages >> int <- jsonObjectGet(jbParity,"reference_languages");
+                record(checks,"jetbrains_professional_parity_contract",field(caps,"version","2.0.0.2") && field(jbParity,"tier","c_cpp_rust_java_grade") && subset(jbLanguages,"[\"c\",\"cpp\",\"rust\",\"java\"]"));
+                jbColors >> int <- jsonObjectGet(colors,"keys");
+                record(checks,"jetbrains_palette_keys",keys(jbColors,"[\"NC_MODE_BASAL\",\"NC_MODE_KERNEL\",\"NC_POINTER_TYPE\",\"NC_RAW_HAZARD\"]"));
+                record(checks,"jetbrains_polyglot_palette_values",field(jbColors,"NC_TYPE","#FFD43B") && field(jbColors,"NC_FUNCTION","#3776AB") && field(jbColors,"NC_MACHINE_INSTRUCTION","#F3722C") && field(jbColors,"NC_RAW_HAZARD","#CE412B"));
+                commands >> int <- jsonNewArray();
+                command(checks,commands,rootPath,node,"extension.js",true);
+                command(checks,commands,rootPath,node,"nc_semantic.js",true);
+                command(checks,commands,rootPath,node,"smoke_test.js",false);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.high_level.ide_release_industrial.report.v1"));
+                jsonObjectSet(report,"status",jsonNewString(release_io.releaseIo.allTrue(checks) ? "ok" : "error"));
+                jsonObjectSet(report,"scope",jsonNewString("normal_nc_high_level_ide_surface"));
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"commands",commands);
+                jsonRelease(package); jsonRelease(snippets); jsonRelease(syntax); jsonRelease(palette); jsonRelease(semantic); jsonRelease(identity); jsonRelease(caps); jsonRelease(colors);
+                jsonRelease(contrib); jsonRelease(config); jsonRelease(properties); jsonRelease(parity); jsonRelease(languages); jsonRelease(tokens); jsonRelease(tokenIds); jsonRelease(themes); jsonRelease(themePaths);
+                jsonRelease(polyglot); jsonRelease(textColors); jsonRelease(tokenColors); jsonRelease(surfaces); jsonRelease(paletteColors); jsonRelease(tokenTypes); jsonRelease(identityPalettes); jsonRelease(identityLogo); jsonRelease(identitySystems);
+                jsonRelease(market); jsonRelease(jbParity); jsonRelease(jbLanguages); jsonRelease(jbColors);
+                free(cast<byte>(logo)); free(cast<byte>(siteLogo)); free(cast<byte>(grammar)); free(cast<byte>(extension)); free(cast<byte>(semanticSource)); strRelease(kotlinSource);
+                return report;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) { println("editor-industrial [--root REPO] [--out REPORT] [--node EXE]"); return 0; }
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--out|--node|","");
+                guard options != 0 else { println("Invalid editor-industrial options"); return 2; }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                node >> str <- tool_cli.toolCli.value(options,"--node","node");
+                output >> str <- tool_cli.toolCli.value(options,"--out",root+"/"+REPORT);
+                model >> int <- inspect(root,node);
+                good >> bool <- field(model,"status","ok");
+                saved >> bool <- release_io.releaseIo.save(output,model);
+                println((good && saved ? "OK: " : "ERROR: ")+"high-level IDE release industrial report "+output);
+                checks >> int <- jsonObjectGet(model,"checks");
+                index >> int <- 0;
+                while (index < jsonObjectLen(checks)) {
+                    key >> str <- jsonObjectKeyAt(checks,index);
+                    if (!contract_checks.contractChecks.boolean(checks,key,true)) println("FAILED: "+key);
+                    free(cast<byte>(key));
+                    index += 1;
+                }
+                jsonRelease(checks); jsonRelease(model); jsonRelease(options);
+                return good && saved ? 0 : 1;
+            }
+    fa: return true;
+}

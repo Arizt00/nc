@@ -1,0 +1,269 @@
+use <io:output, render>;
+use <memory:ptr, heap>;
+
+/*
+ * Este ejemplo separa tres ideas que en C/C++ suelen mezclarse:
+ *
+ * 1. El bloque real de memoria:
+ *    Es el heap reservado con alloc(...). Mientras no hagamos free(...),
+ *    la memoria material sigue viva.
+ *
+ * 2. El puntero propietario:
+ *    alpha.rOwner y beta.pOwner son ptr<int> no nulos. Representan la
+ *    referencia fuerte que cada modulo usa para liberar su propio heap.
+ *
+ * 3. El puntero en transito:
+ *    rWire y pWire son ptr<int> | null. Simulan el puntero cruzando una
+ *    frontera entre modulos, una red, un ABI, un FFI o una capa insegura.
+ *    Esos punteros si pueden corromperse a null sin destruir automaticamente
+ *    el bloque real de heap.
+ */
+alpha :: runtime {
+    stc:
+        rOwner >> p<int>;
+        sawNullP >> bool;
+        releasedR >> bool;
+        rWire     >> p<int> | null <- null;
+        receivedP >> p<int> | null <- null;
+
+    /*
+     * alpha crea *r en heap real.
+     *
+     * rOwner es no nullable porque alpha necesita una referencia fiable
+     * para escribir, leer y liberar memoria. rWire es nullable porque
+     * representa una copia enviada fuera del modulo.
+     */
+    fn:
+        bootR() -> bool {
+            rOwner !> p<int> : alloc(64);
+            wr(rOwner, 111);
+            rWire <- rOwner;
+            receivedP <- null;
+            sawNullP <- false;
+            releasedR <- false;
+            return true;
+        }
+
+        /*
+     * Devuelve el puntero de alpha como puntero nullable.
+     *
+     * No devolvemos rOwner directamente como contrato fuerte, porque al
+     * cruzar de modulo queremos expresar que la frontera puede fallar.
+     */
+    fn:
+        enviarR() -> p<int> | null {
+            return rWire;
+        }
+
+        /*
+     * Simula corrupcion de la referencia en transito.
+     *
+     * Importante: esto NO libera rOwner. Solo rompe la copia que iba
+     * camino a beta. En C seria como perder/copiar mal la direccion; en
+     * nC lo modelamos como ptr<int> | null para poder detectarlo.
+     */
+    fn:
+        corromperRWire() -> bool {
+            rWire <- null;
+            return false;
+        }
+
+        /*
+     * alpha recibe p desde beta.
+     *
+     * Si llega null, alpha registra el fallo y no intenta leerlo. Esta es
+     * la diferencia entre codigo seguro y un crash por null dereference.
+     */
+    fn:
+        recibirP(incoming >> p<int> | null) -> bool {
+            receivedP <- incoming;
+            sawNullP <- receivedP == null;
+            return !sawNullP;
+        }
+
+        /*
+     * Lectura controlada de *r.
+     * Solo usa rOwner, que sigue siendo el puntero fuerte de alpha.
+     */
+    fn:
+        readR() -> int {
+            return rOwner.read();
+        }
+
+        /*
+     * Escritura controlada de *r.
+     * beta no toca rOwner directamente; pide a alpha que cambie su valor.
+     */
+    fn:
+        writeR(value >> int) -> bool {
+            wr(rOwner, value);
+            return true;
+        }
+
+        /*
+     * Limpieza explicita del heap de alpha.
+     * No hay fa propio en alpha: beta coordina el final global del ejemplo.
+     */
+    fn:
+        liberarR() -> bool {
+            releasedR <- free(rOwner);
+            rWire <- null;
+            receivedP <- null;
+            return releasedR;
+        }
+}
+
+beta :: runtime {
+    stc:
+        pOwner >> p<int>;
+        beforeR >> int;
+        beforeP >> int;
+        afterR >> int;
+        afterP >> int;
+        betaSawNullR >> bool;
+        alphaSawNullP >> bool;
+        okExchange >> bool;
+        okCorruption >> bool;
+        releasedP >> bool;
+        releasedR >> bool;
+        pWire     >> p<int> | null <- null;
+        receivedR >> p<int> | null <- null;
+
+    /*
+     * beta crea *p en heap real y arranca alpha.
+     *
+     * Cada modulo conserva su puntero propietario:
+     * - alpha conserva rOwner;
+     * - beta conserva pOwner.
+     *
+     * Las copias que viajan son pWire/rWire y son nullable.
+     */
+    fn:
+        boot() -> bool {
+            alpha.bootR();
+            pOwner !> p<int> : alloc(8);
+            wr(pOwner, 222);
+            pWire <- pOwner;
+            receivedR <- null;
+            beforeR <- 0;
+            beforeP <- 0;
+            afterR <- 0;
+            afterP <- 0;
+            betaSawNullR <- false;
+            alphaSawNullP <- false;
+            okExchange <- false;
+            okCorruption <- false;
+            releasedP <- false;
+            releasedR <- false;
+            return true;
+        }
+
+        /*
+     * Caso 1:
+     * alpha envia r, pero la copia que llega a beta se corrompe a null.
+     *
+     * beta no debe leer receivedR si es null. Solo marca el fallo.
+     */
+    fn:
+        recibirRCorrupto() -> bool {
+            alpha.corromperRWire();
+            receivedR <- alpha.enviarR();
+            betaSawNullR <- receivedR == null;
+            return betaSawNullR;
+        }
+
+        /*
+     * Caso 2:
+     * *r y *p se "encuentran" y hacen swap de VALORES, no de ownership.
+     *
+     * Esto es deliberado:
+     * - intercambiar valores es seguro y auditable;
+     * - intercambiar propietarios sin protocolo podria provocar double free,
+     *   use-after-free o perdida de ownership.
+     */
+    fn:
+        intercambiarValores() -> bool {
+            beforeR <- alpha.readR();
+            beforeP <- pOwner.read();
+
+            alpha.writeR(beforeP);
+            wr(pOwner, beforeR);
+
+            afterR <- alpha.readR();
+            afterP <- pOwner.read();
+
+            okExchange <- afterR == beforeP && afterP == beforeR;
+            return okExchange;
+        }
+
+        /*
+     * Despues del intercambio, beta intenta mandar p a alpha.
+     * En ruta, pWire se corrompe a null.
+     *
+     * Otra vez: pOwner sigue vivo en beta, pero la copia enviada ya no
+     * representa una direccion valida.
+     */
+    fn:
+        enviarPCorruptoAAlpha() -> bool {
+            pWire <- null;
+            alphaSawNullP <- !alpha.recibirP(pWire);
+            return alphaSawNullP;
+        }
+
+        /*
+     * Validacion completa del escenario:
+     * - beta detecta r como null al recibirlo;
+     * - los valores reales se intercambian bien;
+     * - alpha detecta p como null al recibirlo;
+     * - los owners reales siguen vivos hasta liberar.
+     */
+    fn:
+        validar() -> bool {
+            okCorruption <- betaSawNullR && alphaSawNullP;
+            return okCorruption && okExchange && afterR == 222 && afterP == 111;
+        }
+
+        imprimir() -> bool {
+            println(colorBold("===== alpha/beta punteros corruptos =====", "cyan"));
+            println("beta recibe r como null = " + renderBool(betaSawNullR));
+            println("antes: *r = " + renderInt(beforeR) + "  *p = " + renderInt(beforeP));
+            println("despues swap: *r = " + renderInt(afterR) + "  *p = " + renderInt(afterP));
+            println("alpha recibe p como null = " + renderBool(alphaSawNullP));
+            println("swap valido = " + renderBool(okExchange));
+            println("corrupcion controlada = " + renderBool(okCorruption));
+            return true;
+        }
+
+        /*
+     * Unico cierre material del ejemplo.
+     * Aunque alpha no tenga fa, beta llama a alpha.liberarR() para no
+     * dejar memoria reservada. Esto conserva la idea de "un solo cierre"
+     * sin perder disciplina de heap.
+     */
+    fn:
+        liberarTodo() -> bool {
+            releasedR <- alpha.liberarR();
+            releasedP <- free(pOwner);
+            pWire <- null;
+            receivedR <- null;
+            println("heap alpha liberado = " + renderBool(releasedR));
+            println("heap beta liberado = " + renderBool(releasedP));
+            return releasedR && releasedP;
+        }
+
+        run() -> bool {
+            boot();
+            recibirRCorrupto();
+            intercambiarValores();
+            enviarPCorruptoAAlpha();
+            okCorruption <- validar();
+            imprimir();
+            return okCorruption && liberarTodo();
+        }
+
+    ref main ->> run;
+
+    fa:
+        return false;
+
+}

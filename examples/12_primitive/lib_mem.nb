@@ -1,0 +1,129 @@
+bibliotecaMemoria[@] {
+    root:
+        identity: "nC.root.biblioteca.memoria";
+        version: 1;
+        profile: basal;
+        authority: sealed;
+        binary: optional;
+        evidence: optional;
+        lowering: deferred;
+
+    target:
+        arch: x86_64;
+        triple: "x86_64-unknown-linux-gnu";
+        profile: basal;
+        symbols: pending_emit.biblioteca_memoria;
+
+    const:
+        totalLibros >> dword : 30;
+        libroDonQuijote >> dword : 1;
+        precioDonQuijote >> dword : 32;
+
+        estadoDisponible >> dword : 0;
+        estadoReservado >> dword : 1;
+        estadoComprado >> dword : 2;
+        estadoPrestado >> dword : 3;
+
+        usuarioDemo >> dword : 1001;
+        tarjetaDemoUlt4 >> dword : 4242;
+
+    site:
+        saldoSlot:
+            kind: memory_anchor;
+            size: 8;
+            align: 4;
+            permissions: read | write;
+
+        estadoLibroUnoSlot:
+            kind: memory_anchor;
+            size: 8;
+            align: 4;
+            permissions: read | write;
+
+        ultimoMovimientoSlot:
+            kind: memory_anchor;
+            size: 8;
+            align: 4;
+            permissions: read | write;
+
+        usuarioSlot:
+            kind: evidence_anchor;
+            size: 16;
+            align: 8;
+            permissions: read | write | evidence;
+
+    bind:
+        symbol root_entry -> machine.proc pending_emit.biblioteca_memoria;
+        symbol saldo_binding -> root.site saldoSlot;
+        symbol estado_libro_binding -> root.site estadoLibroUnoSlot;
+        symbol movimiento_binding -> root.site ultimoMovimientoSlot;
+        symbol usuario_binding -> root.site usuarioSlot;
+
+    routine:
+        iniciarSistema() -> bool {
+            raw {
+                mem[saldoSlot] >> dword : 0;
+                mem[estadoLibroUnoSlot] >> dword : @estadoDisponible;
+                mem[ultimoMovimientoSlot] >> dword : 0;
+                mem[usuarioSlot] >> dword : @usuarioDemo;
+            }
+
+            return true;
+        }
+
+        reservarLibroUno() -> bool {
+            raw {
+                mem[estadoLibroUnoSlot] >> dword : @estadoReservado;
+                mem[ultimoMovimientoSlot] >> dword : @estadoReservado;
+            }
+
+            return true;
+        }
+
+        comprarLibroUno() -> bool {
+            raw {
+                mem[estadoLibroUnoSlot] >> dword : @estadoComprado;
+                mem[saldoSlot] >> dword : @precioDonQuijote;
+                mem[ultimoMovimientoSlot] >> dword : @estadoComprado;
+            }
+
+            return true;
+        }
+
+        prestarLibroUno() -> bool {
+            raw {
+                mem[estadoLibroUnoSlot] >> dword : @estadoPrestado;
+                mem[ultimoMovimientoSlot] >> dword : @estadoPrestado;
+            }
+
+            return true;
+        }
+
+    verify:
+        iniciarSistema();
+        reservarLibroUno();
+        comprarLibroUno();
+
+        if (mem[estadoLibroUnoSlot] != @estadoComprado) {
+            dev(CompilerFault);
+        }
+
+        if (mem[saldoSlot] != @precioDonQuijote) {
+            dev(CompilerFault);
+        }
+
+        if (mem[ultimoMovimientoSlot] != @estadoComprado) {
+            dev(CompilerFault);
+        }
+
+    report:
+        status "bibliotecaMemoria::validated";
+        emit estadoLibroUnoSlot;
+        emit mem[estadoLibroUnoSlot];
+        emit saldoSlot;
+        emit mem[saldoSlot];
+        emit hash(ultimoMovimientoSlot);
+
+    seal:
+        require source_hash;
+}

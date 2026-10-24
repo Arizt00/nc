@@ -1,0 +1,699 @@
+use <io:output, render>;
+use <project:ir, mct, sema, diagnostics>;
+
+nccMctSymbolBundle {
+    const:
+        MAGIC >> int <- 0x5953434E;
+        VERSION >> int <- 1;
+        HEADER_BYTES >> int <- 64;
+        RECORD_BYTES >> int <- 64;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_TARGET >> int <- 8;
+        H_POINTER_BITS >> int <- 12;
+        H_RECORDS >> int <- 16;
+        H_RECORDS_OFFSET >> int <- 20;
+        H_STRINGS_OFFSET >> int <- 24;
+        H_STRING_BYTES >> int <- 28;
+        H_BYTES >> int <- 32;
+        H_HASH >> int <- 36;
+        H_IDENTITY_FINGERPRINT >> int <- 40;
+        H_FLAGS >> int <- 44;
+        H_FAMILY >> int <- 48;
+        H_LOCAL_RECORDS >> int <- 52;
+        H_DEFINED_RECORDS >> int <- 56;
+        H_RECORD_VERSION >> int <- 60;
+
+        R_KIND >> int <- 0;
+        R_VISIBILITY >> int <- 4;
+        R_FLAGS >> int <- 8;
+        R_TARGET_VALUE >> int <- 12;
+        R_TEXT_OFFSET >> int <- 16;
+        R_BYTE_LENGTH >> int <- 20;
+        R_LINE >> int <- 24;
+        R_COLUMN >> int <- 28;
+        R_NAME_OFFSET >> int <- 32;
+        R_NAME_BYTES >> int <- 36;
+        R_OWNER_OFFSET >> int <- 40;
+        R_OWNER_BYTES >> int <- 44;
+        R_HASH_A >> int <- 48;
+        R_HASH_B >> int <- 52;
+        R_SOURCE_NODE >> int <- 56;
+        R_RESERVED >> int <- 60;
+
+        TARGET_NONE >> int <- 0;
+        TARGET_LOCAL_SYMBOL >> int <- 1;
+        TARGET_EXTERNAL_SYMBOL >> int <- 2;
+        TARGET_CONTROL_NODE >> int <- 3;
+        TARGET_UNRESOLVED >> int <- 4;
+
+        VIS_DEFAULT >> int <- 0;
+        VIS_PUBLIC >> int <- 1;
+        VIS_PRIVATE >> int <- 2;
+        VIS_INTERNAL >> int <- 3;
+
+        IR_FUNCTION >> int <- 2;
+        FLAG_PROJECT_EXPORT >> int <- 1048576;
+
+        FLAG_DEFINED >> int <- 1;
+        FLAG_LOCAL_CLASS >> int <- 2;
+        FLAG_CONTROL >> int <- 4;
+        FLAG_EXTERNAL >> int <- 8;
+        FLAG_UNRESOLVED >> int <- 16;
+        FLAG_PUBLIC >> int <- 32;
+        FLAG_PRIVATE >> int <- 64;
+        FLAG_INTERNAL >> int <- 128;
+
+        BUNDLE_EXACT_IDENTITY >> int <- 1;
+        BUNDLE_SOURCE_LOCATIONS >> int <- 2;
+        BUNDLE_TEXT_INTERVALS >> int <- 4;
+        BUNDLE_LITTLE_ENDIAN >> int <- 8;
+
+    type:
+        SymbolBundleContract {
+            public:
+                target >> int;
+                pointerBits >> int;
+                records >> int;
+                stringBytes >> int;
+                bytes >> int;
+                hash >> int;
+        }
+
+    stc:
+        materializations >> u64 <- 0;
+        materialBytes >> u64 <- 0;
+        indexMaterial >> addr <- 0;
+        indexFingerprint >> int <- 0;
+        indexNodeCount >> int <- 0;
+        indexTargetCount >> int <- 0;
+        indexLocalCount >> int <- 0;
+        indexCapacity >> int <- 0;
+        indexTargets >> p<int> <- null;
+        indexLookup >> p<int> <- null;
+        indexOrdinals >> p<int> <- null;
+        indexDefinitions >> p<int> <- null;
+
+    local:
+        lastTarget >> int <- 0;
+        lastRecords >> int <- 0;
+        lastBytes >> int <- 0;
+        lastHash >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            unsignedByte(value >> int) -> int {
+                return value < 0 ? value + 256 : value;
+            }
+
+            zero(base >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) {
+                    wr<byte>(off(base, at), 0);
+                    at += 1;
+                }
+            }
+
+            hash(base >> p<byte>, bytes >> int) -> int {
+                value >> int <- 104729;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value <- (value + unsignedByte(rd<byte>(off(base, at))) *
+                        ((at % 251) + 37) + at * 31) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            bytesEqual(left >> p<byte>, leftBytes >> int,
+                right >> p<byte>, rightBytes >> int) -> bool {
+                guard leftBytes == rightBytes else return false;
+                at >> int <- 0;
+                while (at < leftBytes) {
+                    if (rd<byte>(off(left, at)) != rd<byte>(off(right, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            clearIndex() -> void {
+                if (indexTargets != null) free(indexTargets);
+                if (indexLookup != null) free(indexLookup);
+                if (indexOrdinals != null) free(indexOrdinals);
+                if (indexDefinitions != null) free(indexDefinitions);
+                indexMaterial <- 0;
+                indexFingerprint <- 0;
+                indexNodeCount <- 0;
+                indexTargetCount <- 0;
+                indexLocalCount <- 0;
+                indexCapacity <- 0;
+                indexTargets <- null;
+                indexLookup <- null;
+                indexOrdinals <- null;
+                indexDefinitions <- null;
+            }
+
+            targetHash(material >> p<byte>, node >> int) -> int {
+                kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                if (kind == TARGET_CONTROL_NODE || kind == TARGET_NONE)
+                    return kind * 65537 +
+                        mct.nccMct.artifactRecordTargetValue(material, node);
+                return kind * 65537 +
+                    mct.nccMct.artifactRecordTargetHashA(material, node) * 17 +
+                    mct.nccMct.artifactRecordTargetHashB(material, node) * 31;
+            }
+
+            lookupSlot(material >> p<byte>, node >> int,
+                lookup >> p<int>, capacity >> int) -> int {
+                slot >> int <- targetHash(material, node) % capacity;
+                if (slot < 0) slot += capacity;
+                probes >> int <- 0;
+                while (probes < capacity) {
+                    encoded >> int <- rd<int>(off(lookup, slot));
+                    if (encoded == 0 || sameTarget(material, encoded - 1, node)) return slot;
+                    slot <- (slot + 1) % capacity;
+                    probes += 1;
+                }
+                return -1;
+            }
+
+            ensureIndex(material >> p<byte>) -> bool {
+                guard material != null else return false;
+                nodes >> int <- mct.nccMct.artifactNodeCount(material);
+                fingerprint >> int <- mct.nccMct.artifactFingerprint(material);
+                if (indexMaterial == adr(material) && indexFingerprint == fingerprint &&
+                    indexNodeCount == nodes && indexTargets != null && indexLookup != null)
+                    return true;
+                clearIndex();
+                candidates >> int <- 0;
+                node >> int <- 0;
+                while (node < nodes) {
+                    if (isTargetRecord(material, node)) candidates += 1;
+                    node += 1;
+                }
+                capacity >> int <- 16;
+                while (capacity < candidates * 2 + 1) { capacity *= 2; }
+                storage >> int <- nodes > 0 ? nodes : 1;
+                targets >> p<int> <- cast<int>(alloc(storage * sizeOf<int>()));
+                lookup >> p<int> <- cast<int>(alloc(capacity * sizeOf<int>()));
+                ordinals >> p<int> <- cast<int>(alloc(storage * sizeOf<int>()));
+                definitions >> p<int> <- cast<int>(alloc(storage * sizeOf<int>()));
+                guard targets != null && lookup != null && ordinals != null &&
+                    definitions != null else {
+                    if (targets != null) free(targets);
+                    if (lookup != null) free(lookup);
+                    if (ordinals != null) free(ordinals);
+                    if (definitions != null) free(definitions);
+                    return false;
+                }
+                at >> int <- 0;
+                while (at < capacity) { wr<int>(off(lookup, at), 0); at += 1; }
+                at <- 0;
+                while (at < storage) {
+                    wr<int>(off(ordinals, at), -1);
+                    wr<int>(off(definitions, at), -2);
+                    at += 1;
+                }
+                unique >> int <- 0;
+                node <- 0;
+                while (node < nodes) {
+                    if (isTargetRecord(material, node)) {
+                        slot >> int <- lookupSlot(material, node, lookup, capacity);
+                        guard slot >= 0 else {
+                            free(targets); free(lookup); free(ordinals); free(definitions);
+                            return false;
+                        }
+                        if (rd<int>(off(lookup, slot)) == 0) {
+                            wr<int>(off(lookup, slot), node + 1);
+                            wr<int>(off(targets, unique), node);
+                            unique += 1;
+                        }
+                    }
+                    node += 1;
+                }
+                ordered >> p<int> <- cast<int>(alloc((unique > 0 ? unique : 1) * sizeOf<int>()));
+                guard ordered != null else {
+                    free(targets); free(lookup); free(ordinals); free(definitions);
+                    return false;
+                }
+                ordinal >> int <- 0;
+                pass >> int <- 0;
+                while (pass < 2) {
+                    localClass >> bool <- pass == 0;
+                    at <- 0;
+                    while (at < unique) {
+                        candidate >> int <- rd<int>(off(targets, at));
+                        if (isLocalTarget(material, candidate) == localClass) {
+                            wr<int>(off(ordered, ordinal), candidate);
+                            wr<int>(off(ordinals, candidate), ordinal);
+                            ordinal += 1;
+                        }
+                        at += 1;
+                    }
+                    if (pass == 0) indexLocalCount <- ordinal;
+                    pass += 1;
+                }
+                free(targets);
+                indexMaterial <- adr(material);
+                indexFingerprint <- fingerprint;
+                indexNodeCount <- nodes;
+                indexTargetCount <- unique;
+                indexCapacity <- capacity;
+                indexTargets <- ordered;
+                indexLookup <- lookup;
+                indexOrdinals <- ordinals;
+                indexDefinitions <- definitions;
+                return true;
+            }
+
+            canonicalTarget(material >> p<byte>, node >> int) -> int {
+                guard ensureIndex(material) && isTargetRecord(material, node) else return -1;
+                slot >> int <- lookupSlot(material, node, indexLookup, indexCapacity);
+                return slot >= 0 && rd<int>(off(indexLookup, slot)) != 0 ?
+                    rd<int>(off(indexLookup, slot)) - 1 : -1;
+            }
+
+            computeDefinitionNode(material >> p<byte>, symbolNode >> int) -> int {
+                kind >> int <- mct.nccMct.artifactRecordTargetKind(material, symbolNode);
+                if (kind == TARGET_CONTROL_NODE) {
+                    value >> int <- mct.nccMct.artifactRecordTargetValue(material, symbolNode);
+                    return value >= 0 && value < mct.nccMct.artifactNodeCount(material) ?
+                        value : -1;
+                }
+                if (kind != TARGET_LOCAL_SYMBOL) return -1;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactDefinition(material, node) &&
+                        sameTarget(material, node, symbolNode))
+                        return node;
+                    node += 1;
+                }
+                return -1;
+            }
+
+            definitionNode(material >> p<byte>, symbolNode >> int) -> int {
+                canonical >> int <- canonicalTarget(material, symbolNode);
+                guard canonical >= 0 else return -1;
+                cached >> int <- rd<int>(off(indexDefinitions, canonical));
+                if (cached != -2) return cached;
+                value >> int <- computeDefinitionNode(material, canonical);
+                wr<int>(off(indexDefinitions, canonical), value);
+                return value;
+            }
+
+            sameNamedIdentity(material >> p<byte>, left >> int, right >> int) -> bool {
+                return bytesEqual(
+                        mct.nccMct.artifactRecordTargetName(material, left),
+                        mct.nccMct.artifactRecordTargetNameBytes(material, left),
+                        mct.nccMct.artifactRecordTargetName(material, right),
+                        mct.nccMct.artifactRecordTargetNameBytes(material, right)) &&
+                    bytesEqual(
+                        mct.nccMct.artifactRecordTargetOwner(material, left),
+                        mct.nccMct.artifactRecordTargetOwnerBytes(material, left),
+                        mct.nccMct.artifactRecordTargetOwner(material, right),
+                        mct.nccMct.artifactRecordTargetOwnerBytes(material, right));
+            }
+
+            functionEnd(material >> p<byte>, node >> int, start >> int) -> int {
+                next >> int <- node + 1;
+                while (next < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, next) == IR_FUNCTION) {
+                        candidate >> int <- mct.nccMct.artifactRecordTextOffset(material, next);
+                        if (candidate > start) return candidate;
+                    }
+                    next += 1;
+                }
+                return mct.nccMct.artifactTextBytes(material);
+            }
+
+            targetByteLength(material >> p<byte>, node >> int) -> int {
+                definition >> int <- definitionNode(material, node);
+                guard definition >= 0 else return 0;
+                start >> int <- mct.nccMct.artifactRecordTextOffset(material, definition);
+                if (mct.nccMct.artifactRecordOpcode(material, definition) == IR_FUNCTION)
+                    return functionEnd(material, definition, start) - start;
+                return mct.nccMct.artifactRecordByteLength(material, definition);
+            }
+
+            targetLine(material >> p<byte>, node >> int) -> int {
+                definition >> int <- definitionNode(material, node);
+                return mct.nccMct.artifactRecordLine(material,
+                    definition >= 0 ? definition : node);
+            }
+
+            targetColumn(material >> p<byte>, node >> int) -> int {
+                definition >> int <- definitionNode(material, node);
+                return mct.nccMct.artifactRecordColumn(material,
+                    definition >= 0 ? definition : node);
+            }
+
+            targetFlags(material >> p<byte>, node >> int) -> int {
+                kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                visibility >> int <- mct.nccMct.artifactRecordTargetVisibility(material, node);
+                flags >> int <- isDefinedTarget(material, node) ? FLAG_DEFINED : 0;
+                if (isLocalTarget(material, node)) flags <- flags | FLAG_LOCAL_CLASS;
+                if (kind == TARGET_CONTROL_NODE) flags <- flags | FLAG_CONTROL;
+                if (kind == TARGET_EXTERNAL_SYMBOL) flags <- flags | FLAG_EXTERNAL;
+                if (kind == TARGET_UNRESOLVED) flags <- flags | FLAG_UNRESOLVED;
+                if (visibility == VIS_PUBLIC) flags <- flags | FLAG_PUBLIC;
+                if (visibility == VIS_PRIVATE) flags <- flags | FLAG_PRIVATE;
+                if (visibility == VIS_INTERNAL) flags <- flags | FLAG_INTERNAL;
+                return flags;
+            }
+
+            stringBytes(material >> p<byte>) -> int {
+                total >> int <- 0;
+                ordinal >> int <- 0;
+                while (ordinal < targetSymbolCount(material)) {
+                    node >> int <- targetNode(material, ordinal);
+                    total += mct.nccMct.artifactRecordTargetNameBytes(material, node) + 1;
+                    total += mct.nccMct.artifactRecordTargetOwnerBytes(material, node) + 1;
+                    ordinal += 1;
+                }
+                return total;
+            }
+
+            writeRecord(material >> p<byte>, blob >> p<byte>, ordinal >> int,
+                recordAt >> int, stringsAt >> int, stringAt >> int) -> int {
+                node >> int <- targetNode(material, ordinal);
+                nameBytes >> int <- mct.nccMct.artifactRecordTargetNameBytes(material, node);
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(material, node);
+                putInteger(blob, recordAt + R_KIND,
+                    mct.nccMct.artifactRecordTargetKind(material, node));
+                putInteger(blob, recordAt + R_VISIBILITY,
+                    mct.nccMct.artifactRecordTargetVisibility(material, node));
+                putInteger(blob, recordAt + R_FLAGS, targetFlags(material, node));
+                putInteger(blob, recordAt + R_TARGET_VALUE,
+                    mct.nccMct.artifactRecordTargetValue(material, node));
+                putInteger(blob, recordAt + R_TEXT_OFFSET, targetTextOffset(material, node));
+                putInteger(blob, recordAt + R_BYTE_LENGTH, targetByteLength(material, node));
+                putInteger(blob, recordAt + R_LINE, targetLine(material, node));
+                putInteger(blob, recordAt + R_COLUMN, targetColumn(material, node));
+                putInteger(blob, recordAt + R_NAME_OFFSET, stringAt);
+                putInteger(blob, recordAt + R_NAME_BYTES, nameBytes);
+                if (nameBytes > 0) cp(off(blob, stringsAt + stringAt),
+                    mct.nccMct.artifactRecordTargetName(material, node), nameBytes);
+                stringAt += nameBytes;
+                wr<byte>(off(blob, stringsAt + stringAt), 0);
+                stringAt += 1;
+                putInteger(blob, recordAt + R_OWNER_OFFSET, stringAt);
+                putInteger(blob, recordAt + R_OWNER_BYTES, ownerBytes);
+                if (ownerBytes > 0) cp(off(blob, stringsAt + stringAt),
+                    mct.nccMct.artifactRecordTargetOwner(material, node), ownerBytes);
+                stringAt += ownerBytes;
+                wr<byte>(off(blob, stringsAt + stringAt), 0);
+                stringAt += 1;
+                putInteger(blob, recordAt + R_HASH_A,
+                    mct.nccMct.artifactRecordTargetHashA(material, node));
+                putInteger(blob, recordAt + R_HASH_B,
+                    mct.nccMct.artifactRecordTargetHashB(material, node));
+                putInteger(blob, recordAt + R_SOURCE_NODE, node);
+                putInteger(blob, recordAt + R_RESERVED, 0);
+                return stringAt;
+            }
+
+            valid(blob >> p<byte>) -> bool {
+                guard blob != null else return false;
+                bytes >> int <- integer(blob, H_BYTES);
+                saved >> int <- integer(blob, H_HASH);
+                putInteger(blob, H_HASH, 0);
+                computed >> int <- hash(blob, bytes);
+                putInteger(blob, H_HASH, saved);
+                return integer(blob, H_MAGIC) == MAGIC &&
+                    integer(blob, H_VERSION) == VERSION &&
+                    integer(blob, H_RECORDS_OFFSET) == HEADER_BYTES &&
+                    integer(blob, H_STRINGS_OFFSET) == HEADER_BYTES +
+                        integer(blob, H_RECORDS) * RECORD_BYTES &&
+                    integer(blob, H_BYTES) == integer(blob, H_STRINGS_OFFSET) +
+                        integer(blob, H_STRING_BYTES) && saved == computed;
+            }
+
+            emitReport(blob >> p<byte>, json >> bool) -> bool {
+                if (!json) {
+                    print("symbol-bundle target=");
+                    println(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                    print("records="); print(renderInt(integer(blob, H_RECORDS)));
+                    print(" strings="); println(renderInt(integer(blob, H_STRING_BYTES)));
+                    print("bytes="); print(renderInt(integer(blob, H_BYTES)));
+                    print(" hash="); println(renderInt(integer(blob, H_HASH)));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.symbol-bundle.v1\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                print("\",\"target_id\":"); print(renderInt(integer(blob, H_TARGET)));
+                print(",\"pointer_bits\":"); print(renderInt(integer(blob, H_POINTER_BITS)));
+                print(",\"records\":"); print(renderInt(integer(blob, H_RECORDS)));
+                print(",\"local_records\":"); print(renderInt(integer(blob, H_LOCAL_RECORDS)));
+                print(",\"defined_records\":"); print(renderInt(integer(blob, H_DEFINED_RECORDS)));
+                print(",\"record_bytes\":"); print(renderInt(RECORD_BYTES));
+                print(",\"string_bytes\":"); print(renderInt(integer(blob, H_STRING_BYTES)));
+                print(",\"identity_fingerprint\":"); print(renderInt(
+                    integer(blob, H_IDENTITY_FINGERPRINT)));
+                print(",\"bytes\":"); print(renderInt(integer(blob, H_BYTES)));
+                print(",\"hash\":"); print(renderInt(integer(blob, H_HASH)));
+                println("}");
+                return true;
+            }
+
+        public:
+            isLocalTarget(material >> p<byte>, node >> int) -> bool {
+                kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                return kind == TARGET_CONTROL_NODE ||
+                    (kind == TARGET_LOCAL_SYMBOL &&
+                    mct.nccMct.artifactRecordTargetVisibility(material, node) == VIS_PRIVATE);
+            }
+
+            isTargetRecord(material >> p<byte>, node >> int) -> bool {
+                return (mct.nccMct.artifactRecordRelocation(material, node) != 0 ||
+                    (mct.nccMct.artifactDefinition(material,node) &&
+                        (mct.nccMct.artifactRecordSection(material,node) != 1 ||
+                            mct.nccMct.artifactRecordTargetVisibility(material,node) == VIS_PUBLIC)) ||
+                    (mct.nccMct.artifactRecordFlags(material, node) &
+                        FLAG_PROJECT_EXPORT) != 0) &&
+                    mct.nccMct.artifactRecordTargetKind(material, node) != TARGET_NONE;
+            }
+
+            sameTarget(material >> p<byte>, left >> int, right >> int) -> bool {
+                leftKind >> int <- mct.nccMct.artifactRecordTargetKind(material, left);
+                rightKind >> int <- mct.nccMct.artifactRecordTargetKind(material, right);
+                guard leftKind == rightKind else return false;
+                if (leftKind == TARGET_CONTROL_NODE || leftKind == TARGET_NONE)
+                    return mct.nccMct.artifactRecordTargetValue(material, left) ==
+                        mct.nccMct.artifactRecordTargetValue(material, right);
+                return bytesEqual(
+                        mct.nccMct.artifactRecordTargetName(material, left),
+                        mct.nccMct.artifactRecordTargetNameBytes(material, left),
+                        mct.nccMct.artifactRecordTargetName(material, right),
+                        mct.nccMct.artifactRecordTargetNameBytes(material, right)) &&
+                    bytesEqual(
+                        mct.nccMct.artifactRecordTargetOwner(material, left),
+                        mct.nccMct.artifactRecordTargetOwnerBytes(material, left),
+                        mct.nccMct.artifactRecordTargetOwner(material, right),
+                        mct.nccMct.artifactRecordTargetOwnerBytes(material, right));
+            }
+
+            targetCountByClass(material >> p<byte>, localClass >> bool) -> int {
+                guard ensureIndex(material) else return 0;
+                return localClass ? indexLocalCount : indexTargetCount - indexLocalCount;
+            }
+
+            targetSymbolCount(material >> p<byte>) -> int {
+                return ensureIndex(material) ? indexTargetCount : 0;
+            }
+
+            targetCountKind(material >> p<byte>, wantedKind >> int) -> int {
+                guard ensureIndex(material) else return 0;
+                count >> int <- 0;
+                ordinal >> int <- 0;
+                while (ordinal < indexTargetCount) {
+                    node >> int <- rd<int>(off(indexTargets, ordinal));
+                    if (mct.nccMct.artifactRecordTargetKind(material, node) == wantedKind)
+                        count += 1;
+                    ordinal += 1;
+                }
+                return count;
+            }
+
+            targetOrdinal(material >> p<byte>, wanted >> int) -> int {
+                canonical >> int <- canonicalTarget(material, wanted);
+                return canonical >= 0 ? rd<int>(off(indexOrdinals, canonical)) : -1;
+            }
+
+            targetNode(material >> p<byte>, ordinal >> int) -> int {
+                guard ensureIndex(material) && ordinal >= 0 &&
+                    ordinal < indexTargetCount else return -1;
+                return rd<int>(off(indexTargets, ordinal));
+            }
+
+            targetTextOffset(material >> p<byte>, node >> int) -> int {
+                definition >> int <- definitionNode(material, node);
+                return definition >= 0 ?
+                    mct.nccMct.artifactRecordTextOffset(material, definition) : 0;
+            }
+            targetSection(material >> p<byte>, node >> int) -> int {
+                definition >> int <- definitionNode(material,node);
+                return definition >= 0 ? mct.nccMct.artifactRecordSection(material,definition) : 0;
+            }
+            targetBytes(material >> p<byte>, node >> int) -> int { return targetByteLength(material,node); }
+
+            externalDefinitionTextOffset(material >> p<byte>, node >> int) -> int {
+                guard material != null &&
+                    mct.nccMct.artifactRecordTargetKind(material, node) ==
+                        TARGET_EXTERNAL_SYMBOL else return -1;
+                candidate >> int <- 0;
+                while (candidate < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, candidate) == IR_FUNCTION &&
+                        isDefinedTarget(material, candidate) &&
+                        sameNamedIdentity(material, candidate, node))
+                        return mct.nccMct.artifactRecordTextOffset(material, candidate);
+                    candidate += 1;
+                }
+                return -1;
+            }
+
+            entryTargetNode(material >> p<byte>) -> int {
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == 19 &&
+                        isTargetRecord(material, node)) return node;
+                    node += 1;
+                }
+                return -1;
+            }
+
+            targetCountVisibility(material >> p<byte>, wanted >> int) -> int {
+                guard ensureIndex(material) else return 0;
+                count >> int <- 0;
+                ordinal >> int <- 0;
+                while (ordinal < indexTargetCount) {
+                    node >> int <- rd<int>(off(indexTargets, ordinal));
+                    if (mct.nccMct.artifactRecordTargetVisibility(material, node) == wanted)
+                        count += 1;
+                    ordinal += 1;
+                }
+                return count;
+            }
+
+            isDefinedTarget(material >> p<byte>, node >> int) -> bool {
+                kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                return kind == TARGET_LOCAL_SYMBOL || kind == TARGET_CONTROL_NODE;
+            }
+
+            build(material >> p<byte>) -> p<byte> {
+                guard material != null else return null;
+                records >> int <- targetSymbolCount(material);
+                stringsAt >> int <- HEADER_BYTES + records * RECORD_BYTES;
+                stringsCount >> int <- stringBytes(material);
+                bytes >> int <- stringsAt + stringsCount;
+                blob >> p<byte> <- cast<byte>(alloc(bytes));
+                guard blob != null else return null;
+                zero(blob, bytes);
+                putInteger(blob, H_MAGIC, MAGIC);
+                putInteger(blob, H_VERSION, VERSION);
+                putInteger(blob, H_TARGET, mct.nccMct.artifactTarget(material));
+                putInteger(blob, H_POINTER_BITS, mct.nccMct.artifactPointerBits(material));
+                putInteger(blob, H_RECORDS, records);
+                putInteger(blob, H_RECORDS_OFFSET, HEADER_BYTES);
+                putInteger(blob, H_STRINGS_OFFSET, stringsAt);
+                putInteger(blob, H_STRING_BYTES, stringsCount);
+                putInteger(blob, H_BYTES, bytes);
+                putInteger(blob, H_IDENTITY_FINGERPRINT,
+                    mct.nccMct.artifactIdentityFingerprint(material));
+                putInteger(blob, H_FLAGS, BUNDLE_EXACT_IDENTITY | BUNDLE_SOURCE_LOCATIONS |
+                    BUNDLE_TEXT_INTERVALS | BUNDLE_LITTLE_ENDIAN);
+                putInteger(blob, H_FAMILY, mct.nccMct.artifactFamily(material));
+                putInteger(blob, H_LOCAL_RECORDS, targetCountByClass(material, true));
+                putInteger(blob, H_DEFINED_RECORDS,
+                    targetCountKind(material, TARGET_LOCAL_SYMBOL) +
+                    targetCountKind(material, TARGET_CONTROL_NODE));
+                putInteger(blob, H_RECORD_VERSION, 1);
+                ordinal >> int <- 0;
+                stringAt >> int <- 0;
+                while (ordinal < records) {
+                    stringAt <- writeRecord(material, blob, ordinal,
+                        HEADER_BYTES + ordinal * RECORD_BYTES, stringsAt, stringAt);
+                    ordinal += 1;
+                }
+                putInteger(blob, H_HASH, hash(blob, bytes));
+                materializations += 1;
+                materialBytes += bytes;
+                lastTarget <- integer(blob, H_TARGET);
+                lastRecords <- records;
+                lastBytes <- bytes;
+                lastHash <- integer(blob, H_HASH);
+                return blob;
+            }
+
+            data(blob >> p<byte>) -> p<byte> { return blob; }
+            bytes(blob >> p<byte>) -> int { return integer(blob, H_BYTES); }
+            records(blob >> p<byte>) -> int { return integer(blob, H_RECORDS); }
+            strings(blob >> p<byte>) -> int { return integer(blob, H_STRING_BYTES); }
+            checksum(blob >> p<byte>) -> int { return integer(blob, H_HASH); }
+            release(blob >> p<byte>) -> void { if (blob != null) free(blob); }
+            releaseMaterialIndex(material >> p<byte>) -> void {
+                if (material != null && indexMaterial == adr(material)) clearIndex();
+            }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                if (output != "" && fsWriteFrom(output, blob, bytes(blob), false) != bytes(blob)) {
+                    release(blob);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitReport(blob, json);
+                code >> int <- valid(blob) ? 0 :
+                    diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return code;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedRecords >> int,
+                expectedBytes >> int, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                ok >> bool <- valid(blob) && records(blob) == expectedRecords &&
+                    bytes(blob) == expectedBytes && checksum(blob) == expectedHash;
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                return MAGIC == 0x5953434E && VERSION == 1 && HEADER_BYTES == 64 &&
+                    RECORD_BYTES == 64 && R_SOURCE_NODE == 56 && R_RESERVED == 60;
+            }
+
+    fa:
+        return true;
+}

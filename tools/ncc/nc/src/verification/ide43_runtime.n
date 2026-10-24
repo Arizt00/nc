@@ -1,0 +1,205 @@
+use <data:json>;
+use <process:env>;
+use <project:release_io, cert_json, tool_cli, ide43_core, ide43_session>;
+
+ide43Runtime {
+    fn:
+        private:
+            routeCheck(checks >> int, family >> str, low >> bool, file >> str) -> void {
+                row >> int <- ide43_session.ide43Session.route(family,file,low ? "expert" : (family == "ghidra" ? "expert" : "standard"));
+                if (ide43_session.ide43Session.succeeded(row)) {
+                    payload >> int <- ide43_session.ide43Session.payload(row);
+                    good >> bool <- false; key >> str <- "";
+                    if (family == "vscode") {
+                        key <- low ? "vscode_router_low_level_uses_nc_sys_lsp_direct" : "vscode_router_high_level_uses_nide_broker";
+                        good <- ide43_core.ide43Core.is(payload,"backend",low ? "nc-sys-lsp" : "nide") &&
+                            ide43_core.ide43Core.is(payload,"transport",low ? "lsp-direct" : "broker-nide");
+                        if (low) good <- ide43_core.ide43Core.members(payload,"professional_ide_parity","c|cpp|rust|java",false) && good;
+                        else good <- ide43_core.ide43Core.is(payload,"version","1.0.0.21v") && ide43_core.ide43Core.is(payload,"semantic_authority","ncc") && good;
+                    } else if (family == "jetbrains") {
+                        key <- low ? "jetbrains_router_low_level_uses_nc_sys_lsp" : "jetbrains_router_high_level_uses_nclsp";
+                        child >> int <- jsonObjectGet(payload,"low_level");
+                        if (low) good <- ide43_core.ide43Core.is(payload,"backend","nc-sys-lsp") &&
+                            ide43_core.ide43Core.truth(child) && ide43_core.ide43Core.members(payload,"professional_ide_parity","c|cpp|rust|java",false);
+                        else good <- ide43_core.ide43Core.is(payload,"backend","nclsp") && jsonObjectHas(payload,"low_level") &&
+                            !ide43_core.ide43Core.truth(child) && ide43_core.ide43Core.is(payload,"version","1.0.0.21v") &&
+                            ide43_core.ide43Core.is(payload,"semantic_authority","ncc");
+                        jsonRelease(child);
+                    } else {
+                        key <- low ? "ghidra_router_low_level_uses_nc_sys_lsp" : "ghidra_router_high_level_falls_back_nclsp";
+                        good <- ide43_core.ide43Core.is(payload,"backend",low ? "nc-sys-lsp" : "nclsp") &&
+                            ide43_core.ide43Core.boolean(payload,"low_level",low);
+                    }
+                    ide43_core.ide43Core.record(checks,key,good); jsonRelease(payload);
+                }
+                jsonRelease(row);
+            }
+            source(file >> str, content >> str) -> bool {
+                if (release_io.releaseIo.write(file,content)) return true;
+                ide43_core.ide43Core.fail("unable to write source: "+file); return false;
+            }
+            whichCheck(checks >> int, which >> int) -> void {
+                path >> str <- ide43_core.ide43Core.field(which,"path");
+                // pathlib.Path("") refers to cwd in the original, but is_file still rejects it.
+                ide43_core.ide43Core.record(checks,"ncup_which_ncc_json_ok",
+                    ide43_core.ide43Core.is(which,"schema","ncup.which.v1") && ide43_core.ide43Core.is(which,"bin","ncc") &&
+                    release_io.releaseIo.fileType(path) == 1);
+            }
+            validate(file >> str, profile >> str, cwd >> str) -> int {
+                words >> int <- ide43_core.ide43Core.list("nclsp|validate");
+                cert_json.certJson.push(words,jsonNewString(file));
+                cert_json.certJson.push(words,jsonNewString("--profile")); cert_json.certJson.push(words,jsonNewString(profile));
+                cert_json.certJson.push(words,jsonNewString("--json"));
+                return ide43_session.ide43Session.invoke(ide43_session.ide43Session.choice("--global-ncc","ncc"),words,cwd);
+            }
+            example(relative >> str) -> str {
+                root >> str <- ide43_session.ide43Session.rootPath();
+                direct >> str <- root+"/"+relative;
+                if (release_io.releaseIo.fileType(direct) != 0) return direct;
+                archived >> str <- root+"/_archive/old_examples/"+strSubstring(relative,9,strByteLen(relative)-9);
+                if (release_io.releaseIo.fileType(archived) != 0) return archived;
+                return direct;
+            }
+        public:
+            integration(checks >> int, family >> str) -> void {
+                if (family == "vscode") {
+                    row >> int <- ide43_session.ide43Session.run(ide43_session.ide43Session.node(),"tools/vscode/nc-language/src/smoke_test.js");
+                    ide43_core.ide43Core.record(checks,"vscode_plugin_smoke_tests_pass",ide43_session.ide43Session.succeeded(row)); jsonRelease(row);
+                }
+                if (!ide43_session.ide43Session.build(family != "vscode") || !ide43_session.ide43Session.init(family == "ghidra")) return;
+                if (family != "ghidra") {
+                    which >> int <- ide43_session.ide43Session.which(); whichCheck(checks,which); jsonRelease(which);
+                }
+                work >> str <- ide43_session.ide43Session.workPath();
+                low >> str <- ide43_session.ide43Session.hostPath(work+(family == "ghidra" ? "/ll_file.ncp" : "/ll_file.nb"));
+                high >> str <- ide43_session.ide43Session.hostPath(work+"/hl_file.n");
+                if (!source(high,"demo { to main { print(1); } }\n")) return;
+                if (!source(low,family == "ghidra" ? "primitive"+"[@] bootPrimitive { signal: ready; }\n" : "[@] rootX { stc: a:int; to main { @a >> int : 1; } }\n")) return;
+                if (!ide43_session.ide43Session.installEnvironment()) { ide43_core.ide43Core.fail("unable to set NCUP_HOME"); return; }
+                if (family == "ghidra") { routeCheck(checks,family,true,low); routeCheck(checks,family,false,high); }
+                else { routeCheck(checks,family,false,high); routeCheck(checks,family,true,low); }
+                if (family == "ghidra") {
+                    go >> str <- ide43_session.ide43Session.choice("--go",ide43_session.ide43Session.findCommand("go"));
+                    if (go != "") {
+                        words >> int <- ide43_core.ide43Core.list("run|tools/nc-sys-lsp/main.go|analyze");
+                        cert_json.certJson.push(words,jsonNewString(low));
+                        suffix >> int <- ide43_core.ide43Core.list("--profile|expert|--migration-stage|strict|--json"); index >> int <- 0;
+                        while (index < jsonArrayLen(suffix)) { cert_json.certJson.push(words,jsonArrayGet(suffix,index)); index += 1; }
+                        jsonRelease(suffix);
+                        row >> int <- ide43_session.ide43Session.invoke(go,words,ide43_session.ide43Session.rootPath());
+                        if (ide43_session.ide43Session.succeeded(row)) {
+                            payload >> int <- ide43_session.ide43Session.payload(row);
+                            ide43_core.ide43Core.record(checks,"nc_sys_lsp_low_level_analyze_ok",
+                                ide43_core.ide43Core.is(payload,"schema","nc.sys.lsp.analyze.v1") &&
+                                ide43_core.ide43Core.is(payload,"family","primitive-low-level") &&
+                                ide43_core.ide43Core.is(payload,"lane","primitive-lane") &&
+                                (ide43_core.ide43Core.is(payload,"status","ok") || ide43_core.ide43Core.is(payload,"status","warning")));
+                            jsonRelease(payload);
+                        }
+                        jsonRelease(row);
+                    } else missingGo();
+                    bundle >> int <- ide43_session.ide43Session.bundle(false);
+                    if (ide43_session.ide43Session.succeeded(bundle)) ide43_core.ide43Core.record(checks,"ghidra_bundle_generated",
+                        ide43_core.ide43Core.files(ide43_session.ide43Session.rootPath(),
+                        "var/releases/v2_0_0/phase10_ide_dist/ghidra/nc-ghidra-extension-v2_0_0.zip|var/releases/v2_0_0/phase10_ide_dist/ghidra/ghidra_extension_manifest.v1.json",false));
+                    jsonRelease(bundle);
+                }
+            }
+            missingGo() -> void {
+                ide43_session.ide43Session.missingGo();
+            }
+            association(checks >> int) -> void {
+                if (!ide43_session.ide43Session.build(false) || !ide43_session.ide43Session.init(false)) return;
+                which >> int <- ide43_session.ide43Session.which();
+                if (!ide43_core.ide43Core.valid()) { jsonRelease(which); return; }
+                path >> str <- ide43_core.ide43Core.field(which,"path");
+                id >> int <- jsonObjectGet(which,"toolchain_id");
+                idText >> str <- jsonKind(id) == 4 ? jsonStringView(id,"") : jsonStringify(id);
+                if (jsonKind(id) == 0 || jsonKind(id) == 1) idText <- "None";
+                ide43_core.ide43Core.record(checks,"ncup_init_and_which_ok",
+                    ide43_core.ide43Core.is(which,"schema","ncup.which.v1") && ide43_core.ide43Core.is(which,"bin","ncc") &&
+                    jsonKind(id) != 0 && jsonKind(id) != 1 &&
+                    release_io.releaseIo.fileType(path == "" ? ide43_session.ide43Session.rootPath() : path) != 0);
+                manifest >> str <- ide43_session.ide43Session.homePath()+"/toolchains/"+idText+"/runtime_stdlib.v1.json";
+                ide43_core.ide43Core.record(checks,"toolchain_runtime_stdlib_manifest_present",release_io.releaseIo.fileType(manifest) == 1);
+                outside >> str <- ide43_session.ide43Session.workPath()+"/outside";
+                file >> str <- outside+"/outside_demo.nc";
+                if (!source(file,"demoNcAlias { to main { print(1); } fa: return true; }\n") || !ide43_session.ide43Session.globalEnvironment()) {
+                    ide43_core.ide43Core.fail("outside setup failed"); jsonRelease(which); jsonRelease(id); return;
+                }
+                words >> int <- ide43_core.ide43Core.list("check"); cert_json.certJson.push(words,jsonNewString(file));
+                row >> int <- ide43_session.ide43Session.invoke(ide43_session.ide43Session.choice("--global-ncc","ncc"),words,outside);
+                ide43_core.ide43Core.record(checks,"global_ncc_exec_outside_repo_ok",ide43_session.ide43Session.succeeded(row)); jsonRelease(row);
+                row <- validate(file,"novice",outside);
+                if (ide43_session.ide43Session.succeeded(row)) {
+                    payload >> int <- ide43_session.ide43Session.payload(row);
+                    ide43_core.ide43Core.record(checks,"nclsp_accepts_nc_high_level",
+                        ide43_core.ide43Core.is(payload,"status","ok") && ide43_core.ide43Core.is(payload,"actual_extension",".nc") &&
+                        ide43_core.ide43Core.members(payload,"accepted_extensions",".nc",false));
+                    jsonRelease(payload);
+                }
+                jsonRelease(row);
+                examples >> int <- ide43_core.ide43Core.list("examples/root_at/root_at_minimal_ok.nb|examples/machine/legacy_at/machine_at_strict_ok.nm|examples/primitive_at/primitive_at_minimal_ok.ncp");
+                names >> int <- ide43_core.ide43Core.list("outside_root.nb|outside_machine.nm|outside_primitive.ncp");
+                exts >> int <- ide43_core.ide43Core.list(".nb|.nm|.ncp");
+                lanes >> int <- ide43_core.ide43Core.list("sovereign-core|machine-core|primitive-core");
+                index >> int <- 0; lowOk >> bool <- true;
+                while (index < 3) {
+                    original >> int <- jsonArrayGet(examples,index); name >> int <- jsonArrayGet(names,index);
+                    extension >> int <- jsonArrayGet(exts,index); lane >> int <- jsonArrayGet(lanes,index);
+                    src >> str <- example(jsonStringView(original,"")); dst >> str <- outside+"/"+jsonStringView(name,"");
+                    if (release_io.releaseIo.fileType(src) != 1) ide43_core.ide43Core.fail("low-level example missing: "+src);
+                    else {
+                        content >> str <- ide43_core.ide43Core.readText(src);
+                        written >> bool <- source(dst,content); strRelease(content);
+                        if (written) {
+                        row <- validate(dst,"expert",outside);
+                        if (!ide43_session.ide43Session.succeeded(row)) lowOk <- false;
+                        else {
+                            payload >> int <- ide43_session.ide43Session.payload(row);
+                            ext >> str <- jsonStringView(extension,"");
+                            lowOk <- ide43_core.ide43Core.is(payload,"status","ok") &&
+                                ide43_core.ide43Core.is(payload,"actual_extension",ext) && ide43_core.ide43Core.is(payload,"required_extension",ext) &&
+                                ide43_core.ide43Core.is(payload,"required_lane",jsonStringView(lane,"")) &&
+                                ide43_core.ide43Core.is(payload,"editorial_profile_min","expert") &&
+                                ide43_core.ide43Core.members(payload,"accepted_extensions",ext,false) && lowOk;
+                            jsonRelease(payload);
+                        }
+                        jsonRelease(row);
+                        }
+                    }
+                    jsonRelease(original); jsonRelease(name); jsonRelease(extension); jsonRelease(lane); index += 1;
+                    if (!ide43_core.ide43Core.valid()) break;
+                }
+                ide43_core.ide43Core.record(checks,"nclsp_low_level_exts_validate_with_expert_lane_mapping",lowOk);
+                jsonRelease(examples); jsonRelease(names); jsonRelease(exts); jsonRelease(lanes);
+                if (ide43_core.ide43Core.valid()) {
+                    row <- validate(outside+"/outside_root.nb","novice",outside);
+                    if (ide43_session.ide43Session.succeeded(row)) {
+                        payload >> int <- ide43_session.ide43Session.payload(row);
+                        ide43_core.ide43Core.record(checks,"nclsp_low_level_editorial_profile_metadata_present",
+                            ide43_core.ide43Core.is(payload,"required_extension",".nb") &&
+                            ide43_core.ide43Core.is(payload,"required_lane","sovereign-core") &&
+                            ide43_core.ide43Core.is(payload,"editorial_profile_min","expert") &&
+                            ide43_core.ide43Core.is(payload,"requested_editorial_profile","novice"));
+                        jsonRelease(payload);
+                    }
+                    jsonRelease(row);
+                    row <- ide43_session.ide43Session.invoke(ide43_session.ide43Session.choice("--global-ncc","ncc"),ide43_core.ide43Core.list("stdlib-model|--json"),outside);
+                    if (ide43_session.ide43Session.succeeded(row)) {
+                        payload >> int <- ide43_session.ide43Session.payload(row);
+                        resolved >> int <- ide43_core.ide43Core.lookup(payload,"resolution|toolchain_id");
+                        resolvedPath >> str <- ide43_core.ide43Core.field(payload,"resolution|manifest_path");
+                        ide43_core.ide43Core.record(checks,"stdlib_model_resolves_from_installed_toolchain",
+                            ide43_core.ide43Core.is(payload,"resolution|source","toolchain_installation") && jsonEquals(id,resolved) &&
+                            release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(resolvedPath)) == release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(manifest)) &&
+                            release_io.releaseIo.fileType(resolvedPath) != 0);
+                        jsonRelease(resolved); jsonRelease(payload);
+                    }
+                    jsonRelease(row);
+                }
+                jsonRelease(id); jsonRelease(which);
+            }
+    fa: return true;
+}
+

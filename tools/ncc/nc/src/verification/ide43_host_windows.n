@@ -1,0 +1,53 @@
+use foreign { c };
+use <process:command>;
+ide43Host {
+    foreign:
+        c symbol "GetFileAttributesW" {
+            abi: C;
+            header: "windows.h";
+            library: "kernel32";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            sideEffects: filesystemRead;
+            capability: "filesystem.attributes.owned-temporary-path";
+            policy: "ide43-cleanup-never-follow-reparse-points";
+            signature: fn(addr) -> u32;
+        }
+    fn:
+        public:
+            executable(path >> str) -> bool { return fsSize(path) >= 0; }
+            pythonCode(child >> addr, timeout >> int) -> int { return -999999; }
+            link(path >> str) -> bool {
+                size >> int <- strByteLen(path); bytes >> p<byte> <- cast(path);
+                wide >> p<u16> <- cast(alloc((size+1)*2)); if (wide == null) return true;
+                index >> int <- 0; written >> int <- 0;
+                while (index < size) {
+                    first >> int <- rd(off(bytes,index)) & 255; width >> int <- 1; scalar >> int <- first;
+                    if (first >= 128) {
+                        if (first >= 194 && first <= 223) { width <- 2; scalar <- first & 31; }
+                        else if (first >= 224 && first <= 239) { width <- 3; scalar <- first & 15; }
+                        else if (first >= 240 && first <= 244) { width <- 4; scalar <- first & 7; }
+                        else { free(wide); return true; }
+                        if (index+width > size) { free(wide); return true; }
+                        at >> int <- 1;
+                        while (at < width) {
+                            next >> int <- rd(off(bytes,index+at)) & 255;
+                            if ((next & 192) != 128) { free(wide); return true; }
+                            scalar <- scalar*64+(next & 63); at += 1;
+                        }
+                    }
+                    if (scalar < 65536) { wr(off(wide,written),scalar); written += 1; }
+                    else {
+                        scalar -= 65536;
+                        wr(off(wide,written),55296+(scalar >>> 10)); wr(off(wide,written+1),56320+(scalar & 1023)); written += 2;
+                    }
+                    index += width;
+                }
+                wr(off(wide,written),0);
+                attributes >> u32 <- GetFileAttributesW(adr(wide)); free(wide);
+                return (attributes & 1024) != 0;
+            }
+    fa: return true;
+}
+

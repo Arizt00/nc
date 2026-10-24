@@ -1,0 +1,44 @@
+runtimeFamilyTimeClockBasic :: runtime {
+    fn:
+        measuredWork() -> bool {
+            value >> int <- 0;
+            value += 1;
+            return value == 1;
+        }
+
+        run() -> bool {
+            mark >> addr <- stackMark();
+            epochText >> p<byte> <- stackAlloc(24, 8);
+            currentText >> p<byte> <- stackAlloc(24, 8);
+
+            epochBytes >> int <- formatTimeInto(0, epochText, 24);
+            currentBytes >> int <- dateInto(currentText, 24);
+            epoch >> str <- cast(epochText);
+
+            start >> u64 <- monotonic();
+            delta >> u64 <- elapsed(start);
+            measured >> u64 <- measure(@fn(measuredWork));
+            resolution >> u64 <- clockResolution();
+            deadline >> int <- monotonicMs();
+
+            sleepMs(0);
+            slept >> bool <- sleepUntilMs(deadline);
+
+            ok >> bool <-
+                epochBytes == 23 &&
+                epoch == "1970-01-01 00:00:00 UTC" &&
+                currentBytes == 23 &&
+                elapsed(start) >= delta &&
+                measured >= 0 &&
+                resolution > 0 &&
+                slept;
+
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

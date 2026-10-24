@@ -1,0 +1,63 @@
+use <data:json>;
+
+jsonNativeCompleteOk :: runtime {
+    fn:
+        run() -> bool {
+            root >> int <- jsonParse("{\"element\":\"Cm\",\"number\":96,\"values\":[1,3],\"enabled\":true}");
+            values >> int <- jsonObjectGet(root, "values");
+            two >> int <- jsonNewInt(2);
+            four >> int <- jsonNewInt(4);
+            inserted >> bool <- jsonArrayInsert(values, 1, two);
+            pushed >> bool <- jsonArrayPush(values, four);
+            removed >> int <- jsonArrayRemove(values, 0);
+            pointer >> int <- jsonPointer(root, "/element");
+
+            built >> int <- jsonNewObject();
+            setRoot >> bool <- jsonObjectSet(built, "root", root);
+            setValues >> bool <- jsonObjectSet(built, "mutated", values);
+            pretty >> str <- jsonStringifyPretty(built, 2);
+            valid >> bool <- jsonValidate(pretty);
+            saved >> bool <- jsonSaveFile(built, "runtime_json_native_roundtrip.json", 2);
+            loaded >> int <- jsonParseFile("runtime_json_native_roundtrip.json");
+            same >> bool <- jsonEquals(built, loaded);
+
+            bad >> int <- jsonParse("{\"broken\":]");
+            parseError >> bool <- bad == 0
+                && jsonErrorCode() == 1
+                && jsonErrorName() == "E_RUNTIME_JSON_PARSE_001"
+                && jsonErrorLine() > 0
+                && jsonErrorColumn() > 0;
+            fallback >> int <- jsonGetIntOr(bad, 77);
+
+            ok >> bool <- root != 0
+                && inserted
+                && pushed
+                && jsonArrayLen(values) == 3
+                && jsonGetInt(removed) == 1
+                && jsonGetString(pointer) == "Cm"
+                && setRoot
+                && setValues
+                && valid
+                && saved
+                && loaded != 0
+                && same
+                && parseError
+                && fallback == 77;
+
+            jsonRelease(loaded);
+            jsonRelease(built);
+            jsonRelease(pointer);
+            jsonRelease(removed);
+            jsonRelease(four);
+            jsonRelease(two);
+            jsonRelease(values);
+            jsonRelease(root);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

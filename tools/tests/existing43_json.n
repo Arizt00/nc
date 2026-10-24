@@ -1,0 +1,55 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:utility_json, contract_checks, release_io, editor_json>;
+
+existing43Json {
+    local:
+        checks >> int;
+        failures >> int;
+    fn:
+        private:
+            check(name >> str, passed >> bool) -> void {
+                jsonObjectSet(checks,name,jsonNewBool(passed));
+                if (!passed) { failures += 1; println("FAIL "+name); }
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 2) return 2;
+                path >> str <- argsAt(arguments,1);
+                checks <- jsonNewObject(); failures <- 0;
+                source >> int <- jsonNewObject();
+                utility_json.utilityJson.put(source,"Latin",jsonNewString("caf\u{e9} Stra\u{df}e"));
+                utility_json.utilityJson.put(source,"CJK",jsonNewString("\u{4e2d}\u{6587}"));
+                utility_json.utilityJson.put(source,"scalar",jsonNewString("\u{1f600}"));
+                utility_json.utilityJson.put(source,"nested",jsonParse("[true,false,null,-123,{}]"));
+                encoded >> str <- utility_json.utilityJson.stringify(source);
+                parsed >> int <- editor_json.editorJson.parse(encoded);
+                check("unicode-roundtrip",jsonKind(parsed) == 6 && contract_checks.contractChecks.equal(source,parsed));
+                check("latin-escape",strContains(encoded,"\\u00e9") && strContains(encoded,"\\u00df"));
+                check("cjk-escape",strContains(encoded,"\\u4e2d") && strContains(encoded,"\\u6587"));
+                check("surrogate-escape",strContains(encoded,"\\ud83d\\ude00"));
+                check("no-sign-extension",!strContains(encoded,"\\uFFC") && !strContains(encoded,"\\uffc"));
+                strRelease(encoded); jsonRelease(parsed);
+                index >> int <- 0; stable >> bool <- true;
+                while (index < 1024) {
+                    if (!utility_json.utilityJson.save(path+".payload.json",source)) { stable <- false; break; }
+                    payload >> str <- release_io.releaseIo.text(path+".payload.json");
+                    parsed <- editor_json.editorJson.parse(payload); strRelease(payload);
+                    if (jsonKind(parsed) != 6 || !contract_checks.contractChecks.equal(source,parsed)) stable <- false;
+                    jsonRelease(parsed); index += 1;
+                }
+                check("owned-string-release-1024",stable && index == 1024);
+                check("write-failure-explicit",!utility_json.utilityJson.save(path+".payload.json/blocked.json",source));
+                jsonRelease(source);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.unicode-json.v43"));
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"failures",jsonNewInt(failures));
+                jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+                saved >> bool <- release_io.releaseIo.save(path,report);
+                println("existing43 JSON checks="+renderInt(jsonObjectLen(checks))+" failures="+renderInt(failures));
+                jsonRelease(report); jsonRelease(checks); argsRelease(arguments); return failures == 0 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

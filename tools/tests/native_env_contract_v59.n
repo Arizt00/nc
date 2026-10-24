@@ -1,0 +1,36 @@
+use <process:env>;
+use <io:output>;
+
+nativeEnvContractV59 {
+    run() -> int {
+        name >> str <- "NC_ENV_GATE59_TEST"; missing >> str <- "NC_ENV_GATE59_MISSING";
+        guard envRemove(name) && envRemove(missing) && !envHas(missing) else return 1;
+        absent >> int <- envLastError(); guard absent == 2 || absent == 203 else return 2;
+        guard envGet(missing,null,0) == -absent && envLastError() == absent else return 3;
+        guard !envSet("bad=name","x") && envLastError() == 22 && !envHas("") && envLastError() == 22 else return 4;
+        guard envGet(name,null,-1) == -22 && envExpand("x",null,-1) == -22 else return 5;
+        guard envSet(name,"abc") && envLastError() == 0 && envHas(name) && envLastError() == 0 else return 6;
+        buffer >> p<byte> <- cast<byte>(alloc(256)); guard buffer != null else return 7;
+        text >> str <- cast(buffer);
+        wr(buffer,71); wr(off(buffer,4),72);
+        guard envGet(name,null,0) == 4 && envGet(name,adr(buffer),3) == 4 && rd(buffer) == 71 else return 8;
+        guard envGet(name,adr(buffer),4) == 3 && rd(off(buffer,3)) == 0 && rd(off(buffer,4)) == 72 else return 9;
+        guard text == "abc" else return 10;
+        guard envSet(name,"") && envHas(name) && envGet(name,null,0) == 1 && envGet(name,adr(buffer),1) == 0 && rd(buffer) == 0 else return 11;
+        guard envSet(name,"España 中文 😀") else return 12;
+        expected >> str <- "España 中文 😀"; bytes >> int <- strByteLen(expected);
+        guard envGet(name,null,0) == bytes+1 && envGet(name,adr(buffer),bytes+1) == bytes && text == expected else return 13;
+        guard envSet(name,"abc") && envExpand("[%NC_ENV_GATE59_TEST%]",null,0) == 6 else return 14;
+        wr(off(buffer,5),73);
+        guard envExpand("[%NC_ENV_GATE59_TEST%]",adr(buffer),5) == 6 && rd(off(buffer,5)) == 73 else return 15;
+        guard envExpand("[%NC_ENV_GATE59_TEST%]",adr(buffer),6) == 5 && text == "[abc]" && envLastError() == 0 else return 16;
+        guard envExpand("%NC_ENV_GATE59_MISSING% %% %open",adr(buffer),256) == 32 && text == "%NC_ENV_GATE59_MISSING% %% %open" else return 17;
+        guard envSet(name,"%NC_ENV_GATE59_MISSING%") && envExpand("%NC_ENV_GATE59_TEST%",adr(buffer),256) == 23 && text == "%NC_ENV_GATE59_MISSING%" else return 18;
+        guard envRemove(name) && !envHas(name) && envRemove(name) else return 19;
+        guard envExpand("%bad=name%",adr(buffer),256) == 10 && text == "%bad=name%" && envLastError() == 0 else return 20;
+        guard envExpand("",null,0) == 1 && envExpand("",adr(buffer),1) == 0 && rd(buffer) == 0 else return 21;
+        free(buffer); println("env contract ok"); return 147;
+    }
+    ref main ->> run;
+    fa: return true;
+}

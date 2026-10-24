@@ -1,0 +1,84 @@
+use <io:output>;
+use <data:json>;
+
+nativeJsonFloat77 {
+    bits(value >> ft64) -> u64 { return rd<u64>(cast<byte>(&value)); }
+    fromBits(value >> u64) -> ft64 { return rd<ft64>(cast<byte>(&value)); }
+    parsed(text >> str, expected >> u64) -> bool {
+        node >> int <- jsonParse(text);
+        valid >> bool <- node != 0 && bits(jsonGetFloat(node)) == expected;
+        jsonRelease(node); return valid;
+    }
+    stored(value >> u64) -> bool {
+        node >> int <- jsonNewFloat(fromBits(value));
+        if (node == 0 || bits(jsonGetFloat(node)) != value) return false;
+        clone >> int <- jsonClone(node);
+        text >> str <- jsonStringify(node);
+        back >> int <- jsonParse(text);
+        numberText >> str <- jsonGetNumberText(clone);
+        valid >> bool <- clone != 0 && back != 0 && bits(jsonGetFloat(back)) == value &&
+            bits(jsonGetFloat(clone)) == value && text == numberText;
+        free(cast<byte>(text)); free(cast<byte>(numberText));
+        jsonRelease(back); jsonRelease(clone); jsonRelease(node); return valid;
+    }
+    run() -> int {
+        a >> int <- jsonNewFloat(1.5);
+        if (a == 0 || jsonKind(a) != 3 || jsonGetFloat(a) != 1.5 || jsonGetInt(a) != 1) return 1;
+        jsonRelease(a);
+        a <- jsonNewFloat(false ? 1.25 : 3);
+        if (jsonGetFloat(a) != 3.0) return 21;
+        jsonRelease(a);
+        buffer >> p<ft64> <- alloc(16);
+        a <- jsonNewFloat(-0.125); wr(buffer,jsonGetFloat(a));
+        wr(off(buffer,1),jsonGetFloatOr(0,3.5));
+        if (rd(buffer) != -0.125 || rd(off(buffer,1)) != 3.5) return 18;
+        alias >> p<ft64> <- cast<ft64>(buffer);
+        volatileWrite<ft64>(alias,-7.25);
+        if (volatileRead<ft64>(alias) != -7.25 || rd(buffer) != -7.25) return 20;
+        free(buffer); jsonRelease(a);
+        wrong >> int <- jsonNewString("not a number");
+        if (bits(jsonGetFloat(wrong)) != 0 || bits(jsonGetFloat(-1)) != 0) return 19;
+        jsonRelease(wrong);
+        if (!stored(0) || !stored(0x8000000000000000) || !stored(1)) return 2;
+        if (!stored(0x7FEFFFFFFFFFFFFF) || !stored(0x0010000000000000)) return 3;
+        if (!parsed("9007199254740993",0x4340000000000000)) return 4;
+        if (!parsed("-0e300",0x8000000000000000) || !parsed("1e9999",0x7FF0000000000000)) return 5;
+        if (!parsed("1.00000000000000011102230246251565404236316680908203125",0x3FF0000000000000)) return 6;
+        if (!parsed("2.4703282292062328e-324",1)) return 7;
+        if (jsonNewFloat(fromBits(0x7FF0000000000000)) != 0 || jsonErrorCode() != 3) return 8;
+        if (jsonNewFloat(fromBits(0xFFF0000000000000)) != 0 || jsonErrorCode() != 3) return 9;
+        if (jsonNewFloat(fromBits(0x7FF8000000001234)) != 0 || jsonErrorCode() != 3) return 10;
+        narrow >> ft32 <- 1.5;
+        a <- jsonNewFloat(narrow);
+        if (a == 0 || jsonGetFloat(a) != 1.5 || jsonErrorCode() != 0) return 22;
+        jsonRelease(a);
+        if (bits(jsonGetFloat(0)) != 0 || jsonGetFloatOr(0,-3.25) != -3.25) return 11;
+        nan >> ft64 <- fromBits(0x7FF8000000001234);
+        if (bits(jsonGetFloatOr(0,nan)) != 0x7FF8000000001234) return 12;
+        integer >> int <- jsonNewInt(-42);
+        if (jsonGetFloat(integer) != -42.0 || jsonGetFloatOr(integer,17.0) != -42.0) return 13;
+        jsonRelease(integer);
+        object >> int <- jsonNewObject(); child >> int <- jsonNewFloat(-0.125);
+        if (!jsonObjectSet(object,"value",child)) return 14;
+        jsonRelease(child); borrowed >> int <- jsonObjectBorrow(object,"value");
+        if (jsonGetFloat(borrowed) != -0.125) return 15;
+        owned >> int <- jsonClone(borrowed); jsonRelease(borrowed); jsonRelease(object);
+        if (jsonGetFloat(owned) != -0.125) return 16;
+        jsonRelease(owned);
+        array >> int <- jsonNewArray(); child <- jsonNewFloat(fromBits(0x8000000000000000));
+        if (!jsonArrayPush(array,child)) return 23;
+        jsonRelease(child); owned <- jsonClone(array); jsonRelease(array);
+        borrowed <- jsonArrayBorrow(owned,0);
+        if (bits(jsonGetFloat(borrowed)) != 0x8000000000000000) return 24;
+        jsonRelease(borrowed); jsonRelease(owned);
+        value >> u64 <- 0xCAFEBABE12345678; at >> int <- 0;
+        while (at < 4096) {
+            value <- value ^ (value << 13); value <- value ^ (value >> 7); value <- value ^ (value << 17);
+            if (((value >> 52) & 2047) != 2047 && !stored(value)) return 17;
+            at += 1;
+        }
+        println("native-json-float-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

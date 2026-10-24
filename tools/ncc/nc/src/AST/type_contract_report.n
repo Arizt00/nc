@@ -1,0 +1,246 @@
+use <io:output, render>;
+use <project:parser_ast, diagnostics>;
+
+nccTypeContractReport {
+    stc:
+        byteOut >> p<byte>;
+    fn:
+        private:
+            jsonByte(value >> int) -> void {
+                if (value == 34) { print("\\\""); return; }
+                if (value == 92) { print("\\\\"); return; }
+                if (value < 32) {
+                    hex >> p<byte> <- cast("0123456789abcdef");
+                    print("\\u00");
+                    wr(byteOut, rd(off(hex, value / 16))); print(cast<str>(byteOut));
+                    wr(byteOut, rd(off(hex, value % 16))); print(cast<str>(byteOut));
+                    return;
+                }
+                wr(byteOut, value); print(cast<str>(byteOut));
+            }
+            bytes(data >> p<byte>, count >> int, lower >> bool) -> void {
+                at >> int <- 0;
+                while (at < count) {
+                    value >> int <- rd(off(data, at)) & 255;
+                    if (lower && value >= 65 && value <= 90) value += 32;
+                    jsonByte(value); at += 1;
+                }
+            }
+            lexeme(session >> p<byte>, at >> int, lower >> bool) -> void {
+                bytes(parser_ast.nccParserAst.materialTokenData(session, at),
+                    parser_ast.nccParserAst.materialTokenEnd(session, at) -
+                    parser_ast.nccParserAst.materialTokenStart(session, at), lower);
+            }
+            word(session >> p<byte>, at >> int) -> void {
+                print("\""); lexeme(session, at, false); print("\"");
+            }
+            child(session >> p<byte>, index >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeFirstChild(session, index);
+            }
+            next(session >> p<byte>, index >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeNextSibling(session, index);
+            }
+            origin(session >> p<byte>, index >> int) -> int {
+                return parser_ast.nccParserAst.materialNodeOrigin(session, index);
+            }
+            typeList(session >> p<byte>, index >> int) -> void {
+                print("["); at >> int <- child(session, index); count >> int <- 0;
+                while (at >= 0) {
+                    if (count > 0) print(","); emitType(session, at);
+                    count += 1; at <- next(session, at);
+                }
+                print("]");
+            }
+            emitType(session >> p<byte>, index >> int) -> void {
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(session, index);
+                token >> int <- origin(session, index);
+                if (kind == 22) { print("{\"Union\":"); typeList(session, index); print("}"); return; }
+                if (kind == 21 && parser_ast.nccParserAst.materialTokenKind(session, token) == 9 &&
+                    next(session, child(session, index)) < 0) {
+                    print("{\"Array\":"); emitType(session, child(session, index)); print("}"); return;
+                }
+                if (kind == 19 && parser_ast.nccParserAst.materialTokenSame(session, token, "vector") &&
+                    next(session, child(session, index)) < 0) {
+                    print("{\"Vector\":"); emitType(session, child(session, index)); print("}"); return;
+                }
+                if (kind == 18 || kind == 24) {
+                    print("{\"Simple\":\"");
+                    at >> int <- parser_ast.nccParserAst.materialNodeFirstToken(session, index);
+                    end >> int <- parser_ast.nccParserAst.materialNodeEndToken(session, index);
+                    while (at <= end) { lexeme(session, at, false); at += 1; }
+                    print("\"}"); return;
+                }
+                print("{\"Generic\":{\"base\":");
+                if (kind == 20) print("\"ptr\"");
+                else if (kind == 21) print("\"array\"");
+                else if (kind == 23) print("\"fn\"");
+                else {
+                    print("\""); at >> int <- token;
+                    while (at <= parser_ast.nccParserAst.materialNodeEndToken(session,index) &&
+                        !parser_ast.nccParserAst.materialTokenSame(session,at,"<") &&
+                        parser_ast.nccParserAst.materialTokenKind(session,at) != 11 &&
+                        parser_ast.nccParserAst.materialTokenKind(session,at) != 27) {
+                        lexeme(session,at,false); at += 1;
+                    }
+                    print("\"");
+                }
+                print(",\"args\":"); typeList(session, index); print("}}");
+            }
+            field(session >> p<byte>, index >> int) -> void {
+                print("{\"name\":"); word(session, origin(session, index));
+                print(",\"ty\":"); emitType(session, child(session, index)); print("}");
+            }
+            clauseName(code >> int) -> str {
+                if (code == 1) return "Layout";
+                if (code == 2) return "Invariant";
+                if (code == 3) return "Bounds";
+                if (code == 4) return "Constructure";
+                if (code == 5) return "Destructure";
+                if (code == 6) return "Copy";
+                if (code == 7) return "Clone";
+                if (code == 8) return "Move";
+                if (code == 9) return "Ffi";
+                if (code == 10) return "Ownership";
+                if (code == 11) return "Nullability";
+                if (code == 12) return "Methods";
+                if (code == 13) return "Associated";
+                if (code == 14) return "Validate";
+                if (code == 15) return "Drop";
+                if (code == 16) return "Default";
+                if (code == 17) return "Compare";
+                if (code == 18) return "Hash";
+                if (code == 19) return "Debug";
+                return "Stable";
+            }
+            item(session >> p<byte>, index >> int) -> void {
+                style >> int <- parser_ast.nccParserAst.materialNodeFlags(session, index);
+                first >> int <- parser_ast.nccParserAst.materialNodeFirstToken(session, index);
+                end >> int <- parser_ast.nccParserAst.materialNodeEndToken(session, index);
+                print("\"");
+                if (style == 1) lexeme(session, first, true);
+                else if (style >= 2 && style <= 4) {
+                    print(style == 2 ? "repr(" : (style == 3 ? "align(" : "endian("));
+                    lexeme(session, first + 1, false); print(")");
+                } else if (style == 5) print("repr(C)");
+                else if (style == 6) print("endian(little)");
+                else if (style == 7) print("endian(big)");
+                else {
+                    at >> int <- first;
+                    while (at <= end) {
+                        if (at > first) print(" ");
+                        kind >> int <- parser_ast.nccParserAst.materialTokenKind(session, at);
+                        if (kind == 3) {
+                            jsonByte(34);
+                            bytes(parser_ast.nccParserAst.materialTokenPayload(session, at),
+                                parser_ast.nccParserAst.materialTokenBytes(session, at), false);
+                            jsonByte(34);
+                        } else if (kind == 4) {
+                            print("Char('"); point >> int <- rd(parser_ast.nccParserAst.materialTokenPayload(session,at)) & 255;
+                            if (point == 0) { jsonByte(92); print("0"); }
+                            else if (point == 9 || point == 10 || point == 13 || point == 39 || point == 92) {
+                                jsonByte(92);
+                                if (point == 9) print("t"); else if (point == 10) print("n");
+                                else if (point == 13) print("r"); else jsonByte(point);
+                            } else if (point < 32 || (point >= 127 && point <= 160) || point == 173) {
+                                jsonByte(92); print("u{");
+                                hex >> p<byte> <- cast("0123456789abcdef");
+                                if (point >= 16) jsonByte(rd(off(hex,point / 16)));
+                                jsonByte(rd(off(hex,point % 16))); print("}");
+                            } else if (point >= 128) { jsonByte(192 + point / 64); jsonByte(128 + point % 64); }
+                            else jsonByte(point);
+                            print("')");
+                        } else if (kind >= 50 && kind != 53 && kind != 55 && kind != 58 &&
+                            kind != 73 && (kind < 64 || kind > 67) && kind != 76 && kind != 77) {
+                            print(parser_ast.nccParserAst.materialTokenName(session, at));
+                        } else lexeme(session, at, false);
+                        at += 1;
+                    }
+                }
+                print("\"");
+            }
+            declaration(session >> p<byte>, index >> int) -> void {
+                kind >> int <- parser_ast.nccParserAst.materialNodeFlags(session, index);
+                print("{\"name\":"); word(session, origin(session, index));
+                print(",\"kind\":\""); print(kind == 1 ? "Struct" : (kind == 2 ? "Union" : (kind == 3 ? "Enum" : "TaggedUnion")));
+                print("\",\"generic_params\":[");
+                at >> int <- child(session, index); count >> int <- 0;
+                while (at >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(session, at) == 89) {
+                        if (count > 0) print(","); word(session, origin(session, at)); count += 1;
+                    }
+                    at <- next(session, at);
+                }
+                print("],\"variants\":["); at <- child(session, index); count <- 0;
+                while (at >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(session, at) == 88) {
+                        if (count > 0) print(","); count += 1;
+                        print("{\"name\":"); word(session, origin(session, at)); print(",\"payload\":[");
+                        entry >> int <- child(session, at); fields >> int <- 0;
+                        while (entry >= 0) {
+                            if (fields > 0) print(","); field(session, entry); fields += 1; entry <- next(session, entry);
+                        }
+                        print("]}");
+                    }
+                    at <- next(session, at);
+                }
+                print("],\"clauses\":["); at <- child(session, index); count <- 0;
+                while (at >= 0) {
+                    code >> int <- parser_ast.nccParserAst.materialNodeKind(session, at);
+                    if (code == 14) {
+                        if (count > 0) print(","); count += 1;
+                        access >> int <- parser_ast.nccParserAst.materialNodeFlags(session, at);
+                        group >> int <- parser_ast.nccParserAst.materialNodeRoleHash(session, at);
+                        print("{\"Fields\":{\"visibility\":\"");
+                        print(access == 1 ? "Public" : (access == 2 ? "Private" : (access == 3 ? "Internal" : "Strictly")));
+                        print("\",\"fields\":["); fields >> int <- 0;
+                        while (at >= 0 && parser_ast.nccParserAst.materialNodeKind(session, at) == 14 &&
+                            parser_ast.nccParserAst.materialNodeRoleHash(session, at) == group) {
+                            if (fields > 0) print(","); field(session, at); fields += 1; at <- next(session, at);
+                        }
+                        print("]}}"); continue;
+                    }
+                    if (code == 86) {
+                        if (count > 0) print(","); count += 1;
+                        print("{\""); print(clauseName(parser_ast.nccParserAst.materialNodeFlags(session, at))); print("\":[");
+                        entry >> int <- child(session, at); items >> int <- 0;
+                        while (entry >= 0) {
+                            if (items > 0) print(","); item(session, entry); items += 1; entry <- next(session, entry);
+                        }
+                        print("]}");
+                    }
+                    at <- next(session, at);
+                }
+                print("]}");
+            }
+        public:
+            parseFile(path >> str) -> int {
+                session >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                if (session == null) return 66;
+                if (!parser_ast.nccParserAst.materialReady(session)) {
+                    error >> int <- parser_ast.nccParserAst.materialLexerError(session);
+                    if (error != 0) diagnostics.nccDiagnostics.emitDiagnostic(error,
+                        parser_ast.nccParserAst.materialErrorLine(session), parser_ast.nccParserAst.materialErrorColumn(session), path);
+                    else diagnostics.nccDiagnostics.emitParser(parser_ast.nccParserAst.materialParserError(session),
+                        parser_ast.nccParserAst.materialErrorLine(session), parser_ast.nccParserAst.materialErrorColumn(session), path);
+                    parser_ast.nccParserAst.closeMaterial(session); return 1;
+                }
+                if (!parser_ast.nccParserAst.materialTreeValid(session)) {
+                    parser_ast.nccParserAst.closeMaterial(session); return 70;
+                }
+                byteOut <- cast(alloc(2));
+                if (byteOut == null) { parser_ast.nccParserAst.closeMaterial(session); return 66; }
+                wr(off(byteOut, 1), 0);
+                print("{\"schema\":\"nc.parser.type-contracts.v44\",\"types\":[");
+                at >> int <- 0; count >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(session)) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(session, at);
+                    if (kind == 11 || kind == 13) {
+                        if (count > 0) print(","); declaration(session, at); count += 1;
+                    }
+                    at += 1;
+                }
+                println("]}"); free(byteOut); byteOut <- null;
+                parser_ast.nccParserAst.closeMaterial(session); return 0;
+            }
+    fa: return true;
+}

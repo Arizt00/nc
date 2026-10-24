@@ -1,0 +1,47 @@
+kernelGuestMemoryVmexitLoop :: kernel {
+    fn:
+        verifyVirtualizationSurface() -> bool {
+            eptRoot       at 0x100000;
+            nptRoot       at 0x101000;
+            guestPage     at 0x200000;
+            intelSnapshot at 0x300000;
+            amdSnapshot   at 0x301000;
+            cpuidOutput   at 0x302000;
+            vmcb          at 0x400000;
+
+            guard guest_phys_zero_page(eptRoot) &&
+                  guest_phys_zero_page(nptRoot) &&
+                  guest_phys_zero_page(guestPage) else return false;
+
+            guard guest_phys_write64(guestPage, 0x123456789ABCDEF0) else return false;
+            guard guest_phys_read64(guestPage) == 0x123456789ABCDEF0 else return false;
+
+            guard ept_set_entry(eptRoot, 0, 0x200037) &&
+                  npt_set_entry(nptRoot, 0, 0x200007) &&
+                  ept_pointer(eptRoot, 6, true) != 0 else return false;
+
+            guard vmexit_intel_snapshot(intelSnapshot) &&
+                  vmexit_amd_snapshot(vmcb, amdSnapshot) else return false;
+
+            guard vmexit_intel_inject(14, 3, true, 0, 0) &&
+                  vmexit_amd_inject(vmcb, 14, 3, true, 0) &&
+                  vmexit_intel_advance(3) &&
+                  vmexit_amd_advance(vmcb) else return false;
+
+            guard vm_call() && svm_call() else return false;
+            guard cpu_read_cr0() != 0 &&
+                  cpu_read_cr3() >= 0 &&
+                  cpu_read_cr4() >= 0 &&
+                  cpu_read_msr(16) >= 0 else return false;
+            guard cpuid_write(1, 0, cpuidOutput) else return false;
+
+            port <- port_read8(0x80);
+            guard port >= 0 && port_write8(0x80, port) else return false;
+
+            return svm_clgi() &&
+                   svm_invlpga(guestPage, 1) &&
+                   svm_stgi();
+        }
+
+    ref main ->> verifyVirtualizationSurface;
+}

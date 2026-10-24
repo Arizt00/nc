@@ -1,0 +1,69 @@
+use <io:output>;
+use <process:args>;
+use <project:ide_router>;
+use <project:mct_smoke>;
+use <project:contract_cli>;
+use <project:retirement_tests>;
+use <project:ncup_cli, ncup_tests>;
+use <project:imports_operational>;
+use <project:parser_material_verify>;
+use <project:lexer_material_verify, modules_verify, cert_cli, utility_cli, dist_cli, editor_cli>;
+use <project:release_layout, release_notes, machine_ci_verify, release_tests>;
+use <project:retirement_dispatch>;
+
+retirement {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            if (argsCount(arguments) < 2) {
+                println("ncc-tools: route-vscode, route-ghidra, mct-smoke, release-policy, release-docs, release-final");
+                argsRelease(arguments); return 2;
+            }
+            command >> str <- argsAt(arguments,1);
+            code >> int <- 2;
+            if (command == "--help" || command == "-h") {
+                println("ncc-tools: route-vscode, route-ghidra, mct-smoke, release-policy, release-docs, release-final");
+                println("Retained commands: release-layout, release-notes, verify-machine-ci, release-self-test, retirement-self-test");
+                println("Toolchain verification: release-ncup-disk, release-ncup-commands, release-ncup-resolution, release-first-run");
+                println("Import verification: release-imports; differential suite: ncup-self-test");
+                println("Frontend verification: verify-parser-material --candidate EXE --baseline EXE --stage0 EXE --out DIR");
+                println("Frontend byte equivalence: verify-lexer-material, verify-parser-modules");
+                println("Native tools: cert-matrix, migrate-low-level, dist-telemetry, dist-external-ops");
+                println("Editor verification: editor-industrial, editor-lsp-smoke, editor-self-test");
+                println("Native families: release, IDE, closure generators, documents, certification and mobile protocol");
+                code <- 0;
+            }
+            else if (retirement_dispatch.retirementDispatch.family(command) != "") code <- retirement_dispatch.retirementDispatch.execute(arguments,command);
+            else if (command == "route-vscode") code <- ide_router.ideRouter.execute(arguments,false);
+            else if (command == "route-ghidra") code <- ide_router.ideRouter.execute(arguments,true);
+            else if (command == "mct-smoke") code <- mct_smoke.mctSmoke.execute(arguments);
+            else if (command == "release-policy") code <- contract_cli.contractCli.execute(arguments,"policy");
+            else if (command == "release-docs") code <- contract_cli.contractCli.execute(arguments,"docs");
+            else if (command == "release-final") code <- contract_cli.contractCli.execute(arguments,"final");
+            else if (command == "retirement-self-test") code <- retirement_tests.retirementTests.executeTests(arguments);
+            else if (command == "release-ncup-disk") code <- ncup_cli.ncupCli.execute(arguments,"disk");
+            else if (command == "ncup-self-test") code <- ncup_tests.ncupTests.run(arguments);
+            else if (command == "release-imports") code <- imports_operational.importsOperational.execute(arguments);
+            else if (command == "verify-parser-material") code <- parser_material_verify.parserMaterialVerify.execute(arguments);
+            else if (command == "verify-lexer-material") code <- lexer_material_verify.lexerMaterialVerify.execute(arguments);
+            else if (command == "verify-parser-modules") code <- modules_verify.modulesVerify.execute(arguments);
+            else if (cert_cli.certCli.accepts(command)) code <- cert_cli.certCli.execute(arguments,command);
+            else if (command == "migrate-low-level") code <- utility_cli.utilityCli.execute(arguments);
+            else if (command == "dist-telemetry") code <- dist_cli.distCli.execute(arguments,"telemetry");
+            else if (command == "dist-external-ops") code <- dist_cli.distCli.execute(arguments,"external-ops");
+            else if (strStartsWith(command,"editor-")) code <- editor_cli.editorCli.dispatch(arguments);
+            else if (command == "release-ncup-commands") code <- ncup_cli.ncupCli.execute(arguments,"commands");
+            else if (command == "release-ncup-resolution") code <- ncup_cli.ncupCli.execute(arguments,"resolution");
+            else if (command == "release-first-run") code <- ncup_cli.ncupCli.execute(arguments,"first-run");
+            else if (command == "release-layout") code <- release_layout.releaseLayout.execute(arguments);
+            else if (command == "release-notes") code <- release_notes.releaseNotes.execute(arguments);
+            else if (command == "verify-machine-ci") code <- machine_ci_verify.machineCiVerify.execute(arguments);
+            else if (command == "release-self-test") code <- release_tests.releaseTests.execute(arguments);
+            else println("ncc-tools: unknown command: "+command);
+            argsRelease(arguments);
+            return code;
+        }
+    ref main ->> run;
+    fa:
+        return true;
+}

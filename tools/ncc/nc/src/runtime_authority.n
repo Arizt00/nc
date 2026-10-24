@@ -1,0 +1,222 @@
+use <project:parser_ast, import_catalog>;
+
+nccRuntimeAuthority {
+    const:
+        CTX_ROOT >> int <- 1;
+        CTX_RUNTIME >> int <- 2;
+        CTX_SYSTEM >> int <- 3;
+        CTX_NETWORK >> int <- 4;
+        CTX_TOOLING >> int <- 5;
+        CTX_COMPILER >> int <- 6;
+        CTX_KERNEL >> int <- 7;
+        CTX_SECURITY >> int <- 8;
+        CTX_INSPECT >> int <- 9;
+        CTX_AI >> int <- 10;
+        CTX_MACHINE >> int <- 11;
+        CTX_PRIMITIVE >> int <- 12;
+        CTX_BASAL >> int <- 13;
+
+        CAP_NONE >> int <- 0;
+        CAP_HOSTED >> int <- 1;
+        CAP_MEMORY >> int <- 2;
+        CAP_OUTPUT >> int <- 3;
+        CAP_FILESYSTEM >> int <- 4;
+        CAP_NETWORK >> int <- 5;
+        CAP_PROCESS >> int <- 6;
+        CAP_CONCURRENT >> int <- 7;
+        CAP_AUTHORITY >> int <- 8;
+
+        POLICY_NONE >> int <- 0;
+        POLICY_HOSTED >> int <- 1;
+        POLICY_RAW_MEMORY >> int <- 2;
+        POLICY_OUTPUT >> int <- 3;
+        POLICY_FILESYSTEM >> int <- 4;
+        POLICY_NETWORK >> int <- 5;
+        POLICY_PROCESS >> int <- 6;
+        POLICY_CONCURRENT >> int <- 7;
+        POLICY_AUTHORITY >> int <- 8;
+
+        RISK_LOW >> int <- 1;
+        RISK_MEDIUM >> int <- 2;
+        RISK_HIGH >> int <- 3;
+
+    fn:
+        private:
+            same(material >> p<byte>, token >> int, value >> str) -> bool {
+                return parser_ast.nccParserAst.materialTokenSame(material, token, value);
+            }
+
+            stoudCapability(material >> p<byte>, family >> int, item >> int) -> int {
+                if (same(material, family, "memory") ||
+                    same(material, family, "collections")) return CAP_MEMORY;
+                if (same(material, family, "fs") ||
+                    same(material, family, "filesystem")) return CAP_FILESYSTEM;
+                if (same(material, family, "network") || same(material, family, "net") ||
+                    same(material, family, "mobile")) return CAP_NETWORK;
+                if (same(material, family, "process") || same(material, family, "sys") ||
+                    same(material, family, "os")) return CAP_PROCESS;
+                if (same(material, family, "thread") || same(material, family, "task") ||
+                    same(material, family, "sync")) return CAP_CONCURRENT;
+                if (same(material, family, "audit")) return CAP_AUTHORITY;
+                if (same(material, family, "terminal") || same(material, family, "ui")) {
+                    return CAP_OUTPUT;
+                }
+                if (same(material, family, "io")) {
+                    if (same(material, item, "fs") || same(material, item, "fsread") ||
+                        same(material, item, "fread_lines") || same(material, item, "fswrite") ||
+                        same(material, item, "fsappend") || same(material, item, "fsync") ||
+                        same(material, item, "exists") || same(material, item, "deleteFile") ||
+                        same(material, item, "delete_file") || same(material, item, "copyFile") ||
+                        same(material, item, "createDir") || same(material, item, "removeDir") ||
+                        same(material, item, "listDir") || same(material, item, "metadata") ||
+                        same(material, item, "permissions") || same(material, item, "setReadonly") ||
+                        same(material, item, "renamePath") || same(material, item, "rename_file") ||
+                        same(material, item, "movePath") || same(material, item, "absolutePath") ||
+                        same(material, item, "officialPath") || same(material, item, "lockFile") ||
+                        same(material, item, "unlockFile") || same(material, item, "readBytes") ||
+                        same(material, item, "readBytesInto") || same(material, item, "writeBytes")) {
+                        return CAP_FILESYSTEM;
+                    }
+                    if (same(material, item, "output") || same(material, item, "errorOutput") ||
+                        same(material, item, "std") || same(material, item, "render") ||
+                        same(material, item, "concat") || same(material, item, "flush")) {
+                        return CAP_OUTPUT;
+                    }
+                }
+                return CAP_HOSTED;
+            }
+
+            policyForCapability(capability >> int) -> int {
+                if (capability == CAP_MEMORY) return POLICY_RAW_MEMORY;
+                if (capability == CAP_OUTPUT) return POLICY_OUTPUT;
+                if (capability == CAP_FILESYSTEM) return POLICY_FILESYSTEM;
+                if (capability == CAP_NETWORK) return POLICY_NETWORK;
+                if (capability == CAP_PROCESS) return POLICY_PROCESS;
+                if (capability == CAP_CONCURRENT) return POLICY_CONCURRENT;
+                if (capability == CAP_AUTHORITY) return POLICY_AUTHORITY;
+                if (capability == CAP_HOSTED) return POLICY_HOSTED;
+                return POLICY_NONE;
+            }
+
+            stoudAllowed(material >> p<byte>, family >> int, context >> int) -> bool {
+                if (context == CTX_RUNTIME || context == CTX_TOOLING ||
+                    context == CTX_COMPILER) return true;
+                if (context == CTX_NETWORK) {
+                    return same(material, family, "network") || same(material, family, "net") ||
+                        same(material, family, "time") || same(material, family, "io") ||
+                        same(material, family, "text") || same(material, family, "thread") ||
+                        same(material, family, "sync");
+                }
+                if (context == CTX_INSPECT) {
+                    return same(material, family, "audit") || same(material, family, "time") ||
+                        same(material, family, "text") || same(material, family, "io");
+                }
+                if (context == CTX_SECURITY) return same(material, family, "audit");
+                return false;
+            }
+
+            authAllowed(material >> p<byte>, family >> int, context >> int) -> bool {
+                if (same(material, family, "system")) return context == CTX_SYSTEM;
+                if (same(material, family, "security")) return context == CTX_SECURITY;
+                if (same(material, family, "resource")) {
+                    return context == CTX_RUNTIME || context == CTX_SYSTEM ||
+                        context == CTX_SECURITY;
+                }
+                return false;
+            }
+
+            domAllowed(material >> p<byte>, family >> int, context >> int) -> bool {
+                if (same(material, family, "compiler")) return context == CTX_COMPILER;
+                if (same(material, family, "tooling")) return context == CTX_TOOLING;
+                if (same(material, family, "inspect")) return context == CTX_INSPECT;
+                if (same(material, family, "ai")) return context == CTX_AI;
+                return same(material, family, "high") && context == CTX_ROOT;
+            }
+
+        public:
+            rootContext() -> int { return CTX_ROOT; }
+
+            context(material >> p<byte>, role >> int) -> int {
+                if (same(material, role, "runtime")) return CTX_RUNTIME;
+                if (same(material, role, "system")) return CTX_SYSTEM;
+                if (same(material, role, "network")) return CTX_NETWORK;
+                if (same(material, role, "tooling")) return CTX_TOOLING;
+                if (same(material, role, "compiler")) return CTX_COMPILER;
+                if (same(material, role, "kernel")) return CTX_KERNEL;
+                if (same(material, role, "security")) return CTX_SECURITY;
+                if (same(material, role, "inspect")) return CTX_INSPECT;
+                if (same(material, role, "ai")) return CTX_AI;
+                if (same(material, role, "machine")) return CTX_MACHINE;
+                if (same(material, role, "primitive")) return CTX_PRIMITIVE;
+                if (same(material, role, "basal")) return CTX_BASAL;
+                return CTX_ROOT;
+            }
+
+            capability(material >> p<byte>, domain >> int,
+                family >> int, item >> int) -> int {
+                if (domain == import_catalog.nccImportCatalog.coreDomain()) {
+                    if (same(material, family, "memory")) return CAP_MEMORY;
+                    if (same(material, family, "sync")) return CAP_CONCURRENT;
+                    return CAP_HOSTED;
+                }
+                if (domain == import_catalog.nccImportCatalog.allocDomain()) return CAP_MEMORY;
+                if (domain == import_catalog.nccImportCatalog.defaultDomain()) {
+                    return stoudCapability(material, family, item);
+                }
+                if (domain == import_catalog.nccImportCatalog.authDomain() ||
+                    domain == import_catalog.nccImportCatalog.domDomain()) return CAP_AUTHORITY;
+                return CAP_NONE;
+            }
+
+            policy(material >> p<byte>, domain >> int,
+                family >> int, item >> int) -> int {
+                return policyForCapability(capability(material, domain, family, item));
+            }
+
+            risk(material >> p<byte>, domain >> int,
+                family >> int, item >> int) -> int {
+                cap >> int <- capability(material, domain, family, item);
+                if (cap == CAP_FILESYSTEM || cap == CAP_NETWORK || cap == CAP_PROCESS ||
+                    cap == CAP_AUTHORITY) return RISK_HIGH;
+                if (cap == CAP_MEMORY || cap == CAP_CONCURRENT) return RISK_MEDIUM;
+                return RISK_LOW;
+            }
+
+            allowed(material >> p<byte>, domain >> int, family >> int,
+                item >> int, contextKind >> int) -> bool {
+                if (contextKind == CTX_ROOT) return true;
+                if (contextKind == CTX_MACHINE || contextKind == CTX_PRIMITIVE ||
+                    contextKind == CTX_BASAL) return false;
+                if (domain == import_catalog.nccImportCatalog.coreDomain() ||
+                    domain == import_catalog.nccImportCatalog.allocDomain() ||
+                    domain == import_catalog.nccImportCatalog.projectDomain()) return true;
+                if (contextKind == CTX_KERNEL) return false;
+                if (domain == import_catalog.nccImportCatalog.defaultDomain()) {
+                    return stoudAllowed(material, family, contextKind);
+                }
+                if (domain == import_catalog.nccImportCatalog.authDomain()) {
+                    return authAllowed(material, family, contextKind);
+                }
+                if (domain == import_catalog.nccImportCatalog.domDomain()) {
+                    return domAllowed(material, family, contextKind);
+                }
+                return false;
+            }
+
+            denial(contextKind >> int) -> int {
+                if (contextKind == CTX_MACHINE) return 16;
+                if (contextKind == CTX_PRIMITIVE) return 17;
+                if (contextKind == CTX_BASAL) return 18;
+                if (contextKind == CTX_KERNEL) return 19;
+                return 22;
+            }
+
+            fingerprint(domain >> int, capabilityKind >> int, policyKind >> int,
+                riskKind >> int, contextKind >> int) -> int {
+                return domain * 1009 + capabilityKind * 101 + policyKind * 17 +
+                    riskKind * 7 + contextKind;
+            }
+
+    fa:
+        return true;
+}

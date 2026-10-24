@@ -1,0 +1,54 @@
+use <process:args, env>;
+use <io:input, output>;
+use <project:release_io>;
+
+editorPeerV42 {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            if (argsCount(arguments) == 2 && argsAt(arguments,1) == "lsp") {
+                data >> p<byte> <- cast(alloc(32768));
+                guard data != null else return 2;
+                count >> int <- envGet("EDITOR_V42_RESPONSE",adr(data),32767);
+                guard count > 0 && count < 32767 else return 2;
+                wr(off(data,count),0); path >> str <- cast(data);
+                wire >> str <- release_io.releaseIo.text(path);
+                // Consume the complete test request before replying, including EOF
+                // after the final exit frame. This also exercises pipe backpressure.
+                lines >> int <- 0;
+                while (lines < 64) {
+                    line >> str <- readLine();
+                    done >> bool <- strContains(line,"\"exit\"");
+                    strRelease(line); lines += 1;
+                    if (done) break;
+                }
+                if (envHas("WINDIR")) {
+                    // The Windows print runtime translates LF to CRLF.
+                    output >> p<byte> <- cast(alloc(strByteLen(wire)+1));
+                    source >> p<byte> <- cast(wire);
+                    index >> int <- 0; cursor >> int <- 0;
+                    while (index < strByteLen(wire)) {
+                        byte >> int <- rd(off(source,index)) & 255;
+                        if (byte != 13 || index+1 >= strByteLen(wire) || rd(off(source,index+1)) != 10) {
+                            wr(off(output,cursor),cast<byte>(byte)); cursor += 1;
+                        }
+                        index += 1;
+                    }
+                    wr(off(output,cursor),0); printable >> str <- cast(output); print(printable); free(output);
+                } else print(wire);
+                free(cast<byte>(wire)); free(data);
+                return envHas("EDITOR_V42_NONZERO") ? 7 : 0;
+            }
+            if (exists(".editor-node-fail")) return 7;
+            if (argsCount(arguments) == 3 && argsAt(arguments,1) == "--check") {
+                path >> str <- argsAt(arguments,2);
+                return release_io.releaseIo.fileType(path) == 1 ? 0 : 2;
+            }
+            if (argsCount(arguments) == 2 && argsAt(arguments,1) == "tools/vscode/nc-language/src/smoke_test.js") {
+                println("OK: editor v42 controlled Node fixture; not JavaScript execution"); return 0;
+            }
+            return 2;
+        }
+    ref main ->> run;
+    fa: return true;
+}

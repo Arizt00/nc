@@ -1,0 +1,168 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command, env>;
+use <project:sha256>;
+
+buildNativeRuntime80 {
+    text(model >> int, key >> str) -> str {
+        item >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(item,"");
+        jsonRelease(item); return value;
+    }
+    normalized(value >> str) -> str {
+        bytes >> int <- strByteLen(value);
+        out >> p<byte> <- alloc(bytes+1);
+        if (out == null) return null;
+        at >> int <- 0;
+        while (at < bytes) {
+            code >> byte <- rd(off(cast<byte>(value),at));
+            if (code == 34 || code == 10 || code == 13) { free(out); return null; }
+            wr(off(out,at),code == 92 ? 47 : code); at += 1;
+        }
+        wr(off(out,bytes),0); return cast<str>(out);
+    }
+    quote(value >> str) -> str { return "\""+value+"\""; }
+    directory(path >> str) -> str {
+        at >> int <- strByteLen(path)-1;
+        while (at > 0 && rd(off(cast<byte>(path),at)) != 47) at -= 1;
+        return at > 0 ? strSubstring(path,0,at) : "";
+    }
+    ensure(path >> str) -> bool {
+        if (exists(path)) return true;
+        parent >> str <- directory(path);
+        valid >> bool <- parent != "" && ensure(parent) && isOk(createDir(path));
+        strRelease(parent); return valid;
+    }
+    copy(source >> str, destination >> str, expected >> str) -> bool {
+        count >> int <- fsSize(source);
+        if (count < 1 || count > 1048576) return false;
+        before >> str <- sha256.nccSha256.file(source);
+        valid >> bool <- expected == "" || before == expected;
+        data >> p<byte> <- valid ? alloc(count) : null;
+        valid <- valid && data != null && fsReadInto(source,data,count) == count &&
+            fsWriteFrom(destination,data,count,false) == count;
+        free(data);
+        after >> str <- valid ? sha256.nccSha256.file(destination) : "";
+        valid <- valid && before == after;
+        strRelease(before); if (after != "") strRelease(after);
+        return valid;
+    }
+    read(path >> str) -> str {
+        count >> int <- fsSize(path);
+        if (count < 1 || count > 1048576) return null;
+        data >> p<byte> <- alloc(count+1);
+        if (data == null) return null;
+        if (fsReadInto(path,data,count) != count) { free(data); return null; }
+        wr(off(data,count),0); return cast<str>(data);
+    }
+    replace(value >> str, needle >> str, replacement >> str) -> str {
+        bytes >> int <- strByteLen(value);
+        width >> int <- strByteLen(needle);
+        extra >> int <- strByteLen(replacement);
+        // Templates are pinned metadata, bounded to one MiB before expansion.
+        if (width <= 0 || bytes > 1048576 || extra > 32768) return null;
+        capacity >> int <- bytes+(bytes/width+1)*extra+1;
+        if (capacity <= 0 || capacity > 134217728) return null;
+        out >> p<byte> <- alloc(capacity);
+        if (out == null) return null;
+        source >> p<byte> <- cast<byte>(value);
+        wanted >> p<byte> <- cast<byte>(needle);
+        at >> int <- 0; written >> int <- 0;
+        while (at < bytes) {
+            same >> int <- 0;
+            while (same < width && at+same < bytes && rd(off(source,at+same)) == rd(off(wanted,same))) same += 1;
+            if (same == width) {
+                cp(off(out,written),cast<byte>(replacement),extra);
+                written += extra; at += width;
+            } else { wr(off(out,written),rd(off(source,at))); written += 1; at += 1; }
+        }
+        wr(off(out,written),0); return cast<str>(out);
+    }
+    invoke(line >> str) -> bool {
+        child >> addr <- commandOpen(line,".",stdIn(),stdOut(),stdErr(),0);
+        if (child == null) { println("runtime child allocation failed"); return false; }
+        valid >> bool <- commandStarted(child);
+        if (!valid) { print("runtime child start error="); println(commandError(child)); }
+        waited >> int <- valid ? commandWait(child,-1) : -1;
+        if (waited != 0 && valid) { commandTerminate(child,15); commandWait(child,30000); }
+        valid <- valid && waited == 0 && commandExitCode(child) == 0;
+        if (!valid) {
+            print("runtime child wait="); print(waited); print(" exit="); println(commandExitCode(child));
+        }
+        commandRelease(child); return valid;
+    }
+    prepare(rows >> int, host >> str, repo >> str, project >> str) -> int {
+        at >> int <- 0; copied >> int <- 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at);
+            owner >> str <- text(row,"host");
+            if (owner == host || owner == "both") {
+                source >> str <- repo+"/"+text(row,"source");
+                destination >> str <- project+"/src/"+text(row,"unit")+".n";
+                valid >> bool <- copy(source,destination,text(row,"sha256"));
+                strRelease(source); strRelease(destination);
+                if (!valid) { jsonRelease(row); return -1; }
+                copied += 1;
+            }
+            jsonRelease(row); at += 1;
+        }
+        return copied;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 6) return 64;
+        repo >> str <- normalized(argsAt(arguments,1));
+        compiler >> str <- normalized(argsAt(arguments,2));
+        project >> str <- normalized(argsAt(arguments,3));
+        publish >> str <- normalized(argsAt(arguments,4));
+        publisher >> str <- normalized(argsAt(arguments,5));
+        if (repo == null || compiler == null || project == null || publish == null || publisher == null) return 64;
+        if (exists(project+"/.ncc")) return 78;
+        if (!ensure(project+"/src") || !ensure(publish)) return 68;
+        windows >> bool <- envHas("WINDIR");
+        host >> str <- windows ? "windows" : "linux";
+        triple >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+        manifest >> int <- jsonParseFile(repo+"/bootstrap/runtime-native-units-v80.json");
+        if (manifest == 0) return 65;
+        rows >> int <- jsonObjectBorrow(manifest,"units");
+        units >> int <- prepare(rows,host,repo,project); jsonRelease(rows);
+        rows <- jsonObjectBorrow(manifest,"generated_units");
+        generated >> int <- prepare(rows,host,repo,project); jsonRelease(rows); jsonRelease(manifest);
+        if (units < 0 || generated < 0 || units+generated != (windows ? 36 : 35)) return 69;
+        if (!copy(repo+"/tools/tests/native_runtime_entry77.n",project+"/main.n","")) return 70;
+        line >> str <- quote(compiler)+" project objects "+quote(project)+" --target "+triple+" --no-incremental";
+        valid >> bool <- invoke(line); strRelease(line);
+        if (!valid) return 71;
+        template >> str <- read(repo+"/bootstrap/runtime-publication-v80."+host+".json");
+        if (template == null) return 72;
+        expanded >> str <- replace(template,"@PROJECT@",project); strRelease(template);
+        if (expanded == null) return 72;
+        template <- replace(expanded,"@PUBLISH@",publish); strRelease(expanded);
+        if (template == null) return 72;
+        model >> int <- jsonParse(template); strRelease(template);
+        if (model == 0) return 72;
+        valid <- jsonSaveFile(model,publish+"/link.json",2); jsonRelease(model);
+        if (!windows) valid <- valid && copy(repo+"/bootstrap/runtime-v80.exports.map",publish+"/runtime.exports.map","");
+        if (!valid) return 73;
+        line <- quote(publisher)+" "+quote(publish+"/link.json");
+        valid <- invoke(line); strRelease(line);
+        image >> str <- publish+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+        valid <- valid && fsSize(image) > 0;
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.native.runtime-rebuild.v80"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"object_units",jsonNewInt(units+generated));
+        jsonObjectSet(report,"retained_project_objects",jsonNewInt(0));
+        digest >> str <- valid ? sha256.nccSha256.file(image) : "";
+        jsonObjectSet(report,"image_sha256",jsonNewString(digest));
+        if (digest != "") strRelease(digest);
+        valid <- jsonSaveFile(report,publish+"/build-receipt.json",2) && valid;
+        jsonRelease(report); strRelease(image);
+        strRelease(repo); strRelease(compiler); strRelease(project); strRelease(publish); strRelease(publisher);
+        argsRelease(arguments);
+        println(valid ? "native runtime reconstruction PASS" : "native runtime reconstruction FAIL");
+        return valid ? 0 : 74;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,23 @@
+use <process:args>;
+use <data:json>;
+use <io:output>;
+use <project:physical43_unicode, physical43_primitive, physical43_common, release_io, tool_cli, sha256>;
+
+physical43UnicodeTests {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); out >> str <- release_io.releaseIo.option(arguments,"--out",""); repo >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--repo","."));
+                if (out == "") return 2; physical43_common.physical43Common.directories(out); size >> int <- 1114112/8; data >> p<byte> <- cast(calloc(size,1)); guard data != null else return 1;
+                at >> int <- 0; while (at < 1114112) { if (physical43_unicode.physical43Unicode.alnum(at)) { byteAt >> int <- at/8; value >> int <- (rd(off(data,byteAt)) & 255) | (1 << (at % 8)); wr(off(data,byteAt),value); } at += 1; }
+                path >> str <- physical43_common.physical43Common.absolutePath(out+"/isalnum-15.bin"); good >> bool <- fsWriteFrom(path,data,size,false) == size; free(data);
+                golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/physical43-goldens.json",false); good <- good && physical43_common.physical43Common.fileHash(path) == physical43_common.physical43Common.field(golden,"unicode_15_isalnum_bitmap_sha256"); jsonRelease(golden);
+                bytes >> p<byte> <- cast(alloc(64)); guard bytes != null else return 1; cp(bytes,cast<byte>("nCprimitive"),11); wr(off(bytes,11),0); cp(off(bytes,12),cast<byte>("alive"),5); fsWriteFrom(out+"/nul.log",bytes,17,false); good <- good && physical43_primitive.physical43Primitive.serialAlive(out+"/nul.log");
+                cp(bytes,cast<byte>("nCprimitive"),11); wr(off(bytes,11),226); wr(off(bytes,12),128); wr(off(bytes,13),148); cp(off(bytes,14),cast<byte>("alive"),5); fsWriteFrom(out+"/punctuation.log",bytes,19,false); good <- good && physical43_primitive.physical43Primitive.serialAlive(out+"/punctuation.log");
+                cp(bytes,cast<byte>("nCprimitive"),11); wr(off(bytes,11),195); wr(off(bytes,12),169); cp(off(bytes,13),cast<byte>("alive"),5); fsWriteFrom(out+"/letter.log",bytes,18,false); good <- good && !physical43_primitive.physical43Primitive.serialAlive(out+"/letter.log");
+                cp(bytes,cast<byte>("nCprimitive"),11); wr(off(bytes,11),255); cp(off(bytes,12),cast<byte>("alive"),5); fsWriteFrom(out+"/invalid-utf8.log",bytes,17,false); good <- good && physical43_primitive.physical43Primitive.serialAlive(out+"/invalid-utf8.log"); free(bytes);
+                report >> int <- jsonParse("{\"schema\":\"nc.physical43.unicode-tests.v1\",\"unicode_version\":\"15.0.0\",\"points_compared\":1114112,\"serial_cases\":4}"); physical43_common.physical43Common.put(report,"passed",jsonNewBool(good)); physical43_common.physical43Common.save(out+"/tests.json",report); physical43_common.physical43Common.print(report); jsonRelease(report); argsRelease(arguments); return good ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

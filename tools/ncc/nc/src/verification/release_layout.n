@@ -1,0 +1,83 @@
+use <data:json>;
+use <io:output>;
+use <project:release_io>;
+
+releaseLayout {
+    fn:
+        public:
+            bins() -> int {
+                return jsonParse("[\"ncc\",\"nfmt\",\"nlint\",\"nbuild\",\"npkg\",\"nide\",\"nclsp\",\"ncup\",\"ncup-init\"]");
+            }
+            inspect(data >> int, directory >> str, source >> str) -> int {
+                row >> int <- jsonNewObject();
+                errors >> int <- jsonNewArray();
+                if (jsonKind(data) != 6 || release_io.releaseIo.field(data,"schema") != "nc.phase10.toolchain.layout.v1") jsonArrayPush(errors,jsonNewString("invalid schema"));
+                if (release_io.releaseIo.field(data,"logical_layout_id") != "nc.toolchain.layout.v1") jsonArrayPush(errors,jsonNewString("invalid logical_layout_id"));
+                logical >> int <- jsonObjectGet(data,"logical_bins");
+                if (jsonKind(logical) != 6) jsonArrayPush(errors,jsonNewString("logical_bins missing or invalid"));
+                required >> int <- bins();
+                index >> int <- 0;
+                while (index < jsonArrayLen(required)) {
+                    name >> str <- jsonGetString(jsonArrayGet(required,index));
+                    relative >> str <- release_io.releaseIo.field(logical,name);
+                    relative <- release_io.releaseIo.forwardPath(relative);
+                    if (relative == "") jsonArrayPush(errors,jsonNewString("logical bin missing: "+name));
+                    else {
+                        if (strStartsWith(relative,"/") || strContains(relative,":") || relative == ".." || strStartsWith(relative,"../") || strContains(relative,"/../") || strEndsWith(relative,"/..")) jsonArrayPush(errors,jsonNewString("logical bin must stay inside toolchain: "+name));
+                        else if (release_io.releaseIo.fileType(release_io.releaseIo.path(directory,relative)) != 1) jsonArrayPush(errors,jsonNewString("resolved bin file missing: "+name));
+                    }
+                    index += 1;
+                }
+                if (release_io.releaseIo.fileType(release_io.releaseIo.path(directory,"manifest.v1.json")) != 1) jsonArrayPush(errors,jsonNewString("toolchain metadata missing: manifest.v1.json"));
+                if (release_io.releaseIo.fileType(source) != 1) jsonArrayPush(errors,jsonNewString("toolchain metadata missing: layout.v1.json"));
+                jsonObjectSet(row,"status",jsonNewString(jsonArrayLen(errors) == 0 ? "ok" : "error"));
+                jsonObjectSet(row,"errors",errors);
+                jsonObjectSet(row,"layout_file",jsonNewString(source));
+                jsonObjectSet(row,"logical_layout_id",jsonObjectGet(data,"logical_layout_id"));
+                jsonObjectSet(row,"version",jsonObjectGet(data,"version"));
+                jsonObjectSet(row,"target",jsonObjectGet(data,"target"));
+                jsonObjectSet(row,"os",jsonObjectGet(data,"os"));
+                jsonRelease(logical); jsonRelease(required);
+                return row;
+            }
+            verify(staging >> str) -> int {
+                report >> int <- release_io.releaseIo.report("nc.phase10.distribution.os.report.v1");
+                rows >> int <- jsonNewArray();
+                names >> int <- release_io.releaseIo.names(staging);
+                valid >> bool <- jsonKind(names) == 5;
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    directory >> str <- release_io.releaseIo.path(staging,jsonGetString(jsonArrayGet(names,index))+"/toolchain");
+                    file >> str <- release_io.releaseIo.path(directory,"layout.v1.json");
+                    if (exists(file)) {
+                        data >> int <- jsonParseFile(file);
+                        row >> int <- inspect(data,directory,file);
+                        valid <- valid && release_io.releaseIo.field(row,"status") == "ok";
+                        jsonArrayPush(rows,row); jsonRelease(data);
+                    }
+                    index += 1;
+                }
+                code >> int <- valid ? 0 : 1;
+                if (jsonArrayLen(rows) == 0) code <- 2;
+                jsonObjectSet(report,"status",jsonNewString(code == 0 ? "ok" : "error"));
+                jsonObjectSet(report,"exit_code",jsonNewInt(code));
+                jsonObjectSet(report,"staging",jsonNewString(staging));
+                jsonObjectSet(report,"checks",rows);
+                jsonRelease(names);
+                return report;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) { println("ncc-release release-layout [--staging DIR] [--report JSON]"); return 0; }
+                guard release_io.releaseIo.optionsValid(arguments,"|--staging|--report|") else { println("Invalid release-layout options; use --help"); return 2; }
+                staging >> str <- release_io.releaseIo.option(arguments,"--staging","var/releases/v2_0_0/phase10_p3_dist/staging");
+                output >> str <- release_io.releaseIo.option(arguments,"--report","docs/status/F10_P3_distribution_os_report.json");
+                report >> int <- verify(staging);
+                code >> int <- release_io.releaseIo.number(report,"exit_code",1);
+                if (!release_io.releaseIo.save(output,report)) code <- 1;
+                println(code == 0 ? "OK: distribution layout report "+output : "FAIL: distribution layout; see "+output);
+                jsonRelease(report);
+                return code;
+            }
+    fa:
+        return true;
+}

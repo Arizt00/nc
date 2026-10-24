@@ -1,0 +1,59 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_deep_json, physical43_json, physical43_common, physical43_portable, portable43_repr, cert_json, release_io, sha256>;
+
+physical43DeepJsonIntegration {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+        results >> int <- 0;
+        certificates >> int <- 0;
+    fn:
+        private:
+            expect(valid >> bool, name >> str) -> void {
+                checks += 1; if (!valid) { failures += 1; println("FAIL "+name+" "+physical43_common.physical43Common.diagnostic()); }
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"name",jsonNewString(name)); cert_json.certJson.put(row,"passed",jsonNewBool(valid)); cert_json.certJson.push(results,row);
+            }
+            unhex(source >> str) -> p<byte> {
+                length >> int <- strByteLen(source)/2; output >> p<byte> <- cast(alloc(length+1)); if (output == null) return null; at >> int <- 0;
+                while (at < length) { part >> str <- strSubstring(source,at*2,2); wr(off(output,at),physical43_common.physical43Common.hexValue(part)); strRelease(part); at += 1; } wr(off(output,length),0); return output;
+            }
+            compare(actual >> str, row >> int, field >> str, name >> str) -> void {
+                wanted >> str <- cert_json.certJson.field(row,field); expect(actual == wanted,name); strRelease(wanted); strRelease(actual);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 4) return 2;
+                source >> str <- release_io.releaseIo.text(argsAt(arguments,1)); gold >> int <- jsonParse(source); strRelease(source); if (gold == 0) return 2; results <- jsonNewArray(); certificates <- jsonNewArray();
+                rows >> int <- jsonObjectBorrow(gold,"portable"); index >> int <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    physical43_common.physical43Common.reset(); row >> int <- jsonArrayBorrow(rows,index); name >> str <- cert_json.certJson.field(row,"name"); path >> str <- cert_json.certJson.field(row,"repository_path"); acceptedNode >> int <- jsonObjectBorrow(row,"accepted"); accepted >> bool <- jsonGetBoolOr(acceptedNode,false); jsonRelease(acceptedNode);
+                    model >> int <- physical43_common.physical43Common.read(path,false); expect(model != 0,name+" common.read complete JSON");
+                    if (accepted && model != 0) {
+                        payload >> int <- jsonClone(model); removed >> int <- jsonObjectRemove(payload,"attestation"); jsonRelease(removed);
+                        actual >> str <- physical43_common.physical43Common.canonical(payload,false,0); encoded >> str <- cert_json.certJson.field(row,"payload_canonical_utf8_hex"); bytes >> p<byte> <- unhex(encoded); expect(actual == physical43_json.physical43Json.asText(bytes),name+" actual production canonical UTF8"); free(bytes); strRelease(encoded); strRelease(actual);
+                        compare(physical43_common.physical43Common.digest("ncc.machine.hypervisor_backend_certificate.v1",payload,false,false),row,"payload_sha256",name+" production signed digest"); jsonRelease(payload);
+                    }
+                    verified >> int <- physical43_portable.physical43Portable.certificate(path,model,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); expect((verified != 0) == accepted,name+" production portable certificate validation");
+                    recorded >> int <- jsonNewObject(); cert_json.certJson.put(recorded,"name",jsonNewString(name)); cert_json.certJson.put(recorded,"passed",jsonNewBool((verified != 0) == accepted)); cert_json.certJson.put(recorded,"accepted",jsonNewBool(verified != 0)); cert_json.certJson.put(recorded,"actual",verified == 0 ? jsonNewNull() : verified); cert_json.certJson.push(certificates,recorded);
+                    jsonRelease(model); strRelease(name); strRelease(path); jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows); rows <- jsonObjectBorrow(gold,"exact"); index <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    physical43_common.physical43Common.reset(); row >> int <- jsonArrayBorrow(rows,index); name >> str <- cert_json.certJson.field(row,"name"); input >> str <- cert_json.certJson.field(row,"input"); model >> int <- physical43_deep_json.physical43DeepJson.parse(input); expect(model != 0,name+" parse full signed metadata");
+                    compare(physical43_common.physical43Common.canonical(model,true,0),row,"canonical",name+" production canonical ASCII"); compare(physical43_common.physical43Common.digest("ncc.ci.exact_head_capture.v1",model,true,false),row,"digest",name+" original exact-head digest"); compare(physical43_common.physical43Common.hmac("ncc.ci.exact_head_capture.v1",model,"physical43-native-key"),row,"hmac",name+" original exact-head HMAC"); jsonRelease(model); strRelease(input); strRelease(name); jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows);
+                model >> int <- physical43_deep_json.physical43DeepJson.parse("[\"\\u0001physical43-number-1\",\"\\u0001physical43-raw-99999\",\"\\ud800\"]"); index <- 0;
+                while (index < 2) {
+                    item >> int <- jsonArrayBorrow(model,index); text >> str <- jsonStringView(item,""); expect(!physical43_json.physical43Json.rawSurrogates(text),"reserved actual registry flag false "+renderInt(index)); expect(!physical43_deep_json.physical43DeepJson.hasSurrogates(text),"reserved semantic bytes no surrogate "+renderInt(index));
+                    copied >> str <- strSubstring(text,0,strByteLen(text)); path >> str <- argsAt(arguments,3)+"/reserved-"+renderInt(index)+".md"; good >> bool <- physical43_portable.physical43Portable.writeMarkdown(path,copied); expect(good,"production writeMarkdown accepts reserved string "+renderInt(index));
+                    hash >> str <- sha256.nccSha256.file(path); wantedHash >> str <- sha256.nccSha256.bytes(physical43_json.physical43Json.rawData(text),physical43_json.physical43Json.rawLength(text)); expect(hash == wantedHash,"production Markdown bytes preserved "+renderInt(index)); strRelease(hash); strRelease(wantedHash); strRelease(path); jsonRelease(item); index += 1;
+                }
+                item >> int <- jsonArrayBorrow(model,2); text >> str <- jsonStringView(item,""); expect(physical43_deep_json.physical43DeepJson.hasSurrogates(text),"actual surrogate metadata still detected"); copied >> str <- strSubstring(text,0,strByteLen(text)); path >> str <- argsAt(arguments,3)+"/surrogate-rejected.md"; expect(!physical43_portable.physical43Portable.writeMarkdown(path,copied),"production writeMarkdown rejects genuine unpaired surrogate"); strRelease(path); jsonRelease(item); jsonRelease(model); jsonRelease(gold);
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.physical43.deep-json.production-callers.v43")); cert_json.certJson.put(report,"passed",jsonNewBool(failures == 0)); cert_json.certJson.put(report,"check_count",jsonNewInt(checks)); cert_json.certJson.put(report,"failures",jsonNewInt(failures)); cert_json.certJson.put(report,"checks",results); cert_json.certJson.put(report,"cases",certificates); saved >> bool <- cert_json.certJson.save(argsAt(arguments,2),report); jsonRelease(report);
+                println("deep JSON production callers checks="+renderInt(checks)+" failures="+renderInt(failures)); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+}

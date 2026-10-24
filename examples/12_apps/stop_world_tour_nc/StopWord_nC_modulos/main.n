@@ -1,0 +1,568 @@
+use <project:embedded_pack, lexicon_es_core>;
+use <io:input, output, render>;
+use <memory:ptr, heap>;
+
+/*
+ * STOP World Tour — nC Edition.
+ *
+ * - perfiles Player y puntuaciones manipuladas mediante p<int>;
+ * - reloj monotónico real por turno;
+ * - corpus offline front-coded en almacenamiento inmutable;
+ * - +50 por respuesta válida y única;
+ * -  0 por respuesta válida repetida;
+ * - -30 por vacío, tiempo, letra o palabra inválida;
+ * - salida disponible tanto en el menú como dentro de cada modo.
+ */
+stopWorldTourNc :: runtime {
+    const:
+        MAX_PLAYERS >> int <- 8;
+        CATEGORY_COUNT >> int <- 16;
+        QUESTIONS_NORMAL >> int <- 8;
+        QUESTIONS_INFINITY >> int <- 5;
+
+    type:
+        Player {
+            public:
+                name >> str;
+                team >> int;
+                score >> int;
+                active >> bool;
+            layout:
+                repr(C);
+        }
+
+    stc:
+        playerNames >> array<str, 8>;
+        playerTeams >> array<int, 8>;
+        playerScores >> array<int, 8>;
+        playerActive >> array<bool, 8>;
+        answerTexts >> array<str, 64>;
+        answerValid >> array<bool, 64>;
+        answerTimedOut >> array<bool, 64>;
+        playerCount >> int <- 0;
+        exitRequested >> bool <- false;
+        lastInputTimedOut >> bool <- false;
+
+    fn:
+        private:
+            scoreAt(index >> int) -> p<int> {
+                return off(pCast<int>(&playerScores), index);
+            }
+
+            answerIndex(player >> int, category >> int) -> int {
+                return player * QUESTIONS_NORMAL + category;
+            }
+
+            addScore(score >> p<int>, points >> int) -> bool {
+                wr(score, rd(score) + points);
+                return true;
+            }
+
+            categoryName(index >> int) -> str {
+                match (index) {
+                    0 => return "NOMBRE";
+                    1 => return "PAIS";
+                    2 => return "ANIMAL";
+                    3 => return "FRUTA O VERDURA";
+                    4 => return "COLOR";
+                    5 => return "OBJETO";
+                    6 => return "MARCA";
+                    7 => return "VERBO";
+                    8 => return "CAPITAL";
+                    9 => return "ELEMENTO QUIMICO";
+                    10 => return "PARTE DEL CUERPO";
+                    11 => return "PROFESION";
+                    12 => return "PERSONAJE HISTORICO";
+                    13 => return "PALABRA EN INGLES";
+                    14 => return "INSTRUMENTO";
+                    15 => return "ADJETIVO";
+                    _ => return "CATEGORIA";
+                }
+            }
+
+            letterAt(index >> int) -> str {
+                match (index) {
+                    0 => return "a"; 1 => return "b"; 2 => return "c";
+                    3 => return "d"; 4 => return "e"; 5 => return "f";
+                    6 => return "g"; 7 => return "h"; 8 => return "i";
+                    9 => return "j"; 10 => return "l"; 11 => return "m";
+                    12 => return "n"; 13 => return "o"; 14 => return "p";
+                    15 => return "r"; 16 => return "s"; 17 => return "t";
+                    18 => return "u"; 19 => return "v"; 20 => return "z";
+                    _ => return "a";
+                }
+            }
+
+            readBounded(label >> str, minimum >> int, maximum >> int) -> int {
+                println(label);
+                print("> ");
+                value >> int <- readInt();
+                while (value < minimum || value > maximum) {
+                    println(color("Valor fuera de rango.", "red"));
+                    print("> ");
+                    value <- readInt();
+                }
+                return value;
+            }
+
+            readTimed(label >> str, deadline >> int) -> str {
+                value >> str <- "";
+                finished >> bool <- false;
+                lastSecond >> int <- -1;
+                lastInputTimedOut <- false;
+
+                rawReady >> bool <- enterRawMode();
+                guard rawReady else {
+                    value <- readLine();
+                    lastInputTimedOut <- monotonicMs() >= deadline;
+                    return value;
+                }
+
+                while (!finished && monotonicMs() < deadline) {
+                    remainingMs >> int <- deadline - monotonicMs();
+                    remainingSecond >> int <- (remainingMs + 999) / 1000;
+                    if (remainingSecond != lastSecond) {
+                        print("\r" + label + " [" + renderInt(remainingSecond) + " s] > " +
+                            value + "        ");
+                        lastSecond <- remainingSecond;
+                    }
+
+                    key >> int <- readKeyNonBlocking();
+                    if (key <= 0) {
+                        sleepMs(8);
+                    } else if (key == 10 || key == 13) {
+                        finished <- true;
+                    } else if (key == 8 || key == 127) {
+                        length >> int <- strLen(value);
+                        if (length > 0) value <- strSubstring(value, 0, length - 1);
+                    } else if (key == 27) {
+                        value <- "SALIR";
+                        finished <- true;
+                    } else if (key >= 32 && key <= 255) {
+                        symbol >> str <- charFromCode(key);
+                        value <- value + symbol;
+                        strRelease(symbol);
+                    }
+                }
+
+                lastInputTimedOut <- !finished && monotonicMs() >= deadline;
+                if (lastInputTimedOut) {
+                    print("\r" + label + " [0 s] > " + value + "        ");
+                }
+                exitRawMode();
+                println("");
+                return value;
+            }
+
+            clearAnswers() -> bool {
+                at >> int <- 0;
+                while (at < 64) {
+                    answerTexts[at] <- "";
+                    answerValid[at] <- false;
+                    answerTimedOut[at] <- false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            normalize(value >> str) -> str {
+                return strToLower(value);
+            }
+
+            requestExit(value >> str) -> bool {
+                return value == "SALIR" || value == "salir" || value == ":q";
+            }
+
+            validateAnswer(value >> str, letter >> str, timedOut >> bool) -> bool {
+                guard !timedOut && value != "" else return false;
+                normalized >> str <- normalize(value);
+                starts >> bool <- strStartsWith(normalized, letter);
+                exists >> bool <- starts && nccLexiconEsCore.lexiconContains(normalized);
+                strRelease(normalized);
+                return exists;
+            }
+
+            duplicated(player >> int, question >> int) -> bool {
+                current >> int <- answerIndex(player, question);
+                guard answerValid[current] else return false;
+                at >> int <- 0;
+                while (at < playerCount) {
+                    if (at != player) {
+                        other >> int <- answerIndex(at, question);
+                        if (answerValid[other] &&
+                            answerTexts[other] == answerTexts[current]) return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            scoreRound() -> bool {
+                player >> int <- 0;
+                while (player < playerCount) {
+                    question >> int <- 0;
+                    while (question < QUESTIONS_NORMAL) {
+                        response >> int <- answerIndex(player, question);
+                        if (!answerValid[response]) addScore(scoreAt(player), -30);
+                        else if (!duplicated(player, question)) addScore(scoreAt(player), 50);
+                        question += 1;
+                    }
+                    player += 1;
+                }
+                return true;
+            }
+
+            showScores(teamMode >> bool) -> bool {
+                println("");
+                println(colorBold("CLASIFICACION", "cyan"));
+                at >> int <- 0;
+                while (at < playerCount) {
+                    line >> str <- playerNames[at] + "  " +
+                        renderInt(playerScores[at]) + " pts";
+                    if (teamMode) line <- line + "  equipo " +
+                        renderInt(playerTeams[at]);
+                    println(line);
+                    at += 1;
+                }
+                return true;
+            }
+
+            registerPlayers(teamMode >> bool, minimum >> int, maximum >> int) -> bool {
+                playerCount <- readBounded("Jugadores (" + renderInt(minimum) + "-" +
+                    renderInt(maximum) + ")", minimum, maximum);
+                at >> int <- 0;
+                while (at < playerCount) {
+                    println("Nombre del jugador " + renderInt(at + 1) + ":");
+                    name >> str <- readLine();
+                    if (requestExit(name)) { exitRequested <- true; return false; }
+                    team >> int <- teamMode ? ((at % 2) + 1) : 0;
+                    profile >> Player <- Player {
+                        name: name, team: team, score: 0, active: true
+                    };
+                    playerNames[at] <- profile.name;
+                    playerTeams[at] <- profile.team;
+                    playerScores[at] <- profile.score;
+                    playerActive[at] <- profile.active;
+                    at += 1;
+                }
+                return true;
+            }
+
+            collectRound(round >> int, seconds >> int, letter >> str) -> bool {
+                clearAnswers();
+                player >> int <- 0;
+                while (player < playerCount) {
+                    println("");
+                    println(colorBold("TURNO DE " + playerNames[player], "cyan"));
+                    println("Ronda " + renderInt(round) + " | letra " +
+                        strToUpper(letter) + " | " + renderInt(seconds) + " s");
+                    println("Escribe SALIR para volver al menu.");
+                    deadline >> int <- monotonicMs() + seconds * 1000;
+                    question >> int <- 0;
+                    while (question < QUESTIONS_NORMAL && !lastInputTimedOut) {
+                        value >> str <- readTimed(categoryName(question), deadline);
+                        if (requestExit(value)) { exitRequested <- true; return false; }
+                        timedOut >> bool <- lastInputTimedOut;
+                        normalized >> str <- normalize(value);
+                        valid >> bool <- validateAnswer(normalized, letter, timedOut);
+                        slot >> int <- answerIndex(player, question);
+                        answerTexts[slot] <- normalized;
+                        answerValid[slot] <- valid;
+                        answerTimedOut[slot] <- timedOut;
+                        if (timedOut) println(color("Tiempo agotado. El turno termina ahora.", "red"));
+                        else if (!valid) println(color("Respuesta invalida: -30", "red"));
+                        question += 1;
+                    }
+                    if (lastInputTimedOut) {
+                        while (question < QUESTIONS_NORMAL) {
+                            slot >> int <- answerIndex(player, question);
+                            answerTexts[slot] <- "";
+                            answerValid[slot] <- false;
+                            answerTimedOut[slot] <- true;
+                            question += 1;
+                        }
+                    }
+                    player += 1;
+                }
+                return true;
+            }
+
+            tournament(teamMode >> bool) -> bool {
+                exitRequested <- false;
+                guard registerPlayers(teamMode, 2, MAX_PLAYERS) else return true;
+                rounds >> int <- readBounded("Rondas (1-20)", 1, 20);
+                seconds >> int <- readBounded("Tiempo por turno en segundos (5-300)", 5, 300);
+                round >> int <- 1;
+                while (round <= rounds && !exitRequested) {
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    if (!collectRound(round, seconds, letter)) return true;
+                    scoreRound();
+                    showScores(teamMode);
+                    round += 1;
+                }
+                return true;
+            }
+
+            registerSolo() -> bool {
+                playerCount <- 1;
+                println("Nombre del jugador:");
+                name >> str <- readLine();
+                if (requestExit(name)) { exitRequested <- true; return false; }
+                playerNames[0] <- name;
+                playerTeams[0] <- 0;
+                playerScores[0] <- 0;
+                playerActive[0] <- true;
+                return true;
+            }
+
+            duelMode() -> bool {
+                exitRequested <- false;
+                guard registerPlayers(false, 2, 2) else return true;
+                rounds >> int <- readBounded("Rondas del duelo (1-15)", 1, 15);
+                seconds >> int <- readBounded("Tiempo por turno (5-180 segundos)", 5, 180);
+                round >> int <- 1;
+                while (round <= rounds && !exitRequested) {
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    println(colorBold("DUELO " + renderInt(round) + " / " +
+                        renderInt(rounds), "magenta"));
+                    if (!collectRound(round, seconds, letter)) return true;
+                    scoreRound();
+                    showScores(false);
+                    round += 1;
+                }
+                return true;
+            }
+
+            sprintMode() -> bool {
+                exitRequested <- false;
+                guard registerSolo() else return true;
+                seconds >> int <- readBounded("Duracion total del sprint (10-300 segundos)", 10, 300);
+                deadline >> int <- monotonicMs() + seconds * 1000;
+                attempts >> int <- 0;
+                while (monotonicMs() < deadline && !exitRequested) {
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    category >> int <- randomRange(0, CATEGORY_COUNT - 1);
+                    label >> str <- categoryName(category) + " con " + strToUpper(letter);
+                    value >> str <- readTimed(label, deadline);
+                    if (requestExit(value)) { exitRequested <- true; return true; }
+                    normalized >> str <- normalize(value);
+                    valid >> bool <- validateAnswer(normalized, letter, lastInputTimedOut);
+                    if (valid) {
+                        addScore(scoreAt(0), 50);
+                        println(color("Correcta: +50", "green"));
+                    } else {
+                        addScore(scoreAt(0), -30);
+                        if (!lastInputTimedOut) println(color("Invalida: -30", "red"));
+                    }
+                    strRelease(normalized);
+                    attempts += 1;
+                }
+                if (lastInputTimedOut) println(color("Tiempo agotado: fin del sprint.", "red"));
+                println("Intentos: " + renderInt(attempts));
+                showScores(false);
+                return true;
+            }
+
+            activePlayers() -> int {
+                count >> int <- 0;
+                at >> int <- 0;
+                while (at < playerCount) {
+                    if (playerActive[at]) count += 1;
+                    at += 1;
+                }
+                return count;
+            }
+
+            survivalMode() -> bool {
+                exitRequested <- false;
+                guard registerPlayers(false, 2, MAX_PLAYERS) else return true;
+                seconds >> int <- readBounded("Segundos por respuesta (3-60)", 3, 60);
+                round >> int <- 1;
+                while (activePlayers() > 1 && round <= 30 && !exitRequested) {
+                    clearAnswers();
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    category >> int <- randomRange(0, CATEGORY_COUNT - 1);
+                    println(colorBold("SUPERVIVENCIA " + renderInt(round) + " | " +
+                        categoryName(category) + " con " + strToUpper(letter), "yellow"));
+
+                    player >> int <- 0;
+                    while (player < playerCount) {
+                        if (playerActive[player]) {
+                            deadline >> int <- monotonicMs() + seconds * 1000;
+                            value >> str <- readTimed(playerNames[player], deadline);
+                            if (requestExit(value)) { exitRequested <- true; return true; }
+                            normalized >> str <- normalize(value);
+                            slot >> int <- answerIndex(player, 0);
+                            answerTexts[slot] <- normalized;
+                            answerTimedOut[slot] <- lastInputTimedOut;
+                            answerValid[slot] <- validateAnswer(normalized, letter,
+                                lastInputTimedOut);
+                        }
+                        player += 1;
+                    }
+
+                    player <- 0;
+                    while (player < playerCount) {
+                        if (playerActive[player]) {
+                            slot >> int <- answerIndex(player, 0);
+                            if (!answerValid[slot]) {
+                                addScore(scoreAt(player), -30);
+                                playerActive[player] <- false;
+                                println(color(playerNames[player] + " queda eliminado.", "red"));
+                            } else if (!duplicated(player, 0)) {
+                                addScore(scoreAt(player), 50);
+                            } else {
+                                println(playerNames[player] + ": palabra repetida, 0 puntos.");
+                            }
+                        }
+                        player += 1;
+                    }
+                    showScores(false);
+                    round += 1;
+                }
+
+                if (activePlayers() == 1) {
+                    at >> int <- 0;
+                    while (at < playerCount) {
+                        if (playerActive[at]) println(colorBold("SUPERVIVIENTE: " +
+                            playerNames[at], "green"));
+                        at += 1;
+                    }
+                } else if (!exitRequested) {
+                    println(colorBold("Final sin superviviente unico.", "yellow"));
+                }
+                return true;
+            }
+
+            categoryMasterMode() -> bool {
+                exitRequested <- false;
+                guard registerSolo() else return true;
+                category >> int <- readBounded("Categoria (1-16)", 1, CATEGORY_COUNT) - 1;
+                rounds >> int <- readBounded("Numero de palabras (1-50)", 1, 50);
+                seconds >> int <- readBounded("Segundos por palabra (3-120)", 3, 120);
+                round >> int <- 1;
+                while (round <= rounds && !exitRequested) {
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    deadline >> int <- monotonicMs() + seconds * 1000;
+                    label >> str <- categoryName(category) + " con " + strToUpper(letter);
+                    value >> str <- readTimed(label, deadline);
+                    if (requestExit(value)) { exitRequested <- true; return true; }
+                    normalized >> str <- normalize(value);
+                    valid >> bool <- validateAnswer(normalized, letter, lastInputTimedOut);
+                    addScore(scoreAt(0), valid ? 50 : -30);
+                    println(valid ? color("Correcta: +50", "green") :
+                        color("Fallo: -30", "red"));
+                    strRelease(normalized);
+                    if (lastInputTimedOut) {
+                        println("El segundero llego a cero: turno terminado.");
+                    }
+                    round += 1;
+                }
+                showScores(false);
+                return true;
+            }
+
+            infinityMode() -> bool {
+                exitRequested <- false;
+                guard registerSolo() else return true;
+                seconds >> int <- readBounded("Tiempo inicial (10-120 segundos)", 10, 120);
+                level >> int <- 1;
+                alive >> bool <- true;
+                while (alive && !exitRequested) {
+                    letter >> str <- letterAt(randomRange(0, 20));
+                    println("");
+                    println(colorBold("INFINITY " + renderInt(level) + " | letra " +
+                        strToUpper(letter), "magenta"));
+                    deadline >> int <- monotonicMs() + seconds * 1000;
+                    question >> int <- 0;
+                    while (question < QUESTIONS_INFINITY && alive) {
+                        category >> int <- randomRange(0, CATEGORY_COUNT - 1);
+                        value >> str <- readTimed(categoryName(category), deadline);
+                        if (requestExit(value)) { exitRequested <- true; return true; }
+                        timedOut >> bool <- lastInputTimedOut;
+                        normalized >> str <- normalize(value);
+                        valid >> bool <- validateAnswer(normalized, letter, timedOut);
+                        strRelease(normalized);
+                        if (!valid) {
+                            addScore(scoreAt(0), -30);
+                            alive <- false;
+                        } else {
+                            addScore(scoreAt(0), 50);
+                        }
+                        question += 1;
+                    }
+                    if (lastInputTimedOut) {
+                        println(color("Cero segundos: final de la partida Infinity.", "red"));
+                    }
+                    if (alive) {
+                        level += 1;
+                        if (seconds > 5) seconds -= 1;
+                    }
+                }
+                showScores(false);
+                return true;
+            }
+
+            banner() -> bool {
+                println(colorBold("STOP WORLD TOUR", "cyan"));
+                println("nC Edition | corpus offline " +
+                    renderInt(nccLexiconEsCore.lexiconCount()) + " palabras");
+                return true;
+            }
+
+            lexiconReady() -> bool {
+                first >> str <- nccLexiconEsCore.lexiconAt(0);
+                decoded >> bool <- first != "";
+                nccLexiconEsCore.lexiconRelease(first);
+                casa >> bool <- nccLexiconEsCore.lexiconContains("casa");
+                gato >> bool <- nccLexiconEsCore.lexiconContains("gato");
+                perro >> bool <- nccLexiconEsCore.lexiconContains("perro");
+                espana >> bool <- nccLexiconEsCore.lexiconContains("españa");
+                invented >> bool <- nccLexiconEsCore.lexiconContains("zzzzinventada");
+                if (!decoded || !casa || !gato || !perro || !espana || invented) {
+                    println("integridad decoded=" + renderBool(decoded) +
+                        " casa=" + renderBool(casa) + " gato=" + renderBool(gato) +
+                        " perro=" + renderBool(perro) + " espana=" + renderBool(espana) +
+                        " invented=" + renderBool(invented));
+                }
+                return decoded && casa && gato && perro && espana && !invented;
+            }
+
+            run() -> bool {
+                guard lexiconReady() else {
+                    println(colorBold("El corpus incrustado no supera su prueba de integridad.", "red"));
+                    return false;
+                }
+                running >> bool <- true;
+                while (running) {
+                    banner();
+                    println("1. Copa mundial individual (2-8 jugadores)");
+                    println("2. Guerra de naciones (equipos)");
+                    println("3. Duelo relampago (2 jugadores)");
+                    println("4. Sprint contrarreloj (1 jugador)");
+                    println("5. Supervivencia por eliminacion");
+                    println("6. Maestro de categoria");
+                    println("7. Infinity progresivo");
+                    println("8. Salir");
+                    option >> int <- readBounded("Elige modo", 1, 8);
+                    match (option) {
+                        1 => tournament(false);
+                        2 => tournament(true);
+                        3 => duelMode();
+                        4 => sprintMode();
+                        5 => survivalMode();
+                        6 => categoryMasterMode();
+                        7 => infinityMode();
+                        8 => running <- false;
+                        _ => running <- false;
+                    }
+                }
+                println(colorBold("Hasta la proxima.", "green"));
+                return true;
+            }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

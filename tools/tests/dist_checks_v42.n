@@ -1,0 +1,69 @@
+use <data:json>;
+use <io:output>;
+use <project:dist_session, dist_telemetry, release_io, tool_cli>;
+
+distChecksV42 {
+    const:
+        EVENT >> str <- "{\"schema\":\"ncup.telemetry.event.v1\",\"version\":1,\"timestamp_epoch\":1,\"event\":\"install\",\"command\":\"install\",\"status\":\"success\",\"ncup_version\":\"2.0.0\",\"target\":\"x86_64-unknown-linux-gnu\",\"collects_source_code\":false}";
+    fn:
+        run() -> int {
+            println("dist-v42: event pair");
+            good >> bool <- true;
+            success >> int <- jsonParse(EVENT);
+            failure >> int <- jsonClone(success);
+            jsonObjectSet(failure,"status",jsonNewString("failure"));
+            encoded >> str <- jsonStringify(failure);
+            pair >> str <- EVENT+"\n"+encoded+"\n";
+            free(cast<byte>(encoded));
+            checks >> int <- dist_telemetry.distTelemetry.events(pair);
+            good <- release_io.releaseIo.allTrue(checks) && good;
+            jsonRelease(checks);
+            println("dist-v42: empty events");
+            checks <- dist_telemetry.distTelemetry.events("\n\r\n");
+            good <- !tool_cli.toolCli.hasFlag(checks,"install_success_event_written") && !tool_cli.toolCli.hasFlag(checks,"install_failure_event_written") && good;
+            jsonRelease(checks);
+            println("dist-v42: malformed events");
+            checks <- dist_telemetry.distTelemetry.events(pair+"{bad\n");
+            good <- !tool_cli.toolCli.hasFlag(checks,"event_schema_min_fields") && !tool_cli.toolCli.hasFlag(checks,"never_collects_source") && good;
+            jsonRelease(checks);
+            println("dist-v42: banned fields");
+            banned >> int <- jsonParse("[\"source_code\",\"source_contents\",\"source_paths\",\"source_file\",\"source_snippet\",\"file_contents\"]");
+            index >> int <- 0;
+            while (index < jsonArrayLen(banned)) {
+                event >> int <- jsonClone(success);
+                key >> int <- jsonArrayGet(banned,index);
+                jsonObjectSet(event,jsonStringView(key,""),jsonNewString("private"));
+                encoded <- jsonStringify(event);
+                checks <- dist_telemetry.distTelemetry.events(encoded);
+                free(cast<byte>(encoded));
+                good <- !tool_cli.toolCli.hasFlag(checks,"never_collects_source") && good;
+                jsonRelease(checks); jsonRelease(event); jsonRelease(key); index += 1;
+            }
+            jsonRelease(banned);
+            println("dist-v42: strict boolean");
+            jsonObjectSet(success,"collects_source_code",jsonNewString("false"));
+            encoded <- jsonStringify(success);
+            checks <- dist_telemetry.distTelemetry.events(encoded);
+            free(cast<byte>(encoded));
+            good <- !tool_cli.toolCli.hasFlag(checks,"never_collects_source") && good;
+            jsonRelease(checks);
+            println("dist-v42: model JSON");
+            doc >> int <- dist_session.distSession.modelJson("banner\n{\"ready\":true}\n");
+            good <- tool_cli.toolCli.hasFlag(doc,"ready") && good;
+            jsonRelease(doc);
+            doc <- dist_session.distSession.modelJson("not JSON");
+            good <- jsonKind(doc) != 6 && good;
+            jsonRelease(doc); jsonRelease(success); jsonRelease(failure);
+            index <- 0;
+            while (index < 10000) {
+                checks <- dist_telemetry.distTelemetry.events(EVENT);
+                good <- tool_cli.toolCli.hasFlag(checks,"never_collects_source") && good;
+                jsonRelease(checks); index += 1;
+            }
+            println("dist-v42: 10000 JSON event validations");
+            println(good ? "PASS: dist-v42 events/privacy/malformed/model checks" : "FAIL: dist-v42 checks");
+            return good ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

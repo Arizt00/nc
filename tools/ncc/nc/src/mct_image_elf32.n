@@ -1,0 +1,522 @@
+use <project:mct, mct_link, mct_image_contract>;
+
+nccMctImageElf32 {
+    const:
+        TARGET_I386 >> int <- 4;
+        TARGET_ARMV7 >> int <- 7;
+        TARGET_RISCV32 >> int <- 8;
+        FORMAT_ELF32 >> int <- 3;
+        ELF_HEADER_BYTES >> int <- 52;
+        PROGRAM_HEADER_BYTES >> int <- 32;
+        SECTION_HEADER_BYTES >> int <- 40;
+        PAGE_BYTES >> int <- 0x1000;
+        TEXT_AT >> int <- 0x1000;
+        DYNAMIC_ENTRIES >> int <- 16;
+        DYNAMIC_BYTES >> int <- DYNAMIC_ENTRIES * 8;
+        SHSTR_BYTES >> int <- 91;
+
+    fn:
+        private:
+            supported(target >> int) -> bool {
+                return target == TARGET_I386 || target == TARGET_ARMV7 ||
+                    target == TARGET_RISCV32;
+            }
+
+            dynamicSupported(target >> int) -> bool {
+                return target == TARGET_I386 || target == TARGET_ARMV7;
+            }
+
+            interpreterBytes(target >> int) -> int {
+                return target == TARGET_ARMV7 ? 25 : 19;
+            }
+
+            writeInterpreter(out >> p<byte>, at >> int, target >> int) -> int {
+                if (target == TARGET_ARMV7)
+                    return mct_image_contract.nccMctImageContract.cstring(
+                        out, at, "/lib/ld-linux-armhf.so.3", 24);
+                return mct_image_contract.nccMctImageContract.cstring(
+                    out, at, "/lib/ld-linux.so.2", 18);
+            }
+
+            machine(target >> int) -> int {
+                if (target == TARGET_ARMV7) return 40;
+                if (target == TARGET_RISCV32) return 243;
+                return 3;
+            }
+
+            machineFlags(target >> int) -> int {
+                if (target == TARGET_ARMV7) return 0x05000000;
+                if (target == TARGET_RISCV32) return 1;
+                return 0;
+            }
+
+            symbolBytes(material >> p<byte>, node >> int) -> int {
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                    material, node);
+                return 11 + ownerBytes + (ownerBytes > 0 ? 1 : 0) +
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node) + 1;
+            }
+
+            writeSymbol(out >> p<byte>, at >> int, material >> p<byte>, node >> int) -> int {
+                cursor >> int <- mct_image_contract.nccMctImageContract.literal(
+                    out, at, "nC.runtime.", 11);
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(material, node);
+                if (ownerBytes > 0) {
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetOwner(material, node),
+                        ownerBytes);
+                    cursor += ownerBytes;
+                    mct_image_contract.nccMctImageContract.put8(out, cursor, 46);
+                    cursor += 1;
+                }
+                nameBytes >> int <- mct.nccMct.artifactRecordTargetNameBytes(material, node);
+                if (nameBytes > 0) {
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetName(material, node),
+                        nameBytes);
+                    cursor += nameBytes;
+                }
+                mct_image_contract.nccMctImageContract.put8(out, cursor, 0);
+                return cursor + 1;
+            }
+
+            dynstrBytes(material >> p<byte>, plan >> p<byte>) -> int {
+                bytes >> int <- 19;
+                index >> int <- 0;
+                while (index < mct_link.nccMctLink.finalPlanProviderCount(plan)) {
+                    node >> int <- mct_link.nccMctLink.finalPlanProviderNode(plan, index);
+                    bytes += symbolBytes(material, node);
+                    index += 1;
+                }
+                return bytes;
+            }
+
+            hashSpan(value >> int, data >> p<byte>, bytes >> int) -> int {
+                at >> int <- 0;
+                hash >> int <- value;
+                while (at < bytes) {
+                    hash <- (hash << 4) + (rd<byte>(off(data, at)) & 255);
+                    high >> int <- hash & 0xF0000000;
+                    if (high != 0) hash <- hash ^ (high >> 24);
+                    hash <- hash & 0x0FFFFFFF;
+                    at += 1;
+                }
+                return hash;
+            }
+
+            symbolHash(material >> p<byte>, node >> int) -> int {
+                hash >> int <- hashSpan(0, cast<byte>("nC.runtime."), 11);
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                    material, node);
+                if (ownerBytes > 0) {
+                    hash <- hashSpan(hash,
+                        mct.nccMct.artifactRecordTargetOwner(material, node), ownerBytes);
+                    dot >> byte <- 46;
+                    hash <- hashSpan(hash, &dot, 1);
+                }
+                return hashSpan(hash, mct.nccMct.artifactRecordTargetName(material, node),
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node));
+            }
+
+            hashBytes(providers >> int) -> int {
+                return 8 + providers * 4 + (providers + 1) * 4;
+            }
+
+            writeNamesSymbolsHash(out >> p<byte>, dynstrAt >> int, dynsymAt >> int,
+                hashAt >> int, material >> p<byte>, plan >> p<byte>) -> void {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                mct_image_contract.nccMctImageContract.put8(out, dynstrAt, 0);
+                cursor >> int <- mct_image_contract.nccMctImageContract.cstring(
+                    out, dynstrAt + 1, "libncruntime.so.2", 17);
+                bucketsAt >> int <- hashAt + 8;
+                chainsAt >> int <- bucketsAt + providers * 4;
+                mct_image_contract.nccMctImageContract.put32(out, hashAt, providers);
+                mct_image_contract.nccMctImageContract.put32(out, hashAt + 4,
+                    providers + 1);
+                index >> int <- 0;
+                while (index < providers) {
+                    node >> int <- mct_link.nccMctLink.finalPlanProviderNode(plan, index);
+                    nameOffset >> int <- cursor - dynstrAt;
+                    cursor <- writeSymbol(out, cursor, material, node);
+                    symbolAt >> int <- dynsymAt + (index + 1) * 16;
+                    mct_image_contract.nccMctImageContract.put32(out, symbolAt, nameOffset);
+                    mct_image_contract.nccMctImageContract.put8(out, symbolAt + 12, 0x12);
+
+                    symbolIndex >> int <- index + 1;
+                    bucket >> int <- symbolHash(material, node) % providers;
+                    first >> int <- rd<int>(off(out, bucketsAt + bucket * 4));
+                    if (first == 0) {
+                        mct_image_contract.nccMctImageContract.put32(out,
+                            bucketsAt + bucket * 4, symbolIndex);
+                    } else {
+                        chain >> int <- first;
+                        while (rd<int>(off(out, chainsAt + chain * 4)) != 0) {
+                            chain <- rd<int>(off(out, chainsAt + chain * 4));
+                        }
+                        mct_image_contract.nccMctImageContract.put32(out,
+                            chainsAt + chain * 4, symbolIndex);
+                    }
+                    index += 1;
+                }
+            }
+
+            writeRel(out >> p<byte>, at >> int, plan >> p<byte>, slotAddress >> int,
+                target >> int) -> void {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                kind >> int <- target == TARGET_ARMV7 ? 22 : 7;
+                index >> int <- 0;
+                while (index < providers) {
+                    relocation >> int <- at + index * 8;
+                    mct_image_contract.nccMctImageContract.put32(out, relocation,
+                        slotAddress + index * 4);
+                    mct_image_contract.nccMctImageContract.put32(out, relocation + 4,
+                        ((index + 1) << 8) | kind);
+                    index += 1;
+                }
+            }
+
+            putDynamic(out >> p<byte>, at >> int, index >> int,
+                tag >> int, value >> int) -> void {
+                entry >> int <- at + index * 8;
+                mct_image_contract.nccMctImageContract.put32(out, entry, tag);
+                mct_image_contract.nccMctImageContract.put32(out, entry + 4, value);
+            }
+
+            writeDynamic(out >> p<byte>, at >> int, dynstrAt >> int, dynstrSize >> int,
+                dynsymAt >> int, hashAt >> int, relAt >> int, relBytes >> int,
+                slotAddress >> int, base >> int) -> void {
+                putDynamic(out, at, 0, 1, 1);
+                putDynamic(out, at, 1, 4, base + hashAt);
+                putDynamic(out, at, 2, 5, base + dynstrAt);
+                putDynamic(out, at, 3, 6, base + dynsymAt);
+                putDynamic(out, at, 4, 10, dynstrSize);
+                putDynamic(out, at, 5, 11, 16);
+                putDynamic(out, at, 6, 3, slotAddress);
+                putDynamic(out, at, 7, 2, relBytes);
+                putDynamic(out, at, 8, 20, 17);
+                putDynamic(out, at, 9, 23, base + relAt);
+                putDynamic(out, at, 10, 17, base + relAt);
+                putDynamic(out, at, 11, 18, relBytes);
+                putDynamic(out, at, 12, 19, 8);
+                putDynamic(out, at, 13, 24, 0);
+                putDynamic(out, at, 14, 30, 8);
+                putDynamic(out, at, 15, 0, 0);
+            }
+
+            writeProgram(out >> p<byte>, at >> int, kind >> int,
+                fileAt >> int, address >> int, fileBytes >> int,
+                memoryBytes >> int, flags >> int, alignment >> int) -> void {
+                mct_image_contract.nccMctImageContract.put32(out, at, kind);
+                mct_image_contract.nccMctImageContract.put32(out, at + 4, fileAt);
+                mct_image_contract.nccMctImageContract.put32(out, at + 8, address);
+                mct_image_contract.nccMctImageContract.put32(out, at + 12, address);
+                mct_image_contract.nccMctImageContract.put32(out, at + 16, fileBytes);
+                mct_image_contract.nccMctImageContract.put32(out, at + 20, memoryBytes);
+                mct_image_contract.nccMctImageContract.put32(out, at + 24, flags);
+                mct_image_contract.nccMctImageContract.put32(out, at + 28, alignment);
+            }
+
+            writeSection(out >> p<byte>, at >> int, name >> int, kind >> int,
+                flags >> int, address >> int, fileAt >> int, bytes >> int,
+                link >> int, info >> int, alignment >> int, entryBytes >> int) -> void {
+                mct_image_contract.nccMctImageContract.put32(out, at, name);
+                mct_image_contract.nccMctImageContract.put32(out, at + 4, kind);
+                mct_image_contract.nccMctImageContract.put32(out, at + 8, flags);
+                mct_image_contract.nccMctImageContract.put32(out, at + 12, address);
+                mct_image_contract.nccMctImageContract.put32(out, at + 16, fileAt);
+                mct_image_contract.nccMctImageContract.put32(out, at + 20, bytes);
+                mct_image_contract.nccMctImageContract.put32(out, at + 24, link);
+                mct_image_contract.nccMctImageContract.put32(out, at + 28, info);
+                mct_image_contract.nccMctImageContract.put32(out, at + 32, alignment);
+                mct_image_contract.nccMctImageContract.put32(out, at + 36, entryBytes);
+            }
+
+            wrapperBytes(target >> int, hasEntry >> bool) -> int {
+                if (target == TARGET_I386) return hasEntry ? 14 : 9;
+                return 12;
+            }
+
+            writeI386Wrapper(out >> p<byte>, at >> int, linked >> int,
+                entry >> int) -> void {
+                cursor >> int <- at;
+                if (entry >= 0) {
+                    mct_image_contract.nccMctImageContract.put8(out, cursor, 0xE8);
+                    mct_image_contract.nccMctImageContract.put32(out, cursor + 1,
+                        entry - (linked + 5));
+                    cursor += 5;
+                    mct_image_contract.nccMctImageContract.put8(out, cursor, 0x89);
+                    mct_image_contract.nccMctImageContract.put8(out, cursor + 1, 0xC3);
+                    cursor += 2;
+                } else {
+                    mct_image_contract.nccMctImageContract.put8(out, cursor, 0x31);
+                    mct_image_contract.nccMctImageContract.put8(out, cursor + 1, 0xDB);
+                    cursor += 2;
+                }
+                mct_image_contract.nccMctImageContract.put8(out, cursor, 0xB8);
+                mct_image_contract.nccMctImageContract.put32(out, cursor + 1, 1);
+                mct_image_contract.nccMctImageContract.put8(out, cursor + 5, 0xCD);
+                mct_image_contract.nccMctImageContract.put8(out, cursor + 6, 0x80);
+            }
+
+            writeArmWrapper(out >> p<byte>, at >> int, linked >> int,
+                entry >> int) -> void {
+                if (entry >= 0) {
+                    delta >> int <- entry - (linked + 8);
+                    mct_image_contract.nccMctImageContract.put32(out, at,
+                        0xEB000000 | ((delta / 4) & 0x00FFFFFF));
+                } else mct_image_contract.nccMctImageContract.put32(out, at, 0xE3A00000);
+                mct_image_contract.nccMctImageContract.put32(out, at + 4, 0xE3A07001);
+                mct_image_contract.nccMctImageContract.put32(out, at + 8, 0xEF000000);
+            }
+
+            riscvJal(delta >> int) -> int {
+                return (((delta >> 20) & 1) << 31) |
+                    (((delta >> 1) & 0x3FF) << 21) |
+                    (((delta >> 11) & 1) << 20) |
+                    (((delta >> 12) & 0xFF) << 12) |
+                    (1 << 7) | 0x6F;
+            }
+
+            writeRiscvWrapper(out >> p<byte>, at >> int, linked >> int,
+                entry >> int) -> void {
+                first >> int <- entry >= 0 ? riscvJal(entry - linked) : 0x00000513;
+                mct_image_contract.nccMctImageContract.put32(out, at, first);
+                mct_image_contract.nccMctImageContract.put32(out, at + 4, 0x05D00893);
+                mct_image_contract.nccMctImageContract.put32(out, at + 8, 0x00000073);
+            }
+
+            writeWrapper(out >> p<byte>, at >> int, target >> int, linked >> int,
+                entry >> int) -> void {
+                if (target == TARGET_I386) { writeI386Wrapper(out, at, linked, entry); return; }
+                if (target == TARGET_ARMV7) { writeArmWrapper(out, at, linked, entry); return; }
+                writeRiscvWrapper(out, at, linked, entry);
+            }
+
+            writeI386Thunks(out >> p<byte>, plan >> p<byte>, base >> int,
+                slotAt >> int) -> void {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                index >> int <- 0;
+                while (index < providers) {
+                    thunk >> int <- TEXT_AT +
+                        mct_link.nccMctLink.finalPlanProviderThunkOffset(plan, index);
+                    mct_image_contract.nccMctImageContract.put8(out, thunk, 0xFF);
+                    mct_image_contract.nccMctImageContract.put8(out, thunk + 1, 0x25);
+                    mct_image_contract.nccMctImageContract.put32(out, thunk + 2,
+                        base + slotAt + index * 4);
+                    mct_image_contract.nccMctImageContract.put8(out, thunk + 6, 0x66);
+                    mct_image_contract.nccMctImageContract.put8(out, thunk + 7, 0x90);
+                    index += 1;
+                }
+            }
+
+            writeArmThunks(out >> p<byte>, plan >> p<byte>, base >> int,
+                slotAt >> int) -> void {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                index >> int <- 0;
+                while (index < providers) {
+                    thunk >> int <- TEXT_AT +
+                        mct_link.nccMctLink.finalPlanProviderThunkOffset(plan, index);
+                    mct_image_contract.nccMctImageContract.put32(out, thunk, 0xE59FC000);
+                    mct_image_contract.nccMctImageContract.put32(out, thunk + 4, 0xE59CF000);
+                    mct_image_contract.nccMctImageContract.put32(out, thunk + 8,
+                        base + slotAt + index * 4);
+                    mct_image_contract.nccMctImageContract.put32(out, thunk + 12,
+                        0xE1A00000);
+                    index += 1;
+                }
+            }
+
+            writeDynamicThunks(out >> p<byte>, plan >> p<byte>, base >> int,
+                slotAt >> int, target >> int) -> void {
+                if (target == TARGET_I386) writeI386Thunks(out, plan, base, slotAt);
+                else if (target == TARGET_ARMV7) writeArmThunks(out, plan, base, slotAt);
+            }
+
+            writeShstr(out >> p<byte>, at >> int) -> void {
+                cursor >> int <- at;
+                mct_image_contract.nccMctImageContract.put8(out, cursor, 0); cursor += 1;
+                cursor <- mct_image_contract.nccMctImageContract.cstring(out, cursor, ".text", 5);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".text.start", 11);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(out, cursor, ".plt", 4);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".got.plt", 8);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".interp", 7);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".dynstr", 7);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".dynsym", 7);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(out, cursor, ".hash", 5);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".rel.plt", 8);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(
+                    out, cursor, ".dynamic", 8);
+                mct_image_contract.nccMctImageContract.cstring(out, cursor, ".shstrtab", 9);
+            }
+
+        public:
+            build(material >> p<byte>, plan >> p<byte>) -> p<byte> {
+                guard material != null && plan != null &&
+                    supported(mct_link.nccMctLink.finalPlanTarget(plan)) &&
+                    mct_link.nccMctLink.finalPlanReady(plan) else return null;
+                target >> int <- mct_link.nccMctLink.finalPlanTarget(plan);
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                dynamic >> bool <- providers > 0;
+                guard !dynamic || dynamicSupported(target) else return null;
+                bodyEntry >> int <- mct_link.nccMctLink.finalPlanEntryOffset(plan);
+                codeBytes >> int <- mct_link.nccMctLink.finalPlanTextBytes(plan);
+                if (dynamic) codeBytes <-
+                    mct_link.nccMctLink.finalPlanProviderThunkOffset(plan, 0) +
+                    providers * mct_link.nccMctLink.finalPlanThunkStride(plan);
+                guard codeBytes > 0 else return null;
+                startBytes >> int <- wrapperBytes(target, bodyEntry >= 0);
+                textEnd >> int <- TEXT_AT + codeBytes + startBytes;
+                phnum >> int <- dynamic ? 5 : 1;
+                guard ELF_HEADER_BYTES + phnum * PROGRAM_HEADER_BYTES <= TEXT_AT else return null;
+
+                interpAt >> int <- 0;
+                dynstrAt >> int <- 0;
+                dynsymAt >> int <- 0;
+                hashAt >> int <- 0;
+                relAt >> int <- 0;
+                slotsAt >> int <- 0;
+                dynamicAt >> int <- 0;
+                roEnd >> int <- textEnd;
+                dataEnd >> int <- textEnd;
+                dynstrSize >> int <- 0;
+                relBytes >> int <- providers * 8;
+                interpBytes >> int <- interpreterBytes(target);
+                if (dynamic) {
+                    interpAt <- mct_image_contract.nccMctImageContract.align(textEnd, PAGE_BYTES);
+                    dynstrAt <- interpAt + interpBytes;
+                    dynstrSize <- dynstrBytes(material, plan);
+                    dynsymAt <- mct_image_contract.nccMctImageContract.align(
+                        dynstrAt + dynstrSize, 4);
+                    hashAt <- mct_image_contract.nccMctImageContract.align(
+                        dynsymAt + (providers + 1) * 16, 4);
+                    relAt <- mct_image_contract.nccMctImageContract.align(
+                        hashAt + hashBytes(providers), 4);
+                    roEnd <- relAt + relBytes;
+                    slotsAt <- mct_image_contract.nccMctImageContract.align(roEnd, PAGE_BYTES);
+                    dynamicAt <- mct_image_contract.nccMctImageContract.align(
+                        slotsAt + providers * 4, 4);
+                    dataEnd <- dynamicAt + DYNAMIC_BYTES;
+                }
+
+                shstrAt >> int <- dataEnd;
+                shoff >> int <- mct_image_contract.nccMctImageContract.align(
+                    shstrAt + SHSTR_BYTES, 4);
+                shnum >> int <- dynamic ? 12 : 4;
+                total >> int <- shoff + shnum * SECTION_HEADER_BYTES;
+                planBase >> int <- mct_link.nccMctLink.finalPlanImageBase(plan);
+                base >> int <- planBase - TEXT_AT;
+                entryAddress >> int <- planBase + codeBytes;
+                image >> p<byte> <- mct_image_contract.nccMctImageContract.make(
+                    FORMAT_ELF32, target, total, entryAddress, providers,
+                    dynamic ? 3 : 1);
+                guard image != null else return null;
+                out >> p<byte> <- mct_image_contract.nccMctImageContract.data(image);
+
+                mct_image_contract.nccMctImageContract.put8(out, 0, 0x7F);
+                mct_image_contract.nccMctImageContract.put8(out, 1, 0x45);
+                mct_image_contract.nccMctImageContract.put8(out, 2, 0x4C);
+                mct_image_contract.nccMctImageContract.put8(out, 3, 0x46);
+                mct_image_contract.nccMctImageContract.put8(out, 4, 1);
+                mct_image_contract.nccMctImageContract.put8(out, 5, 1);
+                mct_image_contract.nccMctImageContract.put8(out, 6, 1);
+                mct_image_contract.nccMctImageContract.put16(out, 16, 2);
+                mct_image_contract.nccMctImageContract.put16(out, 18, machine(target));
+                mct_image_contract.nccMctImageContract.put32(out, 20, 1);
+                mct_image_contract.nccMctImageContract.put32(out, 24, entryAddress);
+                mct_image_contract.nccMctImageContract.put32(out, 28, ELF_HEADER_BYTES);
+                mct_image_contract.nccMctImageContract.put32(out, 32, shoff);
+                mct_image_contract.nccMctImageContract.put32(out, 36, machineFlags(target));
+                mct_image_contract.nccMctImageContract.put16(out, 40, ELF_HEADER_BYTES);
+                mct_image_contract.nccMctImageContract.put16(out, 42, PROGRAM_HEADER_BYTES);
+                mct_image_contract.nccMctImageContract.put16(out, 44, phnum);
+                mct_image_contract.nccMctImageContract.put16(out, 46, SECTION_HEADER_BYTES);
+                mct_image_contract.nccMctImageContract.put16(out, 48, shnum);
+                mct_image_contract.nccMctImageContract.put16(out, 50, shnum - 1);
+
+                programAt >> int <- ELF_HEADER_BYTES;
+                writeProgram(out, programAt, 1, 0, base, textEnd, textEnd, 5, PAGE_BYTES);
+                programAt += PROGRAM_HEADER_BYTES;
+                if (dynamic) {
+                    writeProgram(out, programAt, 1, interpAt, base + interpAt,
+                        roEnd - interpAt, roEnd - interpAt, 4, PAGE_BYTES);
+                    programAt += PROGRAM_HEADER_BYTES;
+                    writeProgram(out, programAt, 1, slotsAt, base + slotsAt,
+                        dataEnd - slotsAt, dataEnd - slotsAt, 6, PAGE_BYTES);
+                    programAt += PROGRAM_HEADER_BYTES;
+                    writeProgram(out, programAt, 3, interpAt, base + interpAt,
+                        interpBytes, interpBytes, 4, 1);
+                    programAt += PROGRAM_HEADER_BYTES;
+                    writeProgram(out, programAt, 2, dynamicAt, base + dynamicAt,
+                        DYNAMIC_BYTES, DYNAMIC_BYTES, 6, 4);
+                }
+
+                cp(off(out, TEXT_AT), mct_link.nccMctLink.finalPlanData(plan), codeBytes);
+                if (dynamic) writeDynamicThunks(out, plan, base, slotsAt, target);
+                writeWrapper(out, TEXT_AT + codeBytes, target, codeBytes, bodyEntry);
+                if (dynamic) {
+                    writeInterpreter(out, interpAt, target);
+                    writeNamesSymbolsHash(out, dynstrAt, dynsymAt, hashAt, material, plan);
+                    writeRel(out, relAt, plan, base + slotsAt, target);
+                    writeDynamic(out, dynamicAt, dynstrAt, dynstrSize, dynsymAt, hashAt,
+                        relAt, relBytes, base + slotsAt, base);
+                }
+                writeShstr(out, shstrAt);
+
+                sectionAt >> int <- shoff + SECTION_HEADER_BYTES;
+                writeSection(out, sectionAt, 1, 1, 6, planBase, TEXT_AT,
+                    mct_link.nccMctLink.finalPlanTextBytes(plan), 0, 0, 16, 0);
+                sectionAt += SECTION_HEADER_BYTES;
+                writeSection(out, sectionAt, 7, 1, 6, entryAddress,
+                    TEXT_AT + codeBytes, startBytes, 0, 0, 4, 0);
+                sectionAt += SECTION_HEADER_BYTES;
+                if (dynamic) {
+                    thunkOffset >> int <-
+                        mct_link.nccMctLink.finalPlanProviderThunkOffset(plan, 0);
+                    writeSection(out, sectionAt, 19, 1, 6, planBase + thunkOffset,
+                        TEXT_AT + thunkOffset,
+                        providers * mct_link.nccMctLink.finalPlanThunkStride(plan),
+                        0, 0, 16, 16);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 24, 1, 3, base + slotsAt, slotsAt,
+                        providers * 4, 0, 0, 4, 4);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 33, 1, 2, base + interpAt, interpAt,
+                        interpBytes, 0, 0, 1, 0);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 41, 3, 2, base + dynstrAt, dynstrAt,
+                        dynstrSize, 0, 0, 1, 0);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 49, 11, 2, base + dynsymAt, dynsymAt,
+                        (providers + 1) * 16, 6, 1, 4, 16);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 57, 5, 2, base + hashAt, hashAt,
+                        hashBytes(providers), 7, 0, 4, 4);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 63, 9, 2, base + relAt, relAt,
+                        relBytes, 7, 4, 4, 8);
+                    sectionAt += SECTION_HEADER_BYTES;
+                    writeSection(out, sectionAt, 72, 6, 3, base + dynamicAt, dynamicAt,
+                        DYNAMIC_BYTES, 6, 0, 4, 8);
+                    sectionAt += SECTION_HEADER_BYTES;
+                }
+                writeSection(out, sectionAt, 81, 3, 0, 0, shstrAt,
+                    SHSTR_BYTES, 0, 0, 1, 0);
+                return mct_image_contract.nccMctImageContract.finish(image);
+            }
+
+            selfTest() -> bool {
+                return TARGET_I386 == 4 && TARGET_ARMV7 == 7 && TARGET_RISCV32 == 8 &&
+                    FORMAT_ELF32 == 3 && ELF_HEADER_BYTES == 52 &&
+                    PROGRAM_HEADER_BYTES == 32 && SECTION_HEADER_BYTES == 40 &&
+                    ELF_HEADER_BYTES + 5 * PROGRAM_HEADER_BYTES < TEXT_AT &&
+                    SHSTR_BYTES == 91 && interpreterBytes(TARGET_I386) == 19 &&
+                    interpreterBytes(TARGET_ARMV7) == 25;
+            }
+
+    fa:
+        return true;
+}

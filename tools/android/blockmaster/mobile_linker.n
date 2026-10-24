@@ -1,0 +1,41 @@
+use <io:output>;
+use <process:args, env>;
+use <data:json>;
+use <project:tool_cli, release_io>;
+
+mobileLinker {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            words >> int <- jsonNewArray();
+            windows >> bool <- envHas("WINDIR");
+            executable >> str <- windows ? "C:/msys64/mingw64/bin/gcc.exe" : "/usr/bin/gcc";
+            if (envHas("NC_MOBILE_CC")) {
+                data >> p<byte> <- cast(alloc(32768));
+                guard data != null else return 2;
+                count >> int <- envGet("NC_MOBILE_CC",adr(data),32767);
+                if (count <= 0 || count > 32767) { free(data); return 2; }
+                wr(off(data,count),0); executable <- cast(data);
+            }
+            tool_cli.toolCli.append(words,executable);
+            index >> int <- 1;
+            while (index < argsCount(arguments)) {
+                tool_cli.toolCli.append(words,argsAt(arguments,index)); index += 1;
+            }
+            tool_cli.toolCli.append(words,"-lssl"); tool_cli.toolCli.append(words,"-lcrypto");
+            if (windows) {
+                tool_cli.toolCli.append(words,"-lws2_32"); tool_cli.toolCli.append(words,"-lbcrypt");
+                tool_cli.toolCli.append(words,"-lshell32");
+                tool_cli.toolCli.append(words,"-Wl,--defsym,__chkstk=___chkstk_ms");
+            }
+            result >> int <- tool_cli.toolCli.execute(words,".",600000);
+            stdout >> str <- release_io.releaseIo.field(result,"stdout");
+            stderr >> str <- release_io.releaseIo.field(result,"stderr");
+            print(stdout); print(stderr); strRelease(stdout); strRelease(stderr);
+            code >> int <- release_io.releaseIo.number(result,"code",1);
+            if (!tool_cli.toolCli.hasFlag(result,"capture_ok") && code == 0) code <- 1;
+            jsonRelease(result); jsonRelease(words); argsRelease(arguments); return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

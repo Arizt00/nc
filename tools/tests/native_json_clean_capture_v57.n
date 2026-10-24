@@ -1,0 +1,35 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonCleanCaptureV57 {
+    cleanCapture(row >> int) -> bool {
+        timed >> int <- jsonObjectGet(row,"timed_out");
+        truncated >> int <- jsonObjectGet(row,"truncated");
+        result >> bool <- !jsonGetBoolOr(timed,true) && !jsonGetBoolOr(truncated,true);
+        jsonRelease(timed); jsonRelease(truncated);
+        return result;
+    }
+    attach(row >> int, key >> str, flag >> bool) -> bool {
+        node >> int <- jsonNewBool(flag);
+        result >> bool <- node > 0 && jsonObjectSet(row,key,node);
+        jsonRelease(node); return result;
+    }
+    run() -> int {
+        row >> int <- jsonNewObject(); guard row > 0 else return 1;
+        guard !cleanCapture(row) && attach(row,"timed_out",false) && !cleanCapture(row) else return 2;
+        guard attach(row,"truncated",false) && cleanCapture(row) else return 3;
+        guard attach(row,"timed_out",true) && !cleanCapture(row) else return 4;
+        guard attach(row,"timed_out",false) && attach(row,"truncated",true) && !cleanCapture(row) else return 5;
+        guard attach(row,"truncated",false) && cleanCapture(row) else return 6;
+        wrong >> int <- jsonNewInt(0);
+        guard jsonObjectSet(row,"truncated",wrong) else return 7;
+        jsonRelease(wrong); guard !cleanCapture(row) else return 8;
+        guard attach(row,"truncated",false) && cleanCapture(row) else return 9;
+        encoded >> str <- jsonStringify(row); guard encoded != null else return 10;
+        println(encoded);
+        guard strRelease(encoded) && jsonRelease(row) else return 11;
+        return 141;
+    }
+    ref main ->> run;
+    fa: return true;
+}

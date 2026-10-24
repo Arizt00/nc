@@ -1,0 +1,94 @@
+use <data:json>;
+use <io:output>;
+use <process:args, env>;
+use <project:release_io, tool_cli>;
+
+distFixtureV42 {
+    const:
+        TARGET >> str <- "x86_64-unknown-linux-gnu";
+        EVENT >> str <- "{\"schema\":\"ncup.telemetry.event.v1\",\"version\":1,\"timestamp_epoch\":1,\"event\":\"install\",\"command\":\"install\",\"status\":\"success\",\"ncup_version\":\"2.0.0\",\"target\":\"x86_64-unknown-linux-gnu\",\"collects_source_code\":false}";
+    fn:
+        private:
+            fault(name >> str) -> bool { return envGet("DIST_V42_"+name,null,0) > 0; }
+            event(home >> str, failed >> bool) -> void {
+                path >> str <- home+"/logs/telemetry-events.v1.ndjson";
+                previous >> str <- release_io.releaseIo.text(path);
+                model >> int <- jsonParse(EVENT);
+                if (failed) jsonObjectSet(model,"status",jsonNewString("failure"));
+                if (fault("SOURCE")) jsonObjectSet(model,"source_code",jsonNewString("private"));
+                if (fault("SCHEMA")) jsonObjectSet(model,"schema",jsonNewString("invalid"));
+                owned >> str <- jsonStringify(model);
+                value >> str <- owned;
+                if (fault("MALFORMED")) value <- "{bad";
+                if (!fault("NOEVENT")) release_io.releaseIo.write(path,previous+value+"\n");
+                free(cast<byte>(owned));
+                jsonRelease(model);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                command >> str <- argsAt(arguments,1);
+                home >> str <- release_io.releaseIo.option(arguments,"--home","");
+                if (command == "build") return 0;
+                if (command == "phase10-toolchain-model") {
+                    if (fault("MODEL")) println("not JSON");
+                    else println("fixture banner\n{\"toolchains\":[{\"id\":\"stable-x86_64-unknown-linux-gnu\"}]}");
+                    return 0;
+                }
+                if (command == "ncup") {
+                    action >> str <- argsAt(arguments,2);
+                    if (fault("EXIT")) return 23;
+                    if (action == "init") {
+                        if (!release_io.releaseIo.write(home+"/enabled","false")) return 22;
+                        println("{}"); return 0;
+                    }
+                    if (action == "telemetry") {
+                        action <- argsAt(arguments,3);
+                        if (action == "enable" || action == "disable") {
+                            if (!release_io.releaseIo.write(home+"/enabled",action == "enable" ? "true" : "false")) return 22;
+                        }
+                        enabled >> bool <- release_io.releaseIo.text(home+"/enabled") == "true" || fault("OPTIN");
+                        println(enabled ? "{\"enabled\":true}" : "{\"enabled\":false}"); return 0;
+                    }
+                    if (action == "install") { event(home,false); return 0; }
+                    if (action == "toolchain" && argsAt(arguments,3) == "install") {
+                        id >> str <- argsAt(arguments,4);
+                        blocked >> bool <- release_io.releaseIo.fileType(home+"/toolchains/"+id+"/bin") == 1;
+                        if (blocked) event(home,true);
+                        if (fault("UNEXPECTED_SUCCESS")) return 0;
+                        println(blocked ? "blocked bin" : "missing injection");
+                        return blocked ? 1 : 0;
+                    }
+                    return 24;
+                }
+                if (strEndsWith(command,"run_phase10_external_publish_matrix_v2_0_0.sh")) {
+                    report >> str <- release_io.releaseIo.option(arguments,"--report","");
+                    release_io.releaseIo.write(report,fault("PUBLISH") ? "{\"status\":\"error\"}" : "{\"status\":\"partial\"}");
+                    return 0;
+                }
+                if (strEndsWith(command,"render_phase10_external_publish_env_v2_0_0.sh")) {
+                    path >> str <- release_io.releaseIo.option(arguments,"--out","");
+                    content >> str <- "run_phase10_external_publish_matrix_v2_0_0.sh --runner linux\nwingetcreate submit\nreprepro -b\ncreaterepo_c\ngit -C\nNC_BREW_TAP_REPO\n";
+                    if (fault("TEMPLATE")) content <- "incomplete";
+                    release_io.releaseIo.write(path,content); return 0;
+                }
+                if (strEndsWith(command,"smoke_phase10_clean_machine_matrix_v2_0_0.sh")) {
+                    release_io.releaseIo.makeDirectories(home);
+                    release_io.releaseIo.makeDirectories(release_io.releaseIo.option(arguments,"--work",""));
+                    report >> str <- release_io.releaseIo.option(arguments,"--report","");
+                    release_io.releaseIo.write(report,fault("SMOKE") ? "{\"status\":\"partial\"}" : "{\"status\":\"ok\"}");
+                    return fault("SMOKE_EXIT") ? 9 : 0;
+                }
+                if (strEndsWith(command,"build_phase10_distribution_os_v2_0_0.sh")) {
+                    release_io.releaseIo.makeDirectories("var/releases/v2_0_0/phase10_p3_dist"); return 0;
+                }
+                if (command == "release-notes") {
+                    release_io.releaseIo.write("docs/spec/release/v2_0_0_release_notes.md","fixture notes\n");
+                    release_io.releaseIo.write("docs/spec/release/v2_0_0_release_announcement.md","fixture announcement\n");
+                    return fault("NOTES") ? 7 : 0;
+                }
+                return 25;
+            }
+    ref main ->> run;
+    fa: return true;
+}

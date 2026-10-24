@@ -1,0 +1,413 @@
+use <io:output, render>;
+use <project:ir, mct, sema, diagnostics>;
+
+nccMctPdb {
+    const:
+        BLOCK_BYTES >> int <- 4096;
+        BLOCKS >> int <- 11;
+        FILE_BYTES >> int <- 45056;
+        DIRECTORY_BYTES >> int <- 60;
+        STREAMS >> int <- 8;
+        DIRECTORY_BLOCK >> int <- 10;
+
+        STREAM_PDB >> int <- 1;
+        STREAM_TPI >> int <- 2;
+        STREAM_DBI >> int <- 3;
+        STREAM_IPI >> int <- 4;
+        STREAM_LINK_INFO >> int <- 5;
+        STREAM_MODULE >> int <- 6;
+        STREAM_NAMES >> int <- 7;
+
+        PDB_BLOCK >> int <- 9;
+        TPI_BLOCK >> int <- 4;
+        DBI_BLOCK >> int <- 6;
+        IPI_BLOCK >> int <- 8;
+        MODULE_BLOCK >> int <- 5;
+        NAMES_BLOCK >> int <- 7;
+
+        PDB_BYTES >> int <- 89;
+        TPI_BYTES >> int <- 56;
+        DBI_BYTES >> int <- 207;
+        IPI_BYTES >> int <- 56;
+        MODULE_BYTES >> int <- 72;
+        NAMES_BYTES >> int <- 25;
+
+        PDB_VERSION_VC70 >> int <- 20000404;
+        TPI_VERSION_V80 >> int <- 20040203;
+        DBI_VERSION_V70 >> int <- 19990903;
+        DBI_BUILD >> int <- 36363;
+        MACHINE_AMD64 >> int <- 0x8664;
+
+    type:
+        PdbContract {
+            public:
+                bytes >> int;
+                blocks >> int;
+                streams >> int;
+                signature >> int;
+                hash >> int;
+                modules >> int;
+        }
+
+    stc:
+        materializations >> u64 <- 0;
+        materialBytes >> u64 <- 0;
+
+    local:
+        lastSignature >> int <- 0;
+        lastHash >> int <- 0;
+        lastBytes >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putU16(base >> p<byte>, at >> int, value >> int) -> void {
+                normalized >> int <- value;
+                if (normalized < 0) normalized += 65536;
+                high >> int <- 0;
+                while (normalized >= 256) {
+                    normalized -= 256;
+                    high += 1;
+                }
+                wr<byte>(off(base, at), normalized == 255 ? -1 : normalized);
+                wr<byte>(off(base, at + 1), high == 255 ? -1 : high);
+            }
+
+            putU32(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            zero(base >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) {
+                    wr<byte>(off(base, at), 0);
+                    at += 1;
+                }
+            }
+
+            copyText(base >> p<byte>, at >> int, value >> str) -> int {
+                source >> p<byte> <- cast<byte>(value);
+                count >> int <- 0;
+                while (rd<byte>(off(source, count)) != 0) {
+                    wr<byte>(off(base, at + count), rd<byte>(off(source, count)));
+                    count += 1;
+                }
+                return count;
+            }
+
+            unsignedByte(value >> int) -> int {
+                return value < 0 ? value + 256 : value;
+            }
+
+            hash(base >> p<byte>, bytes >> int) -> int {
+                value >> int <- 130363;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value <- (value + unsignedByte(rd<byte>(off(base, at))) *
+                        ((at % 251) + 1) + at * 31) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            block(base >> p<byte>, index >> int) -> p<byte> {
+                return off(base, index * BLOCK_BYTES);
+            }
+
+            writeSuperBlock(blob >> p<byte>) -> void {
+                copyText(blob, 0, "Microsoft C/C++ MSF 7.00");
+                wr<byte>(off(blob, 24), 13);
+                wr<byte>(off(blob, 25), 10);
+                wr<byte>(off(blob, 26), 26);
+                wr<byte>(off(blob, 27), 68);
+                wr<byte>(off(blob, 28), 83);
+                putU32(blob, 32, BLOCK_BYTES);
+                putU32(blob, 36, 2);
+                putU32(blob, 40, BLOCKS);
+                putU32(blob, 44, DIRECTORY_BYTES);
+                putU32(blob, 48, 0);
+                putU32(blob, 52, 3);
+            }
+
+            writeFreePageMaps(blob >> p<byte>) -> void {
+                at >> int <- 0;
+                while (at < BLOCK_BYTES) {
+                    wr<byte>(off(block(blob, 1), at), -1);
+                    wr<byte>(off(block(blob, 2), at), -1);
+                    at += 1;
+                }
+                wr<byte>(block(blob, 2), 0);
+                wr<byte>(off(block(blob, 2), 1), 248);
+            }
+
+            writePdbStream(blob >> p<byte>, signature >> int) -> void {
+                out >> p<byte> <- block(blob, PDB_BLOCK);
+                putU32(out, 0, PDB_VERSION_VC70);
+                putU32(out, 4, signature);
+                putU32(out, 8, 1);
+                putU32(out, 12, signature);
+                putU32(out, 16, signature ^ 0x4E435042);
+                putU32(out, 20, signature ^ 0x32475453);
+                putU32(out, 24, signature ^ 0x4244504E);
+                putU32(out, 28, 17);
+                copyText(out, 32, "/LinkInfo");
+                copyText(out, 42, "/names");
+                putU32(out, 49, 2);
+                putU32(out, 53, 4);
+                putU32(out, 57, 1);
+                putU32(out, 61, 6);
+                putU32(out, 65, 0);
+                putU32(out, 69, 10);
+                putU32(out, 73, STREAM_NAMES);
+                putU32(out, 77, 0);
+                putU32(out, 81, STREAM_LINK_INFO);
+                putU32(out, 85, 0);
+            }
+
+            writeTypeStream(blob >> p<byte>, blockIndex >> int) -> void {
+                out >> p<byte> <- block(blob, blockIndex);
+                putU32(out, 0, TPI_VERSION_V80);
+                putU32(out, 4, 56);
+                putU32(out, 8, 0x1000);
+                putU32(out, 12, 0x1000);
+                putU32(out, 16, 0);
+                putU16(out, 20, 0xFFFF);
+                putU16(out, 22, 0xFFFF);
+                putU32(out, 24, 4);
+                putU32(out, 28, 0x3FFFF);
+            }
+
+            writeNamesAt(out >> p<byte>, at >> int) -> void {
+                putU32(out, at, 0xEFFEEFFE);
+                putU32(out, at + 4, 1);
+                putU32(out, at + 8, 1);
+                wr<byte>(off(out, at + 12), 0);
+                putU32(out, at + 13, 1);
+            }
+
+            writeNamesStream(blob >> p<byte>) -> void {
+                writeNamesAt(block(blob, NAMES_BLOCK), 0);
+            }
+
+            writeModuleStream(blob >> p<byte>) -> void {
+                out >> p<byte> <- block(blob, MODULE_BLOCK);
+                putU32(out, 0, 4);
+                putU16(out, 4, 22);
+                putU16(out, 6, 0x1101);
+                putU32(out, 8, 0);
+                copyText(out, 12, "nC-stage2.obj");
+                putU16(out, 28, 38);
+                putU16(out, 30, 0x113C);
+                putU32(out, 32, 0);
+                putU16(out, 36, 0xD0);
+                putU16(out, 38, 2);
+                putU16(out, 40, 0);
+                putU16(out, 42, 2);
+                putU16(out, 44, 0);
+                putU16(out, 46, 2);
+                putU16(out, 48, 0);
+                putU16(out, 50, 2);
+                putU16(out, 52, 0);
+                copyText(out, 54, "nC MCT Stage2");
+            }
+
+            writeDbiStream(blob >> p<byte>) -> void {
+                out >> p<byte> <- block(blob, DBI_BLOCK);
+                putU32(out, 0, -1);
+                putU32(out, 4, DBI_VERSION_V70);
+                putU32(out, 8, 1);
+                putU16(out, 12, 0xFFFF);
+                putU16(out, 14, DBI_BUILD);
+                putU16(out, 16, 0xFFFF);
+                putU16(out, 18, 0);
+                putU16(out, 20, 0xFFFF);
+                putU16(out, 22, 0);
+                putU32(out, 24, 88);
+                putU32(out, 28, 0);
+                putU32(out, 32, 0);
+                putU32(out, 36, 8);
+                putU32(out, 40, 0);
+                putU32(out, 44, 0);
+                putU32(out, 48, 22);
+                putU32(out, 52, NAMES_BYTES);
+                putU16(out, 56, 0);
+                putU16(out, 58, MACHINE_AMD64);
+                putU32(out, 60, 0);
+
+                putU16(out, 96, 0);
+                putU16(out, 98, STREAM_MODULE);
+                putU32(out, 100, MODULE_BYTES - 4);
+                putU32(out, 104, 0);
+                putU32(out, 108, 0);
+                putU16(out, 112, 0);
+                putU32(out, 116, 0);
+                putU32(out, 120, 0);
+                putU32(out, 124, 0);
+                copyText(out, 128, "nC-stage2");
+                copyText(out, 138, "nC-stage2.obj");
+
+                putU16(out, 152, 1);
+                putU16(out, 154, 0);
+                putU16(out, 156, 0);
+                putU16(out, 158, 0);
+                writeNamesAt(out, 160);
+                at >> int <- 185;
+                while (at < DBI_BYTES) {
+                    wr<byte>(off(out, at), -1);
+                    at += 1;
+                }
+            }
+
+            writeDirectory(blob >> p<byte>) -> void {
+                out >> p<byte> <- block(blob, DIRECTORY_BLOCK);
+                putU32(block(blob, 3), 0, DIRECTORY_BLOCK);
+                putU32(out, 0, STREAMS);
+                putU32(out, 4, 0);
+                putU32(out, 8, PDB_BYTES);
+                putU32(out, 12, TPI_BYTES);
+                putU32(out, 16, DBI_BYTES);
+                putU32(out, 20, IPI_BYTES);
+                putU32(out, 24, 0);
+                putU32(out, 28, MODULE_BYTES);
+                putU32(out, 32, NAMES_BYTES);
+                putU32(out, 36, PDB_BLOCK);
+                putU32(out, 40, TPI_BLOCK);
+                putU32(out, 44, DBI_BLOCK);
+                putU32(out, 48, IPI_BLOCK);
+                putU32(out, 52, MODULE_BLOCK);
+                putU32(out, 56, NAMES_BLOCK);
+            }
+
+            valid(blob >> p<byte>) -> bool {
+                guard blob != null else return false;
+                return rd<byte>(blob) == 77 && rd<byte>(off(blob, 1)) == 105 &&
+                    integer(blob, 32) == BLOCK_BYTES && integer(blob, 40) == BLOCKS &&
+                    integer(blob, 44) == DIRECTORY_BYTES && integer(blob, 52) == 3 &&
+                    integer(block(blob, 3), 0) == DIRECTORY_BLOCK &&
+                    integer(block(blob, DIRECTORY_BLOCK), 0) == STREAMS &&
+                    integer(block(blob, PDB_BLOCK), 0) == PDB_VERSION_VC70 &&
+                    integer(block(blob, TPI_BLOCK), 0) == TPI_VERSION_V80 &&
+                    integer(block(blob, DBI_BLOCK), 4) == DBI_VERSION_V70 &&
+                    integer(block(blob, IPI_BLOCK), 0) == TPI_VERSION_V80;
+            }
+
+            emitReport(blob >> p<byte>, signature >> int,
+                checksum >> int, json >> bool) -> bool {
+                if (!json) {
+                    print("PDB MSF7 bytes="); print(renderInt(FILE_BYTES));
+                    print(" blocks="); print(renderInt(BLOCKS));
+                    print(" streams="); print(renderInt(STREAMS));
+                    print(" signature="); print(renderInt(signature));
+                    print(" hash="); println(renderInt(checksum));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.pdb-msf7.v1\"");
+                print(",\"format\":\"pdb-msf7\"");
+                print(",\"target\":\"x86_64-pc-windows-msvc\"");
+                print(",\"block_bytes\":"); print(renderInt(BLOCK_BYTES));
+                print(",\"blocks\":"); print(renderInt(BLOCKS));
+                print(",\"streams\":"); print(renderInt(STREAMS));
+                print(",\"pdb_stream_bytes\":"); print(renderInt(PDB_BYTES));
+                print(",\"tpi_stream_bytes\":"); print(renderInt(TPI_BYTES));
+                print(",\"dbi_stream_bytes\":"); print(renderInt(DBI_BYTES));
+                print(",\"ipi_stream_bytes\":"); print(renderInt(IPI_BYTES));
+                print(",\"module_stream_bytes\":"); print(renderInt(MODULE_BYTES));
+                print(",\"named_streams\":2");
+                print(",\"modules\":1");
+                print(",\"signature\":"); print(renderInt(signature));
+                print(",\"bytes\":"); print(renderInt(FILE_BYTES));
+                print(",\"hash\":"); print(renderInt(checksum));
+                println("}");
+                return true;
+            }
+
+        public:
+            build(material >> p<byte>) -> p<byte> {
+                guard material != null && mct.nccMct.artifactTarget(material) == 2 else return null;
+                blob >> p<byte> <- cast<byte>(alloc(FILE_BYTES));
+                guard blob != null else return null;
+                zero(blob, FILE_BYTES);
+                signature >> int <- mct.nccMct.artifactFingerprint(material);
+                writeSuperBlock(blob);
+                writeFreePageMaps(blob);
+                writePdbStream(blob, signature);
+                writeTypeStream(blob, TPI_BLOCK);
+                writeDbiStream(blob);
+                writeTypeStream(blob, IPI_BLOCK);
+                writeModuleStream(blob);
+                writeNamesStream(blob);
+                writeDirectory(blob);
+                materializations += 1;
+                materialBytes += FILE_BYTES;
+                lastSignature <- signature;
+                lastHash <- hash(blob, FILE_BYTES);
+                lastBytes <- FILE_BYTES;
+                return blob;
+            }
+
+            bytes(blob >> p<byte>) -> int { return blob == null ? 0 : FILE_BYTES; }
+            signature(blob >> p<byte>) -> int {
+                return blob == null ? 0 : integer(block(blob, PDB_BLOCK), 4);
+            }
+            checksum(blob >> p<byte>) -> int {
+                return blob == null ? 0 : hash(blob, FILE_BYTES);
+            }
+            release(blob >> p<byte>) -> void { if (blob != null) free(blob); }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target != 2) return diagnostics.nccDiagnostics.emitMctPdbTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                materialSignature >> int <- signature(blob);
+                materialHash >> int <- checksum(blob);
+                if (output != "" && fsWriteFrom(output, blob, FILE_BYTES, false) != FILE_BYTES) {
+                    release(blob); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitReport(blob, materialSignature, materialHash, json);
+                code >> int <- valid(blob) ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return code;
+            }
+
+            checkFile(path >> str, expectedSignature >> int, expectedHash >> int) -> int {
+                targetName >> str <- "x86_64-pc-windows-msvc";
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                ok >> bool <- valid(blob) && bytes(blob) == FILE_BYTES &&
+                    signature(blob) == expectedSignature && checksum(blob) == expectedHash;
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                return BLOCK_BYTES == 4096 && BLOCKS == 11 && FILE_BYTES == 45056 &&
+                    DIRECTORY_BYTES == 60 && STREAMS == 8 &&
+                    PDB_VERSION_VC70 == 20000404 && TPI_VERSION_V80 == 20040203 &&
+                    DBI_VERSION_V70 == 19990903 && MACHINE_AMD64 == 0x8664;
+            }
+
+    fa:
+        return true;
+}

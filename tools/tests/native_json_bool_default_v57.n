@@ -1,0 +1,43 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonBoolDefaultV57 {
+    const:
+        ROUNDS >> int <- 512;
+    defaultBoth(handle >> int) -> bool {
+        return jsonGetBoolOr(handle,true) && !jsonGetBoolOr(handle,false);
+    }
+    value(handle >> int, fallback >> bool) -> bool {
+        return jsonGetBoolOr(handle,fallback);
+    }
+    run() -> int {
+        yes >> int <- jsonNewBool(true);
+        no >> int <- jsonNewBool(false);
+        number >> int <- jsonNewInt(1);
+        text >> int <- jsonNewString("true");
+        empty >> int <- jsonNewNull();
+        array >> int <- jsonNewArray();
+        object >> int <- jsonNewObject();
+        guard yes > 0 && no > 0 && number > 0 && text > 0 && empty > 0 && array > 0 && object > 0 else return 1;
+        guard value(yes,false) && value(yes,true) && !value(no,false) && !value(no,true) else return 2;
+        guard defaultBoth(number) && defaultBoth(text) && defaultBoth(empty) && defaultBoth(array) && defaultBoth(object) else return 3;
+        guard defaultBoth(0) && defaultBoth(-1) && defaultBoth(2147483647) else return 4;
+        at >> int <- 0;
+        while (at < ROUNDS) {
+            flag >> bool <- (at & 1) == 0;
+            node >> int <- jsonNewBool(flag);
+            guard node > 0 && value(node,!flag) == flag else return 5;
+            guard jsonRelease(node) && defaultBoth(node) else return 6;
+            at += 1;
+        }
+        guard jsonGetBoolOr(yes,jsonGetBoolOr(no,true)) && !jsonGetBoolOr(no,jsonGetBoolOr(yes,false)) else return 7;
+        guard jsonGetBoolOr(0,jsonGetBoolOr(yes,false)) && !jsonGetBoolOr(0,jsonGetBoolOr(no,true)) else return 8;
+        guard jsonKind(yes) == 2 && jsonKind(no) == 2 && jsonKind(number) == 3 && jsonGetInt(number) == 1 else return 9;
+        guard jsonRelease(yes) && jsonRelease(no) && jsonRelease(number) && jsonRelease(text) &&
+            jsonRelease(empty) && jsonRelease(array) && jsonRelease(object) else return 10;
+        println("json bool defaults ok");
+        return 140;
+    }
+    ref main ->> run;
+    fa: return true;
+}

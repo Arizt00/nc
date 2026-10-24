@@ -1,0 +1,47 @@
+
+timeFsHost {
+    fn:
+        private:
+            wide(path >> str) -> p<u16> {
+                if (cast<byte>(path) == null) { osWSetLastError(87); return null; }
+                count >> int <- osWMultiByteToWideChar(65001,8,adr(path),-1,null,0);
+                if (count <= 0) return null;
+                text >> p<u16> <- cast<u16>(alloc(count*2));
+                if (text == null) { osWSetLastError(8); return null; }
+                if (osWMultiByteToWideChar(65001,8,adr(path),-1,adr(text),count) != count) {
+                    error >> u32 <- osWGetLastError(); free(text); osWSetLastError(error); return null;
+                }
+                return text;
+            }
+        public:
+            sleepMilliseconds(milliseconds >> int) -> void {
+                if (milliseconds > 0) osWSleep(milliseconds);
+            }
+            monotonicMilliseconds() -> int { return osWGetTickCount64(); }
+            removeDirectory(path >> str) -> bool {
+                text >> p<u16> <- wide(path);
+                if (text == null) return false;
+                ok >> bool <- osWRemoveDirectoryW(adr(text)) != 0;
+                error >> u32 <- ok ? 0 : osWGetLastError();
+                free(text); osWSetLastError(error); return ok;
+            }
+            deleteFile(path >> str) -> bool {
+                text >> p<u16> <- wide(path);
+                if (text == null) return false;
+                ok >> bool <- osWDeleteFileW(adr(text)) != 0;
+                error >> u32 <- ok ? 0 : osWGetLastError();
+                free(text); osWSetLastError(error); return ok;
+            }
+            renameFile(source >> str, destination >> str) -> bool {
+                fromPath >> p<u16> <- wide(source);
+                if (fromPath == null) return false;
+                toPath >> p<u16> <- wide(destination);
+                if (toPath == null) {
+                    error >> u32 <- osWGetLastError(); free(fromPath); osWSetLastError(error); return false;
+                }
+                ok >> bool <- osWMoveFileExW(adr(fromPath),adr(toPath),1) != 0;
+                error >> u32 <- ok ? 0 : osWGetLastError();
+                free(fromPath); free(toPath); osWSetLastError(error); return ok;
+            }
+    fa: return true;
+}

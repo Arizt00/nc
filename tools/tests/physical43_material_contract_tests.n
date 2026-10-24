@@ -1,0 +1,203 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_common, physical43_stages, release_io, tool_cli>;
+
+physical43MaterialContractTests {
+    stc:
+        checks >> int;
+        passed >> bool <- true;
+        repo >> str;
+        work >> str;
+    fn:
+        private:
+            put(model >> int, key >> str, value >> int) -> void {
+                physical43_common.physical43Common.put(model,key,value);
+            }
+            field(model >> int, key >> str) -> str {
+                return physical43_common.physical43Common.field(model,key);
+            }
+            check(name >> str, good >> bool) -> void {
+                row >> int <- jsonNewObject();
+                put(row,"name",jsonNewString(name));
+                put(row,"passed",jsonNewBool(good));
+                physical43_common.physical43Common.push(checks,row);
+                if (!good) { passed <- false; println("FAIL "+name+": "+physical43_common.physical43Common.diagnostic()); }
+                physical43_common.physical43Common.reset();
+            }
+            native(path >> str) -> str { return physical43_common.physical43Common.nativePath(path); }
+            write(path >> str, text >> str) -> void {
+                check("write "+path,physical43_common.physical43Common.writeText(path,text));
+            }
+            material(path >> str, format >> str, size >> int) -> void {
+                data >> p<byte> <- cast(alloc(size+8));
+                if (data == null) { check("allocate "+path,false); return; }
+                index >> int <- 0;
+                while (index < size+8) { wr(off(data,index),0); index += 1; }
+                if (format == "elf32" || format == "elf64") {
+                    wr(data,127); wr(off(data,1),69); wr(off(data,2),76); wr(off(data,3),70);
+                    wr(off(data,4),format == "elf32" ? 1 : 2);
+                }
+                if (format == "coff32") { wr(data,76); wr(off(data,1),1); }
+                if (format == "coff64") { wr(data,100); wr(off(data,1),134); }
+                if (format == "coffarm") { wr(data,100); wr(off(data,1),170); }
+                if (format == "macho") { wr(data,207); wr(off(data,1),250); wr(off(data,2),237); wr(off(data,3),254); }
+                if (format == "machoswap") { wr(data,254); wr(off(data,1),237); wr(off(data,2),250); wr(off(data,3),207); }
+                if (format == "wasm") { wr(data,0); wr(off(data,1),97); wr(off(data,2),115); wr(off(data,3),109); }
+                check("write binary "+path,physical43_common.physical43Common.writeTextBytes(path,data,size));
+                free(data);
+            }
+            route(id >> str) -> int {
+                model >> int <- jsonParse("{\"target\":\"x86_64-unknown-linux-gnu\",\"profile\":\"standard\",\"source\":\"tools/tests/physical43_material_contract_tests.n\",\"architecture\":\"x86_64\",\"abi\":\"sysv\",\"object_format\":\"elf64\",\"execution\":\"host\",\"runner\":\"linux-x86_64\",\"physical_required\":false}");
+                put(model,"id",jsonNewString(id)); return model;
+            }
+            matrix(routes >> int) -> int {
+                model >> int <- jsonNewObject();
+                put(model,"schema",jsonNewString("ncc.final_certification.target_matrix.v1"));
+                put(model,"required_pipeline_phases",physical43_stages.physical43Stages.phases());
+                jsonObjectSet(model,"routes",routes); return model;
+            }
+            matrixCase(name >> str, model >> int, expected >> bool, diagnostic >> str) -> void {
+                path >> str <- work+"/matrix-"+name+".json";
+                check("save matrix "+name,physical43_common.physical43Common.save(path,model));
+                result >> int <- physical43_stages.physical43Stages.matrix(path,repo);
+                check("matrix "+name,(result != 0) == expected &&
+                    (expected || physical43_common.physical43Common.diagnostic() == diagnostic));
+                if (result != 0) jsonRelease(result); jsonRelease(model);
+            }
+            matrices() -> void {
+                rows >> int <- jsonNewArray(); model >> int <- matrix(rows); jsonRelease(rows);
+                matrixCase("empty-routes",model,true,"");
+                rows <- jsonNewArray(); physical43_common.physical43Common.push(rows,route("host"));
+                model <- matrix(rows); jsonRelease(rows); matrixCase("complete-route",model,true,"");
+                rows <- jsonNewArray(); model <- matrix(rows); jsonRelease(rows);
+                put(model,"schema",jsonNewString("wrong"));
+                matrixCase("schema",model,false,"E_FINAL_CERT_MATRIX_SCHEMA_001: unknown target matrix schema");
+                rows <- jsonNewArray(); model <- matrix(rows); jsonRelease(rows);
+                put(model,"required_pipeline_phases",jsonParse("[\"parser\"]"));
+                matrixCase("phases",model,false,"E_FINAL_CERT_MATRIX_SHAPE_001: incomplete phase or route matrix");
+                rows <- jsonNewArray(); model <- matrix(rows); jsonRelease(rows); put(model,"routes",jsonNewObject());
+                matrixCase("route-shape",model,false,"E_FINAL_CERT_MATRIX_SHAPE_001: incomplete phase or route matrix");
+                rows <- jsonNewArray(); physical43_common.physical43Common.push(rows,route("same"));
+                physical43_common.physical43Common.push(rows,route("same"));
+                model <- matrix(rows); jsonRelease(rows);
+                matrixCase("duplicate-id",model,false,"E_FINAL_CERT_MATRIX_ROUTE_001: route ids must be non-empty and unique");
+                rows <- jsonNewArray(); physical43_common.physical43Common.push(rows,route(""));
+                model <- matrix(rows); jsonRelease(rows);
+                matrixCase("empty-id",model,false,"E_FINAL_CERT_MATRIX_ROUTE_001: route ids must be non-empty and unique");
+                row >> int <- route("missing"); removed >> int <- jsonObjectRemove(row,"abi"); jsonRelease(removed);
+                removed <- jsonObjectRemove(row,"target"); jsonRelease(removed);
+                rows <- jsonNewArray(); physical43_common.physical43Common.push(rows,row);
+                model <- matrix(rows); jsonRelease(rows);
+                matrixCase("missing-fields",model,false,"E_FINAL_CERT_MATRIX_ROUTE_002: missing missing ['abi', 'target']");
+                row <- route("missing-source"); put(row,"source",jsonNewString("physical43-does-not-exist.n"));
+                rows <- jsonNewArray(); physical43_common.physical43Common.push(rows,row);
+                model <- matrix(rows); jsonRelease(rows);
+                matrixCase("missing-source",model,false,"E_FINAL_CERT_MATRIX_SOURCE_001: missing-source source does not exist: physical43-does-not-exist.n");
+                model <- physical43_stages.physical43Stages.matrix(repo+"/tools/certification/final-target-matrix.v1.json",repo);
+                routes >> int <- jsonObjectGet(model,"routes");
+                check("canonical sixteen-route matrix",model != 0 && jsonArrayLen(routes) == 16);
+                if (routes != 0) jsonRelease(routes); if (model != 0) jsonRelease(model);
+            }
+            magics() -> void {
+                formats >> int <- jsonParse("[\"coff32\",\"coff64\",\"coffarm\",\"elf32\",\"elf64\",\"macho\",\"machoswap\",\"wasm\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(formats)) {
+                    node >> int <- jsonArrayBorrow(formats,index); format >> str <- jsonStringView(node,"");
+                    expected >> str <- strStartsWith(format,"coff") ? "coff" : (strStartsWith(format,"macho") ? "macho64" : format);
+                    minimum >> int <- expected == "coff" ? 2 : (strStartsWith(expected,"elf") ? 5 : 4);
+                    path >> str <- work+"/magic-"+format;
+                    material(path,format,minimum);
+                    check("minimum magic "+format,physical43_stages.physical43Stages.magic(path,expected));
+                    check("unknown magic "+format,!physical43_stages.physical43Stages.magic(path,"unknown"));
+                    material(path+"-short",format,minimum-1);
+                    check("truncated magic "+format,!physical43_stages.physical43Stages.magic(path+"-short",expected));
+                    jsonRelease(node); index += 1;
+                }
+                jsonRelease(formats);
+                check("absent magic",!physical43_stages.physical43Stages.magic(work+"/absent","elf64"));
+            }
+            selections() -> void {
+                root >> str <- work+"/objects"; physical43_common.physical43Common.directories(root);
+                check("empty object selection",physical43_stages.physical43Stages.chooseObject(root,"elf64") == "");
+                material(root+"/large.body.o","elf64",90);
+                material(root+"/small.o","elf64",10);
+                check("body priority",physical43_stages.physical43Stages.chooseObject(root,"elf64") == native(root+"/small.o"));
+                material(root+"/small.kernel.o","elf64",8);
+                check("kernel priority",physical43_stages.physical43Stages.chooseObject(root,"elf64") == native(root+"/small.kernel.o"));
+                material(root+"/small.kernel.obj","elf64",6);
+                check("obj suffix priority",physical43_stages.physical43Stages.chooseObject(root,"elf64") == native(root+"/small.kernel.obj"));
+                material(root+"/large.kernel.OBJ","elf64",12);
+                check("size and uppercase suffix",physical43_stages.physical43Stages.chooseObject(root,"elf64") == native(root+"/large.kernel.OBJ"));
+                material(root+"/huge.kernel.obj","elf32",120);
+                check("reject wrong object format",physical43_stages.physical43Stages.chooseObject(root,"elf64") == native(root+"/large.kernel.OBJ"));
+                wasm >> str <- work+"/wasm"; physical43_common.physical43Common.directories(wasm);
+                material(wasm+"/module.wasm","wasm",8);
+                check("wasm fallback",physical43_stages.physical43Stages.chooseObject(wasm,"wasm") == native(wasm+"/module.wasm"));
+                material(wasm+"/wrong.o","elf64",8);
+                check("object disables wasm fallback",physical43_stages.physical43Stages.chooseObject(wasm,"wasm") == "");
+                bin >> str <- work+"/linked/bin"; physical43_common.physical43Common.directories(bin);
+                material(bin+"/excluded.JSON","elf64",100);
+                material(bin+"/excluded.MAP","elf64",101);
+                material(bin+"/excluded.TXT","elf64",102);
+                material(bin+"/small.exe","elf64",9); material(bin+"/large.elf","elf64",10);
+                check("linked exclusions and size",physical43_stages.physical43Stages.linked(work+"/linked") == native(bin+"/large.elf"));
+                check("absent linked root",physical43_stages.physical43Stages.linked(work+"/no-bin") == "");
+                paths >> int <- jsonNewArray();
+                physical43_common.physical43Common.push(paths,jsonNewString(work+"/absent"));
+                write(work+"/empty",""); physical43_common.physical43Common.push(paths,jsonNewString(work+"/empty"));
+                result >> int <- physical43_stages.physical43Stages.fileStage("object","fixture",paths,"no material");
+                expected >> int <- jsonParse("{\"phase\":\"object\",\"name\":\"fixture\",\"status\":\"failed\",\"returncode\":1,\"artifacts\":[],\"diagnostic\":\"no material\"}");
+                check("empty file stage all fields",physical43_common.physical43Common.equal(result,expected));
+                jsonRelease(result); jsonRelease(expected);
+                physical43_common.physical43Common.push(paths,jsonNewString(bin+"/large.elf"));
+                result <- physical43_stages.physical43Stages.fileStage("object","fixture",paths,"no material");
+                expected <- jsonParse("{\"phase\":\"object\",\"name\":\"fixture\",\"status\":\"passed\",\"returncode\":0,\"artifacts\":[],\"diagnostic\":null}");
+                artifacts >> int <- jsonNewArray(); physical43_common.physical43Common.push(artifacts,jsonNewString(native(bin+"/large.elf")));
+                put(expected,"artifacts",artifacts);
+                check("material file stage all fields",physical43_common.physical43Common.equal(result,expected));
+                jsonRelease(result); jsonRelease(expected); jsonRelease(paths);
+            }
+            manifests() -> void {
+                root >> str <- work+"/manifests"; physical43_common.physical43Common.directories(root+"/run");
+                write(root+"/run/00build.json","{\"paths\":{\"exe\":\"fallback\"}}");
+                write(root+"/run/target-01build.json","broken json");
+                write(root+"/run/target-02build.json","{\"paths\":[]}");
+                write(root+"/run/target-03build.json","{\"paths\":{\"exe\":\"preferred\"}}");
+                result >> int <- physical43_stages.physical43Stages.manifest(root,"target");
+                payload >> int <- jsonObjectGet(result,"payload");
+                check("preferred valid manifest",field(result,"path") == native(root+"/run/target-03build.json") &&
+                    physical43_common.physical43Common.textAt(payload,"/paths/exe") == "preferred");
+                jsonRelease(payload); jsonRelease(result);
+                result <- physical43_stages.physical43Stages.manifest(root,"absent-target");
+                check("sorted fallback manifest",field(result,"path") == native(root+"/run/00build.json"));
+                jsonRelease(result);
+                result <- physical43_stages.physical43Stages.manifest(work+"/absent-manifests","target");
+                check("absent manifest object",jsonKind(result) == 6 && jsonObjectLen(result) == 0);
+                jsonRelease(result);
+                payload <- jsonNewObject(); values >> int <- jsonNewObject();
+                put(values,"exe",jsonNewString(work+"/linked/bin/large.elf")); put(payload,"paths",values);
+                check("existing manifest path",physical43_stages.physical43Stages.manifestPath(payload,"exe") == native(work+"/linked/bin/large.elf"));
+                check("absent manifest path",physical43_stages.physical43Stages.manifestPath(payload,"absent") == "");
+                jsonRelease(payload);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                repo <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--repo","."));
+                work <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--work","target/tmp/physical43-material-contract"));
+                checks <- jsonNewArray();
+                check("fresh work directory",physical43_common.physical43Common.fileType(work) == 0);
+                if (!passed) return 2;
+                check("create work",physical43_common.physical43Common.directories(work));
+                matrices(); magics(); selections(); manifests();
+                report >> int <- jsonNewObject(); put(report,"schema",jsonNewString("nc.physical43.material-contract.v1"));
+                put(report,"passed",jsonNewBool(passed)); put(report,"checks",checks);
+                put(report,"fixture_is_physical_execution",jsonNewBool(false));
+                if (!physical43_common.physical43Common.save(work+"/report.json",report)) passed <- false;
+                jsonRelease(report); argsRelease(arguments); println(passed ? "OK: material contract" : "FAILED: material contract");
+                return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

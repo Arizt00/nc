@@ -1,0 +1,623 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, spawn, wait>;
+use <project:text, resolver, sha256, transport>;
+
+package_io[@runtime] {
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionWithValue(name >> str) -> bool {
+                return name == "--path" || name == "--manifest" ||
+                    name == "--manifest-path" || name == "--registry" ||
+                    name == "--target" || name == "--resolver" ||
+                    name == "--lock" || name == "-p" || name == "--package" ||
+                    name == "--precise" || name == "--token";
+            }
+
+            firstPositional(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (optionWithValue(value)) { at += 2; continue; }
+                    if (!starts(value, "-")) return value;
+                    at += 1;
+                }
+                return "";
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copyAt >> int <- 0;
+                while (copyAt < at) {
+                    wr(off(output, copyAt), rd(off(source, copyAt)));
+                    copyAt += 1;
+                }
+                if (copyAt == 0) { wr(output, 46); copyAt <- 1; }
+                wr(off(output, copyAt), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            workspaceRoot(resolve >> int) -> str {
+                manifest >> int <- jsonObjectGet(resolve, "manifest");
+                root >> str <- jsonGetStringOr(jsonObjectGet(manifest, "workspace_root"), "");
+                if (root != "") return root;
+                return directory(jsonGetStringOr(jsonObjectGet(manifest, "path"), "ghor.toml"));
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            packageSpecs(handle >> addr) -> int {
+                result >> int <- jsonNewArray();
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (same(current, "-p") || same(current, "--package")) {
+                        jsonArrayPush(result, jsonNewString(argsAt(handle, at + 1)));
+                        at += 2;
+                        continue;
+                    }
+                    at += 1;
+                }
+                return result;
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                errors >> int <- jsonArrayLen(jsonObjectGet(model, "diagnostics"));
+                jsonRelease(model);
+                return errors == 0 ? 0 : 2;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                result >> Result<bool, FsError> <- createDir(path);
+                return isOk(result) && exists(path);
+            }
+
+            diagnosticsClosed(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(entries, at), "severity"), "") == "error") {
+                        return false;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            basalManifestContract(parsed >> int, entry >> int, diagnostics >> int, path >> str) -> bool {
+                if (jsonGetStringOr(jsonObjectGet(parsed, "schema"), "") != "basal.package.v1" ||
+                    !jsonGetBoolOr(jsonObjectGet(parsed, "ghor_compatible"), false)) {
+                    return addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "unsupported basal package manifest at '" + path + "'") && false;
+                }
+                if (jsonGetStringOr(jsonObjectGet(jsonObjectGet(parsed, "nbb"), "magic"), "") != "NBB0") {
+                    return addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal package has no NBB0 metadata at '" + path + "'") && false;
+                }
+                ffi >> int <- jsonObjectGet(parsed, "ffi_link_manifest");
+                if (jsonGetStringOr(jsonObjectGet(ffi, "status"), "") != "closed" ||
+                    !diagnosticsClosed(jsonObjectGet(ffi, "diagnostics"))) {
+                    return addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal ffi_link_manifest is open or contains errors at '" + path + "'") && false;
+                }
+                canonical >> str <- jsonStringify(ffi);
+                actual >> str <- sha256.sha256.bytes(cast(canonical), length(cast(canonical)));
+                strRelease(canonical);
+                expected >> str <- jsonGetStringOr(jsonObjectGet(entry, "ffi_link_manifest_hash"), "");
+                manifestExpected >> str <- jsonGetStringOr(
+                    jsonObjectGet(parsed, "ffi_link_manifest_hash"), "");
+                if ((expected != "" && expected != actual) ||
+                    (manifestExpected != "" && manifestExpected != actual)) {
+                    return addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal ffi_link_manifest SHA-256 mismatch at '" + path + "'") && false;
+                }
+                return true;
+            }
+
+            manifestVerified(
+                handle >> addr,
+                entry >> int,
+                registry >> str,
+                materialRoot >> str,
+                diagnostics >> int
+            ) -> bool {
+                relative >> str <- jsonGetStringOr(jsonObjectGet(entry, "package_manifest_path"), "");
+                expected >> str <- jsonGetStringOr(jsonObjectGet(entry, "package_manifest_hash"), "");
+                if (relative == "" || expected == "") {
+                    return addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest metadata is incomplete") && false;
+                }
+                guard transport.transport.ensureRegistryFile(
+                    handle, registry, materialRoot, relative, diagnostics) else return false;
+                path >> str <- join(materialRoot, relative);
+                parsed >> int <- jsonParseFile(path);
+                guard parsed != 0 else {
+                    return addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest is not valid JSON at '" + path + "'") && false;
+                }
+                packageKind >> str <- jsonGetStringOr(jsonObjectGet(entry, "package_kind"), "standard");
+                actual >> str <- packageKind == "basal" ? sha256.sha256.file(path) : "";
+                if (packageKind != "basal") {
+                    canonical >> str <- jsonStringify(parsed);
+                    actual <- sha256.sha256.bytes(cast(canonical), length(cast(canonical)));
+                    strRelease(canonical);
+                }
+                if (actual == "" || actual != expected) {
+                    jsonRelease(parsed);
+                    return addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest SHA-256 mismatch at '" + path +
+                        "': expected=" + expected + " actual=" + actual) && false;
+                }
+                if (packageKind == "basal") {
+                    if (!basalManifestContract(parsed, entry, diagnostics, path)) {
+                        jsonRelease(parsed);
+                        return false;
+                    }
+                }
+                jsonRelease(parsed);
+                return true;
+            }
+
+            fetchEntry(handle >> addr, entry >> int, cacheRoot >> str, diagnostics >> int) -> int {
+                source >> int <- jsonObjectGet(entry, "source");
+                registry >> str <- jsonGetStringOr(jsonObjectGet(source, "registry"), "");
+                materialRoot >> str <- jsonGetStringOr(
+                    jsonObjectGet(source, "material_root"), registry);
+                relative >> str <- jsonGetStringOr(jsonObjectGet(entry, "archive"), "");
+                archiveName >> str <- jsonGetStringOr(jsonObjectGet(entry, "archive_name"), "");
+                name >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(entry, "version"), "");
+                packageKind >> str <- jsonGetStringOr(
+                    jsonObjectGet(entry, "package_kind"), "standard");
+                cacheName >> str <- packageKind == "basal" ? jsonGetStringOr(
+                    jsonObjectGet(entry, "safe_name"), name) : name;
+                expected >> str <- jsonGetStringOr(jsonObjectGet(entry, "checksum"), "");
+                if (registry == "" || relative == "" || archiveName == "" || expected == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_CHECKSUM_001",
+                        "registry material metadata is incomplete for '" + name + "'");
+                    return 0;
+                }
+                guard transport.transport.ensureRegistryFile(
+                    handle, registry, materialRoot, relative, diagnostics) else return 0;
+                archive >> str <- join(materialRoot, relative);
+                actual >> str <- sha256.sha256.file(archive);
+                requested >> str <- jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(entry, "requested"), "checksum"), "");
+                if (actual == "" || actual != expected || (requested != "" && actual != requested)) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_CHECKSUM_001",
+                        "registry archive SHA-256 mismatch for '" + name +
+                        "': expected=" + expected + " actual=" + actual);
+                    return 0;
+                }
+                guard manifestVerified(handle, entry, registry, materialRoot, diagnostics) else return 0;
+                packageDir >> str <- join(join(cacheRoot, cacheName), version);
+                guard ensureDirectory(packageDir) else {
+                    addDiagnostic(diagnostics, "E_GHOR_FETCH_001",
+                        "cache directory could not be created for '" + name + "'");
+                    return 0;
+                }
+                destination >> str <- join(packageDir, archiveName);
+                copied >> int <- fsCopy(archive, destination);
+                if (copied != fsSize(archive) || sha256.sha256.file(destination) != actual) {
+                    addDiagnostic(diagnostics, "E_GHOR_FETCH_001",
+                        "verified archive could not be materialized for '" + name + "'");
+                    return 0;
+                }
+                fetched >> int <- jsonNewObject();
+                jsonObjectSet(fetched, "name", jsonNewString(name));
+                jsonObjectSet(fetched, "version", jsonNewString(version));
+                jsonObjectSet(fetched, "status", jsonNewString(
+                    packageKind == "basal" ? "fetched_basal_registry" : "fetched_registry"));
+                jsonObjectSet(fetched, "package_kind", jsonNewString(packageKind));
+                jsonObjectSet(fetched, "root_id", jsonClone(jsonObjectGet(entry, "root_id")));
+                jsonObjectSet(fetched, "safe_name", jsonClone(jsonObjectGet(entry, "safe_name")));
+                jsonObjectSet(fetched, "checksum", jsonNewString(actual));
+                jsonObjectSet(fetched, "cache_path", jsonNewString(destination));
+                jsonObjectSet(fetched, "registry", jsonNewString(registry));
+                jsonObjectSet(fetched, "registry_transport", jsonNewString(
+                    transport.transport.kind(registry)));
+                jsonObjectSet(fetched, "package_manifest_validation",
+                    jsonClone(jsonObjectGet(entry, "verification")));
+                return fetched;
+            }
+
+            pathDependencies(resolve >> int, diagnostics >> int) -> bool {
+                root >> str <- workspaceRoot(resolve);
+                entries >> int <- jsonObjectGet(resolve, "resolved");
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "status"), "") == "resolved_path") {
+                        relative >> str <- jsonGetStringOr(jsonObjectGet(entry, "path"), "");
+                        if (!exists(join(root, relative))) addDiagnostic(diagnostics,
+                            "E_GHOR_DEP_RESOLUTION_001",
+                            "path dependency does not exist: '" + relative + "'");
+                    }
+                    at += 1;
+                }
+                return jsonArrayLen(diagnostics) == 0;
+            }
+
+            materialize(handle >> addr, resolve >> int, diagnostics >> int) -> int {
+                cacheRoot >> str <- join(workspaceRoot(resolve), "target/ghor/registry-cache");
+                basalCacheRoot >> str <- join(workspaceRoot(resolve), "target/ghor/basal-registry-cache");
+                ensureDirectory(cacheRoot);
+                ensureDirectory(basalCacheRoot);
+                fetched >> int <- jsonNewArray();
+                entries >> int <- jsonObjectGet(resolve, "resolved");
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    status >> str <- jsonGetStringOr(jsonObjectGet(entry, "status"), "");
+                    if (status == "resolved_registry" || status == "resolved_basal_registry") {
+                        selectedCache >> str <- status == "resolved_basal_registry" ?
+                            basalCacheRoot : cacheRoot;
+                        item >> int <- fetchEntry(handle, entry, selectedCache, diagnostics);
+                        if (item != 0) jsonArrayPush(fetched, item);
+                    }
+                    at += 1;
+                }
+                return fetched;
+            }
+
+            executeFetch(handle >> addr) -> int {
+                resolve >> int <- resolver.resolver.model(handle);
+                guard resolve != 0 else return 2;
+                diagnostics >> int <- jsonClone(jsonObjectGet(resolve, "diagnostics"));
+                pathDependencies(resolve, diagnostics);
+                fetched >> int <- jsonNewArray();
+                if (jsonArrayLen(diagnostics) == 0) {
+                    jsonRelease(fetched);
+                    fetched <- materialize(handle, resolve, diagnostics);
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.fetch.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                selectedRegistry >> str <- option(handle, "--registry");
+                selectedTransport >> str <- transport.transport.kind(selectedRegistry);
+                jsonObjectSet(report, "registry_transport", jsonNewString(selectedTransport));
+                jsonObjectSet(report, "network", jsonNewString(
+                    selectedTransport == "filesystem" ? "not_required_filesystem" : "materialized_remote"));
+                jsonObjectSet(report, "fetched", fetched);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "resolve", jsonClone(resolve));
+                jsonRelease(resolve);
+                return printModel(report);
+            }
+
+            executeUpdate(handle >> addr) -> int {
+                if (hasFlag(handle, "--frozen")) {
+                    println("error[E_GHOR_FROZEN_001]: --frozen forbids lock updates");
+                    return 2;
+                }
+                resolve >> int <- resolver.resolver.model(handle);
+                guard resolve != 0 else return 2;
+                diagnostics >> int <- jsonClone(jsonObjectGet(resolve, "diagnostics"));
+                if (jsonArrayLen(diagnostics) > 0) {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.update.v1"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    jsonObjectSet(report, "resolve", jsonClone(resolve));
+                    jsonRelease(resolve);
+                    return printModel(report);
+                }
+                lock >> int <- resolver.resolver.lock(resolve);
+                path >> str <- resolver.resolver.lockFile(handle, resolve);
+                metadataPath >> str <- path + ".meta.json";
+                lockText >> str <- jsonGetStringOr(jsonObjectGet(lock, "cargo_lock_toml"), "");
+                afterHash >> str <- sha256.sha256.bytes(cast(lockText), length(cast(lockText)));
+                beforeHash >> str <- exists(path) ? sha256.sha256.file(path) : "";
+                actual >> int <- exists(metadataPath) ? jsonParseFile(metadataPath) : 0;
+                changed >> bool <- beforeHash != afterHash || actual == 0 || !jsonEquals(lock, actual);
+                dryRun >> bool <- hasFlag(handle, "--dry-run");
+                written >> bool <- true;
+                if (!dryRun) written <- fswrite(path, lockText) && jsonSaveFile(lock, metadataPath, 2);
+                if (!written) addDiagnostic(diagnostics, "E_GHOR_LOCK_WRITE_001",
+                    "updated lock artifacts could not be written");
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.update.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    !written ? "error" : (dryRun ? "dry_run" : "updated")));
+                jsonObjectSet(report, "lockfile", jsonNewString(path));
+                jsonObjectSet(report, "lock_metadata", jsonNewString(metadataPath));
+                jsonObjectSet(report, "lock_format", jsonNewString("cargo_lock_toml_primary"));
+                jsonObjectSet(report, "changed", jsonNewBool(changed));
+                jsonObjectSet(report, "package_specs", packageSpecs(handle));
+                precise >> str <- option(handle, "--precise");
+                if (precise == "") jsonObjectSet(report, "precise", jsonNewNull());
+                else jsonObjectSet(report, "precise", jsonNewString(precise));
+                if (beforeHash == "") jsonObjectSet(report, "before_hash", jsonNewNull());
+                else jsonObjectSet(report, "before_hash", jsonNewString(beforeHash));
+                jsonObjectSet(report, "after_hash", jsonNewString(afterHash));
+                jsonObjectSet(report, "cargo_lock_hash", jsonNewString(afterHash));
+                jsonObjectSet(report, "metadata_hash", jsonClone(jsonObjectGet(lock, "material_fingerprint")));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "resolve", jsonClone(resolve));
+                if (actual != 0) jsonRelease(actual);
+                jsonRelease(lock);
+                jsonRelease(resolve);
+                return printModel(report);
+            }
+
+            extract(archive >> str, destination >> str) -> bool {
+                process >> Result<ProcessHandle, ProcessError> <- spawn(
+                    "tar",
+                    ["-xzf", archive, "--strip-components", "1", "-C", destination]
+                );
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) && unwrap(status) == 0;
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            collectChecksums(root >> str, relative >> str, files >> int) -> int {
+                current >> str <- relative == "" ? root : join(root, relative);
+                capacity >> int <- 1048576;
+                names >> p<byte> <- cast(alloc(capacity));
+                guard names != null else return -1;
+                listed >> int <- listDirInto(current, names, capacity);
+                if (listed < 0) { free(names); return -1; }
+                if (listed >= capacity) listed <- capacity - 1;
+                wr(off(names, listed), 0);
+                count >> int <- 0;
+                startAt >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    currentByte >> byte <- rd(off(names, at));
+                    if (currentByte == 10 || currentByte == 13 || currentByte == 0) {
+                        wr(off(names, at), 0);
+                        if (at > startAt) {
+                            name >> str <- cast(off(names, startAt));
+                            childRelative >> str <- relative == "" ? name : relative + "/" + name;
+                            child >> str <- join(root, childRelative);
+                            if (isDirectory(child)) {
+                                nested >> int <- collectChecksums(root, childRelative, files);
+                                if (nested < 0) { free(names); return -1; }
+                                count += nested;
+                            }
+                            else if (name != ".cargo-checksum.json" &&
+                                name != ".basal-checksum.json") {
+                                hash >> str <- sha256.sha256.file(child);
+                                if (hash == "") { free(names); return -1; }
+                                jsonObjectSet(files, childRelative, jsonNewString(hash));
+                                count += 1;
+                            }
+                        }
+                        while (at < listed && (rd(off(names, at + 1)) == 10 ||
+                            rd(off(names, at + 1)) == 13)) { at += 1; }
+                        startAt <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return count;
+            }
+
+            executeVendor(handle >> addr) -> int {
+                resolve >> int <- resolver.resolver.model(handle);
+                guard resolve != 0 else return 2;
+                diagnostics >> int <- jsonClone(jsonObjectGet(resolve, "diagnostics"));
+                pathDependencies(resolve, diagnostics);
+                selected >> str <- firstPositional(handle);
+                vendor >> str <- selected == "" ? join(workspaceRoot(resolve), "vendor") : selected;
+                if (exists(vendor) && !hasFlag(handle, "--no-delete")) {
+                    removed >> Result<bool, FsError> <- removeDir(vendor);
+                    if (!isOk(removed)) addDiagnostic(diagnostics, "E_GHOR_VENDOR_001",
+                        "vendor directory could not be cleared");
+                }
+                if (!ensureDirectory(vendor)) addDiagnostic(diagnostics, "E_GHOR_VENDOR_001",
+                    "vendor directory could not be created");
+                fetched >> int <- jsonNewArray();
+                if (jsonArrayLen(diagnostics) == 0) {
+                    jsonRelease(fetched);
+                    fetched <- materialize(handle, resolve, diagnostics);
+                }
+                vendored >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(fetched) && jsonArrayLen(diagnostics) == 0) {
+                    item >> int <- jsonArrayGet(fetched, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(item, "name"), "");
+                    version >> str <- jsonGetStringOr(jsonObjectGet(item, "version"), "");
+                    packageKind >> str <- jsonGetStringOr(
+                        jsonObjectGet(item, "package_kind"), "standard");
+                    directoryName >> str <- packageKind == "basal" ? jsonGetStringOr(
+                        jsonObjectGet(item, "safe_name"), name) : name;
+                    dirName >> str <- hasFlag(handle, "--versioned-dirs") ?
+                        directoryName + "-" + version : directoryName;
+                    destination >> str <- join(vendor, dirName);
+                    if (exists(destination)) {
+                        removed >> Result<bool, FsError> <- removeDir(destination);
+                    }
+                    if (!ensureDirectory(destination) || !extract(
+                        jsonGetStringOr(jsonObjectGet(item, "cache_path"), ""), destination)) {
+                        addDiagnostic(diagnostics, "E_GHOR_PACKAGE_VERIFY_001",
+                            "package extraction failed for '" + name + "'");
+                        break;
+                    }
+                    files >> int <- jsonNewObject();
+                    fileCount >> int <- collectChecksums(destination, "", files);
+                    if (fileCount < 0) {
+                        jsonRelease(files);
+                        addDiagnostic(diagnostics, "E_GHOR_PACKAGE_VERIFY_001",
+                            "vendored file checksum failed for '" + name + "'");
+                        break;
+                    }
+                    checksumDocument >> int <- jsonNewObject();
+                    if (packageKind == "basal") jsonObjectSet(checksumDocument, "schema",
+                        jsonNewString("ghor.basal.vendor.checksum.v1"));
+                    jsonObjectSet(checksumDocument, "files", files);
+                    jsonObjectSet(checksumDocument, "package", jsonClone(jsonObjectGet(item, "checksum")));
+                    ghor >> int <- jsonNewObject();
+                    jsonObjectSet(ghor, "name", jsonNewString(name));
+                    jsonObjectSet(ghor, "version", jsonNewString(version));
+                    jsonObjectSet(ghor, "registry", jsonClone(jsonObjectGet(item, "registry")));
+                    jsonObjectSet(ghor, "package_kind", jsonClone(jsonObjectGet(item, "package_kind")));
+                    jsonObjectSet(ghor, "root_id", jsonClone(jsonObjectGet(item, "root_id")));
+                    jsonObjectSet(ghor, "package_manifest_validation",
+                        jsonClone(jsonObjectGet(item, "package_manifest_validation")));
+                    jsonObjectSet(checksumDocument,
+                        packageKind == "basal" ? "basal" : "ghor", ghor);
+                    checksumPath >> str <- join(destination,
+                        packageKind == "basal" ? ".basal-checksum.json" : ".cargo-checksum.json");
+                    if (!jsonSaveFile(checksumDocument, checksumPath, 2)) {
+                        addDiagnostic(diagnostics, "E_GHOR_VENDOR_001",
+                            "vendor checksum document could not be written for '" + name + "'");
+                    }
+                    jsonRelease(checksumDocument);
+                    record >> int <- jsonNewObject();
+                    jsonObjectSet(record, "name", jsonNewString(name));
+                    jsonObjectSet(record, "version", jsonNewString(version));
+                    jsonObjectSet(record, "path", jsonNewString(destination));
+                    jsonObjectSet(record, "checksum", jsonClone(jsonObjectGet(item, "checksum")));
+                    jsonObjectSet(record, "file_checksums", jsonNewInt(fileCount));
+                    jsonObjectSet(record, "registry", jsonClone(jsonObjectGet(item, "registry")));
+                    jsonObjectSet(record, "package_kind", jsonClone(jsonObjectGet(item, "package_kind")));
+                    jsonObjectSet(record, "root_id", jsonClone(jsonObjectGet(item, "root_id")));
+                    jsonArrayPush(vendored, record);
+                    at += 1;
+                }
+                entries >> int <- jsonObjectGet(resolve, "resolved");
+                at <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "status"), "") == "resolved_path") {
+                        marker >> str <- join(vendor,
+                            jsonGetStringOr(jsonObjectGet(entry, "name"), "dependency") + ".path");
+                        fswrite(marker, jsonGetStringOr(jsonObjectGet(entry, "path"), ""));
+                    }
+                    at += 1;
+                }
+                config >> str <- "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n" +
+                    "[source.vendored-sources]\ndirectory = \"" + vendor + "\"\n";
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.vendor.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "path", jsonNewString(vendor));
+                jsonObjectSet(report, "vendored", vendored);
+                jsonObjectSet(report, "config", jsonNewString(config));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "resolve", jsonClone(resolve));
+                jsonRelease(fetched);
+                jsonRelease(resolve);
+                return printModel(report);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "fetch" || command == "vendor" || command == "update";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "fetch") return executeFetch(handle);
+                if (command == "update") return executeUpdate(handle);
+                return executeVendor(handle);
+            }
+
+            selfTest() -> bool {
+                return length(cast("package-io")) == 10 &&
+                    starts("fetch", "fe") && !starts("fetch", "vendor");
+            }
+
+    fa:
+        return true;
+}

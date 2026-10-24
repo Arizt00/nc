@@ -1,0 +1,132 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:portable43_repr, physical43_common, physical43_json, physical43_deep_json, physical43_portable, physical43_capture, release_io, cert_json, sha256>;
+
+portable43Tests {
+    stc:
+        checks >> int;
+        passed >> bool <- true;
+    fn:
+        private:
+            edit(model >> int, path >> int, at >> int, value >> int, remove >> bool) -> void {
+                nameNode >> int <- jsonArrayBorrow(path,at); name >> str <- jsonStringView(nameNode,"");
+                if (at+1 == jsonArrayLen(path)) { if (remove) { removed >> int <- jsonObjectRemove(model,name); jsonRelease(removed); } else jsonObjectSet(model,name,value); }
+                else { child >> int <- jsonObjectGet(model,name); if (jsonKind(child) != 6) { jsonRelease(child); child <- jsonNewObject(); } edit(child,path,at+1,value,remove); cert_json.certJson.put(model,name,child); }
+                jsonRelease(nameNode);
+            }
+            boundaries(golden >> int, extra >> int) -> void {
+                baseCases >> int <- jsonObjectBorrow(golden,"cases"); additions >> int <- jsonObjectBorrow(extra,"cases"); at >> int <- 0;
+                while (at < jsonArrayLen(additions)) {
+                    spec >> int <- jsonArrayBorrow(additions,at); kind >> str <- physical43_common.physical43Common.field(spec,"kind"); document >> int <- 0; index >> int <- 0;
+                    while (index < 5) { base >> int <- jsonArrayBorrow(baseCases,index); if (physical43_common.physical43Common.field(base,"kind") == kind) document <- physical43_deep_json.physical43DeepJson.parse(physical43_common.physical43Common.field(base,"document_input")); jsonRelease(base); index += 1; }
+                    edits >> int <- jsonObjectBorrow(spec,"edits"); index <- 0;
+                    while (index < jsonArrayLen(edits)) { change >> int <- jsonArrayBorrow(edits,index); path >> int <- jsonObjectBorrow(change,"path"); value >> int <- jsonObjectHas(change,"value_input") ? physical43_deep_json.physical43DeepJson.parse(physical43_common.physical43Common.field(change,"value_input")) : jsonObjectBorrow(change,"value"); removeNode >> int <- jsonObjectBorrow(change,"remove"); edit(document,path,0,value,jsonGetBoolOr(removeNode,false)); jsonRelease(removeNode); jsonRelease(value); jsonRelease(path); jsonRelease(change); index += 1; } jsonRelease(edits);
+                    digest >> int <- jsonObjectBorrow(spec,"payload_sha256"); if (kind == "backend" || kind == "hardware") { attestation >> int <- jsonNewObject(); jsonObjectSet(attestation,"payload_sha256",digest); cert_json.certJson.put(document,"attestation",attestation); } else jsonObjectSet(document,"payload_sha256",digest); jsonRelease(digest);
+                    input >> str <- physical43_common.physical43Common.canonical(document,true,0); row >> int <- jsonClone(spec); cert_json.certJson.put(row,"document_input",jsonNewString(input)); cert_json.certJson.push(baseCases,row); strRelease(input); strRelease(kind); jsonRelease(document); jsonRelease(spec); at += 1;
+                }
+                jsonRelease(additions); jsonRelease(baseCases);
+                keys >> int <- jsonParse("[\"repr_values\",\"lower_strings\"]"); at <- 0; while (at < 2) { keyNode >> int <- jsonArrayBorrow(keys,at); key >> str <- jsonStringView(keyNode,""); values >> int <- jsonObjectBorrow(golden,key); added >> int <- jsonObjectBorrow(extra,key); index >> int <- 0; while (index < jsonArrayLen(added)) { cert_json.certJson.push(values,jsonArrayGet(added,index)); index += 1; } jsonRelease(values); jsonRelease(added); jsonRelease(keyNode); at += 1; } jsonRelease(keys);
+            }
+            record(id >> str, good >> bool) -> void {
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"id",jsonNewString(id)); cert_json.certJson.put(row,"passed",jsonNewBool(good)); cert_json.certJson.push(checks,row);
+                passed <- passed && good; println((good ? "PASS " : "FAIL ")+id);
+            }
+            seed(golden >> int, work >> str) -> bool {
+                cases >> int <- jsonObjectBorrow(golden,"cases"); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(cases)) {
+                    spec >> int <- jsonArrayBorrow(cases,at); id >> str <- physical43_common.physical43Common.field(spec,"id"); root >> str <- work+"/fixtures/"+id+"/evidence";
+                    pathCase >> str <- physical43_common.physical43Common.field(spec,"path_case"); input >> str <- physical43_common.physical43Common.field(spec,"document_input");
+                    filename >> str <- pathCase == "uppercase-extension" ? "certificate.JSON" : "certificate.json";
+                    certificateDir >> str <- pathCase == "posix-backslash" ? "certificate\\leaf" : (pathCase == "mixed-case-name" ? "MiXeD" : "certificate"); certificateRel >> str <- certificateDir+"/"+filename;
+                    physical43_common.physical43Common.deleteFile(root+"/SHA256SUMS"); physical43_common.physical43Common.deleteFile(root+"/sha256sums"); physical43_common.physical43Common.deleteFile(root+"/"+certificateDir+"/SHA256SUMS"); physical43_common.physical43Common.deleteFile(root+"/sub/deep/SHA256SUMS");
+                    cert_json.certJson.put(spec,"certificate_rel",jsonNewString(certificateRel));
+                    if (pathCase == "bom-json-sums") input <- portable43_repr.portable43Repr.append(portable43_repr.portable43Repr.codePointText(65279),input);
+                    good <- physical43_common.physical43Common.write(root+"/"+certificateRel,input) && good;
+                    if (pathCase == "component-order") {
+                        dirs >> int <- jsonParse("[\"a.x\",\"a/y\",\"Z\",\"B\",\"A\"]"); index >> int <- 0;
+                        while (index < jsonArrayLen(dirs)) { directoryNode >> int <- jsonArrayBorrow(dirs,index); good <- physical43_common.physical43Common.write(root+"/"+jsonStringView(directoryNode,"")+"/certificate.json",input) && good; jsonRelease(directoryNode); index += 1; } jsonRelease(dirs);
+                    }
+                    targets >> int <- jsonParse("[\"aarch64-unknown-none\",\"riscv64-unknown-elf\",\"riscv32imac-unknown-elf\"]"); index >> int <- 0;
+                    while (index < 3) { targetNode >> int <- jsonArrayBorrow(targets,index); targetName >> str <- pathCase == "uppercase-target" ? strToUpper(jsonStringView(targetNode,"")) : strSubstring(jsonStringView(targetNode,""),0,strByteLen(jsonStringView(targetNode,""))); good <- physical43_common.physical43Common.write(root+"/"+targetName+"/fixture.o",pathCase == "empty-target" ? "" : "Controlled fixture bytes, NOT a physical object certification.\n") && good; strRelease(targetName); jsonRelease(targetNode); index += 1; } jsonRelease(targets);
+                    names >> int <- physical43_common.physical43Common.files(root,false); sums >> str <- ""; index <- 0;
+                    while (index < jsonArrayLen(names)) {
+                        node >> int <- jsonArrayBorrow(names,index); name >> str <- jsonStringView(node,""); hash >> str <- physical43_common.physical43Common.fileHash(root+"/"+name);
+                        if (pathCase == "ascii-upper") { upper >> str <- strToUpper(hash); strRelease(hash); hash <- upper; }
+                        separator >> str <- pathCase == "unicode-space" ? portable43_repr.portable43Repr.codePointText(160) : "  "; endline >> str <- pathCase == "unicode-lines" ? portable43_repr.portable43Repr.codePointText(8232) : "\n";
+                        sums <- cert_json.certJson.append(sums,hash+separator+name+endline); strRelease(separator); strRelease(endline); strRelease(hash); jsonRelease(node); index += 1;
+                    }
+                    sumName >> str <- pathCase == "lowercase-sums" ? "sha256sums" : "SHA256SUMS";
+                    if (pathCase == "local-checksum-fallback" || pathCase == "parent-checksum-fallback" || pathCase == "absolute-checksum" || pathCase == "star-checksum" || pathCase == "mixed-case-name") {
+                        strRelease(sums); hash >> str <- physical43_common.physical43Common.fileHash(root+"/"+certificateRel); recorded >> str <- certificateRel;
+                        if (pathCase == "local-checksum-fallback") { sumName <- certificateDir+"/SHA256SUMS"; recorded <- "missing/path/"+filename; }
+                        if (pathCase == "parent-checksum-fallback") { sumName <- "sub/deep/SHA256SUMS"; recorded <- "neighbor.bin"; good <- physical43_common.physical43Common.write(work+"/fixtures/"+id+"/neighbor.bin","External controlled fixture, not physical evidence.") && good; strRelease(hash); hash <- physical43_common.physical43Common.fileHash(work+"/fixtures/"+id+"/neighbor.bin"); }
+                        if (pathCase == "absolute-checksum") recorded <- root+"/"+certificateRel;
+                        if (pathCase == "star-checksum") recorded <- "* * "+certificateRel;
+                        if (pathCase == "mixed-case-name") recorded <- "mixed/"+filename;
+                        sums <- hash+"  "+recorded+"\n"; strRelease(hash);
+                    }
+                    if (pathCase == "checksum-missing" || pathCase == "nul-checksum-name" || pathCase == "checksum-tampered") { strRelease(sums); hash >> str <- physical43_common.physical43Common.fileHash(root+"/"+certificateRel); recorded >> str <- pathCase == "checksum-missing" ? "missing.json" : certificateRel; if (pathCase == "checksum-tampered") { strRelease(hash); hash <- "0000000000000000000000000000000000000000000000000000000000000000"; } sums <- hash+"  "+recorded; if (pathCase == "nul-checksum-name") sums <- portable43_repr.portable43Repr.append(sums,portable43_repr.portable43Repr.codePointText(0)); sums <- portable43_repr.portable43Repr.append(sums,"\n"); strRelease(hash); }
+                    if (pathCase == "checksum-empty") { strRelease(sums); sums <- " \n\t\n"; }
+                    if (pathCase == "bom-json-sums") sums <- portable43_repr.portable43Repr.append(portable43_repr.portable43Repr.codePointText(65279),sums);
+                    if (pathCase == "invalid-checksum-utf8") { bad >> p<byte> <- cast(alloc(1)); wr(bad,255); good <- physical43_common.physical43Common.writeBytes(root+"/"+sumName,bad,1) && good; free(bad); }
+                    else good <- physical43_common.physical43Common.write(root+"/"+sumName,sums) && good;
+                    if (pathCase == "mixed-case-name") cert_json.certJson.put(spec,"expected_exit_linux",jsonNewInt(physical43_common.physical43Common.fileType(root+"/mixed/"+filename) == 1 ? 0 : 1));
+                    strRelease(sums); jsonRelease(names); strRelease(id); strRelease(pathCase); strRelease(input); jsonRelease(spec); at += 1;
+                }
+                jsonRelease(cases); return good;
+            }
+            unicode(golden >> int, work >> str) -> void {
+                count >> int <- 1114112; lower >> p<byte> <- cast(alloc(count*8)); bits >> p<byte> <- cast(calloc(count/8,1)); representations >> p<byte> <- cast(alloc(count*20));
+                if (lower == null || bits == null || representations == null) { record("unicode-allocation",false); return; }
+                point >> int <- 0; used >> int <- 0;
+                while (point < count) {
+                    first >> int <- portable43_repr.portable43Repr.lowerCodePoint(point,0); extra >> int <- portable43_repr.portable43Repr.lowerCodePoint(point,1); index >> int <- 0;
+                    while (index < 4) { firstByte >> int <- (first >>> (index*8)) & 255; extraByte >> int <- (extra >>> (index*8)) & 255; wr(off(lower,point*8+index),firstByte); wr(off(lower,point*8+4+index),extraByte); index += 1; }
+                    if (portable43_repr.portable43Repr.printable(point)) { byteAt >> int <- point/8; value >> int <- (rd(off(bits,byteAt)) & 255) | (1 << (point % 8)); wr(off(bits,byteAt),value); }
+                    text >> str <- portable43_repr.portable43Repr.reprCodePoint(point); length >> int <- strByteLen(text); cp(off(representations,used),cast<byte>(text),length); used += length; wr(off(representations,used),10); used += 1; strRelease(text); point += 1;
+                }
+                a >> str <- sha256.nccSha256.bytes(lower,count*8); b >> str <- sha256.nccSha256.bytes(bits,count/8); c >> str <- sha256.nccSha256.bytes(representations,used);
+                record("lower-all-1114112-points",a == physical43_common.physical43Common.field(golden,"lower_all_codepoints_sha256"));
+                record("printability-all-1114112-points",b == physical43_common.physical43Common.field(golden,"printability_bitmap_sha256"));
+                record("repr-all-1114112-points",c == physical43_common.physical43Common.field(golden,"repr_all_codepoints_sha256"));
+                fsWriteFrom(work+"/lower-all.bin",lower,count*8,false); fsWriteFrom(work+"/printability.bin",bits,count/8,false); fsWriteFrom(work+"/repr-all.txt",representations,used,false);
+                strRelease(a); strRelease(b); strRelease(c); free(lower); free(bits); free(representations);
+                cases >> int <- jsonObjectBorrow(golden,"repr_values"); at >> int <- 0;
+                while (at < jsonArrayLen(cases)) {
+                    row >> int <- jsonArrayBorrow(cases,at); input >> str <- physical43_common.physical43Common.field(row,"input"); value >> int <- physical43_deep_json.physical43DeepJson.parse(input);
+                    actual >> str <- portable43_repr.portable43Repr.repr(value); expected >> str <- physical43_common.physical43Common.field(row,"repr"); record("repr-value-"+renderInt(at),portable43_repr.portable43Repr.equal(actual,expected)); strRelease(actual); strRelease(expected);
+                    actual <- portable43_repr.portable43Repr.strValue(value); expected <- physical43_common.physical43Common.field(row,"str"); record("str-value-"+renderInt(at),portable43_repr.portable43Repr.equal(actual,expected));
+                    strRelease(actual); strRelease(expected); strRelease(input); jsonRelease(value); jsonRelease(row); at += 1;
+                }
+                jsonRelease(cases); cases <- jsonObjectBorrow(golden,"lower_strings"); at <- 0;
+                while (at < jsonArrayLen(cases)) {
+                    row >> int <- jsonArrayBorrow(cases,at); input >> str <- physical43_common.physical43Common.field(row,"input"); actual >> str <- portable43_repr.portable43Repr.lower(input); expected >> str <- physical43_common.physical43Common.field(row,"expected");
+                    record("lower-context-"+renderInt(at),portable43_repr.portable43Repr.equal(actual,expected)); strRelease(input); strRelease(actual); strRelease(expected); jsonRelease(row); at += 1;
+                }
+                jsonRelease(cases);
+                a <- envHas("WINDIR") ? "a/b" : "A/b"; b <- envHas("WINDIR") ? "A.x" : "A.x";
+                record("path-components-before-flat-order",portable43_repr.portable43Repr.pathCompare(a,b) < 0);
+                record("path-host-case-policy",(portable43_repr.portable43Repr.pathCompare("A/z","a/z") == 0) == envHas("WINDIR"));
+            }
+            paths(repo >> str) -> void {
+                golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/portable43-path-goldens.json",false); vectors >> int <- jsonObjectBorrow(golden,"vectors"); at >> int <- 0;
+                while (at < jsonArrayLen(vectors)) { row >> int <- jsonArrayBorrow(vectors,at); base >> str <- physical43_common.physical43Common.field(row,"base"); candidate >> str <- physical43_common.physical43Common.field(row,"candidate"); joined >> str <- portable43_repr.portable43Repr.joinPath(base,candidate); actual >> str <- envHas("WINDIR") ? physical43_common.physical43Common.nativePath(joined) : strSubstring(joined,0,strByteLen(joined)); expected >> str <- physical43_common.physical43Common.field(row,envHas("WINDIR") ? "windows" : "linux"); record("path-join-"+renderInt(at),actual == expected); strRelease(base); strRelease(candidate); strRelease(joined); strRelease(actual); strRelease(expected); jsonRelease(row); at += 1; } jsonRelease(vectors); jsonRelease(golden);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); repo >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--repo","."));
+                work >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--work","")); if (work == "") return 2;
+                physical43_common.physical43Common.directories(work); golden >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/portable43-goldens.json",false);
+                extra >> int <- physical43_common.physical43Common.read(repo+"/bootstrap/portable43-boundary-goldens.json",false); boundaries(golden,extra); jsonRelease(extra);
+                extra <- physical43_common.physical43Common.read(repo+"/bootstrap/portable43-supplement-goldens.json",false); boundaries(golden,extra); jsonRelease(extra);
+                checks <- jsonNewArray(); record("current-native-fixtures-created",seed(golden,work)); unicode(golden,work);
+                paths(repo);
+                physical43_common.physical43Common.save(work+"/cases.json",golden);
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.portable43.native-tests.v1")); cert_json.certJson.put(report,"scope",jsonNewString("Synthetic native fixtures and frozen Python Unicode/representation goldens; no physical or CI certification."));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed)); jsonObjectSet(report,"checks",checks);
+                good >> bool <- physical43_common.physical43Common.save(work+"/tests.json",report); jsonRelease(report); jsonRelease(golden); jsonRelease(checks); argsRelease(arguments); return passed && good ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

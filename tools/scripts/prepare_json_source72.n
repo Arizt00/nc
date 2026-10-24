@@ -1,0 +1,64 @@
+use <io:output>;
+use <process:args>;
+
+prepareJsonSource72 {
+    append(root >> str, out >> str, name >> str, first >> bool, linux >> bool) -> bool {
+        path >> str <- root+"/runtime/nc/"+name;
+        count >> int <- fsSize(path);
+        if (count < 1 || count > 1048576) { strRelease(path); return false; }
+        data >> p<byte> <- alloc(count);
+        if (data == null) { strRelease(path); return false; }
+        valid >> bool <- fsReadInto(path,data,count) == count;
+        if (valid && first) {
+            before >> p<byte> <- cast("nccJsonRuntime :: runtime");
+            after >> p<byte> <- cast("jsonProvider54 :: runtime");
+            found >> int <- 0;
+            at >> int <- 0;
+            while (at+25 <= count) {
+                matched >> int <- 0;
+                while (matched < 25 && rd(off(data,at+matched)) == rd(off(before,matched))) matched += 1;
+                if (matched == 25) {
+                    position >> int <- 0;
+                    while (position < 25) { wr(off(data,at+position),rd(off(after,position))); position += 1; }
+                    found += 1;
+                }
+                at += 1;
+            }
+            valid <- found == 1;
+        }
+        if (valid && linux) {
+            needle >> p<byte> <- cast("vmCommit(base, total, 4)");
+            at >> int <- 0;
+            while (at+24 <= count) {
+                matched >> int <- 0;
+                while (matched < 24 && rd(off(data,at+matched)) == rd(off(needle,matched))) matched += 1;
+                if (matched == 24) wr(off(data,at+22),51);
+                at += 1;
+            }
+        }
+        valid <- valid && fsWriteFrom(out,data,count,!first) == count;
+        free(data); strRelease(path);
+        return valid;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 4) return 64;
+        root >> str <- argsAt(arguments,1);
+        out >> str <- argsAt(arguments,2);
+        mode >> str <- argsAt(arguments,3);
+        if (mode != "windows" && mode != "linux") { argsRelease(arguments); return 64; }
+        linux >> bool <- mode == "linux";
+        valid >> bool <- append(root,out,"json.n",true,linux) &&
+            append(root,out,"text_format.n",false,linux) &&
+            append(root,out,"text_escape.n",false,linux) &&
+            append(root,out,"text_parse.n",false,linux) &&
+            append(root,out,"unicode_tables.n",false,linux) &&
+            append(root,out,"unicode.n",false,linux) &&
+            append(root,out,"json_cursor_support.n",false,linux);
+        argsRelease(arguments);
+        println(valid ? "JSON source prepared from nC" : "JSON source preparation failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

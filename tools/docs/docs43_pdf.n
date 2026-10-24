@@ -1,0 +1,229 @@
+use <project:release_io, cert_json, docs43_font, docs43_utf8>;
+
+docs43Pdf {
+    stc:
+        destination >> str <- "";
+        stream >> str <- "";
+        offsets >> array<int, 4096>;
+        written >> int <- 0;
+        objects >> int <- 0;
+        pages >> int <- 0;
+        pageIds >> array<int,4096>;
+        unicodeFont >> int <- 0;
+        width >> int <- 595276;
+        height >> int <- 841890;
+        good >> bool <- true;
+    fn:
+        private:
+            writeData(text >> str) -> void {
+                count >> int <- strByteLen(text);
+                if (fsWriteFrom(destination,cast<byte>(text),count,true) != count) good <- false;
+                written += count;
+            }
+            object(id >> int, body >> str) -> void {
+                if (id < 1 || id >= 4096) { good <- false; return; }
+                offsets[id] <- written;
+                writeData(renderInt(id)+" 0 obj\n"+body+"\nendobj\n");
+            }
+            binaryObject(id >> int, bytes >> p<byte>, size >> int, extra >> str) -> void {
+                offsets[id] <- written;
+                writeData(renderInt(id)+" 0 obj\n<< /Length "+renderInt(size)+" "+extra+" >>\nstream\n");
+                if (fsWriteFrom(destination,bytes,size,true) != size) good <- false;
+                written += size; writeData("\nendstream\nendobj\n");
+            }
+            writeFont() -> void {
+                if (unicodeFont == 0) return;
+                id >> int <- unicodeFont;
+                object(id,"<< /Type /Font /Subtype /Type0 /BaseFont /Docs43Unicode /Encoding /Identity-H /DescendantFonts ["+renderInt(id+1)+" 0 R] /ToUnicode "+renderInt(id+5)+" 0 R >>");
+                object(id+1,"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Docs43Unicode /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor "+renderInt(id+2)+" 0 R /W "+docs43_font.docs43Font.widths()+" /CIDToGIDMap "+renderInt(id+4)+" 0 R >>");
+                object(id+2,docs43_font.docs43Font.descriptor(id+3));
+                binaryObject(id+3,docs43_font.docs43Font.pointer(),docs43_font.docs43Font.size(),"/Length1 "+renderInt(docs43_font.docs43Font.size()));
+                mapping >> str <- docs43_font.docs43Font.mapping();
+                object(id+4,"<< /Length "+renderInt(strByteLen(mapping))+" /Filter /ASCIIHexDecode >>\nstream\n"+mapping+"\nendstream"); strRelease(mapping);
+                cmap >> str <- docs43_font.docs43Font.unicodeMap();
+                object(id+5,"<< /Length "+renderInt(strByteLen(cmap))+" >>\nstream\n"+cmap+"\nendstream"); strRelease(cmap);
+            }
+            octal(value >> int) -> str {
+                return "\\"+renderInt((value/64)%8)+renderInt((value/8)%8)+renderInt(value%8);
+            }
+            glyphWidth(code >> int, font >> int) -> int {
+                if (font == 3) return 600;
+                regular >> array<int,95> <- [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+                bold >> array<int,95> <- [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+                if (code >= 192 && code <= 197) code <- 65;
+                if (code == 199) code <- 67;
+                if (code >= 200 && code <= 203) code <- 69;
+                if (code >= 204 && code <= 207) code <- 73;
+                if (code == 209) code <- 78;
+                if (code >= 210 && code <= 214) code <- 79;
+                if (code >= 217 && code <= 220) code <- 85;
+                if (code >= 224 && code <= 229) code <- 97;
+                if (code == 231) code <- 99;
+                if (code >= 232 && code <= 235) code <- 101;
+                if (code >= 236 && code <= 239) code <- 105;
+                if (code == 241) code <- 110;
+                if (code >= 242 && code <= 246) code <- 111;
+                if (code >= 249 && code <= 252) code <- 117;
+                if (code < 32 || code > 126) return 556;
+                return font == 2 ? bold[code-32] : regular[code-32];
+            }
+        public:
+            needsUnicode(text >> str) -> bool {
+                bytes >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) {
+                    code >> int <- docs43_utf8.docs43Utf8.point(bytes,at);
+                    if (code > 255 && code != 8211 && code != 8212 && code != 8216 && code != 8217 && code != 8220 && code != 8221 && code != 8226 && code != 8230) return true;
+                    at += docs43_utf8.docs43Utf8.span(rd(off(bytes,at)) & 255);
+                }
+                return false;
+            }
+            // All layout coordinates are integer thousandths of a PDF point.
+            number(value >> int) -> str {
+                negative >> bool <- value < 0;
+                if (negative) value <- -value;
+                tail >> str <- renderInt(value%1000);
+                while (strByteLen(tail) < 3) { tail <- "0"+tail; }
+                return (negative ? "-" : "")+renderInt(value/1000)+"."+tail;
+            }
+            literal(text >> str) -> str {
+                if (needsUnicode(text)) return docs43_utf8.docs43Utf8.string16(text);
+                output >> str <- "(";
+                data >> p<byte> <- cast(text);
+                i >> int <- 0;
+                while (i < strByteLen(text)) {
+                    code >> int <- rd(off(data,i)) & 255;
+                    i += 1;
+                    if (code >= 194 && code <= 223 && i < strByteLen(text)) {
+                        code <- (code & 31)*64+(rd(off(data,i)) & 63); i += 1;
+                    } else if (code >= 224 && code <= 239 && i+1 < strByteLen(text)) {
+                        code <- (code & 15)*4096+(rd(off(data,i)) & 63)*64+(rd(off(data,i+1)) & 63); i += 2;
+                        if (code == 8211) code <- 150;
+                        else if (code == 8212) code <- 151;
+                        else if (code == 8216) code <- 145;
+                        else if (code == 8217) code <- 146;
+                        else if (code == 8220) code <- 147;
+                        else if (code == 8221) code <- 148;
+                        else if (code == 8226) code <- 149;
+                        else if (code == 8230) code <- 133;
+                    }
+                    if (code > 255) { good <- false; code <- 63; }
+                    if (code == 40 || code == 41 || code == 92 || code < 32 || code >= 127) output <- cert_json.certJson.append(output,octal(code));
+                    else {
+                        ch >> str <- strSubstring(text,i-1,1);
+                        output <- cert_json.certJson.append(output,ch); strRelease(ch);
+                    }
+                }
+                return cert_json.certJson.append(output,")");
+            }
+            measure(text >> str, font >> int, size >> int) -> int {
+                if (needsUnicode(text)) return docs43_font.docs43Font.measure(text,size);
+                data >> p<byte> <- cast(text);
+                i >> int <- 0; total >> int <- 0;
+                while (i < strByteLen(text)) {
+                    code >> int <- rd(off(data,i)) & 255; i += 1;
+                    if (code >= 194 && code <= 223 && i < strByteLen(text)) {
+                        code <- (code & 31)*64+(rd(off(data,i)) & 63); i += 1;
+                    }
+                    total += glyphWidth(code,font);
+                }
+                return total*size/1000;
+            }
+            begin(path >> str, title >> str, author >> str, w >> int, h >> int) -> bool {
+                destination <- path; width <- w; height <- h;
+                good <- true; written <- 0; objects <- 6; pages <- 0; stream <- ""; unicodeFont <- 0; docs43_font.docs43Font.reset();
+                guard release_io.releaseIo.write(path,"%PDF-1.4\n% nC native documents v43\n") else return false;
+                written <- fsSize(path);
+                object(1,"<< /Type /Catalog /Pages 2 0 R >>");
+                object(3,"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+                object(4,"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+                object(5,"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>");
+                object(6,"<< /Title "+literal(title)+" /Author "+literal(author)+" /Producer (nC native PDF v43) >>");
+                return good;
+            }
+            content(text >> str) -> void { stream <- cert_json.certJson.append(stream,text); }
+            color(rgb >> str) -> void { content(rgb+" rg\n"); }
+            stroke(rgb >> str) -> void { content(rgb+" RG\n"); }
+            text(value >> str, x >> int, y >> int, font >> int, size >> int) -> void {
+                encoded >> str <- "";
+                if (needsUnicode(value)) {
+                    if (!docs43_font.docs43Font.load() || objects+6 >= 4096) { good <- false; return; }
+                    if (unicodeFont == 0) { unicodeFont <- objects+1; objects += 6; }
+                    font <- 4; encoded <- docs43_font.docs43Font.encode(value);
+                } else encoded <- literal(value);
+                content("BT /F"+renderInt(font)+" "+number(size)+" Tf 1 0 0 1 "+number(x)+" "+number(y)+" Tm "+encoded+" Tj ET\n");
+                strRelease(encoded);
+            }
+            right(value >> str, x >> int, y >> int, font >> int, size >> int) -> void {
+                text(value,x-measure(value,font,size),y,font,size);
+            }
+            line(x >> int, y >> int, x2 >> int, y2 >> int) -> void {
+                content(number(x)+" "+number(y)+" m "+number(x2)+" "+number(y2)+" l S\n");
+            }
+            rect(x >> int, y >> int, w >> int, h >> int, fill >> bool, border >> bool) -> void {
+                content(number(x)+" "+number(y)+" "+number(w)+" "+number(h)+" re "+(fill ? (border ? "B" : "f") : "S")+"\n");
+            }
+            roundRect(x >> int, y >> int, w >> int, h >> int, r >> int) -> void {
+                k >> int <- r*5528/10000;
+                content(number(x+r)+" "+number(y)+" m "+number(x+w-r)+" "+number(y)+" l\n");
+                content(number(x+w-r+k)+" "+number(y)+" "+number(x+w)+" "+number(y+r-k)+" "+number(x+w)+" "+number(y+r)+" c\n");
+                content(number(x+w)+" "+number(y+h-r)+" l "+number(x+w)+" "+number(y+h-r+k)+" "+number(x+w-r+k)+" "+number(y+h)+" "+number(x+w-r)+" "+number(y+h)+" c\n");
+                content(number(x+r)+" "+number(y+h)+" l "+number(x+r-k)+" "+number(y+h)+" "+number(x)+" "+number(y+h-r+k)+" "+number(x)+" "+number(y+h-r)+" c\n");
+                content(number(x)+" "+number(y+r)+" l "+number(x)+" "+number(y+r-k)+" "+number(x+r-k)+" "+number(y)+" "+number(x+r)+" "+number(y)+" c h B\n");
+            }
+            wrap(value >> str, font >> int, size >> int, maxWidth >> int) -> int {
+                result >> int <- jsonNewArray();
+                data >> p<byte> <- cast(value);
+                i >> int <- 0; current >> str <- "";
+                while (i < strByteLen(value)) {
+                    while (i < strByteLen(value) && (rd(off(data,i)) & 255) <= 32) { i += 1; }
+                    start >> int <- i;
+                    while (i < strByteLen(value) && (rd(off(data,i)) & 255) > 32) { i += 1; }
+                    if (start == i) break;
+                    word >> str <- strSubstring(value,start,i-start);
+                    trial >> str <- current == "" ? strSubstring(word,0,strByteLen(word)) : current+" "+word;
+                    if (measure(trial,font,size) <= maxWidth) { strRelease(current); current <- trial; }
+                    else {
+                        if (current != "") cert_json.certJson.push(result,jsonNewString(current));
+                        strRelease(current); strRelease(trial); current <- strSubstring(word,0,strByteLen(word));
+                    }
+                    strRelease(word);
+                }
+                if (current != "") cert_json.certJson.push(result,jsonNewString(current));
+                strRelease(current); return result;
+            }
+            wrapped(value >> str, x >> int, y >> int, w >> int, font >> int, size >> int, leading >> int) -> int {
+                lines >> int <- wrap(value,font,size,w);
+                i >> int <- 0;
+                while (i < jsonArrayLen(lines)) {
+                    item >> int <- jsonArrayBorrow(lines,i);
+                    text(jsonStringView(item,""),x,y,font,size); jsonRelease(item);
+                    y -= leading; i += 1;
+                }
+                jsonRelease(lines); return y;
+            }
+            page() -> void {
+                if (objects+2 >= 4096) { good <- false; return; }
+                id >> int <- objects+1;
+                object(id,"<< /Length "+renderInt(strByteLen(stream))+" >>\nstream\n"+stream+"endstream");
+                object(id+1,"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "+number(width)+" "+number(height)+"] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R "+(unicodeFont > 0 ? "/F4 "+renderInt(unicodeFont)+" 0 R " : "")+">> >> /Contents "+renderInt(id)+" 0 R >>");
+                pageIds[pages] <- id+1;
+                objects += 2; pages += 1; strRelease(stream); stream <- "";
+            }
+            finish() -> bool {
+                writeFont();
+                kids >> str <- ""; i >> int <- 0;
+                while (i < pages) { kids <- cert_json.certJson.append(kids,renderInt(pageIds[i])+" 0 R "); i += 1; }
+                object(2,"<< /Type /Pages /Count "+renderInt(pages)+" /Kids ["+kids+"] >>"); strRelease(kids);
+                start >> int <- written;
+                writeData("xref\n0 "+renderInt(objects+1)+"\n0000000000 65535 f \n");
+                i <- 1;
+                while (i <= objects) {
+                    positionText >> str <- renderInt(offsets[i]);
+                    while (strByteLen(positionText) < 10) { positionText <- "0"+positionText; }
+                    writeData(positionText+" 00000 n \n"); i += 1;
+                }
+                writeData("trailer\n<< /Size "+renderInt(objects+1)+" /Root 1 0 R /Info 6 0 R >>\nstartxref\n"+renderInt(start)+"\n%%EOF\n");
+                return good && pages > 0;
+            }
+    fa: return true;
+}

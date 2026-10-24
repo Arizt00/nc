@@ -1,0 +1,217 @@
+use <data:json>;
+use <io:render>;
+use <process:env>;
+use <project:release43_common, release43_host, release_io, sha256>;
+
+release43Archive {
+    stc: identities >> int;
+    fn:
+        private:
+            zero(data >> p<byte>, count >> int) -> void { at >> int <- 0; while (at < count) { wr(off(data,at),0); at += 1; } }
+            little(data >> p<byte>, at >> int, value >> i64, count >> int) -> void {
+                if (value < 0) value += 4294967296;
+                index >> int <- 0; while (index < count) { remainder >> i64 <- value%256; part >> int <- remainder; wr<byte>(off<byte>(data,at+index),part); value <- value/256; index += 1; }
+            }
+            writeRaw(path >> str, data >> p<byte>, count >> int, append >> bool) -> bool {
+                return release43_common.release43Common.writeBytes(path,data,count,append) == count;
+            }
+            octal(data >> p<byte>, at >> int, count >> int, value >> i64) -> void {
+                cursor >> int <- count-2; while (cursor >= 0) { wr(off(data,at+cursor),48+(value & 7)); value <- value >>> 3; cursor -= 1; }
+            }
+            header(path >> str, name >> str, size >> i64, kind >> int, mode >> int, target >> str) -> bool {
+                data >> p<byte> <- cast(alloc(512)); if (data == null) return false; zero(data,512);
+                cp(data,cast<byte>(name),strByteLen(name) < 100 ? strByteLen(name) : 100);
+                octal(data,100,8,mode); octal(data,108,8,0); octal(data,116,8,0); octal(data,124,12,size); octal(data,136,12,1767225600);
+                at >> int <- 148; while (at < 156) { wr(off(data,at),32); at += 1; }
+                wr(off(data,156),kind); cp(off(data,157),cast<byte>(target),strByteLen(target) < 100 ? strByteLen(target) : 100);
+                cp(off(data,257),cast<byte>("ustar"),5); cp(off(data,263),cast<byte>("00"),2);
+                sum >> int <- 0; at <- 0; while (at < 512) { sum += rd(off(data,at)) & 255; at += 1; }
+                octal(data,148,7,sum); wr(off(data,155),32);
+                good >> bool <- writeRaw(path,data,512,true); free(data); return good;
+            }
+            pax(key >> str, name >> str) -> str {
+                value >> str <- " "+key+"="+name+"\n"; count >> int <- strByteLen(value)+1;
+                while (strByteLen(renderInt(count))+strByteLen(value) != count) { count <- strByteLen(renderInt(count))+strByteLen(value); }
+                return renderInt(count)+value;
+            }
+            padding(path >> str, size >> i64) -> bool {
+                count >> int <- (512-size%512)%512; data >> p<byte> <- cast(alloc(512)); if (data == null) return false;
+                zero(data,512); good >> bool <- writeRaw(path,data,count,true); free(data); return good;
+            }
+            appendFile(path >> str, source >> str, size >> i64) -> bool {
+                if (size == 0) return true;
+                data >> p<byte> <- cast(alloc(1048576)); if (data == null) return false;
+                position >> i64 <- 0; good >> bool <- true;
+                while (position < size && good) {
+                    amount >> int <- size-position < 1048576 ? size-position : 1048576;
+                    good <- release43_host.release43Host.readRange(source,data,amount,position) == amount;
+                    if (good) good <- writeRaw(path,data,amount,true); position += amount;
+                }
+                free(data); return good;
+            }
+            crcFile(source >> str, size >> i64) -> int {
+                if (size == 0) return 0;
+                table >> p<u32> <- cast(alloc(1024)); data >> p<byte> <- cast(alloc(1048576));
+                if (table == null || data == null) { free(table); free(data); release43_common.release43Common.fail("cannot allocate CRC buffer"); return 0; }
+                at >> int <- 0;
+                while (at < 256) {
+                    value >> int <- at; bit >> int <- 0;
+                    while (bit < 8) { value <- (value >>> 1) ^ ((value & 1) == 1 ? 3988292384 : 0); bit += 1; }
+                    wr<u32>(off(table,at),value); at += 1;
+                }
+                value >> int <- 4294967295; position >> i64 <- 0;
+                while (position < size) {
+                    amount >> int <- size-position < 1048576 ? size-position : 1048576;
+                    if (release43_host.release43Host.readRange(source,data,amount,position) != amount) { release43_common.release43Common.fail("cannot stream CRC: "+source); break; }
+                    at <- 0; while (at < amount) { value <- (value >>> 8) ^ rd<u32>(off(table,(value ^ (rd(off(data,at)) & 255)) & 255)); at += 1; }
+                    position += amount;
+                }
+                free(table); free(data); return value ^ 4294967295;
+            }
+            addTar(path >> str, source >> str, name >> str, directory >> bool, executable >> bool) -> bool {
+                ascii >> bool <- true; at >> int <- 0; nameBytes >> p<byte> <- cast(name);
+                while (at < strByteLen(name)) { if ((rd(off(nameBytes,at)) & 255) >= 128) ascii <- false; at += 1; }
+                tarName >> str <- directory ? name+"/" : name;
+                linked >> bool <- release43_host.release43Host.link(source); target >> str <- linked ? release43_host.release43Host.linkTarget(source) : "";
+                if (linked && target == "") return release43_common.release43Common.fail("cannot read archive symlink: "+source);
+                if (linked) tarName <- name;
+                hardLink >> bool <- false;
+                if (!directory && !linked) {
+                    identity >> str <- release43_host.release43Host.identity(source);
+                    if (identity != "") {
+                        target <- release43_common.release43Common.field(identities,identity); hardLink <- target != "";
+                        if (!hardLink) release43_common.release43Common.put(identities,identity,jsonNewString(name));
+                    }
+                }
+                size >> i64 <- directory || linked || hardLink ? 0 : release43_common.release43Common.fileSize64(source);
+                if (size < 0) return release43_common.release43Common.fail("cannot stat archive member: "+source);
+                payload >> str <- strByteLen(tarName) > 100 || !ascii ? pax("path",tarName) : "";
+                if (size >= 8589934592) payload <- payload+pax("size",release43_common.release43Common.wideText(size));
+                at <- 0; ascii <- true; while (at < strByteLen(target)) { if ((rd<byte>(off<byte>(cast<byte>(target),at)) & 255) >= 128) ascii <- false; at += 1; }
+                if (strByteLen(target) > 100 || !ascii) payload <- payload+pax("linkpath",target);
+                if (payload != "") {
+                    if (!header(path,"././@PaxHeader",strByteLen(payload),120,420,"") ||
+                        !writeRaw(path,cast<byte>(payload),strByteLen(payload),true) || !padding(path,strByteLen(payload))) return false;
+                }
+                memberMode >> int <- hardLink ? release43_host.release43Host.mode(source) : (linked ? 511 : (directory || executable ? 493 : 420));
+                if (!header(path,tarName,size >= 8589934592 ? 0 : size,linked ? 50 : (hardLink ? 49 : (directory ? 53 : 48)),memberMode,target)) return false;
+                if (size > 0) { if (!appendFile(path,source,size)) return false; }
+                return padding(path,size);
+            }
+        public:
+            crc(data >> p<byte>, count >> int) -> int {
+                value >> int <- 4294967295; at >> int <- 0;
+                while (at < count) {
+                    value <- value ^ (rd(off(data,at)) & 255); bit >> int <- 0;
+                    while (bit < 8) { value <- (value >>> 1) ^ ((value & 1) == 1 ? 3988292384 : 0); bit += 1; }
+                    at += 1;
+                }
+                return value ^ 4294967295;
+            }
+            files(source >> str) -> int {
+                tree >> int <- release43_common.release43Common.tree(source); if (tree == 0) return 0;
+                names >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(tree)) {
+                    row >> int <- jsonArrayGet(tree,at);
+                    if (release_io.releaseIo.number(row,"kind",0) == 1) release43_common.release43Common.arg(names,release43_common.release43Common.field(row,"path"));
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(tree); ordered >> int <- release43_common.release43Common.sorted(names); release43_common.release43Common.release(names); return ordered;
+            }
+            zip(source >> str, target >> str, prefix >> str) -> bool {
+                files >> int <- files(source); if (files == 0) return false;
+                count >> int <- jsonArrayLen(files);
+                if (!release43_common.release43Common.makeDirectories(release_io.releaseIo.directory(target))) return false;
+                empty >> p<byte> <- cast(""); if (!writeRaw(target,empty,0,false)) return false;
+                central >> int <- jsonNewArray(); position >> i64 <- 0; at >> int <- 0; good >> bool <- true;
+                while (at < count && good) {
+                    rel >> str <- release43_common.release43Common.stringAt(files,at); name >> str <- prefix == "" ? rel : prefix+"/"+rel;
+                    size >> i64 <- release43_common.release43Common.fileSize64(source+"/"+rel); length >> int <- strByteLen(name);
+                    if (size < 0 || length > 65535) { good <- false; break; }
+                    extended >> bool <- size*105 > 214748364700; extra >> int <- extended ? 20 : 0;
+                    record >> p<byte> <- cast(alloc(30+length+extra));
+                    if (record == null) { good <- false; break; }
+                    checksum >> int <- crcFile(source+"/"+rel,size); good <- !release43_common.release43Common.failed(); flags >> int <- 0; cursor >> int <- 0; chars >> p<byte> <- cast(name);
+                    while (cursor < length) { if ((rd(off(chars,cursor)) & 255) >= 128) flags <- 2048; cursor += 1; }
+                    // ZipInfo passed to Python writestr defaults to STORED, despite the ZipFile compression setting.
+                    zero(record,30+length+extra); little(record,0,67324752,4); little(record,4,extended ? 45 : 20,2); little(record,6,flags,2);
+                    little(record,12,23585,2); little(record,14,checksum,4); little(record,18,extended ? 4294967295 : size,4); little(record,22,extended ? 4294967295 : size,4); little(record,26,length,2); little(record,28,extra,2); cp(off(record,30),chars,length);
+                    if (extended) { little(record,30+length,1,2); little(record,32+length,16,2); little(record,34+length,size,8); little(record,42+length,size,8); }
+                    if (good) good <- writeRaw(target,record,30+length+extra,true);
+                    if (good) good <- appendFile(target,source+"/"+rel,size);
+                    row >> int <- jsonNewObject(); release43_common.release43Common.put(row,"name",jsonNewString(name));
+                    release43_common.release43Common.put(row,"size",release43_common.release43Common.integer64(size)); release43_common.release43Common.put(row,"crc",jsonNewInt(checksum));
+                    release43_common.release43Common.put(row,"offset",release43_common.release43Common.integer64(position)); release43_common.release43Common.put(row,"flags",jsonNewInt(flags)); release43_common.release43Common.push(central,row);
+                    position += 30+length+extra+size; free(record); at += 1;
+                }
+                centralStart >> i64 <- position; at <- 0;
+                while (at < count && good) {
+                    row >> int <- jsonArrayGet(central,at); name >> str <- release43_common.release43Common.field(row,"name"); length >> int <- strByteLen(name);
+                    size >> i64 <- release43_common.release43Common.number64(row,"size"); location >> i64 <- release43_common.release43Common.number64(row,"offset");
+                    extra >> int <- (size > 2147483647 ? 16 : 0)+(location > 2147483647 ? 8 : 0); if (extra > 0) extra += 4;
+                    version >> int <- extra > 0 || size*105 > 214748364700 ? 45 : 20;
+                    record >> p<byte> <- cast(alloc(46+length+extra)); if (record == null) { release43_common.release43Common.release(row); good <- false; break; }
+                    zero(record,46+length+extra); little(record,0,33639248,4); little(record,4,version+(envHas("WINDIR") ? 0 : 768),2); little(record,6,version,2);
+                    little(record,8,release_io.releaseIo.number(row,"flags",0),2); little(record,14,23585,2); little(record,16,release_io.releaseIo.number(row,"crc",0),4);
+                    little(record,20,size > 2147483647 ? 4294967295 : size,4); little(record,24,size > 2147483647 ? 4294967295 : size,4); little(record,28,length,2); little(record,30,extra,2);
+                    little(record,38,27525120,4); little(record,42,location > 2147483647 ? 4294967295 : location,4); cp(off(record,46),cast<byte>(name),length);
+                    if (extra > 0) {
+                        little(record,46+length,1,2); little(record,48+length,extra-4,2); cursor >> int <- 50+length;
+                        if (size > 2147483647) { little(record,cursor,size,8); little(record,cursor+8,size,8); cursor += 16; }
+                        if (location > 2147483647) little(record,cursor,location,8);
+                    }
+                    good <- writeRaw(target,record,46+length+extra,true); position += 46+length+extra; free(record); release43_common.release43Common.release(row); at += 1;
+                }
+                centralSize >> i64 <- position-centralStart;
+                if (good && (count > 65535 || centralStart > 2147483647 || centralSize > 2147483647)) {
+                    extendedEnd >> p<byte> <- cast(alloc(76)); if (extendedEnd == null) good <- false;
+                    else {
+                        zero(extendedEnd,76); little(extendedEnd,0,101075792,4); little(extendedEnd,4,44,8); little(extendedEnd,12,45,2); little(extendedEnd,14,45,2);
+                        little(extendedEnd,24,count,8); little(extendedEnd,32,count,8); little(extendedEnd,40,centralSize,8); little(extendedEnd,48,centralStart,8);
+                        little(extendedEnd,56,117853008,4); little(extendedEnd,64,position,8); little(extendedEnd,72,1,4); good <- writeRaw(target,extendedEnd,76,true); free(extendedEnd);
+                    }
+                }
+                end >> p<byte> <- cast(alloc(22)); if (end == null) good <- false;
+                else { zero(end,22); little(end,0,101010256,4); little(end,8,count > 65535 ? 65535 : count,2); little(end,10,count > 65535 ? 65535 : count,2); little(end,12,centralSize > 4294967295 ? 4294967295 : centralSize,4); little(end,16,centralStart > 4294967295 ? 4294967295 : centralStart,4); if (good) good <- writeRaw(target,end,22,true); free(end); }
+                release43_common.release43Common.release(files); release43_common.release43Common.release(central); return good;
+            }
+            tarGz(source >> str, target >> str, prefix >> str, executable >> bool) -> bool {
+                identities <- jsonNewObject();
+                if (!release43_common.release43Common.makeDirectories(release_io.releaseIo.directory(target))) return false;
+                plain >> str <- target+".release43.tar";
+                if (!writeRaw(plain,cast<byte>(""),0,false)) return false;
+                good >> bool <- prefix == "" || addTar(plain,source,prefix,true,executable);
+                rows >> int <- release43_common.release43Common.tree(source); if (rows == 0) return false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(rows) && good) {
+                    row >> int <- jsonArrayGet(rows,at); rel >> str <- release43_common.release43Common.field(row,"path");
+                    good <- addTar(plain,source+"/"+rel,prefix == "" ? rel : prefix+"/"+rel,release_io.releaseIo.number(row,"kind",0) == 2,executable);
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(rows); release43_common.release43Common.release(identities); zeros >> p<byte> <- cast(alloc(10240)); if (zeros == null) return false; zero(zeros,10240);
+                length >> i64 <- release43_common.release43Common.fileSize64(plain); tail >> int <- 10240-length%10240; if (tail < 1024) tail += 10240;
+                good <- good && writeRaw(plain,zeros,tail > 10240 ? 10240 : tail,true);
+                if (tail > 10240) good <- good && writeRaw(plain,zeros,tail-10240,true);
+                free(zeros); if (!good) return false;
+                args >> int <- release43_common.release43Common.array("[\"-9\",\"-n\",\"-f\"]"); release43_common.release43Common.arg(args,plain);
+                row >> int <- release43_common.release43Common.invoke(release43_common.release43Common.nativeTool("gzip"),args);
+                if (!release43_common.release43Common.succeeded(row)) return release43_common.release43Common.fail("native gzip failed");
+                if (release43_common.release43Common.fileType(target) == 1) release43_common.release43Common.deleteFile(target);
+                return release43_common.release43Common.renamePath(plain+".gz",target);
+            }
+            extract(archive >> str, destination >> str) -> bool {
+                if (!release43_common.release43Common.makeDirectories(destination)) return false;
+                words >> int <- release43_common.release43Common.array("[\"-xf\"]"); release43_common.release43Common.arg(words,archive);
+                release43_common.release43Common.arg(words,"-C"); release43_common.release43Common.arg(words,destination);
+                binary >> str <- envHas("WINDIR") ? release43_common.release43Common.env("WINDIR")+"/System32/tar.exe" : "tar";
+                // Windows' bsdtar accepts ZIP as well as gzip; MSYS GNU tar does not.
+                if (strEndsWith(archive,".zip")) {
+                    if (!envHas("WINDIR")) {
+                        binary <- "unzip"; release43_common.release43Common.release(words); words <- release43_common.release43Common.array("[\"-q\"]");
+                        release43_common.release43Common.arg(words,archive); release43_common.release43Common.arg(words,"-d"); release43_common.release43Common.arg(words,destination);
+                    }
+                }
+                return release43_common.release43Common.succeeded(release43_common.release43Common.invoke(binary,words));
+            }
+    fa: return true;
+}

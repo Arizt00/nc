@@ -1,0 +1,203 @@
+sha256[@runtime] {
+    fn:
+        private:
+            u32(value >> int) -> int {
+                return value;
+            }
+
+            power2(bits >> int) -> int {
+                value >> int <- 1;
+                at >> int <- 0;
+                while (at < bits) { value *= 2; at += 1; }
+                return value;
+            }
+
+            rotateRight(value >> int, bits >> int) -> int {
+                normalized >> int <- u32(value);
+                mask >> int <- power2(bits) - 1;
+                return u32((normalized >>> bits) +
+                    ((normalized & mask) * power2(32 - bits)));
+            }
+
+            choose(x >> int, y >> int, z >> int) -> int {
+                return u32((x & y) ^ ((x ^ 4294967295) & z));
+            }
+
+            majority(x >> int, y >> int, z >> int) -> int {
+                return u32((x & y) ^ (x & z) ^ (y & z));
+            }
+
+            roundConstant(index >> int) -> int {
+                values >> array<int, 64> <- [
+                    1116352408, 1899447441, 3049323471, 3921009573,
+                    961987163, 1508970993, 2453635748, 2870763221,
+                    3624381080, 310598401, 607225278, 1426881987,
+                    1925078388, 2162078206, 2614888103, 3248222580,
+                    3835390401, 4022224774, 264347078, 604807628,
+                    770255983, 1249150122, 1555081692, 1996064986,
+                    2554220882, 2821834349, 2952996808, 3210313671,
+                    3336571891, 3584528711, 113926993, 338241895,
+                    666307205, 773529912, 1294757372, 1396182291,
+                    1695183700, 1986661051, 2177026350, 2456956037,
+                    2730485921, 2820302411, 3259730800, 3345764771,
+                    3516065817, 3600352804, 4094571909, 275423344,
+                    430227734, 506948616, 659060556, 883997877,
+                    958139571, 1322822218, 1537002063, 1747873779,
+                    1955562222, 2024104815, 2227730452, 2361852424,
+                    2428436474, 2756734187, 3204031479, 3329325298
+                ];
+                return values[index];
+            }
+
+            nibble(value >> int) -> str {
+                if (value == 0) return "0";
+                if (value == 1) return "1";
+                if (value == 2) return "2";
+                if (value == 3) return "3";
+                if (value == 4) return "4";
+                if (value == 5) return "5";
+                if (value == 6) return "6";
+                if (value == 7) return "7";
+                if (value == 8) return "8";
+                if (value == 9) return "9";
+                if (value == 10) return "a";
+                if (value == 11) return "b";
+                if (value == 12) return "c";
+                if (value == 13) return "d";
+                if (value == 14) return "e";
+                return "f";
+            }
+
+            wordHex(value >> int) -> str {
+                output >> str <- "";
+                at >> int <- 7;
+                while (at >= 0) {
+                    output <- output + nibble((value >>> (at * 4)) & 15);
+                    at -= 1;
+                }
+                return output;
+            }
+
+            digest(data >> p<byte>, byteCount >> int) -> str {
+                required >> int <- byteCount + 9;
+                padded >> int <- ((required + 63) / 64) * 64;
+                message >> p<byte> <- cast(alloc(padded));
+                guard message != null else return "";
+                at >> int <- 0;
+                while (at < padded) { wr(off(message, at), 0); at += 1; }
+                at <- 0;
+                while (at < byteCount) {
+                    wr(off(message, at), rd(off(data, at)));
+                    at += 1;
+                }
+                wr(off(message, byteCount), 128);
+                bitCount >> int <- byteCount * 8;
+                at <- 0;
+                while (at < 8) {
+                    wr(off(message, padded - 1 - at), bitCount & 255);
+                    bitCount <- bitCount >>> 8;
+                    at += 1;
+                }
+
+                h0 >> int <- 1779033703;
+                h1 >> int <- 3144134277;
+                h2 >> int <- 1013904242;
+                h3 >> int <- 2773480762;
+                h4 >> int <- 1359893119;
+                h5 >> int <- 2600822924;
+                h6 >> int <- 528734635;
+                h7 >> int <- 1541459225;
+                words >> p<int> <- cast(alloc(64 * sizeOf(int)));
+                guard words != null else { free(message); return ""; }
+
+                block >> int <- 0;
+                while (block < padded) {
+                    at <- 0;
+                    while (at < 16) {
+                        base >> int <- block + at * 4;
+                        value >> int <- (rd(off(message, base)) & 255) * 16777216 +
+                            (rd(off(message, base + 1)) & 255) * 65536 +
+                            (rd(off(message, base + 2)) & 255) * 256 +
+                            (rd(off(message, base + 3)) & 255);
+                        wr(off(words, at), u32(value));
+                        at += 1;
+                    }
+                    while (at < 64) {
+                        w15 >> int <- rd(off(words, at - 15));
+                        w2 >> int <- rd(off(words, at - 2));
+                        s0 >> int <- rotateRight(w15, 7) ^ rotateRight(w15, 18) ^ (w15 >>> 3);
+                        s1 >> int <- rotateRight(w2, 17) ^ rotateRight(w2, 19) ^ (w2 >>> 10);
+                        wr(off(words, at), u32(rd(off(words, at - 16)) + s0 +
+                            rd(off(words, at - 7)) + s1));
+                        at += 1;
+                    }
+
+                    a >> int <- h0;
+                    b >> int <- h1;
+                    c >> int <- h2;
+                    d >> int <- h3;
+                    e >> int <- h4;
+                    f >> int <- h5;
+                    g >> int <- h6;
+                    h >> int <- h7;
+                    at <- 0;
+                    while (at < 64) {
+                        upper1 >> int <- rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+                        temporary1 >> int <- u32(h + upper1 + choose(e, f, g) +
+                            roundConstant(at) + rd(off(words, at)));
+                        upper0 >> int <- rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+                        temporary2 >> int <- u32(upper0 + majority(a, b, c));
+                        h <- g;
+                        g <- f;
+                        f <- e;
+                        e <- u32(d + temporary1);
+                        d <- c;
+                        c <- b;
+                        b <- a;
+                        a <- u32(temporary1 + temporary2);
+                        at += 1;
+                    }
+                    h0 <- u32(h0 + a);
+                    h1 <- u32(h1 + b);
+                    h2 <- u32(h2 + c);
+                    h3 <- u32(h3 + d);
+                    h4 <- u32(h4 + e);
+                    h5 <- u32(h5 + f);
+                    h6 <- u32(h6 + g);
+                    h7 <- u32(h7 + h);
+                    block += 64;
+                }
+                free(words);
+                free(message);
+                return wordHex(h0) + wordHex(h1) + wordHex(h2) + wordHex(h3) +
+                    wordHex(h4) + wordHex(h5) + wordHex(h6) + wordHex(h7);
+            }
+
+        public:
+            bytes(data >> p<byte>, byteCount >> int) -> str {
+                guard byteCount >= 0 else return "";
+                return digest(data, byteCount);
+            }
+
+            file(path >> str) -> str {
+                byteCount >> int <- fsSize(path);
+                guard byteCount >= 0 else return "sha256:size-error";
+                storageBytes >> int <- byteCount == 0 ? 1 : byteCount;
+                data >> p<byte> <- cast(alloc(storageBytes));
+                guard data != null else return "sha256:alloc-error";
+                read >> int <- byteCount == 0 ? 0 : fsReadInto(path, data, byteCount);
+                read <- read & 2147483647;
+                byteCount <- read;
+                result >> str <- digest(data, byteCount);
+                free(data);
+                return result;
+            }
+
+            selfTest() -> bool {
+                return choose(1, 2, 3) == 2 &&
+                    majority(1, 1, 0) == 1 && power2(8) == 256;
+            }
+
+    fa:
+        return true;
+}

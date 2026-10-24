@@ -1,0 +1,132 @@
+bitWeightPurePhysical[@] {
+    stc:
+        physicalWidth >> int <- 32;
+
+        src0 >> addr <- 0x3000;
+        src1 >> addr <- 0x3004;
+        src2 >> addr <- 0x3008;
+
+        dst0Shift >> addr <- 0x4000;
+        dst0Fold  >> addr <- 0x4004;
+
+        dst1Shift >> addr <- 0x4008;
+        dst1Fold  >> addr <- 0x400C;
+
+        dst2Shift >> addr <- 0x4010;
+        dst2Fold  >> addr <- 0x4014;
+
+    binary:
+        one >> int <- 0b1;
+        zero >> int <- 0b0;
+
+    fn:
+        loadWord(address >> addr) -> int {
+            pointer >> p<int> <- from(address);
+            return rd(pointer);
+        }
+
+        storeWord(address >> addr, value >> int) -> void {
+            pointer >> p<int> <- from(address);
+            wr(pointer, value);
+        }
+
+        seedPhysicalMemory() -> bool {
+            storeWord(src0, 11);
+            storeWord(src1, -1);
+            storeWord(src2, 0);
+            return true;
+        }
+
+        physicalShiftCount(src >> addr, dst >> addr) -> bool {
+            work >> int <- 0;
+            acc >> int <- 0;
+            lsb >> int <- 0;
+
+            raw {
+                work >> int <- loadWord(src);
+                acc >> int <- 0;
+
+                while (work != zero) {
+                    lsb >> int <- work & one;
+                    acc >> int <- acc + lsb;
+                    work >> int <- work >>> 1;
+                }
+
+                storeWord(dst, acc);
+            }
+
+            return true;
+        }
+
+        physicalFoldCount(src >> addr, dst >> addr) -> bool {
+            work >> int <- 0;
+            acc >> int <- 0;
+
+            raw {
+                work >> int <- loadWord(src);
+                acc >> int <- 0;
+
+                while (work != zero) {
+                    work >> int <- work & (work - 1);
+                    acc >> int <- acc + 1;
+                }
+
+                storeWord(dst, acc);
+            }
+
+            return true;
+        }
+
+        physicalAssert(dst >> addr) -> bool {
+            value >> int <- loadWord(dst);
+
+            if (value < 0) {
+                dev(irregular);
+            }
+
+            if (value > physicalWidth) {
+                dev(security.MemoryOverflow);
+            }
+
+            return true;
+        }
+
+    probe:
+        seedPhysicalMemory();
+        physicalShiftCount(src0, dst0Shift);
+        physicalFoldCount(src0, dst0Fold);
+
+        physicalShiftCount(src1, dst1Shift);
+        physicalFoldCount(src1, dst1Fold);
+
+        physicalShiftCount(src2, dst2Shift);
+        physicalFoldCount(src2, dst2Fold);
+
+        if (loadWord(dst0Shift) != 3)  { dev(CompilerFault); }
+        if (loadWord(dst0Fold)  != 3)  { dev(CompilerFault); }
+
+        if (loadWord(dst1Shift) != 32) { dev(CompilerFault); }
+        if (loadWord(dst1Fold)  != 32) { dev(CompilerFault); }
+
+        if (loadWord(dst2Shift) != 0)  { dev(CompilerFault); }
+        if (loadWord(dst2Fold)  != 0)  { dev(CompilerFault); }
+
+        physicalAssert(dst0Shift);
+        physicalAssert(dst0Fold);
+        physicalAssert(dst1Shift);
+        physicalAssert(dst1Fold);
+        physicalAssert(dst2Shift);
+        physicalAssert(dst2Fold);
+
+    final:
+        println("bitWeightPurePhysical::stable");
+
+        println(loadWord(dst0Shift));
+        println(loadWord(dst0Fold));
+        println(loadWord(dst1Shift));
+        println(loadWord(dst1Fold));
+        println(loadWord(dst2Shift));
+        println(loadWord(dst2Fold));
+
+        return true;
+}

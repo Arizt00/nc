@@ -1,0 +1,63 @@
+package closure_executable { profile: closure_aot; }
+
+use <memory:stack>;
+
+closureExecutable {
+    fn:
+        apply(value >> int, f >> fn(int) -> int) -> int {
+            return f(value);
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            addOneStorage >> p<byte> <- stackAlloc(512, 16);
+            doubleStorage >> p<byte> <- stackAlloc(512, 16);
+            plusBaseStorage >> p<byte> <- stackAlloc(512, 16);
+            incStorage >> p<byte> <- stackAlloc(512, 16);
+            ownedStorage >> p<byte> <- stackAlloc(512, 16);
+            sumStorage >> p<byte> <- stackAlloc(512, 16);
+
+            addOne >> fn(int) -> int <- closureAt(addOneStorage, |x: int| -> int {
+                return x + 1;
+            });
+            double >> fn(int) -> int <- closureAt(doubleStorage, |x: int| -> int {
+                return x * 2;
+            });
+            base >> int <- 10;
+            plusBase >> fn(int) -> int <- closureAt(plusBaseStorage, |x: int| -> int captures(base) {
+                return x + base;
+            });
+            counter >> int <- 0;
+            inc >> fn(int) -> int <- closureAt(incStorage, |x: int| -> int
+                effects(state.write)
+                captures(mut counter) {
+                counter >> int <- counter + 1;
+                return x + counter;
+            });
+            ownedValue >> int <- 41;
+            owned >> fn() -> int <- closureAt(ownedStorage, move || -> int captures(move ownedValue) {
+                return ownedValue + 1;
+            });
+            sum6 >> fn(int, int, int, int, int, int) -> int <- closureAt(sumStorage,
+                |a: int, b: int, c: int, d: int, e: int, f: int| -> int {
+                return a + b + c + d + e + f;
+            });
+
+            ok >> bool <- addOne(4) == 5
+                && apply(6, double) == 12
+                && plusBase(5) == 15
+                && inc(2) == 3
+                && inc(2) == 4
+                && counter == 2
+                && owned() == 42
+                && sum6(1, 2, 3, 4, 5, 6) == 21;
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

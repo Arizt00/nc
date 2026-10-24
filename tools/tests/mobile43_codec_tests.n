@@ -1,0 +1,76 @@
+use <io:output, render>;
+use <project:mobile43_codec, mobile43_transport, sha256>;
+
+mobile43CodecTests {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+    fn:
+        private:
+            expect(value >> bool) -> void {
+                checks += 1;
+                if (!value) { failures += 1; println("FAIL "+renderInt(checks)); }
+            }
+        public:
+            run() -> int {
+                expect(sha256.nccSha256.selfTest());
+                expect(mobile43_codec.mobile43Codec.field("a|b|c",1) == "b");
+                expect(mobile43_codec.mobile43Codec.field("a|b|c",4) == "");
+                expect(mobile43_codec.mobile43Codec.fields("a||c|") == 4);
+                expect(mobile43_codec.mobile43Codec.fieldIs("a||c|",1,""));
+                expect(mobile43_codec.mobile43Codec.fieldIs("a||c|",2,"c"));
+                expect(!mobile43_codec.mobile43Codec.fieldIs("a||c|",4,""));
+                expect(mobile43_codec.mobile43Codec.equal("hello","hello"));
+                expect(!mobile43_codec.mobile43Codec.equal("hello","hell"));
+                digest >> str <- mobile43_codec.mobile43Codec.sign("Jefe","what do ya want for nothing?");
+                expect(digest == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+                strRelease(digest);
+                token >> p<byte> <- cast(alloc(132));
+                i >> int <- 0;
+                while (i < 131) { wr(off(token,i),170); i += 1; }
+                wr(off(token,131),0);
+                text >> str <- cast(token);
+                digest <- mobile43_codec.mobile43Codec.sign(text,"Test Using Larger Than Block-Size Key - Hash Key First");
+                expect(digest == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+                strRelease(digest); free(token);
+                encoded >> str <- mobile43_codec.mobile43Codec.encode("PING");
+                expect(encoded == "UElORw"); strRelease(encoded);
+                decoded >> str <- mobile43_codec.mobile43Codec.decode("UElORw");
+                expect(decoded == "PING"); strRelease(decoded);
+                expect(mobile43_codec.mobile43Codec.decode("_") == "");
+                expect(mobile43_codec.mobile43Codec.decode("AA") == "");
+                expect(mobile43_codec.mobile43Codec.decode("wIA") == "");
+                input >> str <- "Llamada: España, 東京";
+                encoded <- mobile43_codec.mobile43Codec.encode(input);
+                decoded <- mobile43_codec.mobile43Codec.decode(encoded);
+                expect(decoded == input); strRelease(encoded); strRelease(decoded);
+                iteration >> int <- 0;
+                while (iteration < 4096) {
+                    encoded <- mobile43_codec.mobile43Codec.encode(input);
+                    decoded <- mobile43_codec.mobile43Codec.decode(encoded);
+                    expect(decoded == input);
+                    strRelease(encoded); strRelease(decoded); iteration += 1;
+                }
+                header >> p<byte> <- cast(alloc(4));
+                i <- 0;
+                while (i < 1048578) {
+                    mobile43_codec.mobile43Codec.writeLength(header,i);
+                    expect(mobile43_codec.mobile43Codec.readLength(header) == i);
+                    if (i < 257) i += 1;
+                    else if (i == 257) i <- 65535;
+                    else if (i < 65538) i += 1;
+                    else if (i == 65538) i <- 1048576;
+                    else i += 1;
+                }
+                free(header);
+                nonce >> str <- mobile43_transport.mobile43Transport.nonce();
+                expect(strByteLen(nonce) == 48); strRelease(nonce);
+                ctx >> addr <- mobile43_transport.mobile43Transport.context(false,""," ");
+                expect(ctx != null);
+                mobile43_transport.mobile43Transport.close(null,null,ctx);
+                println(failures == 0 ? "OK: mobile43 codec, RFC 4231, UTF-8 and native TLS context" : "FAILED: mobile43 codec");
+                return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

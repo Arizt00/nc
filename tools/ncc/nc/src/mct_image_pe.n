@@ -1,0 +1,247 @@
+use <project:mct, mct_link, mct_image_contract>;
+
+nccMctImagePe {
+    const:
+        TARGET_WIN64 >> int <- 2;
+        FORMAT_PE64 >> int <- 1;
+        IMAGE_BASE >> int <- 0x00400000;
+        SECTION_ALIGN >> int <- 0x1000;
+        FILE_ALIGN >> int <- 0x200;
+        TEXT_RVA >> int <- 0x1000;
+        PE_OFFSET >> int <- 0x80;
+        OPTIONAL_BYTES >> int <- 240;
+        SECTION_BYTES >> int <- 40;
+        HOST_EXIT_BYTES >> int <- 19;
+        HEADERS_RAW >> int <- PE_OFFSET + 4 + 20 + OPTIONAL_BYTES + 4 * SECTION_BYTES;
+
+    fn:
+        private:
+            symbolBytes(material >> p<byte>, node >> int) -> int {
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                    material, node);
+                return 11 + ownerBytes + (ownerBytes > 0 ? 1 : 0) +
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node);
+            }
+
+            writeSymbol(out >> p<byte>, at >> int, material >> p<byte>, node >> int) -> int {
+                cursor >> int <- mct_image_contract.nccMctImageContract.literal(
+                    out, at, "nC.runtime.", 11);
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(material, node);
+                if (ownerBytes > 0) {
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetOwner(material, node),
+                        ownerBytes);
+                    cursor += ownerBytes;
+                    mct_image_contract.nccMctImageContract.put8(out, cursor, 46);
+                    cursor += 1;
+                }
+                nameBytes >> int <- mct.nccMct.artifactRecordTargetNameBytes(material, node);
+                if (nameBytes > 0) {
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetName(material, node),
+                        nameBytes);
+                    cursor += nameBytes;
+                }
+                mct_image_contract.nccMctImageContract.put8(out, cursor, 0);
+                return cursor + 1;
+            }
+
+            importBytes(material >> p<byte>, plan >> p<byte>) -> int {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                // Kernel descriptor, optional runtime descriptor, null descriptor, both ILTs and names.
+                bytes >> int <- 64 + (providers + 1) * 8 + 16 + 14 + 14 + 14;
+                index >> int <- 0;
+                while (index < providers) {
+                    node >> int <- mct_link.nccMctLink.finalPlanProviderNode(plan, index);
+                    bytes += 2 + symbolBytes(material, node) + 1;
+                    if (bytes % 2 != 0) bytes += 1;
+                    index += 1;
+                }
+                return bytes;
+            }
+
+            writeSection(out >> p<byte>, at >> int, name >> str, nameBytes >> int,
+                virtualSize >> int, rva >> int, rawSize >> int, rawAt >> int,
+                characteristics >> int) -> void {
+                mct_image_contract.nccMctImageContract.literal(out, at, name, nameBytes);
+                mct_image_contract.nccMctImageContract.put32(out, at + 8, virtualSize);
+                mct_image_contract.nccMctImageContract.put32(out, at + 12, rva);
+                mct_image_contract.nccMctImageContract.put32(out, at + 16, rawSize);
+                mct_image_contract.nccMctImageContract.put32(out, at + 20, rawAt);
+                mct_image_contract.nccMctImageContract.put32(out, at + 36, characteristics);
+            }
+
+            buildImports(out >> p<byte>, textRaw >> int, idataAt >> int, idataRva >> int,
+                material >> p<byte>, plan >> p<byte>) -> int {
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                descriptorAt >> int <- idataAt + 20;
+                intAt >> int <- idataAt + 64;
+                kernelInt >> int <- intAt + (providers + 1) * 8;
+                namesAt >> int <- kernelInt + 16;
+                cursor >> int <- mct_image_contract.nccMctImageContract.cstring(out,namesAt,"kernel32.dll",12);
+                if (cursor % 2 != 0) cursor += 1;
+                hint >> int <- cursor;
+                mct_image_contract.nccMctImageContract.put16(out,hint,0);
+                cursor <- mct_image_contract.nccMctImageContract.cstring(out,hint+2,"ExitProcess",11);
+                exitName >> int <- idataRva+hint-idataAt;
+                exitSlot >> int <- mct_link.nccMctLink.finalPlanStorageEnd(plan)-16;
+                mct_image_contract.nccMctImageContract.put64(out,kernelInt,exitName);
+                mct_image_contract.nccMctImageContract.put64(out,textRaw+exitSlot,exitName);
+                mct_image_contract.nccMctImageContract.put32(out,idataAt,idataRva+kernelInt-idataAt);
+                mct_image_contract.nccMctImageContract.put32(out,idataAt+12,idataRva+namesAt-idataAt);
+                mct_image_contract.nccMctImageContract.put32(out,idataAt+16,TEXT_RVA+exitSlot);
+                dllAt >> int <- cursor;
+                cursor <- mct_image_contract.nccMctImageContract.cstring(out,dllAt,"ncruntime.dll",13);
+                if (cursor % 2 != 0) cursor += 1;
+
+                index >> int <- 0;
+                while (index < providers) {
+                    node >> int <- mct_link.nccMctLink.finalPlanProviderNode(plan, index);
+                    hintAt >> int <- cursor;
+                    mct_image_contract.nccMctImageContract.put16(out, hintAt, 0);
+                    cursor <- writeSymbol(out, hintAt + 2, material, node);
+                    if (cursor % 2 != 0) cursor += 1;
+                    nameRva >> int <- idataRva + hintAt - idataAt;
+                    mct_image_contract.nccMctImageContract.put64(out, intAt + index * 8,
+                        nameRva);
+                    slot >> int <- mct_link.nccMctLink.finalPlanProviderSlotOffset(plan,index);
+                    mct_image_contract.nccMctImageContract.put64(out,textRaw+slot,nameRva);
+                    index += 1;
+                }
+
+                firstSlot >> int <- providers > 0 ?
+                    mct_link.nccMctLink.finalPlanProviderSlotOffset(plan, 0) : 0;
+                if (providers > 0) {
+                    mct_image_contract.nccMctImageContract.put32(out, descriptorAt,idataRva + intAt - idataAt);
+                    mct_image_contract.nccMctImageContract.put32(out, descriptorAt + 12,idataRva + dllAt - idataAt);
+                    mct_image_contract.nccMctImageContract.put32(out, descriptorAt + 16,TEXT_RVA + firstSlot);
+                }
+                return cursor - idataAt;
+            }
+
+        public:
+            build(material >> p<byte>, plan >> p<byte>) -> p<byte> {
+                guard material != null && plan != null &&
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_WIN64 &&
+                    mct_link.nccMctLink.finalPlanReady(plan) else return null;
+                linkedBytes >> int <- mct_link.nccMctLink.finalPlanBytes(plan);
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                mainOffset >> int <- mct_link.nccMctLink.finalPlanEntryOffset(plan);
+                guard linkedBytes > 0 else return null;
+                entryOffset >> int <- linkedBytes;
+                payloadBytes >> int <- linkedBytes + HOST_EXIT_BYTES;
+
+                headers >> int <- mct_image_contract.nccMctImageContract.align(
+                    HEADERS_RAW, FILE_ALIGN);
+                textRaw >> int <- headers;
+                textSize >> int <- mct_image_contract.nccMctImageContract.align(
+                    payloadBytes, FILE_ALIGN);
+                rodataOffset >> int <- mct_link.nccMctLink.sectionOffset(plan,4);
+                dataOffset >> int <- mct_link.nccMctLink.sectionOffset(plan,2);
+                guard rodataOffset >= payloadBytes && dataOffset > rodataOffset else return null;
+                storageEnd >> int <- mct_link.nccMctLink.finalPlanStorageEnd(plan);
+                rodataSize >> int <- dataOffset-rodataOffset;
+                dataSize >> int <- mct_image_contract.nccMctImageContract.align(storageEnd-dataOffset,FILE_ALIGN);
+                idataRva >> int <- mct_image_contract.nccMctImageContract.align(
+                    TEXT_RVA + storageEnd, SECTION_ALIGN);
+                idataAt >> int <- textRaw+dataOffset+dataSize;
+                imports >> int <- importBytes(material, plan);
+                unwindAt >> int <- mct_image_contract.nccMctImageContract.align(imports,4);
+                idataVirtual >> int <- unwindAt+20;
+                idataSize >> int <- mct_image_contract.nccMctImageContract.align(
+                    idataVirtual, FILE_ALIGN);
+                total >> int <- idataAt + idataSize;
+                image >> p<byte> <- mct_image_contract.nccMctImageContract.make(
+                    FORMAT_PE64,
+                    TARGET_WIN64, total, TEXT_RVA + entryOffset, providers, 1);
+                guard image != null else return null;
+                out >> p<byte> <- mct_image_contract.nccMctImageContract.data(image);
+
+                mct_image_contract.nccMctImageContract.put8(out, 0, 0x4D);
+                mct_image_contract.nccMctImageContract.put8(out, 1, 0x5A);
+                mct_image_contract.nccMctImageContract.put32(out, 0x3C, PE_OFFSET);
+                mct_image_contract.nccMctImageContract.put32(out, PE_OFFSET, 0x00004550);
+                coff >> int <- PE_OFFSET + 4;
+                mct_image_contract.nccMctImageContract.put16(out, coff, 0x8664);
+                mct_image_contract.nccMctImageContract.put16(out, coff + 2, 4);
+                mct_image_contract.nccMctImageContract.put16(out, coff + 16, OPTIONAL_BYTES);
+                mct_image_contract.nccMctImageContract.put16(out, coff + 18, 0x0022);
+
+                optional >> int <- coff + 20;
+                mct_image_contract.nccMctImageContract.put16(out, optional, 0x020B);
+                mct_image_contract.nccMctImageContract.put8(out, optional + 2, 1);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 4, textSize);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 8, rodataSize+dataSize+idataSize);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 16,
+                    TEXT_RVA + entryOffset);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 20, TEXT_RVA);
+                mct_image_contract.nccMctImageContract.put64(out, optional + 24, IMAGE_BASE);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 32, SECTION_ALIGN);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 36, FILE_ALIGN);
+                mct_image_contract.nccMctImageContract.put16(out, optional + 40, 6);
+                mct_image_contract.nccMctImageContract.put16(out, optional + 48, 6);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 56,
+                    mct_image_contract.nccMctImageContract.align(
+                        idataRva + idataVirtual, SECTION_ALIGN));
+                mct_image_contract.nccMctImageContract.put32(out, optional + 60, headers);
+                mct_image_contract.nccMctImageContract.put16(out, optional + 68, 3);
+                mct_image_contract.nccMctImageContract.put16(out, optional + 70, 0x0100);
+                mct_image_contract.nccMctImageContract.put64(out, optional + 72, 0x00100000);
+                mct_image_contract.nccMctImageContract.put64(out, optional + 80, 0x00001000);
+                mct_image_contract.nccMctImageContract.put64(out, optional + 88, 0x00100000);
+                mct_image_contract.nccMctImageContract.put64(out, optional + 96, 0x00001000);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 108, 16);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 120, idataRva);
+                mct_image_contract.nccMctImageContract.put32(out, optional + 124, providers > 0 ? 60 : 40);
+                mct_image_contract.nccMctImageContract.put32(out,optional+136,idataRva+unwindAt);
+                mct_image_contract.nccMctImageContract.put32(out,optional+140,12);
+                {
+                    firstSlot >> int <- providers > 0 ? mct_link.nccMctLink.finalPlanProviderSlotOffset(plan, 0) : storageEnd-16;
+                    mct_image_contract.nccMctImageContract.put32(out, optional + 208,
+                        TEXT_RVA + firstSlot);
+                    mct_image_contract.nccMctImageContract.put32(out, optional + 212,
+                        storageEnd-firstSlot);
+                }
+
+                sectionAt >> int <- optional + OPTIONAL_BYTES;
+                // Reserved entry space belongs to .text, including a page-boundary tail.
+                writeSection(out, sectionAt, ".text", 5, rodataOffset, TEXT_RVA,
+                    textSize, textRaw, 0x60000020);
+                writeSection(out,sectionAt+SECTION_BYTES,".rdata",6,
+                    rodataSize,TEXT_RVA+rodataOffset,
+                    rodataSize,textRaw+rodataOffset,0x40000040);
+                writeSection(out,sectionAt+2*SECTION_BYTES,".data",5,storageEnd-dataOffset,
+                    TEXT_RVA+dataOffset,dataSize,textRaw+dataOffset,0xC0000040);
+                writeSection(out, sectionAt + 3*SECTION_BYTES, ".idata", 6, idataVirtual,
+                    idataRva, idataSize, idataAt, 0x40000040);
+                cp(off(out, textRaw), mct_link.nccMctLink.finalPlanData(plan), linkedBytes);
+                cp(off(out,textRaw+rodataOffset),off<byte>(mct_link.nccMctLink.finalPlanData(plan),rodataOffset),storageEnd-rodataOffset);
+                entry >> int <- textRaw+entryOffset;
+                prologue >> array<byte,19> <- [72,131,236,40,232,0,0,0,0,137,193,255,21,0,0,0,0,15,11];
+                cp(off(out,entry),cast<byte>(&prologue),19);
+                if (mainOffset >= 0) mct_image_contract.nccMctImageContract.put32(out,entry+5,mainOffset-entryOffset-9);
+                else {
+                    mct_image_contract.nccMctImageContract.put8(out,entry+4,49);
+                    mct_image_contract.nccMctImageContract.put8(out,entry+5,192);
+                    mct_image_contract.nccMctImageContract.put8(out,entry+6,144);
+                    mct_image_contract.nccMctImageContract.put8(out,entry+7,144);
+                    mct_image_contract.nccMctImageContract.put8(out,entry+8,144);
+                }
+                mct_image_contract.nccMctImageContract.put32(out,entry+13,storageEnd-16-entryOffset-17);
+                written >> int <- buildImports(out,textRaw,idataAt,idataRva,material,plan);
+                if (written != imports) { mct_image_contract.nccMctImageContract.release(image); return null; }
+                table >> int <- idataAt+unwindAt;
+                mct_image_contract.nccMctImageContract.put32(out,table,TEXT_RVA+entryOffset);
+                mct_image_contract.nccMctImageContract.put32(out,table+4,TEXT_RVA+entryOffset+HOST_EXIT_BYTES);
+                mct_image_contract.nccMctImageContract.put32(out,table+8,idataRva+unwindAt+12);
+                unwind >> array<byte,8> <- [1,4,1,0,4,66,0,0];
+                cp(off(out,table+12),cast<byte>(&unwind),8);
+                return mct_image_contract.nccMctImageContract.finish(image);
+            }
+
+            selfTest() -> bool {
+                return TARGET_WIN64 == 2 && IMAGE_BASE + TEXT_RVA == 0x00401000 &&
+                    HOST_EXIT_BYTES == 19 && HEADERS_RAW == 552;
+            }
+
+    fa:
+        return true;
+}

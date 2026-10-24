@@ -1,0 +1,22 @@
+use <io:output>;
+
+nativeSyscall74 {
+    run() -> int {
+        pid >> i64 <- syscall6(39,0,0,0,0,0,0);
+        if (pid <= 0) return 1;
+        missing >> i64 <- syscall6(0x7FFFFFFF,0,0,0,0,0,0);
+        if (missing != -38) return 2;
+        address >> i64 <- syscall6(9,null,4096,3,34,-1,0);
+        if (address < 0 && address >= -4095) return 3;
+        base >> p<byte> <- from<byte>(address);
+        volatileWrite<u64>(base,0xFEDCBA9876543210);
+        if (volatileRead<u64>(base) != 0xFEDCBA9876543210) return 4;
+        if (syscall6(10,base,4096,1,0,0,0) != 0 ||
+            volatileRead<u64>(base) != 0xFEDCBA9876543210) return 5;
+        if (syscall6(11,base,4096,0,0,0,0) != 0) return 6;
+        println("native-linux-syscall-ok");
+        return 247;
+    }
+    ref main ->> run;
+    fa: return true;
+}

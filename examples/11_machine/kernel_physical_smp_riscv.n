@@ -1,0 +1,34 @@
+kernelPhysicalSmpRiscv :: kernel {
+    fn:
+        prepare() -> bool {
+            guard bootValid() && smpDiscover() else return false;
+            guard smpConfigureFirmware() else return false;
+            guard smpInterruptInitFirmware(1) else return false;
+            return cpuCountPhysical() > 0 && cpuCurrentPhysical() >= 0;
+        }
+
+        start(cpu >> int, stack >> addr, entry >> addr, context >> addr) -> bool {
+            guard cpuSetStackPhysical(cpu, stack) else return false;
+            return cpuStartPhysicalWait(cpu, entry, context, 10_000_000);
+        }
+
+        secondary(cpu >> int) -> bool {
+            return cpuMarkOnline(cpu) && smpInterruptInitFirmware(cpu);
+        }
+
+        plicInterrupt(context >> int) -> bool {
+            source >> int <- plicClaim(context);
+            return source == 0 || plicComplete(context, source);
+        }
+
+        imsicInterrupt() -> bool {
+            irq >> int <- imsicClaim();
+            return irq == 0 || imsicComplete(irq);
+        }
+
+        invalidate(address >> addr, bytes >> int, asid >> int) -> bool {
+            return tlbShootdown(address, bytes, asid, 1);
+        }
+
+    ref main ->> prepare;
+}

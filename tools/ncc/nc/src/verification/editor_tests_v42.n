@@ -1,0 +1,146 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, tool_cli, contract_checks, editor_rpc, editor_json>;
+
+editorTestsV42 {
+    fn:
+        private:
+            check(checks >> int, key >> str, good >> bool) -> void {
+                contract_checks.contractChecks.record(checks,key,good);
+                if (!good) println("FAILED: "+key);
+            }
+            response(id >> int, result >> int) -> int {
+                row >> int <- jsonParse("{\"jsonrpc\":\"2.0\"}");
+                jsonObjectSet(row,"id",jsonNewInt(id)); jsonObjectSet(row,"result",result); return row;
+            }
+            wire(documents >> int, fault >> str) -> str {
+                init >> int <- response(1,jsonParse(fault == "capability" ? "{\"capabilities\":{\"completionProvider\":{}}}" : "{\"capabilities\":{}}"));
+                result >> str <- editor_rpc.editorRpc.frame(init); jsonRelease(init);
+                index >> int <- 0;
+                while (index < jsonArrayLen(documents)) {
+                    doc >> int <- jsonArrayGet(documents,index);
+                    diagnostic >> int <- jsonParse("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\"}");
+                    params >> int <- jsonParse("{\"diagnostics\":[]}"); jsonObjectSet(params,"uri",jsonObjectGet(doc,"uri"));
+                    if (fault == "uri" && index == 3) jsonObjectSet(params,"uri",jsonNewString("file://wrong.ncp"));
+                    jsonObjectSet(diagnostic,"params",params);
+                    if (fault != "diagnostic" || index != 2) result <- result+editor_rpc.editorRpc.frame(diagnostic);
+                    completion >> int <- response(index+2,jsonParse(fault == "items" && index == 1 ? "{\"items\":[{\"label\":\"forbidden\"}]}" : "{\"items\":[]}"));
+                    if (fault == "fractional-items" && index == 1) jsonObjectSet(completion,"result",jsonParse("{\"items\":0.5}"));
+                    if (fault != "completion" || index != 2) result <- result+editor_rpc.editorRpc.frame(completion);
+                    jsonRelease(completion); jsonRelease(diagnostic); jsonRelease(doc); index += 1;
+                }
+                shutdown >> int <- response(6,jsonParse(fault == "shutdown" ? "{}" : "null"));
+                if (fault != "missing-shutdown") result <- result+editor_rpc.editorRpc.frame(shutdown);
+                jsonRelease(shutdown);
+                if (fault == "malformed") return "Content-Length: 3\r\n\r\n{xx";
+                if (fault == "truncated") return "Content-Length: 500\r\n\r\n{}";
+                if (fault == "no-frames") return "not a framed response";
+                return result;
+            }
+        public:
+            selfTest(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--out|","");
+                guard options != 0 else return 2;
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                output >> str <- tool_cli.toolCli.value(options,"--out","target/tmp/editor-v42-self-test.json");
+                docs >> int <- editor_rpc.editorRpc.documents(root);
+                checks >> int <- jsonNewObject();
+                faults >> int <- jsonParse("[\"none\",\"capability\",\"uri\",\"diagnostic\",\"items\",\"fractional-items\",\"completion\",\"shutdown\",\"missing-shutdown\",\"malformed\",\"truncated\",\"no-frames\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(faults)) {
+                    item >> int <- jsonArrayGet(faults,index);
+                    fault >> str <- jsonStringView(item,"");
+                    bytes >> str <- wire(docs,fault);
+                    messages >> int <- editor_rpc.editorRpc.decode(bytes);
+                    failure >> str <- editor_rpc.editorRpc.validate(messages,docs);
+                    check(checks,"rpc_"+fault,(failure == "") == (fault == "none"));
+                    jsonRelease(messages); strRelease(bytes); jsonRelease(item); index += 1;
+                }
+                unicode >> int <- jsonNewObject();
+                jsonObjectSet(unicode,"text",jsonNewString("caf\u{e9} \u{1f600}"));
+                encoded >> str <- editor_rpc.editorRpc.frame(unicode);
+                decoded >> int <- editor_rpc.editorRpc.decode(encoded);
+                first >> int <- jsonArrayGet(decoded,0);
+                check(checks,"utf8_byte_length",jsonArrayLen(decoded) == 1 && contract_checks.contractChecks.equal(first,unicode));
+                escaped >> int <- editor_json.editorJson.parse("{\"text\":\"caf\\u00e9 \\ud83d\\ude00\"}");
+                check(checks,"unicode_escape_pairs",contract_checks.contractChecks.equal(escaped,unicode)); jsonRelease(escaped);
+                escaped <- editor_json.editorJson.parse("{\"a\":\"first\",\"a\":\"last\"}");
+                check(checks,"json_duplicate_key_last",editor_json.editorJson.field(escaped,"a") == "last"); jsonRelease(escaped);
+                escaped <- editor_json.editorJson.parse("{\"a\":\"\\ud83d\"}");
+                check(checks,"unpaired_surrogate_rejected",escaped == 0); jsonRelease(escaped);
+                escaped <- editor_json.editorJson.parse("{\"a\":\"\\u0000\"}");
+                check(checks,"embedded_nul_fail_closed",escaped == 0); jsonRelease(escaped);
+                jsonRelease(first); jsonRelease(decoded); jsonRelease(unicode); strRelease(encoded);
+                decoded <- editor_rpc.editorRpc.decode("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\ncontent-length: +2\r\n\r\n{}trailing");
+                check(checks,"headers_and_trailing_oracle_compat",jsonArrayLen(decoded) == 1); jsonRelease(decoded);
+                decoded <- editor_rpc.editorRpc.decode("Content-Type: x\r\n\r\n{}");
+                check(checks,"missing_length_rejected",decoded == 0); jsonRelease(decoded);
+                decoded <- editor_rpc.editorRpc.decode("Content-Length: -2\r\n\r\n{}");
+                check(checks,"negative_length_rejected",decoded == 0); jsonRelease(decoded);
+                decoded <- editor_rpc.editorRpc.decode("Content-Length: nope\r\n\r\n{}");
+                check(checks,"invalid_length_rejected",decoded == 0); jsonRelease(decoded);
+                decoded <- editor_rpc.editorRpc.decode("Content-Length: 99999999999999999999999\r\n\r\n{}");
+                check(checks,"overflow_length_rejected",decoded == 0); jsonRelease(decoded);
+                request >> str <- editor_rpc.editorRpc.payload(docs);
+                decoded <- editor_rpc.editorRpc.decode(request);
+                check(checks,"request_inventory",jsonArrayLen(decoded) == 11);
+                jsonRelease(decoded); strRelease(request);
+                report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.editor.tests.v42"));
+                good >> bool <- release_io.releaseIo.allTrue(checks);
+                jsonObjectSet(report,"status",jsonNewString(good ? "ok" : "error")); jsonObjectSet(report,"checks",checks);
+                good <- release_io.releaseIo.save(output,report) && good;
+                jsonRelease(report); jsonRelease(faults); jsonRelease(docs); jsonRelease(options);
+                println(good ? "OK: editor v42 self-test" : "ERROR: editor v42 self-test"); return good ? 0 : 1;
+            }
+            fixture(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--case|--out|","");
+                guard options != 0 else return 2;
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root",""));
+                safe >> str <- release_io.releaseIo.forwardPath(root);
+                // This test-only command never prepares a canonical checkout.
+                guard strContains(safe,"/target/tmp/v42-editor/") && exists(root+"/.editor-v42-fixture") else return 2;
+                mode >> str <- tool_cli.toolCli.value(options,"--case","positive");
+                if (strStartsWith(mode,"rpc-")) {
+                    docs >> int <- editor_rpc.editorRpc.documents(root);
+                    bytes >> str <- wire(docs,strSubstring(mode,4,strLen(mode)-4));
+                    path >> str <- tool_cli.toolCli.value(options,"--out",root+"/response.bin");
+                    good >> bool <- release_io.releaseIo.write(path,bytes);
+                    jsonRelease(docs); strRelease(bytes); jsonRelease(options); return good ? 0 : 1;
+                }
+                packagePath >> str <- root+"/tools/vscode/nc-language/package.json";
+                package >> int <- jsonParseFile(packagePath);
+                guard jsonKind(package) == 6 else return 1;
+                jsonObjectSet(package,"version",jsonNewString(mode == "version" ? "wrong" : "2.0.0-2"));
+                jsonObjectSet(package,"ncProductVersion",jsonNewString("2.0.0.2"));
+                if (mode == "boolean") {
+                    contrib >> int <- jsonObjectGet(package,"contributes");
+                    config >> int <- jsonObjectGet(contrib,"configuration");
+                    props >> int <- jsonObjectGet(config,"properties");
+                    jsonObjectSet(props,"nc.editorAssistHints",jsonParse("{\"default\":\"true\"}"));
+                    jsonObjectSet(config,"properties",props); jsonObjectSet(contrib,"configuration",config); jsonObjectSet(package,"contributes",contrib);
+                }
+                good >> bool <- release_io.releaseIo.save(packagePath,package); jsonRelease(package);
+                capPath >> str <- root+"/tools/jetbrains/nc-language-plugin/capabilities.contract.json";
+                caps >> int <- jsonParseFile(capPath); jsonObjectSet(caps,"version",jsonNewString("2.0.0.2"));
+                good <- release_io.releaseIo.save(capPath,caps) && good; jsonRelease(caps);
+                // These are inert marker comments in an isolated test corpus, not plugin implementations.
+                ext >> str <- root+"/tools/vscode/nc-language/src/extension.js";
+                source >> str <- release_io.releaseIo.text(ext);
+                good <- release_io.releaseIo.write(ext,source+"\n/* regionFromPtr bounded memRegion */\n") && good; free(cast<byte>(source));
+                marker >> str <- "/* IconLoader.getIcon(\"/icons/nc-logo.svg\" NcIcons.SourceFile NcIcons.BasalFile NcIcons.BasalBinaryFile NcIcons.MachineFile NcIcons.PrimitiveFile override fun getIcon(): Icon = icon */\n";
+                good <- release_io.releaseIo.write(root+"/tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/editor_v42.kt",marker) && good;
+                if (mode == "color") {
+                    path >> str <- root+"/tools/jetbrains/nc-language-plugin/resources/nc_colors.json";
+                    colors >> int <- jsonParseFile(path); keys >> int <- jsonObjectGet(colors,"keys");
+                    jsonObjectSet(keys,"NC_RAW_HAZARD",jsonNewString("#000000")); jsonObjectSet(colors,"keys",keys);
+                    good <- release_io.releaseIo.save(path,colors) && good; jsonRelease(colors);
+                }
+                if (mode == "png") good <- release_io.releaseIo.write(root+"/tools/vscode/nc-language/assets/nc-logo-128.png","short") && good;
+                if (mode == "logo") good <- release_io.releaseIo.write(root+"/site/public/assets/nc-logo.svg","different") && good;
+                if (mode == "snippets") good <- release_io.releaseIo.write(root+"/tools/vscode/nc-language/snippets/nc.code-snippets","{}") && good;
+                if (mode == "json") good <- release_io.releaseIo.write(packagePath,"{broken") && good;
+                if (mode == "node") good <- release_io.releaseIo.write(root+"/.editor-node-fail","controlled failure") && good;
+                jsonRelease(options); return good ? 0 : 1;
+            }
+    fa: return true;
+}

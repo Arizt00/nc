@@ -1,0 +1,214 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, erroroutput, render>;
+use <project:physical43_common, portable43_repr, physical43_json, physical43_deep_json, release43_host, release_io, tool_cli, sha256>;
+
+physical43Portable {
+    stc:
+        expectedSupplied >> bool <- false;
+    const:
+        BACKEND >> str <- "ncc.machine.hypervisor_backend_certificate.v1";
+        HARDWARE >> str <- "ncc.machine.x86_virtualization_hardware_certificate.v1";
+        IOMMU >> str <- "ncc.machine.iommu_vfio_certificate.v1";
+    fn:
+        private:
+            collect(root >> str, prefix >> str, paths >> int, depth >> int) -> bool {
+                if (depth > 1000) return physical43_common.physical43Common.fail("portable path nesting exceeds native limit");
+                directory >> str <- prefix == "" ? strSubstring(root,0,strByteLen(root)) : root+"/"+prefix; names >> int <- release43_host.release43Host.names(directory);
+                if (jsonKind(names) != 5) { jsonRelease(names); return physical43_common.physical43Common.fail("cannot list portable evidence directory: "+directory); }
+                at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(names) && good) { item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); relative >> str <- prefix == "" ? strSubstring(name,0,strByteLen(name)) : prefix+"/"+name; full >> str <- root+"/"+relative; kind >> int <- physical43_common.physical43Common.fileType(full); if (kind == 2 && !release43_host.release43Host.link(full)) good <- collect(root,relative,paths,depth+1); else if (kind == 1) { node >> int <- jsonNewString(relative); jsonArrayPush(paths,node); jsonRelease(node); } strRelease(relative); strRelease(full); jsonRelease(item); at += 1; }
+                jsonRelease(names); strRelease(directory); return good;
+            }
+            required(payload >> int, paths >> int, path >> str, hardware >> bool) -> bool {
+                index >> int <- 0;
+                while (index < jsonArrayLen(paths)) {
+                    item >> int <- jsonArrayBorrow(paths,index); pointer >> str <- jsonStringView(item,"");
+                    valid >> bool <- physical43_common.physical43Common.boolAt(payload,pointer);
+                    if (!valid) { physical43_common.physical43Common.fail(path+": required "+(hardware ? "hardware " : "")+"evidence "+strSubstring(pointer,1,strByteLen(pointer)-1)+" is not true"); jsonRelease(item); return false; }
+                    jsonRelease(item); index += 1;
+                }
+                return true;
+            }
+        public:
+            readText(path >> str) -> str {
+                size >> i64 <- physical43_common.physical43Common.fileSize(path); if (size < 0 || size > 134217728) return "";
+                bytes >> p<byte> <- cast(alloc(size+1)); guard bytes != null else return "";
+                got >> int <- physical43_common.physical43Common.readBytes(path,bytes,size); if (got != size) { free(bytes); return ""; }
+                start >> int <- 0; if (got >= 3 && (rd(bytes) & 255) == 239 && (rd(off(bytes,1)) & 255) == 187 && (rd(off(bytes,2)) & 255) == 191) start <- 3;
+                at >> int <- start;
+                while (at < got) {
+                    first >> int <- rd(off(bytes,at)) & 255; count >> int <- portable43_repr.portable43Repr.width(bytes,got,at); code >> int <- portable43_repr.portable43Repr.point(bytes,got,at);
+                    if (code < 0 || (first >= 128 && first < 194) || first > 244 || (count == 2 && code < 128) || (count == 3 && code < 2048) || (count == 4 && code < 65536) || (code >= 55296 && code <= 57343) || code > 1114111) { free(bytes); physical43_common.physical43Common.fail(path+": invalid UTF-8 checksum text"); return ""; }
+                    at += count;
+                }
+                text >> str <- portable43_repr.portable43Repr.fromBytes(off(bytes,start),got-start,false); free(bytes); return text;
+            }
+            writeMarkdown(path >> str, text >> str) -> bool {
+                if (portable43_repr.portable43Repr.hasSurrogate(text)) { strRelease(text); return false; }
+                good >> bool <- physical43_common.physical43Common.writeText(path,text); strRelease(text); return good;
+            }
+            source(path >> str, payload >> int, expected >> str) -> bool {
+                src >> int <- jsonObjectBorrow(payload,"source"); if (jsonKind(src) != 6) { jsonRelease(src); return physical43_common.physical43Common.fail(path+": certificate has no source identity"); }
+                if (expected == "" && !expectedSupplied) { jsonRelease(src); return true; }
+                fields >> int <- jsonParse("[\"github_sha\",\"git_head\"]"); at >> int <- 0;
+                while (at < 2) {
+                    field >> int <- jsonArrayBorrow(fields,at); name >> str <- jsonStringView(field,""); node >> int <- jsonObjectBorrow(src,name);
+                    actual >> str <- portable43_repr.portable43Repr.strValue(node); actualLower >> str <- portable43_repr.portable43Repr.lower(actual); expectedLower >> str <- portable43_repr.portable43Repr.lower(expected);
+                    valid >> bool <- jsonKind(node) == 4 && !physical43_deep_json.physical43DeepJson.isNumber(node) && portable43_repr.portable43Repr.equal(actualLower,expectedLower);
+                    strRelease(actualLower); strRelease(expectedLower); strRelease(actual);
+                    if (!valid) { shown >> str <- portable43_repr.portable43Repr.repr(node); physical43_common.physical43Common.fail(path+": source "+name+"="+shown+", expected "+expected); strRelease(shown); jsonRelease(node); jsonRelease(field); jsonRelease(fields); jsonRelease(src); return false; }
+                    jsonRelease(node); jsonRelease(field); at += 1;
+                }
+                jsonRelease(fields); result >> bool <- physical43_common.physical43Common.boolAt(src,"/exact_head_match"); jsonRelease(src);
+                if (!result) physical43_common.physical43Common.fail(path+": source exact_head_match is not true"); return result;
+            }
+            certificate(path >> str, document >> int, expected >> str) -> int {
+                schema >> str <- physical43_common.physical43Common.field(document,"schema"); payload >> int <- 0; hash >> str <- ""; expectedHash >> str <- ""; kind >> str <- ""; provider >> int <- 0; pointers >> int <- 0; hardware >> bool <- false;
+                if (schema == BACKEND || schema == HARDWARE) {
+                    attestation >> int <- jsonObjectBorrow(document,"attestation");
+                    if (jsonKind(attestation) != 6) { physical43_common.physical43Common.fail(path+": "+(schema == BACKEND ? "backend" : "hardware")+" certificate has no attestation"); jsonRelease(attestation); return 0; }
+                    digestNode >> int <- jsonObjectBorrow(attestation,"payload_sha256"); digestString >> bool <- jsonKind(digestNode) == 4 && !physical43_deep_json.physical43DeepJson.isNumber(digestNode); jsonRelease(digestNode);
+                    if (!digestString) { jsonRelease(attestation); physical43_common.physical43Common.fail(path+": attestation payload_sha256 must be a string"); return 0; }
+                    expectedHash <- portable43_repr.portable43Repr.field(attestation,"payload_sha256"); jsonRelease(attestation); payload <- jsonClone(document); removed >> int <- jsonObjectRemove(payload,"attestation"); jsonRelease(removed);
+                    hash <- physical43_common.physical43Common.digest(schema,payload,false,false);
+                    if (hash == "") { physical43_common.physical43Common.fail(path+": certificate cannot be encoded as canonical UTF-8"); jsonRelease(payload); return 0; }
+                    if (hash != expectedHash) { physical43_common.physical43Common.fail(path+": "+(schema == BACKEND ? "backend" : "hardware")+" hash mismatch expected="+expectedHash+" actual="+hash); jsonRelease(payload); return 0; }
+                    if (schema == BACKEND) {
+                        kind <- "hypervisor_backend"; provider <- jsonObjectGet(payload,"provider");
+                        pointers <- jsonParse("[\"/truth_boundary/provider_api_executed\",\"/truth_boundary/guest_code_executed_on_cpu\",\"/execution/provider_api_executed\",\"/execution/guest_code_executed\",\"/execution/final_halt\",\"/execution/deadline_enforced\"]");
+                    } else {
+                        kind <- "hypervisor_hardware"; hardware <- true;
+                        pointers <- jsonParse("[\"/truth_boundary/cpu_backed_execution\",\"/truth_boundary/kvm_acceleration\",\"/truth_boundary/bare_metal_board\",\"/truth_boundary/physical_board_certificate\",\"/execution/results/unmapped_gpa_mmio_write_exit\",\"/execution/results/unmapped_gpa_mmio_read_exit\",\"/execution/results/final_halt\",\"/execution/results/deadline_enforced\"]");
+                        host >> int <- jsonObjectBorrow(payload,"host");
+                        if (jsonObjectHas(payload,"host") && jsonKind(host) != 6) { jsonRelease(host); physical43_common.physical43Common.fail(path+": hardware host must support get"); return 0; }
+                        architectureNode >> int <- jsonObjectBorrow(host,"architecture"); architecture >> str <- jsonStringView(architectureNode,"");
+                        execution >> int <- jsonObjectBorrow(payload,"execution"); guest >> int <- jsonObjectBorrow(execution,"guest");
+                        if (jsonObjectHas(execution,"guest") && jsonKind(guest) != 6) { jsonRelease(host); jsonRelease(architectureNode); jsonRelease(execution); jsonRelease(guest); physical43_common.physical43Common.fail(path+": hardware guest must support get"); return 0; }
+                        extensionNode >> int <- jsonObjectBorrow(guest,"hardware_virtualization_extension"); extension >> str <- portable43_repr.portable43Repr.strValue(extensionNode);
+                        if (architecture == "x86_64") {
+                            cpuid >> int <- jsonObjectBorrow(host,"cpuid"); if (jsonObjectHas(host,"cpuid") && jsonKind(cpuid) != 6) { jsonRelease(cpuid); physical43_common.physical43Common.fail(path+": hardware cpuid must support get"); return 0; } jsonRelease(cpuid);
+                            extra >> int <- jsonParse("[\"/execution/results/invalid_opcode_exception_delivered\",\"/execution/results/external_interrupt_vector_0x20_delivered\",\"/execution/failure_recovery/kvm_run_interrupted\",\"/execution/failure_recovery/vcpu_reentered_after_interrupt\",\"/execution/direct_platform/smp/passed\",\"/truth_boundary/blocked_run_recovery_executed\",\"/truth_boundary/multi_vcpu_delivery_executed\"]");
+                            index >> int <- 0; while (index < jsonArrayLen(extra)) { physical43_common.physical43Common.push(pointers,jsonArrayGet(extra,index)); index += 1; } jsonRelease(extra);
+                            strRelease(extension); extension <- physical43_common.physical43Common.textAt(payload,"/host/cpuid/vendor") == "GenuineIntel" ? "vmx" : "svm";
+                        }
+                        providerText >> str <- portable43_repr.portable43Repr.append("kvm-",extension); provider <- portable43_repr.portable43Repr.string(providerText); strRelease(providerText); strRelease(extension); jsonRelease(extensionNode); jsonRelease(guest); jsonRelease(execution); jsonRelease(architectureNode); jsonRelease(host);
+                    }
+                } else {
+                    payload <- jsonObjectGet(document,"payload"); if (jsonKind(payload) != 6) { physical43_common.physical43Common.fail(path+": IOMMU certificate has no payload"); return 0; }
+                    digestNode >> int <- jsonObjectBorrow(document,"payload_sha256"); digestString >> bool <- jsonKind(digestNode) == 4 && !physical43_deep_json.physical43DeepJson.isNumber(digestNode); jsonRelease(digestNode);
+                    if (!digestString) { jsonRelease(payload); physical43_common.physical43Common.fail(path+": IOMMU payload_sha256 must be a string"); return 0; }
+                    hash <- physical43_common.physical43Common.digest(IOMMU,payload,false,true); expectedHash <- portable43_repr.portable43Repr.field(document,"payload_sha256");
+                    if (hash == "") { physical43_common.physical43Common.fail(path+": IOMMU payload cannot be encoded as canonical UTF-8"); jsonRelease(payload); return 0; }
+                    if (hash != expectedHash) { physical43_common.physical43Common.fail(path+": IOMMU hash mismatch expected="+expectedHash+" actual="+hash); return 0; }
+                    kind <- physical43_common.physical43Common.field(payload,"kind");
+                    if (kind == "viommu_material_model") { pointers <- jsonParse("[\"/truth_boundary/software_viommu_executed\",\"/truth_boundary/dma_translation_materialized\",\"/truth_boundary/fault_and_invalidation_queues_executed\",\"/model/material_execution\"]"); provider <- jsonNewString("viommu"); }
+                    else if (kind == "vfio_control_plane" || kind == "vfio_physical_passthrough") {
+                        pointers <- jsonParse("[\"/truth_boundary/physical_iommu_executed\",\"/truth_boundary/vfio_passthrough_executed\",\"/truth_boundary/iommu_dma_map_unmap_executed\",\"/vfio/provider_api_executed\",\"/vfio/dma_map_unmap_executed\",\"/vfio/teardown_complete\"]"); provider <- jsonPointer(payload,"/vfio/mode");
+                        if (kind == "vfio_physical_passthrough") {
+                            if (physical43_common.physical43Common.textAt(payload,"/exercise/schema") != "ncc.machine.vfio_dma_exercise.v1") { physical43_common.physical43Common.fail(path+": physical VFIO certificate has no validated exercise"); return 0; }
+                            fields >> int <- jsonParse("[\"device_generated_dma_executed\",\"device_reset_performed\",\"msix_eventfd_delivered\",\"vfio_interrupt_remapping_path_executed\",\"iova_isolation_executed\",\"iommu_group_isolation_verified\",\"hardware_iommu_architecture_identified\"]"); at >> int <- 0;
+                            while (at < jsonArrayLen(fields)) { item >> int <- jsonArrayBorrow(fields,at); name >> str <- jsonStringView(item,""); physical43_common.physical43Common.push(pointers,jsonNewString("/truth_boundary/"+name)); physical43_common.physical43Common.push(pointers,jsonNewString("/vfio/"+name)); jsonRelease(item); at += 1; } jsonRelease(fields);
+                        }
+                    } else { kindNode >> int <- jsonObjectBorrow(payload,"kind"); shown >> str <- portable43_repr.portable43Repr.repr(kindNode); physical43_common.physical43Common.fail(path+": unknown IOMMU certificate kind "+shown); strRelease(shown); jsonRelease(kindNode); return 0; }
+                }
+                if (!required(payload,pointers,path,hardware) || !source(path,payload,expected)) return 0;
+                if (provider == 0) provider <- jsonNewNull(); status >> int <- jsonObjectBorrow(payload,"status"); if (status == 0) status <- jsonNewNull();
+                result >> int <- jsonNewObject(); physical43_common.physical43Common.put(result,"id",jsonNewString(portable43_repr.portable43Repr.basename(portable43_repr.portable43Repr.parent(path)))); physical43_common.physical43Common.put(result,"kind",jsonNewString(kind)); physical43_common.physical43Common.put(result,"provider",provider); physical43_common.physical43Common.put(result,"status",status); physical43_common.physical43Common.put(result,"sha256",jsonNewString(physical43_common.physical43Common.fileHash(path))); physical43_common.physical43Common.put(result,"payload_sha256",jsonNewString(hash)); physical43_common.physical43Common.put(result,"path",jsonNewString(physical43_common.physical43Common.nativePath(path)));
+                jsonRelease(payload); jsonRelease(pointers); strRelease(schema); strRelease(hash); strRelease(expectedHash); return result;
+            }
+            locate(checksum >> str, recorded >> str, root >> str) -> str {
+                if (physical43_common.physical43Common.hasNul(recorded)) return "";
+                recorded <- physical43_common.physical43Common.plainText(recorded);
+                if (physical43_common.physical43Common.isAbsolute(recorded) && physical43_common.physical43Common.fileType(recorded) == 1) return recorded;
+                candidate >> str <- portable43_repr.portable43Repr.joinPath(root,recorded); if (physical43_common.physical43Common.fileType(candidate) == 1) return candidate;
+                parent >> str <- portable43_repr.portable43Repr.parent(checksum); count >> int <- 0;
+                while (count < 1024) { candidate <- portable43_repr.portable43Repr.joinPath(parent,recorded); if (physical43_common.physical43Common.fileType(candidate) == 1) return candidate; next >> str <- portable43_repr.portable43Repr.parent(parent); if (next == parent || parent == ".") break; parent <- next; count += 1; }
+                candidate <- portable43_repr.portable43Repr.parent(checksum)+"/"+portable43_repr.portable43Repr.basename(recorded); return physical43_common.physical43Common.fileType(candidate) == 1 ? candidate : "";
+            }
+            checksums(root >> str, names >> int) -> int {
+                results >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,"");
+                    base >> str <- portable43_repr.portable43Repr.basename(name); compared >> str <- envHas("WINDIR") ? portable43_repr.portable43Repr.lower(base) : strSubstring(base,0,strByteLen(base));
+                    if (compared == (envHas("WINDIR") ? "sha256sums" : "SHA256SUMS")) {
+                        path >> str <- root+"/"+name; text >> str <- readText(path); lines >> int <- portable43_repr.portable43Repr.lines(text); strRelease(text); index >> int <- 0; count >> int <- 0;
+                        while (index < jsonArrayLen(lines)) {
+                            lineNode >> int <- jsonArrayBorrow(lines,index); line >> str <- portable43_repr.portable43Repr.trim(jsonStringView(lineNode,"")); jsonRelease(lineNode);
+                            if (line != "") {
+                                bytes >> p<byte> <- portable43_repr.portable43Repr.data(line); end >> int <- 0; width >> int <- 0; code >> int <- 0;
+                                while (end < portable43_repr.portable43Repr.length(line)) { code <- portable43_repr.portable43Repr.point(bytes,portable43_repr.portable43Repr.length(line),end); width <- portable43_repr.portable43Repr.width(bytes,portable43_repr.portable43Repr.length(line),end); if (portable43_repr.portable43Repr.space(code)) break; end += width; }
+                                expected >> str <- portable43_repr.portable43Repr.slice(line,0,end); start >> int <- end;
+                                while (start < portable43_repr.portable43Repr.length(line)) { code <- portable43_repr.portable43Repr.point(bytes,portable43_repr.portable43Repr.length(line),start); width <- portable43_repr.portable43Repr.width(bytes,portable43_repr.portable43Repr.length(line),start); if (!portable43_repr.portable43Repr.space(code)) break; start += width; }
+                                while (start < portable43_repr.portable43Repr.length(line) && (rd(off(bytes,start)) == 32 || rd(off(bytes,start)) == 42)) { start += 1; }
+                                if (end == portable43_repr.portable43Repr.length(line)) { shown >> str <- portable43_repr.portable43Repr.reprText(line); physical43_common.physical43Common.fail(path+": malformed checksum line "+shown); strRelease(shown); return 0; }
+                                recorded >> str <- portable43_repr.portable43Repr.slice(line,start,portable43_repr.portable43Repr.length(line)-start); actualPath >> str <- locate(path,recorded,root);
+                                if (actualPath == "") { shown >> str <- portable43_repr.portable43Repr.reprText(recorded); physical43_common.physical43Common.fail(path+": retained file "+shown+" is missing"); strRelease(shown); return 0; }
+                                actual >> str <- physical43_common.physical43Common.fileHash(actualPath);
+                                actualLower >> str <- portable43_repr.portable43Repr.lower(actual); expectedLower >> str <- portable43_repr.portable43Repr.lower(expected); matched >> bool <- portable43_repr.portable43Repr.equal(actualLower,expectedLower); strRelease(actualLower); strRelease(expectedLower);
+                                if (!matched) { physical43_common.physical43Common.fail(path+": hash mismatch for "+actualPath+": expected="+expected+" actual="+actual); return 0; }
+                                count += 1;
+                            }
+                            strRelease(line); index += 1;
+                        }
+                        jsonRelease(lines); if (count == 0) { physical43_common.physical43Common.fail(path+": no checksums were retained"); return 0; }
+                        row >> int <- jsonNewObject(); physical43_common.physical43Common.put(row,"path",jsonNewString(physical43_common.physical43Common.nativePath(path))); physical43_common.physical43Common.put(row,"files_verified",jsonNewInt(count)); physical43_common.physical43Common.push(results,row);
+                    }
+                    strRelease(base); strRelease(compared); jsonRelease(item); at += 1;
+                }
+                if (jsonArrayLen(results) == 0) { physical43_common.physical43Common.fail(root+": no SHA256SUMS files found"); return 0; } return results;
+            }
+            verify(root >> str, expected >> str, requiredEvidence >> int) -> int {
+                if (physical43_common.physical43Common.fileType(root) != 2) { physical43_common.physical43Common.fail("evidence root does not exist: "+root); return 0; }
+                unsorted >> int <- jsonNewArray(); if (!collect(root,"",unsorted,0)) { jsonRelease(unsorted); return 0; }
+                names >> int <- portable43_repr.portable43Repr.sortedPaths(unsorted); jsonRelease(unsorted);
+                certificates >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,"");
+                    compared >> str <- envHas("WINDIR") ? portable43_repr.portable43Repr.lower(name) : strSubstring(name,0,strByteLen(name));
+                    if (strEndsWith(compared,".json")) {
+                        path >> str <- root+"/"+name; document >> int <- physical43_common.physical43Common.read(path,true);
+                        if (document == 0) { strRelease(compared); jsonRelease(item); at += 1; continue; }
+                        if (document != 0 && jsonKind(document) != 6) { physical43_common.physical43Common.fail(path+": JSON document must support get"); return 0; }
+                        schema >> str <- physical43_common.physical43Common.field(document,"schema");
+                        if (schema != BACKEND && schema != HARDWARE && jsonObjectHas(document,"payload")) { payload >> int <- jsonObjectBorrow(document,"payload"); typed >> bool <- jsonKind(payload) == 6; jsonRelease(payload); if (!typed) { physical43_common.physical43Common.fail(path+": JSON payload must support get"); return 0; } }
+                        if (schema == BACKEND || schema == HARDWARE || physical43_common.physical43Common.textAt(document,"/payload/schema") == IOMMU) { row >> int <- certificate(path,document,expected); if (row == 0) return 0; physical43_common.physical43Common.push(certificates,row); }
+                        jsonRelease(document);
+                    }
+                    strRelease(compared); jsonRelease(item); at += 1;
+                }
+                if (jsonArrayLen(certificates) == 0) { physical43_common.physical43Common.fail("no portable hypervisor/IOMMU certificates found"); return 0; }
+                missing >> int <- jsonNewArray(); at <- 0; while (at < jsonArrayLen(requiredEvidence)) {
+                    requirement >> int <- jsonArrayBorrow(requiredEvidence,at); wanted >> str <- portable43_repr.portable43Repr.lower(jsonStringView(requirement,"")); found >> bool <- false; index >> int <- 0;
+                    while (index < jsonArrayLen(certificates)) { row >> int <- jsonArrayBorrow(certificates,index); id >> str <- portable43_repr.portable43Repr.field(row,"id"); kind >> str <- portable43_repr.portable43Repr.field(row,"kind"); provider >> str <- portable43_repr.portable43Repr.field(row,"provider"); joined >> str <- portable43_repr.portable43Repr.append(id," "); joined <- portable43_repr.portable43Repr.append(joined,kind); joined <- portable43_repr.portable43Repr.append(joined," "); joined <- portable43_repr.portable43Repr.append(joined,provider); text >> str <- portable43_repr.portable43Repr.lower(joined); if (portable43_repr.portable43Repr.contains(text,wanted)) found <- true; strRelease(kind); strRelease(provider); strRelease(joined); jsonRelease(row); strRelease(text); index += 1; }
+                    if (!found) jsonArrayPush(missing,requirement); jsonRelease(requirement); strRelease(wanted); at += 1;
+                }
+                if (jsonArrayLen(missing) > 0) { shown >> str <- portable43_repr.portable43Repr.repr(missing); physical43_common.physical43Common.fail("required retained evidence is missing: "+shown); strRelease(shown); jsonRelease(missing); return 0; } jsonRelease(missing);
+                checksumFiles >> int <- checksums(root,names); if (checksumFiles == 0) return 0;
+                targets >> int <- jsonParse("[\"aarch64-unknown-none\",\"riscv64-unknown-elf\",\"riscv32imac-unknown-elf\"]"); matrix >> int <- jsonNewObject(); at <- 0;
+                while (at < 3) { target >> int <- jsonArrayBorrow(targets,at); name >> str <- jsonStringView(target,""); found >> bool <- false; index >> int <- 0;
+                    while (index < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,index); path >> str <- root+"/"+jsonStringView(item,""); if (strContains(path,name) && physical43_common.physical43Common.fileSize(path) > 0) found <- true; jsonRelease(item); index += 1; }
+                    physical43_common.physical43Common.put(matrix,name,jsonNewBool(found)); jsonRelease(target); at += 1;
+                }
+                if (!release_io.releaseIo.allTrue(matrix)) { physical43_common.physical43Common.fail("portable object matrix is incomplete"); return 0; }
+                result >> int <- jsonParse("{\"schema\":\"ncc.machine.portable_hypervisor_iommu.retained_evidence.v1\",\"status\":\"verified\"}"); physical43_common.physical43Common.put(result,"expected_sha",expected == "" && !expectedSupplied ? jsonNewNull() : jsonNewString(expected)); jsonObjectSet(result,"required",requiredEvidence); physical43_common.physical43Common.put(result,"certificates",certificates); physical43_common.physical43Common.put(result,"checksum_files",checksumFiles); physical43_common.physical43Common.put(result,"object_targets",matrix); jsonRelease(targets); jsonRelease(names); return result;
+            }
+            markdown(model >> int) -> str {
+                text >> str <- "# Portable hypervisor and IOMMU retained evidence\n\nStatus: **verified**\n\n| Evidence | Kind | Provider | Status |\n|---|---|---|---|\n"; rows >> int <- jsonObjectBorrow(model,"certificates"); at >> int <- 0;
+                while (at < jsonArrayLen(rows)) { row >> int <- jsonArrayBorrow(rows,at); id >> str <- portable43_repr.portable43Repr.field(row,"id"); kind >> str <- portable43_repr.portable43Repr.field(row,"kind"); provider >> str <- portable43_repr.portable43Repr.field(row,"provider"); status >> str <- portable43_repr.portable43Repr.field(row,"status"); text <- portable43_repr.portable43Repr.append(text,"| `"); text <- portable43_repr.portable43Repr.append(text,id); text <- portable43_repr.portable43Repr.append(text,"` | `"); text <- portable43_repr.portable43Repr.append(text,kind); text <- portable43_repr.portable43Repr.append(text,"` | `"); text <- portable43_repr.portable43Repr.append(text,provider); text <- portable43_repr.portable43Repr.append(text,"` | `"); text <- portable43_repr.portable43Repr.append(text,status); text <- portable43_repr.portable43Repr.append(text,"` |\n"); strRelease(id); strRelease(kind); strRelease(provider); strRelease(status); jsonRelease(row); at += 1; } jsonRelease(rows);
+                return portable43_repr.portable43Repr.append(text,"\n## Material object targets\n\n- `aarch64-unknown-none`: verified\n- `riscv32imac-unknown-elf`: verified\n- `riscv64-unknown-elf`: verified\n");
+            }
+            execute(arguments >> addr) -> int {
+                if (physical43_common.physical43Common.help(arguments)) { println("portable-hypervisor-iommu --root DIR [--expected-sha SHA] [--require TEXT] --out JSON --markdown-out MD"); return 0; }
+                options >> int <- physical43_common.physical43Common.parse(arguments,2,"|--root|--expected-sha|--require|--out|--markdown-out|","","|--require|");
+                if (options == 0) { eprintln("invalid portable evidence options"); return 2; }
+                if (!jsonObjectHas(options,"--root") || !jsonObjectHas(options,"--out") || !jsonObjectHas(options,"--markdown-out")) { eprintln("invalid or missing portable evidence options"); jsonRelease(options); return 2; }
+                requirements >> int <- jsonObjectGet(options,"--require"); if (jsonKind(requirements) != 5) { jsonRelease(requirements); requirements <- jsonNewArray(); }
+                expectedSupplied <- jsonObjectHas(options,"--expected-sha"); result >> int <- verify(physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--root","")),tool_cli.toolCli.value(options,"--expected-sha",""),requirements); expectedSupplied <- false; jsonRelease(requirements);
+                if (result == 0) { eprintln(physical43_common.physical43Common.diagnostic()); jsonRelease(options); return 1; }
+                success >> bool <- physical43_common.physical43Common.save(tool_cli.toolCli.value(options,"--out",""),result) && writeMarkdown(tool_cli.toolCli.value(options,"--markdown-out",""),markdown(result));
+                certificates >> int <- jsonObjectBorrow(result,"certificates"); bundles >> int <- jsonObjectBorrow(result,"checksum_files"); if (success) println("verified "+renderInt(jsonArrayLen(certificates))+" certificates and "+renderInt(jsonArrayLen(bundles))+" checksum bundles");
+                jsonRelease(certificates); jsonRelease(bundles); jsonRelease(result); jsonRelease(options); return success ? 0 : 1;
+            }
+    fa: return true;
+}

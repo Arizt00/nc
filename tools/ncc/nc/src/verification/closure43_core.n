@@ -1,0 +1,321 @@
+use <data:json>;
+use <io:output, errorOutput, render>;
+use <process:args, env>;
+use <text:parse>;
+use <project:release_io, tool_cli, cert_json, process_capture, sha256, editor_json, closure43_host>;
+
+closure43Core {
+    stc:
+        root >> str <- ".";
+        dataRoot >> str <- ".";
+        failed >> bool <- false;
+        errorStyle >> str <- "compiler";
+    fn:
+        public:
+            environment(name >> str, fallback >> str) -> str {
+                if (!envHas(name)) return fallback;
+                data >> p<byte> <- cast(alloc(32768));
+                if (data == null) { failed <- true; return fallback; }
+                size >> int <- envGet(name,data,32767);
+                if (size < 0 || size >= 32767) { free(data); failed <- true; return fallback; }
+                wr(off(data,size),0);
+                view >> str <- cast(data);
+                result >> str <- strSubstring(view,0,size); free(data); return result;
+            }
+            init() -> void {
+                failed <- false;
+                errorStyle <- "compiler";
+                package >> str <- packageRoot();
+                root <- tool_cli.toolCli.absolute(environment("CLOSURE43_ROOT",package));
+                dataRoot <- tool_cli.toolCli.absolute(environment("CLOSURE43_DATA_ROOT",package));
+                if (root == "" || dataRoot == "") fail("cannot resolve closure roots");
+            }
+            packageRoot() -> str {
+                args >> addr <- argsOpen(); binary >> str <- tool_cli.toolCli.absolute(argsAt(args,0)); argsRelease(args);
+                directory >> str <- release_io.releaseIo.directory(binary); depth >> int <- 0;
+                while (directory != "" && depth < 128) {
+                    if (release_io.releaseIo.fileType(release_io.releaseIo.path(directory,"bootstrap/closure43-primitive-data.json")) == 1) return directory;
+                    parent >> str <- release_io.releaseIo.directory(directory); if (parent == directory) break; directory <- parent; depth += 1;
+                }
+                return ".";
+            }
+            fail(message >> str) -> void { failed <- true; eprintln(message); }
+            ok() -> bool { return !failed; }
+            commandStyle(style >> str) -> void { errorStyle <- style; }
+            require(record >> int, label >> str) -> void {
+                if (failed) return;
+                code >> int <- release_io.releaseIo.number(record,"returncode",-1);
+                if (code != 0) fail(label+" failed with exit="+renderInt(code)+"\nstdout:\n"+field(record,"stdout")+"\nstderr:\n"+field(record,"stderr"));
+            }
+            trace(message >> str) -> void { if (envHas("CLOSURE43_TRACE")) eprintln(message); }
+            workspace() -> str { return root; }
+            path(relative >> str) -> str {
+                result >> str <- release_io.releaseIo.path(root,relative);
+                return envHas("WINDIR") ? replace(result,"/","\\") : result;
+            }
+            diskPath(value >> str) -> str {
+                if (!envHas("WINDIR") || strByteLen(value) < 248 || strStartsWith(value,"\\\\?\\")) return value;
+                normalized >> str <- replace(value,"/","\\");
+                if (strStartsWith(normalized,"\\\\")) return "\\\\?\\UNC\\"+strSubstring(normalized,2,strByteLen(normalized)-2);
+                if (strByteLen(normalized) > 2 && strSubstring(normalized,1,1) == ":") return "\\\\?\\"+normalized;
+                return value;
+            }
+            narrowTime(value >> i64) -> int { return value; }
+            iso() -> str {
+                seconds >> int <- epoch(); fraction >> int <- 0;
+                if (!envHas("CLOSURE43_EPOCH")) {
+                    micros >> i64 <- closure43_host.closure43Host.micros(); seconds <- narrowTime(micros/1000000); fraction <- narrowTime(micros%1000000);
+                }
+                value >> str <- release_io.releaseIo.utc(seconds); suffix >> str <- "";
+                if (fraction != 0) { digits >> str <- renderInt(fraction); while (strByteLen(digits) < 6) { digits <- "0"+digits; } suffix <- "."+digits; }
+                return strSubstring(value,0,strByteLen(value)-1)+suffix+"+00:00";
+            }
+            hostName() -> str { return closure43_host.closure43Host.name(); }
+            ncc() -> str {
+                return environment("CLOSURE43_NCC",path(envHas("WINDIR") ? "target/debug/ncc.exe" : "target/debug/ncc"));
+            }
+            replace(text >> str, needle >> str, replacement >> str) -> str {
+                width >> int <- strByteLen(needle); if (width == 0) return strSubstring(text,0,strByteLen(text));
+                bytes >> p<byte> <- cast(text); pattern >> p<byte> <- cast(needle); added >> int <- strByteLen(replacement);
+                cursor >> int <- 0; count >> int <- 0; length >> int <- strByteLen(text);
+                while (cursor < length) {
+                    matches >> bool <- cursor+width <= length; at >> int <- 0;
+                    while (matches && at < width) { if (rd(off(bytes,cursor+at)) != rd(off(pattern,at))) matches <- false; at += 1; }
+                    if (matches) { count += 1; cursor += width; } else cursor += 1;
+                }
+                size >> int <- length+count*(added-width); data >> p<byte> <- cast(alloc(size+1)); guard data != null else return "";
+                cursor <- 0; written >> int <- 0;
+                while (cursor < length) {
+                    matches >> bool <- cursor+width <= length; at >> int <- 0;
+                    while (matches && at < width) { if (rd(off(bytes,cursor+at)) != rd(off(pattern,at))) matches <- false; at += 1; }
+                    if (matches) { cp(off(data,written),cast<byte>(replacement),added); written += added; cursor += width; }
+                    else { wr(off(data,written),rd(off(bytes,cursor))); written += 1; cursor += 1; }
+                }
+                wr(off(data,written),0); view >> str <- cast(data); result >> str <- strSubstring(view,0,written); free(data); return result;
+            }
+            quote(text >> str) -> str {
+                escaped >> str <- cert_json.certJson.quote(text); length >> int <- strByteLen(escaped);
+                data >> p<byte> <- cast(alloc(length+1)); guard data != null else return "";
+                source >> p<byte> <- cast(escaped); index >> int <- 0; written >> int <- 0;
+                while (index < length) {
+                    if (rd(off(source,index)) == 92 && index+1 < length) {
+                        short >> int <- 0;
+                        if (index+5 < length && rd(off(source,index+1)) == 117 && rd(off(source,index+2)) == 48 && rd(off(source,index+3)) == 48 && rd(off(source,index+4)) == 48) {
+                            last >> int <- rd(off(source,index+5));
+                            if (last == 56) short <- 98; if (last == 57) short <- 116; if (last == 97) short <- 110; if (last == 99) short <- 102; if (last == 100) short <- 114;
+                        }
+                        wr(off(data,written),92); written += 1;
+                        if (short != 0) { wr(off(data,written),short); written += 1; index += 6; }
+                        else { wr(off(data,written),rd(off(source,index+1))); written += 1; index += 2; }
+                    } else { wr(off(data,written),rd(off(source,index))); written += 1; index += 1; }
+                }
+                wr(off(data,written),0); view >> str <- cast(data); result >> str <- strSubstring(view,0,written); free(data); strRelease(escaped); return result;
+            }
+            epoch() -> int { return parseInt(environment("CLOSURE43_EPOCH",renderInt(timestamp()))); }
+            characters(text >> str) -> int {
+                bytes >> p<byte> <- cast(text); index >> int <- 0; count >> int <- 0;
+                while (index < strByteLen(text)) { if (((rd(off(bytes,index)) & 255) & 192) != 128) count += 1; index += 1; }
+                return count;
+            }
+            prefix(text >> str, count >> int) -> str {
+                bytes >> p<byte> <- cast(text); index >> int <- 0; seen >> int <- 0;
+                while (index < strByteLen(text)) {
+                    if ((rd(off(bytes,index)) & 192) != 128) { if (seen >= count) break; seen += 1; }
+                    index += 1;
+                }
+                return strSubstring(text,0,index);
+            }
+            field(object >> int, key >> str) -> str {
+                if (object == 0) return "";
+                if (jsonKind(object) != 6) return "";
+                if (!jsonObjectHas(object,key)) return "";
+                return cert_json.certJson.field(object,key);
+            }
+            put(object >> int, key >> str, value >> int) -> void { cert_json.certJson.put(object,key,value == 0 ? jsonNewNull() : value); }
+            set(object >> int, key >> str, text >> str) -> void { put(object,key,jsonNewString(text)); }
+            push(array >> int, value >> int) -> void { cert_json.certJson.push(array,value); }
+            copyField(target >> int, source >> int, key >> str) -> void { put(target,key,jsonObjectGet(source,key)); }
+            keys(object >> int) -> int {
+                result >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonObjectLen(object)) {
+                    name >> str <- jsonObjectKeyAt(object,index);
+                    push(result,jsonNewString(name)); free(cast<byte>(name)); index += 1;
+                }
+                sorted >> int <- release_io.releaseIo.sorted(result); jsonRelease(result); return sorted;
+            }
+            spaces(count >> int) -> str {
+                result >> str <- ""; index >> int <- 0;
+                while (index < count) { result <- result+" "; index += 1; }
+                return result;
+            }
+            encode(value >> int, pretty >> bool, sorted >> bool, depth >> int) -> str {
+                if (depth > 128) { fail("JSON nesting exceeds closure contract"); return ""; }
+                if (value == 0) return "null";
+                kind >> int <- jsonKind(value);
+                if (kind == 4) return quote(jsonStringView(value,""));
+                if (kind != 5 && kind != 6) return cert_json.certJson.stringify(value);
+                count >> int <- kind == 5 ? jsonArrayLen(value) : jsonObjectLen(value); result >> str <- kind == 5 ? "[" : "{";
+                ordered >> int <- kind == 6 && sorted ? keys(value) : jsonNewArray(); index >> int <- 0;
+                while (index < count) {
+                    if (index > 0) result <- cert_json.certJson.append(result,pretty ? "," : ", ");
+                    if (pretty) { indentation >> str <- "\n"+spaces((depth+1)*2); result <- cert_json.certJson.append(result,indentation); strRelease(indentation); }
+                    child >> int <- 0;
+                    if (kind == 6) {
+                        name >> str <- "";
+                        if (sorted) { item >> int <- jsonArrayGet(ordered,index); name <- jsonGetString(item); jsonRelease(item); } else name <- jsonObjectKeyAt(value,index);
+                        escaped >> str <- quote(name); result <- cert_json.certJson.append(result,escaped); strRelease(escaped); result <- cert_json.certJson.append(result,": ");
+                        child <- jsonObjectBorrow(value,name); free(cast<byte>(name));
+                    } else child <- jsonArrayBorrow(value,index);
+                    contents >> str <- encode(child,pretty,sorted,depth+1); result <- cert_json.certJson.append(result,contents); strRelease(contents); jsonRelease(child); index += 1;
+                }
+                jsonRelease(ordered);
+                if (pretty && count > 0) { indentation >> str <- "\n"+spaces(depth*2); result <- cert_json.certJson.append(result,indentation); strRelease(indentation); }
+                return cert_json.certJson.append(result,kind == 5 ? "]" : "}");
+            }
+            dumps(value >> int) -> str { return encode(value,false,true,0); }
+            pretty(value >> int) -> str { return encode(value,true,true,0); }
+            hash(text >> str) -> str { return sha256.nccSha256.bytes(cast<byte>(text),strByteLen(text)); }
+            stamp(value >> int, key >> str) -> str {
+                text >> str <- dumps(value); result >> str <- hash(text); strRelease(text); set(value,key,result); return result;
+            }
+            write(relative >> str, text >> str) -> bool {
+                content >> str <- envHas("WINDIR") ? replace(text,"\n","\r\n") : text;
+                destination >> str <- path(relative); success >> bool <- release_io.releaseIo.write(diskPath(destination),content); strRelease(destination);
+                if (envHas("WINDIR")) strRelease(content);
+                if (!success) fail("cannot write "+relative);
+                return success;
+            }
+            save(relative >> str, value >> int) -> bool {
+                text >> str <- pretty(value); combined >> str <- text+"\n"; result >> bool <- write(relative,combined); strRelease(text); strRelease(combined); return result;
+            }
+            load(name >> str) -> int {
+                text >> str <- release_io.releaseIo.text(release_io.releaseIo.path(dataRoot,"bootstrap/closure43-"+name+"-data.json"));
+                result >> int <- jsonParse(text); strRelease(text);
+                if (jsonKind(result) != 6) fail("missing or invalid closure data: "+name);
+                return result;
+            }
+            resolve(source >> str) -> str {
+                if (strStartsWith(source,"examples/")) {
+                    if (release_io.releaseIo.fileType(path(source)) != 0) return source;
+                    archived >> str <- "_archive/old_examples/"+strSubstring(source,9,strByteLen(source)-9);
+                    if (release_io.releaseIo.fileType(path(archived)) != 0) return archived;
+                }
+                return source;
+            }
+            resolveCommand(source >> str) -> str {
+                result >> str <- resolve(source);
+                if (envHas("WINDIR") && release_io.releaseIo.fileType(path(result)) != 0 && strStartsWith(source,"examples/")) return replace(result,"/","\\");
+                return result;
+            }
+            joinText(array >> int, separator >> str) -> str {
+                result >> str <- ""; index >> int <- 0;
+                while (index < jsonArrayLen(array)) {
+                    item >> int <- jsonArrayGet(array,index);
+                    if (index > 0) result <- result+separator;
+                    result <- result+jsonGetString(item); jsonRelease(item); index += 1;
+                }
+                return result;
+            }
+            display(value >> int) -> str {
+                kind >> int <- jsonKind(value);
+                if (kind == 1 || kind == 0) return "None";
+                if (kind == 2) return jsonGetBoolOr(value,false) ? "True" : "False";
+                if (kind == 4) return jsonGetString(value);
+                return encode(value,false,false,0);
+            }
+            table(object >> int, first >> str, second >> str, excluded >> str) -> str {
+                result >> str <- "| "+first+" | "+second+" |\n|---|---|";
+                index >> int <- 0;
+                while (index < jsonObjectLen(object)) {
+                    key >> str <- jsonObjectKeyAt(object,index);
+                    if (key != excluded) {
+                        value >> int <- jsonObjectGet(object,key);
+                        result <- result+"\n| "+key+" | "+display(value)+" |"; jsonRelease(value);
+                    }
+                    index += 1;
+                }
+                return result;
+            }
+            command(words >> int, strict >> bool, resolveExamples >> bool, primitive >> bool) -> int {
+                if (failed) return jsonNewObject();
+                actual >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    word >> int <- jsonArrayGet(words,index); text >> str <- jsonGetString(word);
+                    if (text == "@ncc") text <- ncc();
+                    if (index == 0 && text == "cargo") text <- environment("CLOSURE43_CARGO","cargo");
+                    if (resolveExamples) text <- resolveCommand(text);
+                    push(actual,jsonNewString(text)); jsonRelease(word); index += 1;
+                }
+                captured >> int <- tool_cli.toolCli.execute(actual,root,3600000);
+                result >> int <- jsonNewObject();
+                set(result,primitive ? "command" : "cmd",joinText(actual," "));
+                copyField(result,captured,"stdout"); copyField(result,captured,"stderr");
+                output >> str <- replace(field(captured,"stdout"),"\r\n","\n");
+                errors >> str <- replace(field(captured,"stderr"),"\r\n","\n");
+                output <- replace(output,"\r","\n"); errors <- replace(errors,"\r","\n");
+                set(result,"stdout",output); set(result,"stderr",errors);
+                code >> int <- release_io.releaseIo.number(captured,"code",-1); put(result,"returncode",jsonNewInt(code));
+                if (!primitive) set(result,"sha256",hash(output+errors));
+                if (!tool_cli.toolCli.clean(captured)) fail("process capture failed: "+joinText(actual," "));
+                if (strict && code != 0) fail("command failed ("+renderInt(code)+"): "+joinText(actual," ")+(errorStyle == "compiler" ? "\n"+output+"\n"+errors : "\nstdout:\n"+output+"\nstderr:\n"+errors));
+                if (primitive && strStartsWith(strTrim(output),"{")) {
+                    parsed >> int <- editor_json.editorJson.parse(output);
+                    if (parsed != 0) put(result,"json",parsed);
+                }
+                jsonRelease(captured); jsonRelease(actual); return result;
+            }
+            run(text >> str, strict >> bool, resolveExamples >> bool, primitive >> bool) -> int {
+                words >> int <- jsonParse(text); result >> int <- command(words,strict,resolveExamples,primitive); jsonRelease(words); return result;
+            }
+            payload(record >> int, prefixed >> bool) -> int {
+                if (failed) return 0;
+                text >> str <- field(record,"stdout");
+                if (prefixed) {
+                    start >> int <- strIndexOf(text,"{");
+                    if (start < 0) { fail("JSON command returned no object: "+field(record,"cmd")); return 0; }
+                    text <- strSubstring(text,start,strByteLen(text)-start);
+                }
+                value >> int <- editor_json.editorJson.parse(text);
+                if (value == 0 || (prefixed && jsonKind(value) != 6)) fail("command did not emit valid JSON");
+                return value;
+            }
+            passed(text >> str) -> int {
+                total >> int <- 0; cursor >> int <- 0; prefix >> str <- "test result: ok. ";
+                while (cursor < strByteLen(text)) {
+                    rest >> str <- strSubstring(text,cursor,strByteLen(text)-cursor); at >> int <- strIndexOf(rest,prefix);
+                    if (at < 0) return total;
+                    cursor += at+strByteLen(prefix); start >> int <- cursor; value >> int <- 0;
+                    bytes >> p<byte> <- cast(text);
+                    while (cursor < strByteLen(text) && rd(off(bytes,cursor)) >= 48 && rd(off(bytes,cursor)) <= 57) {
+                        value <- value*10+rd(off(bytes,cursor))-48; cursor += 1;
+                    }
+                    if (cursor > start && strStartsWith(strSubstring(text,cursor,strByteLen(text)-cursor)," passed")) total += value;
+                }
+                return total;
+            }
+            files(directory >> str, extension >> str) -> int {
+                result >> int <- jsonNewArray(); names >> int <- release_io.releaseIo.names(path(directory));
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    entry >> int <- jsonArrayGet(names,index); name >> str <- jsonGetString(entry);
+                    if (strEndsWith(name,extension) && release_io.releaseIo.fileType(path(directory+"/"+name)) == 1) push(result,jsonNewString(directory+"/"+name));
+                    jsonRelease(entry); index += 1;
+                }
+                jsonRelease(names); return result;
+            }
+            entries(directory >> str) -> int {
+                empty >> p<byte> <- null; needed >> int <- listDirInto(path(directory),empty,0); if (needed < 0) return jsonNewArray();
+                data >> p<byte> <- cast(alloc(needed+1)); guard data != null else return 0;
+                length >> int <- listDirInto(path(directory),data,needed+1); if (length < 0 || length > needed) { free(data); fail("directory changed during marker enumeration"); return 0; }
+                result >> int <- jsonNewArray(); start >> int <- 0; index >> int <- 0;
+                while (index <= length) {
+                    if (index == length || rd(off(data,index)) == 10) {
+                        wr(off(data,index),0); name >> str <- cast(off(data,start)); if (index > start) push(result,jsonNewString(name)); start <- index+1;
+                    }
+                    index += 1;
+                }
+                free(data); return result;
+            }
+    fa: return true;
+}

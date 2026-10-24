@@ -1,0 +1,388 @@
+nccBinary64 {
+    const:
+        LIMBS >> int <- 192;
+        DIGITS >> int <- 1200;
+    fn:
+        private:
+            clear(a >> p<u32>) -> void {
+                at >> int <- 0;
+                while (at <= LIMBS) { wr(off(a,at),0); at += 1; }
+            }
+            trim(a >> p<u32>) -> void {
+                n >> int <- rd(a);
+                while (n > 0 && rd(off(a,n)) == 0) n -= 1;
+                wr(a,n);
+            }
+            small(a >> p<u32>, value >> u64) -> void {
+                clear(a);
+                wr(off(a,1),value); wr(off(a,2),value >> 32);
+                wr(a,value >> 32 != 0 ? 2 : (value != 0 ? 1 : 0));
+            }
+            copy(a >> p<u32>, b >> p<u32>) -> void { cp(a,b,(LIMBS+1)*4); }
+            mul(a >> p<u32>, factor >> u64, extra >> u64) -> void {
+                n >> int <- rd(a); at >> int <- 1; carry >> u64 <- extra;
+                while (at <= n) {
+                    value >> u64 <- rd(off(a,at)); value <- value*factor+carry;
+                    wr(off(a,at),value); carry <- value >> 32; at += 1;
+                }
+                if (carry != 0) { wr(off(a,at),carry); wr(a,at); }
+            }
+            shift(a >> p<u32>, count >> int) -> void {
+                n >> int <- rd(a);
+                if (n == 0 || count <= 0) return;
+                words >> int <- count/32; bits >> int <- count%32;
+                at >> int <- n+words+(bits != 0 ? 1 : 0);
+                wr(a,at);
+                while (at > 0) {
+                    source >> int <- at-words;
+                    value >> u64 <- source > 0 && source <= n ? rd(off(a,source)) : 0;
+                    value <- value << bits;
+                    if (bits != 0 && source > 1 && source-1 <= n) {
+                        lower >> u64 <- rd(off(a,source-1)); value <- value | (lower >> (32-bits));
+                    }
+                    wr(off(a,at),value); at -= 1;
+                }
+                trim(a);
+            }
+            right(a >> p<u32>) -> void {
+                at >> int <- rd(a); carry >> u32 <- 0;
+                while (at > 0) {
+                    value >> u32 <- rd(off(a,at));
+                    wr(off(a,at),(value >> 1) | carry); carry <- value << 31; at -= 1;
+                }
+                trim(a);
+            }
+            compare(a >> p<u32>, b >> p<u32>) -> int {
+                n >> int <- rd(a); other >> int <- rd(b);
+                if (n != other) return n < other ? -1 : 1;
+                while (n > 0) {
+                    x >> u32 <- rd(off(a,n)); y >> u32 <- rd(off(b,n));
+                    if (x != y) return x < y ? -1 : 1;
+                    n -= 1;
+                }
+                return 0;
+            }
+            subtract(a >> p<u32>, b >> p<u32>) -> void {
+                n >> int <- rd(a); at >> int <- 1; borrow >> u64 <- 0;
+                while (at <= n) {
+                    x >> u64 <- rd(off(a,at));
+                    y >> u64 <- at <= rd(b) ? rd(off(b,at)) : 0;
+                    y <- y+borrow; wr(off(a,at),x-y); borrow <- x < y ? 1 : 0; at += 1;
+                }
+                trim(a);
+            }
+            bits(a >> p<u32>) -> int {
+                n >> int <- rd(a);
+                if (n == 0) return 0;
+                value >> u32 <- rd(off(a,n)); count >> int <- (n-1)*32;
+                while (value != 0) { count += 1; value <- value >> 1; }
+                return count;
+            }
+            divide(a >> p<u32>, b >> p<u32>) -> u64 {
+                storage >> array<u32,193>; work >> p<u32> <- cast<u32>(&storage);
+                distance >> int <- bits(a)-bits(b); quotient >> u64 <- 0;
+                if (distance < 0) return 0;
+                copy(work,b); shift(work,distance);
+                while (distance >= 0) {
+                    if (compare(a,work) >= 0) { subtract(a,work); quotient <- quotient | (cast<u64>(1) << distance); }
+                    right(work); distance -= 1;
+                }
+                return quotient;
+            }
+            div10(a >> p<u32>) -> int {
+                at >> int <- rd(a); carry >> u64 <- 0;
+                while (at > 0) {
+                    value >> u64 <- rd(off(a,at)); value <- (carry << 32) | value;
+                    wr(off(a,at),value/10); carry <- value%10; at -= 1;
+                }
+                trim(a); return carry;
+            }
+            add(a >> p<u32>, b >> p<u32>) -> void {
+                n >> int <- rd(a) > rd(b) ? rd(a) : rd(b);
+                carry >> u64 <- 0; at >> int <- 1;
+                while (at <= n) {
+                    value >> u64 <- rd(off(a,at)); value <- value+rd(off(b,at))+carry;
+                    wr(off(a,at),value); carry <- value >> 32; at += 1;
+                }
+                wr(a,n); if (carry != 0) { wr(off(a,n+1),carry); wr(a,n+1); }
+            }
+            multiply(a >> p<u32>, b >> p<u32>, out >> p<u32>) -> void {
+                clear(out); x >> int <- 1;
+                while (x <= rd(a)) {
+                    carry >> u64 <- 0; y >> int <- 1;
+                    while (y <= rd(b)) {
+                        value >> u64 <- rd(off(a,x)); value <- value*rd(off(b,y))+rd(off(out,x+y-1))+carry;
+                        wr(off(out,x+y-1),value); carry <- value >> 32; y += 1;
+                    }
+                    wr(off(out,x+y-1),carry); x += 1;
+                }
+                wr(out,rd(a)+rd(b)); trim(out);
+            }
+            rational(a >> p<u32>, b >> p<u32>, sign >> u64, sticky >> bool, precision >> int) -> u64 {
+                if (precision == 24) sign <- sign >> 32;
+                if (rd(a) == 0) return sign;
+                bias >> int <- precision == 24 ? 127 : 1023;
+                minimum >> int <- precision == 24 ? -126 : -1022;
+                infinity >> u64 <- precision == 24 ? 0x7F800000 : 0x7FF0000000000000;
+                one >> u64 <- 1;
+                storage >> array<u32,193>; work >> p<u32> <- cast<u32>(&storage);
+                power >> int <- bits(a)-bits(b);
+                if (power >= 0) { copy(work,b); shift(work,power); if (compare(a,work) < 0) power -= 1; }
+                else { copy(work,a); shift(work,0-power); if (compare(work,b) < 0) power -= 1; }
+                if (power > bias) return sign | infinity;
+                subnormal >> bool <- power < minimum;
+                scale >> int <- subnormal ? precision-1-minimum : precision-1-power;
+                if (scale >= 0) shift(a,scale); else shift(b,0-scale);
+                quotient >> u64 <- divide(a,b);
+                shift(a,1); rounded >> int <- compare(a,b);
+                if (rounded > 0 || (rounded == 0 && (sticky || (quotient & 1) != 0))) quotient += 1;
+                if (subnormal) return sign | quotient;
+                if (quotient == (one << precision)) { quotient <- quotient >> 1; power += 1; }
+                if (power > bias) return sign | infinity;
+                return sign | (cast<u64>(power+bias) << (precision-1)) | (quotient & ((one << (precision-1))-1));
+            }
+            roundedShift(value >> u64, distance >> int) -> u64 {
+                if (distance <= 0) return value << (0-distance);
+                if (distance >= 64) return 0;
+                one >> u64 <- 1; quotient >> u64 <- value >> distance;
+                rest >> u64 <- value & ((one << distance)-1); half >> u64 <- one << (distance-1);
+                return quotient+(rest > half || (rest == half && (quotient & 1) != 0) ? 1 : 0);
+            }
+            decimal(out >> p<byte>, value >> u64, exponent >> int, negative >> bool) -> int {
+                reversed >> array<byte,32>; temp >> p<byte> <- cast<byte>(&reversed);
+                while (value%10 == 0 && value != 0) { value <- value/10; exponent += 1; }
+                count >> int <- 0;
+                while (value != 0) { wr(off(temp,count),48+value%10); value <- value/10; count += 1; }
+                if (count == 0) { wr(temp,48); count <- 1; }
+                at >> int <- 0;
+                if (negative) { wr(out,45); at += 1; }
+                point >> int <- count+exponent;
+                if (exponent >= 0 && point <= 21) {
+                    pos >> int <- count-1;
+                    while (pos >= 0) { wr(off(out,at),rd(off(temp,pos))); pos -= 1; at += 1; }
+                    while (exponent > 0) { wr(off(out,at),48); at += 1; exponent -= 1; }
+                } else if (point > 0 && point < count) {
+                    pos >> int <- count-1;
+                    while (pos >= 0) {
+                        wr(off(out,at),rd(off(temp,pos))); at += 1; pos -= 1;
+                        if (pos+1 == count-point) { wr(off(out,at),46); at += 1; }
+                    }
+                } else if (point <= 0 && point >= -5) {
+                    wr(off(out,at),48); wr(off(out,at+1),46); at += 2;
+                    while (point < 0) { wr(off(out,at),48); at += 1; point += 1; }
+                    pos >> int <- count-1;
+                    while (pos >= 0) { wr(off(out,at),rd(off(temp,pos))); pos -= 1; at += 1; }
+                } else {
+                    wr(off(out,at),rd(off(temp,count-1))); at += 1;
+                    pos >> int <- count-2;
+                    if (pos >= 0) { wr(off(out,at),46); at += 1; }
+                    while (pos >= 0) { wr(off(out,at),rd(off(temp,pos))); pos -= 1; at += 1; }
+                    wr(off(out,at),101); at += 1; exponent <- count+exponent-1;
+                    if (exponent < 0) { wr(off(out,at),45); at += 1; exponent <- 0-exponent; }
+                    pos <- 0;
+                    while (exponent > 0) { wr(off(temp,pos),48+exponent%10); pos += 1; exponent <- exponent/10; }
+                    if (pos == 0) { wr(temp,48); pos <- 1; }
+                    while (pos > 0) { pos -= 1; wr(off(out,at),rd(off(temp,pos))); at += 1; }
+                }
+                wr(off(out,at),0); return at;
+            }
+        internal:
+            finite(value >> u64) -> bool { return ((value >> 52) & 2047) != 2047; }
+            integer(value >> u64) -> u64 {
+                encoded >> int <- (value >> 52) & 2047;
+                if (encoded == 0) return 0;
+                if (encoded == 2047 || encoded-1075 > 11) return 0x8000000000000000;
+                magnitude >> u64 <- (value & 0xFFFFFFFFFFFFF) | 0x10000000000000;
+                power >> int <- encoded-1075;
+                if (power >= 0) magnitude <- magnitude << power;
+                else magnitude <- power <= -64 ? 0 : magnitude >> (0-power);
+                return value >> 63 != 0 ? 0-magnitude : magnitude;
+            }
+            compareValues(left >> u64, right >> u64, operation >> int) -> bool {
+                a >> u64 <- left & 0x7FFFFFFFFFFFFFFF; b >> u64 <- right & 0x7FFFFFFFFFFFFFFF;
+                if (a > 0x7FF0000000000000 || b > 0x7FF0000000000000) return operation == 32;
+                equal >> bool <- left == right || (a == 0 && b == 0);
+                less >> bool <- left >> 63 != right >> 63 ? left >> 63 != 0 : (left >> 63 != 0 ? a > b : a < b);
+                if (operation == 31) return equal;
+                if (operation == 32) return !equal;
+                if (operation == 26) return !equal && !less;
+                if (operation == 27) return !equal && less;
+                if (operation == 28) return equal || !less;
+                return equal || less;
+            }
+            fromUnsigned(value >> u64) -> u64 {
+                if (value == 0) return 0;
+                power >> int <- 0; scan >> u64 <- value;
+                while (scan > 1) { power += 1; scan <- scan >> 1; }
+                significand >> u64 <- roundedShift(value,power-52);
+                if (significand == 0x20000000000000) { significand <- significand >> 1; power += 1; }
+                return (cast<u64>(power+1023) << 52) | (significand & 0xFFFFFFFFFFFFF);
+            }
+            narrow(value >> u64) -> u32 {
+                sign >> u32 <- (value >> 32) & 0x80000000;
+                encoded >> int <- (value >> 52) & 2047; fraction >> u64 <- value & 0xFFFFFFFFFFFFF;
+                if (encoded == 2047) return sign | 0x7F800000 | (fraction == 0 ? 0 : (fraction >> 29) | 0x400000);
+                if (encoded == 0) return sign;
+                power >> int <- encoded-1023;
+                if (power > 127) return sign | 0x7F800000;
+                mantissa >> u64 <- fraction | 0x10000000000000;
+                if (power < -126) return sign | roundedShift(mantissa,0-power-97);
+                mantissa <- roundedShift(mantissa,29);
+                if (mantissa == 0x1000000) { mantissa <- mantissa >> 1; power += 1; }
+                if (power > 127) return sign | 0x7F800000;
+                return sign | ((power+127) << 23) | (mantissa & 0x7FFFFF);
+            }
+            widen(value >> u32) -> u64 {
+                sign >> u64 <- value & 0x80000000; sign <- sign << 32;
+                encoded >> int <- (value >> 23) & 255; fraction >> u64 <- value & 0x7FFFFF;
+                if (encoded == 255) return sign | 0x7FF0000000000000 | (fraction << 29);
+                if (encoded != 0) return sign | (cast<u64>(encoded+896) << 52) | (fraction << 29);
+                if (fraction == 0) return sign;
+                power >> int <- -126;
+                while ((fraction & 0x800000) == 0) { fraction <- fraction << 1; power -= 1; }
+                return sign | (cast<u64>(power+1023) << 52) | ((fraction & 0x7FFFFF) << 29);
+            }
+            represent(value >> u64, precision >> int) -> u64 { return precision == 24 ? narrow(value) : value; }
+            operate(left >> u64, right >> u64, operation >> int) -> u64 { return operatePrecision(left,right,operation,53); }
+            operateSingle(left >> u64, right >> u64, operation >> int) -> u64 { return operatePrecision(left,right,operation,24); }
+            operatePrecision(left >> u64, right >> u64, operation >> int, precision >> int) -> u64 {
+                if (operation == 38) right <- right ^ 0x8000000000000000;
+                signA >> u64 <- left & 0x8000000000000000; signB >> u64 <- right & 0x8000000000000000;
+                magA >> u64 <- left & 0x7FFFFFFFFFFFFFFF; magB >> u64 <- right & 0x7FFFFFFFFFFFFFFF;
+                sign >> u64 <- signA ^ signB;
+                if (magA > 0x7FF0000000000000) return represent(left | 0x8000000000000,precision);
+                if (magB > 0x7FF0000000000000) return represent(right | 0x8000000000000,precision);
+                if (operation == 35 || operation == 38) {
+                    if (magA == 0x7FF0000000000000 && magB == magA && signA != signB) return represent(0x7FF8000000000000,precision);
+                    if (magA == 0x7FF0000000000000) return represent(left,precision);
+                    if (magB == 0x7FF0000000000000) return represent(right,precision);
+                } else if (operation == 18) {
+                    if ((magA == 0 && magB == 0x7FF0000000000000) || (magB == 0 && magA == 0x7FF0000000000000)) return represent(0x7FF8000000000000,precision);
+                    if (magA == 0x7FF0000000000000 || magB == 0x7FF0000000000000) return represent(sign | 0x7FF0000000000000,precision);
+                    if (magA == 0 || magB == 0) return represent(sign,precision);
+                } else if (operation == 41) {
+                    if ((magA == 0 && magB == 0) || (magA == 0x7FF0000000000000 && magB == magA)) return represent(0x7FF8000000000000,precision);
+                    if (magA == 0x7FF0000000000000 || magB == 0) return represent(sign | 0x7FF0000000000000,precision);
+                    if (magB == 0x7FF0000000000000 || magA == 0) return represent(sign,precision);
+                } else return represent(0x7FF8000000000000,precision);
+                aStorage >> array<u32,193>; bStorage >> array<u32,193>; tempStorage >> array<u32,193>;
+                a >> p<u32> <- cast<u32>(&aStorage); b >> p<u32> <- cast<u32>(&bStorage); temp >> p<u32> <- cast<u32>(&tempStorage);
+                encodedA >> int <- (magA >> 52) & 2047; encodedB >> int <- (magB >> 52) & 2047;
+                small(a,(magA & 0xFFFFFFFFFFFFF) | (encodedA == 0 ? 0 : 0x10000000000000));
+                small(b,(magB & 0xFFFFFFFFFFFFF) | (encodedB == 0 ? 0 : 0x10000000000000));
+                powerA >> int <- encodedA == 0 ? -1074 : encodedA-1075;
+                powerB >> int <- encodedB == 0 ? -1074 : encodedB-1075;
+                power >> int <- 0;
+                if (operation == 35 || operation == 38) {
+                    power <- powerA < powerB ? powerA : powerB;
+                    shift(a,powerA-power); shift(b,powerB-power); sign <- signA;
+                    if (signA == signB) add(a,b);
+                    else if (compare(a,b) >= 0) subtract(a,b);
+                    else { subtract(b,a); copy(a,b); sign <- signB; }
+                    if (rd(a) == 0) return represent(signA & signB,precision);
+                    small(b,1);
+                } else if (operation == 18) {
+                    multiply(a,b,temp); copy(a,temp); small(b,1); power <- powerA+powerB;
+                } else power <- powerA-powerB;
+                if (power >= 0) shift(a,power); else shift(b,0-power);
+                return rational(a,b,sign,false,precision);
+            }
+            parse(data >> p<byte>, bytes >> int, separators >> bool) -> u64 {
+                invalid >> u64 <- 0x7FF8000000000000;
+                if (data == null || bytes <= 0) return invalid;
+                aStorage >> array<u32,193>; bStorage >> array<u32,193>; workStorage >> array<u32,193>;
+                a >> p<u32> <- cast<u32>(&aStorage); b >> p<u32> <- cast<u32>(&bStorage);
+                work >> p<u32> <- cast<u32>(&workStorage);
+                small(a,0); small(b,1);
+                at >> int <- 0; sign >> u64 <- 0;
+                if (rd(data) == 45) { sign <- 0x8000000000000000; at += 1; }
+                fraction >> int <- 0; count >> int <- 0; kept >> int <- 0;
+                digits >> int <- 0; afterPoint >> bool <- false; sticky >> bool <- false;
+                while (at < bytes) {
+                    code >> byte <- rd(off(data,at));
+                    if (separators && code == 95) { at += 1; continue; }
+                    if (code == 46 && !afterPoint) { afterPoint <- true; at += 1; continue; }
+                    if (code < 48 || code > 57) break;
+                    digits += 1; if (afterPoint) fraction += 1;
+                    if (count > 0 || code != 48) {
+                        count += 1;
+                        if (kept < DIGITS) { mul(a,10,code-48); kept += 1; }
+                        else if (code != 48) sticky <- true;
+                    }
+                    at += 1;
+                }
+                if (digits == 0) return invalid;
+                exponent >> i64 <- 0;
+                if (at < bytes && (rd(off(data,at)) == 101 || rd(off(data,at)) == 69)) {
+                    at += 1; minus >> bool <- false;
+                    if (at < bytes && (rd(off(data,at)) == 43 || rd(off(data,at)) == 45)) { minus <- rd(off(data,at)) == 45; at += 1; }
+                    start >> int <- at;
+                    while (at < bytes) {
+                        code >> byte <- rd(off(data,at));
+                        if (separators && code == 95) { at += 1; continue; }
+                        if (code < 48 || code > 57) return invalid;
+                        if (exponent < 2000000000) exponent <- exponent*10+code-48;
+                        at += 1;
+                    }
+                    if (at == start) return invalid;
+                    if (minus) exponent <- 0-exponent;
+                }
+                if (at != bytes) return invalid;
+                if (count == 0) return sign;
+                exponent <- exponent-fraction+count-kept;
+                order >> i64 <- exponent+kept-1;
+                if (order > 308) return sign | 0x7FF0000000000000;
+                if (order < -325) return sign;
+                scale >> int <- exponent;
+                while (scale > 0) { mul(a,10,0); scale -= 1; }
+                while (scale < 0) { mul(b,10,0); scale += 1; }
+                return rational(a,b,sign,sticky,53);
+            }
+            format(value >> u64) -> str {
+                if (!finite(value)) return null;
+                negative >> bool <- (value >> 63) != 0;
+                magnitude >> u64 <- value & 0x7FFFFFFFFFFFFFFF;
+                out >> p<byte> <- alloc(64);
+                if (out == null) return null;
+                if (magnitude == 0) {
+                    at >> int <- 0; if (negative) { wr(out,45); at <- 1; }
+                    wr(off(out,at),48); wr(off(out,at+1),46); wr(off(out,at+2),48); wr(off(out,at+3),0);
+                    return cast<str>(out);
+                }
+                storage >> array<u32,193>; number >> p<u32> <- cast<u32>(&storage);
+                reversed >> array<byte,1200>; text >> p<byte> <- cast<byte>(&reversed);
+                encoded >> int <- (magnitude >> 52) & 2047;
+                mantissa >> u64 <- magnitude & 0xFFFFFFFFFFFFF;
+                if (encoded != 0) mantissa <- mantissa | 0x10000000000000;
+                power >> int <- encoded == 0 ? -1074 : encoded-1075;
+                small(number,mantissa);
+                exponent >> int <- 0;
+                if (power >= 0) shift(number,power);
+                else { exponent <- power; while (power < 0) { mul(number,5,0); power += 1; } }
+                length >> int <- 0;
+                while (rd(number) != 0) { wr(off(text,length),48+div10(number)); length += 1; }
+                prefix >> u64 <- 0; precision >> int <- 1;
+                while (precision <= 17 && precision <= length) {
+                    prefix <- prefix*10+rd(off(text,length-precision))-48;
+                    rounded >> u64 <- prefix;
+                    if (precision < length) {
+                        next >> byte <- rd(off(text,length-precision-1)); tail >> bool <- false;
+                        at >> int <- length-precision-2;
+                        while (at >= 0) { if (rd(off(text,at)) != 48) tail <- true; at -= 1; }
+                        if (next > 53 || (next == 53 && (tail || (rounded & 1) != 0))) rounded += 1;
+                    }
+                    attempt >> int <- 0;
+                    while (attempt < 3) {
+                        candidate >> u64 <- attempt == 0 ? rounded : (attempt == 1 ? rounded-1 : rounded+1);
+                        if (candidate != 0) {
+                            bytes >> int <- decimal(out,candidate,exponent+length-precision,negative);
+                            if (parse(out,bytes,false) == value) return cast<str>(out);
+                        }
+                        attempt += 1;
+                    }
+                    precision += 1;
+                }
+                free(out); return null;
+            }
+    fa: return true;
+}

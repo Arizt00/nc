@@ -1,0 +1,65 @@
+use <project:machine_authority>;
+
+nccExecutableActivation {
+    const:
+        STATUS_ACCESS_VIOLATION >> u64 <- 3221225477;
+        STATUS_INVALID_IMAGE_FORMAT >> u64 <- 3221225595;
+        STATUS_DLL_NOT_FOUND >> u64 <- 3221225781;
+        STATUS_ENTRYPOINT_NOT_FOUND >> u64 <- 3221225785;
+        STATUS_STACK_BUFFER_OVERRUN >> u64 <- 3221226505;
+
+    type:
+        ActivationContract {
+            public:
+                target >> str;
+                executableKind >> str;
+                loader >> str;
+                status >> u64;
+                reason >> str;
+                help >> str;
+        }
+
+    stc:
+        classified >> u64 <- 0;
+
+    fn:
+        public:
+            statusReason(code >> u64) -> str {
+                classified += 1;
+                if (code == STATUS_ACCESS_VIOLATION) return "access violation";
+                if (code == STATUS_INVALID_IMAGE_FORMAT) return "invalid image format or architecture";
+                if (code == STATUS_DLL_NOT_FOUND) return "required DLL was not found";
+                if (code == STATUS_ENTRYPOINT_NOT_FOUND) return "imported DLL entrypoint was not found";
+                if (code == STATUS_STACK_BUFFER_OVERRUN) return "stack buffer overrun or fail-fast";
+                return "native process terminated abnormally";
+            }
+
+            statusHelp(code >> u64) -> str {
+                if (code == STATUS_ACCESS_VIOLATION) return "inspect pointers, raw memory, ABI and the retained crash report";
+                if (code == STATUS_INVALID_IMAGE_FORMAT) return "rebuild for the host target and inspect PE machine/import metadata";
+                if (code == STATUS_DLL_NOT_FOUND) return "inspect the PE import table and runtime deployment";
+                if (code == STATUS_ENTRYPOINT_NOT_FOUND) return "inspect every imported symbol and its providing DLL";
+                if (code == STATUS_STACK_BUFFER_OVERRUN) return "inspect stack layout, canaries and fail-fast metadata";
+                return "inspect the retained executable, target .init and platform status";
+            }
+
+            executableKind(target >> str) -> str {
+                return machine_authority.nccMachineAuthority.executableKind(target);
+            }
+
+            loader(target >> str) -> str {
+                return machine_authority.nccMachineAuthority.loaderKind(target);
+            }
+
+            selfTest() -> bool {
+                return statusReason(STATUS_ENTRYPOINT_NOT_FOUND) ==
+                        "imported DLL entrypoint was not found" &&
+                    statusHelp(STATUS_INVALID_IMAGE_FORMAT) ==
+                        "rebuild for the host target and inspect PE machine/import metadata" &&
+                    executableKind("x86_64-pc-windows-msvc") == "pe" &&
+                    loader("x86_64-unknown-linux-gnu") == "host-elf-loader";
+            }
+
+    fa:
+        return true;
+}

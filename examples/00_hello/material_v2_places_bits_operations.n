@@ -1,0 +1,61 @@
+use <io:output, render>;
+
+materialV2PlacesBitsOperations {
+    hostWin64 :: abi {
+        target        <- "x86_64-pc-windows-msvc";
+        pointer.bits  <- 64;
+        stack.align   <- 16;
+        stack.shadow  <- 32;
+        stack.redzone <- 0;
+        args.int      <- [rcx, rdx, r8, r9];
+        args.float    <- [xmm0, xmm1, xmm2, xmm3];
+        returns.int   <- [rax];
+        returns.float <- [xmm0];
+        preserve      <- [rbx, rbp, rdi, rsi, r12, r13, r14, r15];
+        clobber       <- [rax, rcx, rdx, r8, r9, r10, r11];
+        sret          <- rcx;
+    }
+
+    stc:
+        executions >> u64 <- 0;
+
+    fn:
+        internal:
+            sumMemory(memory >> addr) -> int {
+                stack {
+                    first  >> int;
+                    second >> int;
+                }
+
+                store int [memory + 0 * size int] <- 5;
+                store int [memory + 1 * size int] <- 9;
+
+                first  <- load int [memory + 0 * size int];
+                second <- load int [memory + 1 * size int];
+
+                return first + second;
+            }
+
+        public:
+            run() -> bool {
+                stack {
+                    memory >> addr <- alignedAlloc(2 * size int, align int);
+                    total  >> int;
+                    ok     >> bool;
+                }
+
+                total <- sumMemory(memory);
+                ok <- total == 14;
+                executions <- executions + 1;
+
+                println(ok ? "material v2: ok" : "material v2: fail");
+                alignedFree(memory);
+                return ok;
+            }
+
+    bind main <- run using hostWin64;
+    ref main ->> run;
+
+    fa:
+        return true;
+}

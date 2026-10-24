@@ -1,0 +1,516 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, spawn, wait>;
+use <project:text, package_graph, build_pipeline, assurance, sha256, project_inspection>;
+
+buildBoundaries[@runtime] {
+    fn:
+        private:
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            fileName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return strSubstring(path, at + 1, strByteLen(path) - at - 1);
+            }
+
+            joinPath(left >> str, right >> str) -> str {
+                if (right == "") return left;
+                source >> p<byte> <- cast(right);
+                if (rd(source) == 47 || rd(source) == 92 ||
+                    (strByteLen(right) > 1 && rd(off(source, 1)) == 58)) return right;
+                if (left == "" || left == ".") return right;
+                width >> int <- strByteLen(left);
+                base >> p<byte> <- cast(left);
+                if (width > 0 && separator(rd(off(base, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(base, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (argsAt(handle, at) == name) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            positional(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--manifest" || current == "--manifest-path" ||
+                        current == "--path" || current == "--target" ||
+                        current == "--source" || current == "--out") { at += 2; continue; }
+                    if (rd(cast(current)) != 45) return current;
+                    at += 1;
+                }
+                return "";
+            }
+
+            hashModel(model >> int) -> str {
+                rendered >> str <- jsonStringify(model);
+                digest >> str <- sha256.sha256.bytes(cast(rendered), strByteLen(rendered));
+                strRelease(rendered);
+                return digest;
+            }
+
+            packageName(root >> int) -> str {
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(root, "package"), "name"), "unnamed");
+            }
+
+            packageVersion(root >> int) -> str {
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(root, "package"), "version"), "0.0.0");
+            }
+
+            manifestPath(root >> int) -> str {
+                return jsonGetStringOr(jsonObjectGet(root, "path"), "");
+            }
+
+            selectedTarget(handle >> addr, root >> int) -> str {
+                selected >> str <- option(handle, "--target");
+                if (selected == "") selected <- positional(handle);
+                if (selected != "") return selected;
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(root, "target_default"), "triple"),
+                    build_pipeline.buildPipeline.host());
+            }
+
+            appendStrings(target >> int, source >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    jsonArrayPush(target, jsonClone(jsonArrayGet(source, at)));
+                    at += 1;
+                }
+                return true;
+            }
+
+            prefixArray(values >> int, prefix >> str) -> int {
+                result >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    value >> str <- jsonGetStringOr(jsonArrayGet(values, at), "");
+                    jsonArrayPush(result, jsonNewString(prefix + value));
+                    at += 1;
+                }
+                return result;
+            }
+
+            frameworkFlags(values >> int) -> int {
+                result >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    jsonArrayPush(result, jsonNewString("-framework"));
+                    jsonArrayPush(result, jsonClone(jsonArrayGet(values, at)));
+                    at += 1;
+                }
+                return result;
+            }
+
+            linkArgs(dependency >> int) -> int {
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "include_flags", prefixArray(
+                    jsonObjectGet(dependency, "include_paths"), "-I"));
+                jsonObjectSet(result, "link_path_flags", prefixArray(
+                    jsonObjectGet(dependency, "link_paths"), "-L"));
+                jsonObjectSet(result, "lib_flags", prefixArray(
+                    jsonObjectGet(dependency, "libs"), "-l"));
+                jsonObjectSet(result, "framework_flags", frameworkFlags(
+                    jsonObjectGet(dependency, "frameworks")));
+                jsonObjectSet(result, "cflags", jsonClone(jsonObjectGet(dependency, "cflags")));
+                jsonObjectSet(result, "ldflags", jsonClone(jsonObjectGet(dependency, "ldflags")));
+                jsonObjectSet(result, "artifact", jsonClone(jsonObjectGet(dependency, "artifact")));
+                jsonObjectSet(result, "pkg_config", jsonClone(jsonObjectGet(dependency, "pkg_config")));
+                return result;
+            }
+
+            diagnostic(entries >> int, code >> str, message >> str, path >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                if (path != "") jsonObjectSet(item, "path", jsonNewString(path));
+                return jsonArrayPush(entries, item);
+            }
+
+            nativeReport(root >> int) -> int {
+                dependencies >> int <- jsonObjectGet(root, "native_dependencies");
+                normalized >> int <- jsonNewArray();
+                arguments >> int <- jsonNewArray();
+                diagnostics >> int <- jsonClone(jsonObjectGet(root, "diagnostics"));
+                if (diagnostics == 0) diagnostics <- jsonNewArray();
+                base >> str <- directory(manifestPath(root));
+                at >> int <- 0;
+                while (at < jsonArrayLen(dependencies)) {
+                    dependency >> int <- jsonArrayGet(dependencies, at);
+                    item >> int <- jsonClone(dependency);
+                    args >> int <- linkArgs(dependency);
+                    jsonObjectSet(item, "link_args", args);
+                    jsonArrayPush(arguments, jsonClone(args));
+                    artifact >> str <- jsonGetStringOr(jsonObjectGet(dependency, "artifact"), "");
+                    expected >> str <- jsonGetStringOr(jsonObjectGet(dependency, "checksum"), "");
+                    if (artifact != "") {
+                        path >> str <- joinPath(base, artifact);
+                        if (!exists(path)) diagnostic(diagnostics, "E_GHOR_NATIVE_ARTIFACT_001",
+                            "native dependency artifact does not exist", path);
+                        else if (expected != "") {
+                            wanted >> str <- strStartsWith(expected, "sha256:") ?
+                                strSubstring(expected, 7, strByteLen(expected) - 7) : expected;
+                            actual >> str <- sha256.sha256.file(path);
+                            if (actual != wanted) diagnostic(diagnostics,
+                                "E_GHOR_NATIVE_CHECKSUM_001",
+                                "native dependency checksum does not match its material artifact", path);
+                        }
+                    }
+                    jsonArrayPush(normalized, item);
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.native_deps.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "package", jsonNewString(packageName(root)));
+                jsonObjectSet(report, "target", jsonClone(jsonObjectGet(root, "target_default")));
+                jsonObjectSet(report, "native_dependencies", normalized);
+                jsonObjectSet(report, "link_args", arguments);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return report;
+            }
+
+            quote(value >> str) -> str {
+                return "\"" + value + "\"";
+            }
+
+            sourceDeclaresFfi(path >> str) -> bool {
+                bytes >> int <- fsSize(path);
+                if (bytes < 0) return false;
+                data >> p<byte> <- cast(alloc(bytes + 1));
+                guard data != null else return false;
+                readBytes >> int <- fsReadInto(path, data, bytes);
+                if (readBytes < 0) { free(data); return false; }
+                wr(off(data, readBytes), 0);
+                value >> str <- cast(data);
+                result >> bool <- strContains(value, "foreign:") ||
+                    strContains(value, "use foreign.") ||
+                    strContains(value, "use foreign {") ||
+                    strContains(value, "use <foreign:");
+                free(data);
+                return result;
+            }
+
+            addCompilerManifest(
+                source >> str,
+                manifests >> int,
+                arguments >> int,
+                runtimePaths >> int,
+                artifacts >> int,
+                diagnostics >> int
+            ) -> int {
+                command >> str <- "compiler ffi-link-manifest " + quote(source) + " --json";
+                capture >> int <- assurance.assurance.captureProcess(
+                    assurance.assurance.activeCompiler(), command);
+                if (!assurance.assurance.captureOk(capture)) {
+                    diagnostic(diagnostics, "E_GHOR_FFI_MANIFEST_001",
+                        "compiler ffi-link-manifest execution failed", source);
+                    if (capture != 0) jsonRelease(capture);
+                    return 0;
+                }
+                output >> str <- assurance.assurance.captureOutput(capture);
+                manifest >> int <- jsonParse(output);
+                if (manifest == 0) {
+                    diagnostic(diagnostics, "E_GHOR_FFI_MANIFEST_001",
+                        "compiler ffi-link-manifest did not emit valid JSON", source);
+                    jsonClearError();
+                    jsonRelease(capture);
+                    return 0;
+                }
+                status >> str <- jsonGetStringOr(jsonObjectGet(manifest, "status"), "unknown");
+                count >> int <- jsonGetIntOr(jsonObjectGet(manifest, "count"), 0);
+                if (status != "closed") diagnostic(diagnostics, "E_GHOR_FFI_MANIFEST_001",
+                    "compiler ffi-link-manifest reported an open contract", source);
+                appendStrings(arguments, jsonObjectGet(manifest, "link_args"));
+                appendStrings(runtimePaths, jsonObjectGet(manifest, "runtime_paths"));
+                appendStrings(artifacts, jsonObjectGet(manifest, "artifacts"));
+                if (count > 0 || status != "closed") jsonArrayPush(manifests, manifest);
+                else jsonRelease(manifest);
+                jsonRelease(capture);
+                return count;
+            }
+
+            ffiReport(handle >> addr, root >> int) -> int {
+                manifests >> int <- jsonNewArray();
+                arguments >> int <- jsonNewArray();
+                runtimePaths >> int <- jsonNewArray();
+                artifacts >> int <- jsonNewArray();
+                diagnostics >> int <- jsonNewArray();
+                sources >> int <- jsonNewArray();
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                selected >> str <- option(handle, "--source");
+                entries >> int <- graph == 0 ? 0 : jsonObjectGet(graph, "sources");
+                total >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    source >> str <- jsonGetStringOr(jsonArrayGet(entries, at), "");
+                    if (strEndsWith(source, ".n") &&
+                        (selected == "" || source == joinPath(directory(manifestPath(root)), selected)) &&
+                        sourceDeclaresFfi(source)) {
+                        jsonArrayPush(sources, jsonNewString(source));
+                        total += addCompilerManifest(source, manifests, arguments,
+                            runtimePaths, artifacts, diagnostics);
+                    }
+                    at += 1;
+                }
+                if (graph != 0) jsonRelease(graph);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.ffi_manifest.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "closed" : "failed"));
+                jsonObjectSet(report, "package", jsonNewString(packageName(root)));
+                jsonObjectSet(report, "manifest", jsonNewString(manifestPath(root)));
+                jsonObjectSet(report, "source_files", sources);
+                jsonObjectSet(report, "compiler_ffi_entry_count", jsonNewInt(total));
+                jsonObjectSet(report, "compiler_ffi_link_manifests", manifests);
+                jsonObjectSet(report, "native_dependencies",
+                    jsonClone(jsonObjectGet(root, "native_dependencies")));
+                jsonObjectSet(report, "link_args", arguments);
+                jsonObjectSet(report, "runtime_paths", runtimePaths);
+                jsonObjectSet(report, "artifacts", artifacts);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "native_diagnostics",
+                    jsonClone(jsonObjectGet(root, "diagnostics")));
+                return report;
+            }
+
+            printModel(model >> int) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: project manifest cannot be materialized");
+                    return 2;
+                }
+                status >> str <- jsonGetStringOr(jsonObjectGet(model, "status"), "ok");
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return status == "error" || status == "failed" ? 1 : 0;
+            }
+
+            executeCross(handle >> addr, root >> int) -> int {
+                target >> str <- selectedTarget(handle, root);
+                if (!project_inspection.projectInspection.targetSupported(target)) {
+                    jsonRelease(root);
+                    println("error[E_GHOR_TARGET_001]: unsupported cross target");
+                    return 2;
+                }
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.cross.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(
+                    target == build_pipeline.buildPipeline.host() ?
+                    "native_plan_ready" : "cross_plan_ready_requires_external_toolchain"));
+                jsonObjectSet(model, "target", jsonNewString(target));
+                jsonObjectSet(model, "host", jsonNewString(build_pipeline.buildPipeline.host()));
+                jsonObjectSet(model, "package", jsonNewString(packageName(root)));
+                jsonObjectSet(model, "graph_hash", jsonNewString(hashModel(graph)));
+                jsonObjectSet(model, "toolchain_matrix",
+                    project_inspection.projectInspection.foreignToolchains());
+                jsonObjectSet(model, "execution", jsonNewString("plan_only_no_simulated_cross_compile"));
+                jsonRelease(graph); jsonRelease(root);
+                return printModel(model);
+            }
+
+            executeNative(root >> int) -> int {
+                report >> int <- nativeReport(root);
+                jsonRelease(root);
+                return printModel(report);
+            }
+
+            executeFfi(handle >> addr, root >> int) -> int {
+                report >> int <- ffiReport(handle, root);
+                jsonRelease(root);
+                return printModel(report);
+            }
+
+            executeLink(handle >> addr, root >> int) -> int {
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                native >> int <- nativeReport(root);
+                ffi >> int <- ffiReport(handle, root);
+                failed >> bool <- jsonGetStringOr(jsonObjectGet(native, "status"), "error") == "error" ||
+                    jsonGetStringOr(jsonObjectGet(ffi, "status"), "failed") == "failed";
+                projectRoot >> str <- directory(manifestPath(root));
+                target >> str <- selectedTarget(handle, root);
+                cargoBin >> int <- jsonObjectGet(root, "cargo_bin");
+                mainName >> str <- jsonGetStringOr(jsonObjectGet(cargoBin, "path"), "src/main.n");
+                sourceDirectory >> str <- directory(mainName);
+                compilerRoot >> str <- sourceDirectory == "." ? projectRoot :
+                    joinPath(projectRoot, sourceDirectory);
+                compilerMain >> str <- fileName(mainName);
+                output >> str <- option(handle, "--out");
+                if (output == "") {
+                    suffix >> str <- strContains(target, "windows") ? ".exe" :
+                        (strStartsWith(target, "wasm32") ? ".wasm" : "");
+                    output <- joinPath(projectRoot,
+                        "target/ghor/link/" + packageName(root) + suffix);
+                }
+                exitCode >> int <- -1;
+                if (!failed && ensureDirectory(directory(output))) {
+                    arguments >> list<str> <- listCreateWithCapacity<str>(11);
+                    listAdd(arguments, "project");
+                    listAdd(arguments, "link");
+                    listAdd(arguments, compilerRoot);
+                    listAdd(arguments, "--main");
+                    listAdd(arguments, compilerMain);
+                    listAdd(arguments, "--target");
+                    listAdd(arguments, target);
+                    listAdd(arguments, "--out");
+                    listAdd(arguments, output);
+                    listAdd(arguments, "--quiet");
+                    compilerPath >> str <- assurance.assurance.activeCompiler();
+                    process >> Result<ProcessHandle, ProcessError> <- spawn(compilerPath, arguments);
+                    status >> Result<int, ProcessError> <- wait(process);
+                    exitCode <- isOk(status) ? unwrap(status) : -1;
+                    failed <- exitCode != 0 || !exists(output) || fsSize(output) <= 0;
+                }
+                else failed <- true;
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.link.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(failed ? "error" : "linked"));
+                jsonObjectSet(model, "package", jsonNewString(packageName(root)));
+                jsonObjectSet(model, "target", jsonNewString(target));
+                jsonObjectSet(model, "artifact", jsonClone(jsonObjectGet(root, "artifact")));
+                jsonObjectSet(model, "native_dependencies",
+                    jsonClone(jsonObjectGet(native, "native_dependencies")));
+                jsonObjectSet(model, "native_link_args", jsonClone(jsonObjectGet(native, "link_args")));
+                jsonObjectSet(model, "compiler_ffi_link_manifest", ffi);
+                jsonObjectSet(model, "graph_hash", jsonNewString(hashModel(graph)));
+                jsonObjectSet(model, "execution", jsonNewString(
+                    "native-nc-project-link-no-shell"));
+                jsonObjectSet(model, "exit_code", jsonNewInt(exitCode));
+                jsonObjectSet(model, "output", jsonNewString(output));
+                jsonObjectSet(model, "output_bytes", jsonNewInt(
+                    exists(output) ? fsSize(output) : 0));
+                jsonObjectSet(model, "output_sha256", jsonNewString(
+                    exists(output) ? sha256.sha256.file(output) : ""));
+                bridge >> str <- joinPath(compilerRoot, "bridge.json");
+                jsonObjectSet(model, "bridge", jsonNewString(
+                    exists(bridge) ? bridge : ""));
+                jsonRelease(ffi); jsonRelease(native); jsonRelease(graph); jsonRelease(root);
+                return printModel(model);
+            }
+
+            executeArtifact(handle >> addr, root >> int) -> int {
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                native >> int <- nativeReport(root);
+                ffi >> int <- ffiReport(handle, root);
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload, "schema", jsonNewString("ghor.artifact.v1"));
+                jsonObjectSet(payload, "executor", jsonNewString("nc-stage1"));
+                failed >> bool <- jsonGetStringOr(jsonObjectGet(native, "status"), "error") == "error" ||
+                    jsonGetStringOr(jsonObjectGet(ffi, "status"), "failed") == "failed";
+                jsonObjectSet(payload, "status", jsonNewString(failed ? "error" : "recorded"));
+                jsonObjectSet(payload, "package", jsonNewString(packageName(root)));
+                jsonObjectSet(payload, "version", jsonNewString(packageVersion(root)));
+                jsonObjectSet(payload, "target", jsonClone(jsonObjectGet(root, "target_default")));
+                jsonObjectSet(payload, "artifact", jsonClone(jsonObjectGet(root, "artifact")));
+                jsonObjectSet(payload, "native_dependencies",
+                    jsonClone(jsonObjectGet(native, "native_dependencies")));
+                jsonObjectSet(payload, "native_link_args",
+                    jsonClone(jsonObjectGet(native, "link_args")));
+                jsonObjectSet(payload, "compiler_ffi_link_manifest", ffi);
+                jsonObjectSet(payload, "graph_hash", jsonNewString(hashModel(graph)));
+                jsonObjectSet(payload, "manifest_hash", jsonNewString(hashModel(root)));
+                jsonObjectSet(payload, "native_boundary_hash", jsonNewString(hashModel(native)));
+                jsonObjectSet(payload, "ffi_manifest_hash", jsonNewString(hashModel(ffi)));
+                out >> str <- option(handle, "--out");
+                if (out == "") out <- joinPath(directory(manifestPath(root)),
+                    "target/ghor/artifacts/artifact-manifest.json");
+                guard ensureDirectory(directory(out)) else {
+                    jsonRelease(payload); jsonRelease(ffi); jsonRelease(native);
+                    jsonRelease(graph); jsonRelease(root);
+                    println("error[E_GHOR_ARTIFACT_001]: artifact directory cannot be created");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(payload, 2);
+                guard fswrite(out, rendered) else {
+                    strRelease(rendered); jsonRelease(payload); jsonRelease(ffi); jsonRelease(native);
+                    jsonRelease(graph); jsonRelease(root);
+                    println("error[E_GHOR_ARTIFACT_001]: artifact manifest cannot be written");
+                    return 2;
+                }
+                digest >> str <- hashModel(payload);
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "schema", jsonNewString("ghor.artifact.result.v1"));
+                jsonObjectSet(result, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(result, "status", jsonNewString(failed ? "error" : "recorded"));
+                jsonObjectSet(result, "path", jsonNewString(out));
+                jsonObjectSet(result, "artifact_hash", jsonNewString(digest));
+                jsonObjectSet(result, "boundary_status", jsonNewString(failed ? "error" : "closed"));
+                strRelease(rendered); jsonRelease(payload); jsonRelease(ffi); jsonRelease(native);
+                jsonRelease(graph); jsonRelease(root);
+                return printModel(result);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "cross" || selected == "link" || selected == "artifact" ||
+                    selected == "native" || selected == "native-deps" ||
+                    selected == "native-dependencies" || selected == "ffi-manifest" ||
+                    selected == "ffi-link-manifest" || selected == "ffi-package-manifest";
+            }
+
+            execute(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return printModel(0);
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "cross") return executeCross(handle, root);
+                if (selected == "link") return executeLink(handle, root);
+                if (selected == "artifact") return executeArtifact(handle, root);
+                if (selected == "native" || selected == "native-deps" ||
+                    selected == "native-dependencies") return executeNative(root);
+                return executeFfi(handle, root);
+            }
+
+            selfTest() -> bool {
+                return separator(47) && separator(92) &&
+                    joinPath("root", "artifact") != "" &&
+                    project_inspection.projectInspection.targetSupported(
+                        "x86_64-unknown-linux-gnu");
+            }
+
+    fa:
+        return true;
+}

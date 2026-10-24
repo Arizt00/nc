@@ -1,0 +1,195 @@
+use <project:ir, mct_values, wasm_bytes, native_types>;
+
+nccWasmModel {
+    // Context owns the constant table and node indexes, but borrows the IR.
+    fn:
+        internal:
+            graph(ctx >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(ctx)); }
+            constants(ctx >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(off(ctx, 8))); }
+            get(ctx >> p<byte>, node >> int, field >> int) -> int {
+                return node < 0 ? -1 : rd<int>(off(ctx, 64 + node * 40 + field));
+            }
+            set(ctx >> p<byte>, node >> int, field >> int, value >> int) -> void {
+                wr<int>(off(ctx, 64 + node * 40 + field), value);
+            }
+            functionOf(g >> p<byte>, node >> int) -> int {
+                while (node >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g, node) == 15) return node;
+                    node <- ir.nccIr.graphNodeParent(g, node);
+                }
+                return -1;
+            }
+            typeNode(g >> p<byte>, node >> int) -> int {
+                child >> int <- ir.nccIr.graphNodeFirstChild(g, node);
+                while (child >= 0) {
+                    kind >> int <- ir.nccIr.graphNodeAstKind(g, child);
+                    if (kind >= 18 && kind <= 24) return child;
+                    child <- ir.nccIr.graphNodeNextSibling(g, child);
+                }
+                return -1;
+            }
+            scalar(g >> p<byte>, node >> int) -> int {
+                guard node >= 0 else return -1;
+                if (ir.nccIr.graphNodeAstKind(g, node) == 20) return 0x7F;
+                if (ir.nccIr.graphTextValue(g, node, "void")) return 0x40;
+                if (ir.nccIr.graphTextValue(g,node,"i64") || ir.nccIr.graphTextValue(g,node,"u64")) return 0x7E;
+                if (ir.nccIr.graphTextValue(g, node, "int") || ir.nccIr.graphTextValue(g, node, "i32") ||
+                    ir.nccIr.graphTextValue(g, node, "u32") || ir.nccIr.graphTextValue(g, node, "byte") ||
+                    ir.nccIr.graphTextValue(g, node, "char") || ir.nccIr.graphTextValue(g, node, "bool") ||
+                    ir.nccIr.graphTextValue(g, node, "addr") || ir.nccIr.graphTextValue(g, node, "usize") ||
+                    ir.nccIr.graphTextValue(g, node, "isize") || ir.nccIr.graphTextValue(g, node, "str")) return 0x7F;
+                return -1;
+            }
+            parameterCount(g >> p<byte>, node >> int) -> int {
+                count >> int <- 0;
+                child >> int <- ir.nccIr.graphNodeFirstChild(g, node);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g, child) == 16) count += 1;
+                    child <- ir.nccIr.graphNodeNextSibling(g, child);
+                }
+                return count;
+            }
+            materialCode(g >> p<byte>, node >> int) -> int {
+                kind >> int <- ir.nccIr.graphNodeAstKind(g,node);
+                return kind == 12 || kind == 16 ? native_types.nccNativeTypes.code(g,typeNode(g,node)) :
+                    native_types.nccNativeTypes.expression(g,node,0);
+            }
+            materialBytes(g >> p<byte>, node >> int) -> int {
+                code >> int <- materialCode(g,node);
+                if (code == 34) return 4;
+                if (native_types.nccNativeTypes.aggregate(code))
+                    return native_types.nccNativeTypes.aggregateBytes(g,code);
+                return native_types.nccNativeTypes.width(code);
+            }
+            valueType(code >> int) -> int {
+                return !native_types.nccNativeTypes.aggregate(code) && code != 34 &&
+                    native_types.nccNativeTypes.width(code) == 8 ? 0x7E : 0x7F;
+            }
+            named(g >> p<byte>, node >> int, name >> str) -> bool {
+                return ir.nccIr.graphTextValue(g, node, name);
+            }
+            runtimeResult(g >> p<byte>, node >> int) -> int {
+                if (named(g,node,"print") || named(g,node,"println") || named(g,node,"sleepMs") ||
+                    named(g,node,"free")) return 0x40;
+                if (named(g,node,"readInt") || named(g,node,"readStr") || named(g,node,"readLine") ||
+                    named(g,node,"monotonicMs") || named(g,node,"renderInt") || named(g,node,"renderBool") ||
+                    named(g,node,"alloc") || named(g,node,"realloc") || named(g,node,"calloc")) return 0x7F;
+                return -1;
+            }
+            runtimeArity(g >> p<byte>, node >> int) -> int {
+                if (named(g,node,"readInt") || named(g,node,"readStr") || named(g,node,"readLine") ||
+                    named(g,node,"monotonicMs")) return 0;
+                if (named(g,node,"realloc") || named(g,node,"calloc")) return 2;
+                return runtimeResult(g,node) >= 0 ? 1 : -1;
+            }
+            create(g >> p<byte>, providers >> int) -> p<byte> {
+                count >> int <- ir.nccIr.graphNodes(g);
+                ctx >> p<byte> <- cast<byte>(alloc(64 + count * 40));
+                guard ctx != null else return null;
+                at >> int <- 0;
+                while (at < 64 + count * 40) { wr<byte>(off(ctx,at),255); at += 1; }
+                wr<addr>(ctx,adr(g));
+                values >> p<byte> <- mct_values.nccMctValues.create(g);
+                if (values == null) { free(ctx); return null; }
+                wr<addr>(off(ctx,8),adr(values));
+                functions >> int <- providers;
+                globals >> int <- 0;
+                dataBytes >> int <- 16;
+                at <- 0;
+                while (at < count) {
+                    kind >> int <- ir.nccIr.graphNodeAstKind(g,at);
+                    if (kind == 15) { set(ctx,at,0,functions); functions += 1; }
+                    if (kind == 12 || kind == 10 || kind == 16 || kind == 15)
+                        set(ctx,at,12,scalar(g,typeNode(g,at)));
+                    if (kind == 15 && (ir.nccIr.graphNodeFlags(g,at) & 128) != 0)
+                        set(ctx,at,12,0x40);
+                    if (kind == 12 && functionOf(g,at) < 0 && !mct_values.nccMctValues.isConstant(g,at)) {
+                        set(ctx,at,8,globals); globals += 1;
+                    }
+                    if (kind == 25 && ir.nccIr.graphNodeRoleHash(g,at) == 3) {
+                        set(ctx,at,16,dataBytes);
+                        dataBytes += ir.nccIr.graphNodeNameBytes(g,at) + 1;
+                    }
+                    at += 1;
+                }
+                wr<int>(off(ctx,16),functions);
+                wr<int>(off(ctx,20),globals);
+                wr<int>(off(ctx,24),dataBytes);
+                wr<int>(off(ctx,32),globals);
+                wr<int>(off(ctx,36),(dataBytes+1048576+65535) & ~65535);
+                wr<int>(off(ctx,20),globals+1);
+                at <- 0;
+                while (at < count) {
+                    if (ir.nccIr.graphNodeAstKind(g,at) == 15) {
+                        index >> int <- 0;
+                        child >> int <- ir.nccIr.graphNodeFirstChild(g,at);
+                        while (child >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(g,child) == 16) { set(ctx,child,4,index); index += 1; }
+                            child <- ir.nccIr.graphNodeNextSibling(g,child);
+                        }
+                        scan >> int <- 0;
+                        while (scan < count) {
+                            if (ir.nccIr.graphNodeAstKind(g,scan) == 12 && functionOf(g,scan) == at &&
+                                !mct_values.nccMctValues.isConstant(g,scan)) { set(ctx,scan,4,index); index += 1; }
+                            scan += 1;
+                        }
+                        set(ctx,at,32,index);
+                        set(ctx,at,20,index+4);
+                        frameBytes >> int <- 0;
+                        scan <- 0;
+                        while (scan < count) {
+                            kind >> int <- ir.nccIr.graphNodeAstKind(g,scan);
+                            if ((kind == 12 || kind == 16 || kind == 33 || kind == 45) && functionOf(g,scan) == at &&
+                                !mct_values.nccMctValues.isConstant(g,scan)) {
+                                width >> int <- materialBytes(g,scan);
+                                if (width <= 0 || width > 1048576 ||
+                                    (!native_types.nccNativeTypes.aggregate(materialCode(g,scan)) && width > 8)) {
+                                    release(ctx); return null;
+                                }
+                                frameBytes <- (frameBytes+7) & ~7;
+                                set(ctx,scan,24,frameBytes); frameBytes += width;
+                                set(ctx,scan,12,valueType(materialCode(g,scan)));
+                            }
+                            scan += 1;
+                        }
+                        set(ctx,at,28,(frameBytes+15) & ~15);
+                    }
+                    at += 1;
+                }
+                return ctx;
+            }
+            signature(ctx >> p<byte>, out >> p<byte>, node >> int, runtime >> bool) -> void {
+                g >> p<byte> <- graph(ctx);
+                wasm_bytes.nccWasmBytes.put(out,0x60);
+                if (runtime) {
+                    arity >> int <- runtimeArity(g,node);
+                    result >> int <- runtimeResult(g,node);
+                    if (arity < 0 || result < 0) { wasm_bytes.nccWasmBytes.reject(out); return; }
+                    wasm_bytes.nccWasmBytes.uleb(out,arity);
+                    at >> int <- 0;
+                    while (at < arity) { wasm_bytes.nccWasmBytes.put(out,0x7F); at += 1; }
+                    wasm_bytes.nccWasmBytes.uleb(out,result == 0x40 ? 0 : 1);
+                    if (result != 0x40) wasm_bytes.nccWasmBytes.put(out,result);
+                    return;
+                }
+                wasm_bytes.nccWasmBytes.uleb(out,parameterCount(g,node));
+                child >> int <- ir.nccIr.graphNodeFirstChild(g,node);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g,child) == 16) {
+                        t >> int <- get(ctx,child,12);
+                        if (t != 0x7F && t != 0x7E) wasm_bytes.nccWasmBytes.reject(out);
+                        wasm_bytes.nccWasmBytes.put(out,t);
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(g,child);
+                }
+                result >> int <- get(ctx,node,12);
+                if (result != 0x7F && result != 0x7E && result != 0x40) wasm_bytes.nccWasmBytes.reject(out);
+                wasm_bytes.nccWasmBytes.uleb(out,result == 0x40 ? 0 : 1);
+                if (result != 0x40) wasm_bytes.nccWasmBytes.put(out,result);
+            }
+            release(ctx >> p<byte>) -> void {
+                if (ctx != null) { free(constants(ctx)); free(ctx); }
+            }
+    fa:
+        return true;
+}

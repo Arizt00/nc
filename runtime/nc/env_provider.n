@@ -1,0 +1,101 @@
+use <project:env_host>;
+
+envProvider {
+    fn:
+        private:
+            length(text >> p<byte>) -> int {
+                if (text == null) return 0;
+                at >> int <- 0; while (rd(off(text,at)) != 0) { at += 1; } return at;
+            }
+            valid(name >> str) -> bool {
+                text >> p<byte> <- cast<byte>(name);
+                if (text == null || rd(text) == 0) return false;
+                at >> int <- 0;
+                while (rd(off(text,at)) != 0) { if (rd(off(text,at)) == 61) return false; at += 1; }
+                return true;
+            }
+            emitByte(destination >> p<byte>, capacity >> int, position >> int, code >> byte) -> int {
+                if (destination != null && position < capacity) wr(off(destination,position),code);
+                return position+1;
+            }
+        public:
+            provider_env_envOpen() -> addr {
+                data >> p<byte> <- cast<byte>(calloc(1,32));
+                if (data == null) { env_host.envHost.setError(12); return null; }
+                status >> int <- env_host.envHost.capture(data);
+                wr<u64>(off(data,24),status); env_host.envHost.setError(status); return adr(data);
+            }
+            provider_env_envCount(handle >> addr) -> int { return handle == null ? 0 : rd<u64>(from<byte>(handle)); }
+            provider_env_envAt(handle >> addr, index >> int) -> str {
+                vector >> p<addr> <- from<addr>(rd<addr>(off(from<byte>(handle),8)));
+                return cast<str>(rd(off(vector,index)));
+            }
+            provider_env_envData(handle >> addr) -> addr { return rd<addr>(off(from<byte>(handle),8)); }
+            provider_env_envBytes(handle >> addr) -> int { return rd<u64>(off(from<byte>(handle),16)); }
+            provider_env_envError(handle >> addr) -> int { return handle == null ? 12 : rd<u64>(off(from<byte>(handle),24)); }
+            provider_env_envRelease(handle >> addr) -> bool {
+                if (handle == null) return true;
+                data >> p<byte> <- from<byte>(handle); count >> u64 <- rd<u64>(data);
+                vector >> p<addr> <- from<addr>(rd<addr>(off(data,8))); at >> u64 <- 0;
+                while (at < count) { free(from<byte>(rd(off(vector,at)))); at += 1; }
+                free(vector); free(data); return true;
+            }
+            provider_env_envLastError() -> int { return env_host.envHost.lastError(); }
+            provider_env_envGet(name >> str, destination >> addr, capacity >> int) -> int {
+                if (!valid(name) || capacity < 0) { env_host.envHost.setError(22); return -22; }
+                value >> p<byte> <- env_host.envHost.value(name);
+                if (value == null) return -env_host.envHost.lastError();
+                bytes >> int <- length(value); required >> int <- bytes+1;
+                if (destination != null && capacity >= required) {
+                    at >> int <- 0; while (at < required) { wr<byte>(off(from<byte>(destination),at),rd(off(value,at))); at += 1; }
+                    required <- bytes;
+                }
+                free(value); env_host.envHost.setError(0); return required;
+            }
+            provider_env_envHas(name >> str) -> bool {
+                if (!valid(name)) { env_host.envHost.setError(22); return false; }
+                value >> p<byte> <- env_host.envHost.value(name);
+                status >> int <- env_host.envHost.lastError(); present >> bool <- value != null;
+                free(value); env_host.envHost.setError(status); return present;
+            }
+            provider_env_envSet(name >> str, value >> str) -> bool {
+                if (!valid(name) || cast<byte>(value) == null) { env_host.envHost.setError(22); return false; }
+                return env_host.envHost.set(name,value);
+            }
+            provider_env_envRemove(name >> str) -> bool {
+                if (!valid(name)) { env_host.envHost.setError(22); return false; }
+                return env_host.envHost.remove(name);
+            }
+            provider_env_envExpand(source >> str, destination >> addr, capacity >> int) -> int {
+                text >> p<byte> <- cast<byte>(source); target >> p<byte> <- from<byte>(destination);
+                if (text == null || capacity < 0) { env_host.envHost.setError(22); return -22; }
+                at >> int <- 0; written >> int <- 0;
+                while (rd(off(text,at)) != 0) {
+                    code >> byte <- rd(off(text,at)); close >> int <- at+1;
+                    if (code == 37) { while (rd(off(text,close)) != 0 && rd(off(text,close)) != 37) { close += 1; } }
+                    if (code != 37 || close == at+1 || rd(off(text,close)) != 37) {
+                        written <- emitByte(target,capacity,written,code); at += 1; continue;
+                    }
+                    name >> p<byte> <- cast<byte>(alloc(close-at));
+                    if (name == null) { env_host.envHost.setError(12); return -12; }
+                    index >> int <- 0;
+                    while (index < close-at-1) { wr(off(name,index),rd(off(text,at+1+index))); index += 1; }
+                    wr(off(name,index),0);
+                    key >> str <- cast(name); nameValid >> bool <- valid(key);
+                    value >> p<byte> <- nameValid ? env_host.envHost.value(key) : null;
+                    status >> int <- nameValid ? env_host.envHost.lastError() : 0; free(name);
+                    if (value == null && status != 0 && status != 2 && status != 203 && status != 22) { env_host.envHost.setError(status); return -status; }
+                    if (value == null) {
+                        while (at <= close) { written <- emitByte(target,capacity,written,rd(off(text,at))); at += 1; }
+                    } else {
+                        index <- 0;
+                        while (rd(off(value,index)) != 0) { written <- emitByte(target,capacity,written,rd(off(value,index))); index += 1; }
+                        free(value); at <- close+1;
+                    }
+                }
+                env_host.envHost.setError(0);
+                if (target == null || capacity <= written) return written+1;
+                wr(off(target,written),0); return written;
+            }
+    fa: return true;
+}

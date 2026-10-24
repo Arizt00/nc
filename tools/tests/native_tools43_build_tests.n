@@ -1,0 +1,96 @@
+use <data:json>;
+use <io:output>;
+use <process:args, env>;
+use <project:tool_cli, release_io, cert_json>;
+
+nativeTools43BuildTests {
+    stc:
+        cases >> int;
+        failed >> bool <- false;
+        builder >> str;
+        repo >> str;
+        work >> str;
+        ncc >> str;
+        cc >> str;
+    fn:
+        private:
+            test(name >> str, manifest >> str, family >> str, expected >> int) -> bool {
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,builder);
+                tool_cli.toolCli.append(words,"--manifest"); tool_cli.toolCli.append(words,manifest);
+                tool_cli.toolCli.append(words,"--root"); tool_cli.toolCli.append(words,repo);
+                tool_cli.toolCli.append(words,"--out"); tool_cli.toolCli.append(words,work+"/artifacts with spaces");
+                tool_cli.toolCli.append(words,"--family"); tool_cli.toolCli.append(words,family);
+                tool_cli.toolCli.append(words,"--ncc"); tool_cli.toolCli.append(words,ncc);
+                tool_cli.toolCli.append(words,"--cc"); tool_cli.toolCli.append(words,cc);
+                result >> int <- tool_cli.toolCli.execute(words,repo,120000);
+                code >> int <- release_io.releaseIo.number(result,"code",-1);
+                good >> bool <- tool_cli.toolCli.hasFlag(result,"capture_ok") && code == expected;
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"name",jsonNewString(name));
+                cert_json.certJson.put(row,"expected_exit",jsonNewInt(expected));
+                cert_json.certJson.put(row,"actual_exit",jsonNewInt(code));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.put(row,"stderr",jsonObjectGet(result,"stderr"));
+                cert_json.certJson.put(row,"stdout",jsonObjectGet(result,"stdout"));
+                cert_json.certJson.push(cases,row);
+                if (!good) { failed <- true; println("FAIL "+name); }
+                jsonRelease(result); jsonRelease(words); return good;
+            }
+            fixture(name >> str, content >> str) -> str {
+                path >> str <- work+"/"+name+".json";
+                if (!release_io.releaseIo.write(path,content)) failed <- true;
+                return path;
+            }
+            executeBuilt(label >> str) -> bool {
+                suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                words >> int <- jsonNewArray();
+                path >> str <- work+"/artifacts with spaces/bin/fixture"+suffix;
+                tool_cli.toolCli.append(words,path);
+                result >> int <- tool_cli.toolCli.execute(words,repo,10000);
+                output >> str <- cert_json.certJson.field(result,"stdout");
+                good >> bool <- tool_cli.toolCli.hasFlag(result,"ok") && strTrim(output) == "native-builder=43";
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"name",jsonNewString(label));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.put(row,"stdout",jsonNewString(output));
+                cert_json.certJson.push(cases,row);
+                if (!good) { failed <- true; println("FAIL "+label); }
+                strRelease(output); jsonRelease(result); jsonRelease(words);
+                return good;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                builder <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--builder",""));
+                repo <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--root","."));
+                work <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--work","target/tmp/native43-builder-tests"));
+                ncc <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--ncc",envHas("WINDIR") ? "target/x86_64-pc-windows-gnu/release/ncc.exe" : "target/release/ncc"));
+                cc <- release_io.releaseIo.option(arguments,"--cc",envHas("WINDIR") ? "C:/msys64/mingw64/bin/gcc.exe" : "/usr/bin/gcc");
+                cases <- jsonNewArray();
+                test("missing manifest",work+"/missing.json","",2);
+                test("invalid JSON",fixture("invalid","not JSON"),"",2);
+                test("missing families",fixture("missing-families","{}"),"",2);
+                test("empty families",fixture("empty","{\"families\":[]}"),"",2);
+                test("unsafe family",fixture("unsafe-name","{\"families\":[{\"name\":\"../escape\",\"sources\":[]}]}"),"",1);
+                test("missing sources",fixture("missing-sources","{\"families\":[{\"name\":\"fixture\"}]}"),"",1);
+                test("missing source file",fixture("missing-file","{\"families\":[{\"name\":\"fixture\",\"sources\":[{\"source\":\"absent.n\",\"destination\":\"main.n\"}]}]}"),"",1);
+                test("source traversal",fixture("traversal","{\"families\":[{\"name\":\"fixture\",\"sources\":[{\"source\":\"../escape.n\",\"destination\":\"main.n\"}]}]}"),"",1);
+                test("unknown family",fixture("unknown","{\"families\":[{\"name\":\"fixture\",\"sources\":[]}]}"),"unknown",1);
+                if (test("compile project in path with spaces",fixture("positive","{\"families\":[{\"name\":\"fixture\",\"sources\":[{\"source\":\"tools/tests/native_tools43_build_fixture.n\",\"destination\":\"main.n\"}]}]}"),"fixture",0)) executeBuilt("run compiled fixture");
+                if (test("platform source override",fixture("override","{\"families\":[{\"name\":\"fixture\",\"sources\":[{\"source\":\"absent.n\",\"windows\":\"tools/tests/native_tools43_build_fixture.n\",\"linux\":\"tools/tests/native_tools43_build_fixture.n\",\"destination\":\"main.n\"}]}]}"),"fixture",0)) executeBuilt("run platform override fixture");
+                if (test("selected family skips unrelated project",fixture("selected","{\"families\":[{\"name\":\"unrelated\",\"sources\":[{\"source\":\"absent.n\",\"destination\":\"main.n\"}]},{\"name\":\"fixture\",\"sources\":[{\"source\":\"tools/tests/native_tools43_build_fixture.n\",\"destination\":\"main.n\"}]}]}"),"fixture",0)) executeBuilt("run selected family fixture");
+                test("nonzero compiler status propagated",fixture("compiler-rejected","{\"families\":[{\"name\":\"fixture\",\"sources\":[{\"source\":\"tools/tests/native_tools43_build_rejected.n\",\"destination\":\"main.n\"}]}]}"),"fixture",1);
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.native-tools.builder.tests.v43"));
+                cert_json.certJson.put(report,"host",jsonNewString(envHas("WINDIR") ? "windows" : "linux"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(!failed));
+                cert_json.certJson.put(report,"cases",cases);
+                if (!cert_json.certJson.save(work+"/report.json",report)) failed <- true;
+                jsonRelease(report); argsRelease(arguments);
+                println(failed ? "FAILED: native family builder regressions" : "OK: native family builder regressions");
+                return failed ? 1 : 0;
+            }
+    ref main ->> run;
+    fa: return true;
+}

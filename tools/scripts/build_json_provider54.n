@@ -1,0 +1,287 @@
+use <io:output, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildJsonProvider54 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == name) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return fallback;
+            }
+            directory(path >> str) -> str {
+                index >> int <- strByteLen(path)-1;
+                data >> p<byte> <- cast<byte>(path);
+                while (index >= 0) {
+                    value >> byte <- rd(off(data,index));
+                    if (value == 47 || value == 92) return index == 0 ? "/" : strSubstring(path,0,index);
+                    index -= 1;
+                }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent == path || !mkdir(parent)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            write(path >> str, text >> str) -> bool {
+                bytes >> int <- strByteLen(text);
+                return fsWriteFrom(path,cast<byte>(text),bytes,false) == bytes;
+            }
+            copyFile(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source);
+                if (bytes <= 0 || bytes > 1048576) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes));
+                if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes &&
+                    fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            appendSource(root >> str, project >> str, source >> str, windows >> bool) -> bool {
+                path >> str <- root+"/runtime/nc/"+source;
+                bytes >> int <- fsSize(path);
+                guard bytes > 0 && bytes < 1048576 else return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes));
+                guard data != null else return false;
+                guard fsReadInto(path,data,bytes) == bytes else { free(data); return false; }
+                if (!windows) {
+                    needle >> p<byte> <- cast<byte>("vmCommit(base, total, 4)");
+                    at >> int <- 0;
+                    while (at+24 <= bytes) {
+                        index >> int <- 0;
+                        while (index < 24 && rd(off(data,at+index)) == rd(off(needle,index))) { index += 1; }
+                        if (index == 24) wr(off(data,at+22),51);
+                        at += 1;
+                    }
+                }
+                valid >> bool <- fsWriteFrom(project+"/src/json.n",data,bytes,true) == bytes;
+                free(data); return valid;
+            }
+            jsonSource(root >> str, project >> str, windows >> bool) -> bool {
+                path >> str <- root+"/runtime/nc/json.n";
+                bytes >> int <- fsSize(path);
+                guard bytes > 0 && bytes < 1048576 else return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes+1));
+                guard data != null else return false;
+                guard fsReadInto(path,data,bytes) == bytes else { free(data); return false; }
+                wr<byte>(off(data,bytes),0);
+                before >> p<byte> <- cast<byte>("nccJsonRuntime :: runtime");
+                after >> p<byte> <- cast<byte>("jsonProvider54 :: runtime");
+                width >> int <- 25;
+                start >> int <- -1;
+                at >> int <- 0;
+                while (at+width <= bytes) {
+                    index >> int <- 0;
+                    while (index < width && rd(off(data,at+index)) == rd(off(before,index))) { index += 1; }
+                    if (index == width) {
+                        if (start >= 0) { free(data); return false; }
+                        start <- at;
+                    }
+                    at += 1;
+                }
+                guard start >= 0 else { free(data); return false; }
+                at <- 0;
+                while (at < width) { wr(off(data,start+at),rd(off(after,at))); at += 1; }
+                valid >> bool <- fsWriteFrom(project+"/src/json.n",data,bytes,false) == bytes;
+                free(data);
+                return valid && appendSource(root,project,"text_format.n",windows) &&
+                    appendSource(root,project,"text_escape.n",windows) &&
+                    appendSource(root,project,"text_parse.n",windows) &&
+                    appendSource(root,project,"unicode_tables.n",windows) &&
+                    appendSource(root,project,"unicode.n",windows);
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+                    windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child);
+                waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child);
+                commandRelease(child);
+                if (!started || waited != 0 || code != 0) {
+                    println("JSON provider build failed: "+line); return false;
+                }
+                return true;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                root >> str <- option(arguments,"--root",".");
+                out >> str <- option(arguments,"--out","target/frontend54/providers");
+                ncc >> str <- option(arguments,"--ncc",windows ? "target/debug/ncc.exe" : "ncc");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                compilerSupport >> str <- option(arguments,"--compiler-support","C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+                kernel32 >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                heap >> str <- option(arguments,"--heap",root+(windows ?
+                    "/docs/evidence/frontend48/providers/windows/heap.exports.obj" :
+                    "/docs/evidence/frontend48/providers/linux/heap.exports.o"));
+                if (quote(root) == "" || quote(out) == "" || quote(ncc) == "" || quote(objcopy) == "" ||
+                    quote(linker) == "" || quote(kernel32) == "" || quote(heap) == "" || quote(compilerSupport) == "") return 64;
+                if (!mkdir(out+"/project/src")) return 73;
+                project >> str <- out+"/project";
+                if (!copyFile(root+"/tools/tests/json_provider_probe54.n",project+"/main.n") ||
+                    !jsonSource(root,project,windows) ||
+                    !copyFile(root+"/runtime/nc/string_length_provider.n",project+"/src/string_length.n") ||
+                    !copyFile(root+"/runtime/nc/output_provider.n",project+"/src/output.n") ||
+                    !copyFile(root+"/runtime/nc/render_provider.n",project+"/src/render.n") ||
+                    !copyFile(root+(windows ? "/runtime/nc/output_host_windows.n" : "/runtime/nc/output_host_linux.n"),
+                        project+"/src/output_host.n")) return 74;
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                if (!invoke(quote(ncc)+" project sync "+quote(project)+" --main main.n --target "+target,windows) ||
+                    !invoke(quote(ncc)+" project graph "+quote(project)+" --main main.n --target "+target,windows)) return 1;
+                objects >> str <- project+"/.ncc/obj/"+(windows ? "x86_64_pc_windows_msvc" : "x86_64_unknown_linux_gnu");
+                object >> str <- objects+(windows ? "/output.obj" : "/output.o");
+                host >> str <- objects+(windows ? "/output_host.obj" : "/output_host.o");
+                exported >> str <- out+(windows ? "/output.exports.obj" : "/output.exports.o");
+                render >> str <- objects+(windows ? "/render.obj" : "/render.o");
+                renderExported >> str <- out+(windows ? "/render.exports.obj" : "/render.exports.o");
+                string >> str <- objects+(windows ? "/string_length.obj" : "/string_length.o");
+                nativeString >> str <- option(arguments,"--native-string-object","");
+                if (nativeString != "") {
+                    if (quote(nativeString) == "" || fsSize(nativeString) <= 0) return 74;
+                    string <- nativeString;
+                }
+                stringExported >> str <- out+(windows ? "/string_length.exports.obj" : "/string_length.exports.o");
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                jsonObject >> str <- objects+(windows ? "/json.obj" : "/json.o");
+                jsonExported >> str <- out+(windows ? "/json.exports.obj" : "/json.exports.o");
+                rename >> str <- " --redefine-sym outputProvider_provider_output_print=nC.runtime.output.print"+
+                    " --redefine-sym outputProvider_provider_output_println=nC.runtime.output.println"+
+                    " --redefine-sym outputProvider_provider_output_flush=nC.runtime.output.flush"+
+                    " --redefine-sym outputProvider_provider_output_writeBytes=nC.runtime.output.writeBytes ";
+                if (!invoke(quote(objcopy)+rename+quote(object)+" "+quote(exported),windows)) return 1;
+                rename <- " --redefine-sym renderProvider_provider_render_renderInt=nC.runtime.render.renderInt"+
+                    " --redefine-sym renderProvider_provider_render_renderBool=nC.runtime.render.renderBool"+
+                    " --redefine-sym renderProvider_provider_render_renderChar=nC.runtime.render.renderChar"+
+                    " --redefine-sym renderProvider_provider_render_renderStr=nC.runtime.render.renderStr"+
+                    " --redefine-sym heapProvider_provider_heap_alloc=nC.runtime.heap.alloc ";
+                if (!invoke(quote(objcopy)+rename+quote(render)+" "+quote(renderExported),windows)) return 1;
+                rename <- " --redefine-sym stringLengthProvider_provider_string_strByteLen=nC.runtime.string.strByteLen"+
+                    " --redefine-sym stringLengthProvider_provider_string_strLen=nC.runtime.string.strLen"+
+                    " --redefine-sym stringLengthProvider_provider_string_len=nC.runtime.string.len ";
+                if (nativeString != "") rename <-
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$26$provider_string_strByteLen=nC.runtime.string.strByteLen"+
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$22$provider_string_strLen=nC.runtime.string.strLen"+
+                    " --redefine-sym nc$S$P$20$stringLengthProvider$19$provider_string_len=nC.runtime.string.len ";
+                if (!invoke(quote(objcopy)+rename+quote(string)+" "+quote(stringExported),windows)) return 1;
+                rename <-
+                    " --redefine-sym jsonProvider54_jsonNewBool=nC.runtime.json.jsonNewBool"+
+                    " --redefine-sym jsonProvider54_jsonObjectSet=nC.runtime.json.jsonObjectSet"+
+                    " --redefine-sym jsonProvider54_jsonNewObject=nC.runtime.json.jsonNewObject"+
+                    " --redefine-sym jsonProvider54_jsonRelease=nC.runtime.json.jsonRelease"+
+                    " --redefine-sym jsonProvider54_jsonGetBool=nC.runtime.json.jsonGetBool"+
+                    " --redefine-sym jsonProvider54_jsonKind=nC.runtime.json.jsonKind"+
+                    " --redefine-sym jsonProvider54_jsonObjectBorrow=nC.runtime.json.jsonObjectBorrow"+
+                    " --redefine-sym jsonProvider54_jsonObjectLen=nC.runtime.json.jsonObjectLen"+
+                    " --redefine-sym jsonProvider54_jsonObjectHas=nC.runtime.json.jsonObjectHas"+
+                    " --redefine-sym jsonProvider54_jsonObjectGet=nC.runtime.json.jsonObjectGet"+
+                    " --redefine-sym jsonProvider54_jsonClone=nC.runtime.json.jsonClone"+
+                    " --redefine-sym jsonProvider54_jsonNewNull=nC.runtime.json.jsonNewNull"+
+                    " --redefine-sym jsonProvider54_jsonNewInt=nC.runtime.json.jsonNewInt"+
+                    " --redefine-sym jsonProvider54_jsonNewString=nC.runtime.json.jsonNewString"+
+                    " --redefine-sym jsonProvider54_jsonNewArray=nC.runtime.json.jsonNewArray"+
+                    " --redefine-sym jsonProvider54_jsonArrayPush=nC.runtime.json.jsonArrayPush"+
+                    " --redefine-sym jsonProvider54_jsonArrayBorrow=nC.runtime.json.jsonArrayBorrow"+
+                    " --redefine-sym jsonProvider54_jsonArrayLen=nC.runtime.json.jsonArrayLen"+
+                    " --redefine-sym jsonProvider54_jsonGetInt=nC.runtime.json.jsonGetInt"+
+                    " --redefine-sym jsonProvider54_jsonStringView=nC.runtime.json.jsonStringView"+
+                    " --redefine-sym jsonProvider54_jsonObjectRemove=nC.runtime.json.jsonObjectRemove"+
+                    " --redefine-sym jsonProvider54_jsonEquals=nC.runtime.json.jsonEquals"+
+                    " --redefine-sym jsonProvider54_jsonObjectKeyAt=nC.runtime.json.jsonObjectKeyAt"+
+                    " --redefine-sym jsonProvider54_jsonStringify=nC.runtime.json.jsonStringify"+
+                    " --redefine-sym malloc=nC.runtime.heap.alloc --redefine-sym calloc=nC.runtime.heap.calloc"+
+                    " --redefine-sym free=nC.runtime.heap.free ";
+                if (!invoke(quote(objcopy)+rename+quote(jsonObject)+" "+quote(jsonExported),windows)) return 1;
+                if (windows) {
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64"+
+                        " /export:nC.runtime.heap.alloc /export:nC.runtime.heap.calloc /export:nC.runtime.heap.realloc"+
+                        " /export:nC.runtime.heap.free /export:nC.runtime.output.print /export:nC.runtime.output.println"+
+                        " /export:nC.runtime.output.flush /export:nC.runtime.output.writeBytes /out:"+quote(artifact)+
+                        " /export:nC.runtime.render.renderInt /export:nC.runtime.render.renderBool"+
+                        " /export:nC.runtime.render.renderChar /export:nC.runtime.render.renderStr"+
+                        " /export:nC.runtime.string.strByteLen /export:nC.runtime.string.strLen /export:nC.runtime.string.len"+
+                        " /export:nC.runtime.json.jsonNewBool"+
+                        " /export:nC.runtime.json.jsonObjectSet"+
+                        " /export:nC.runtime.json.jsonNewObject"+
+                        " /export:nC.runtime.json.jsonRelease"+
+                        " /export:nC.runtime.json.jsonGetBool"+
+                        " /export:nC.runtime.json.jsonKind"+
+                        " /export:nC.runtime.json.jsonObjectBorrow"+
+                        " /export:nC.runtime.json.jsonObjectLen"+
+                        " /export:nC.runtime.json.jsonObjectHas"+
+                        " /export:nC.runtime.json.jsonObjectGet"+
+                        " /export:nC.runtime.json.jsonClone"+
+                        " /export:nC.runtime.json.jsonNewNull"+
+                        " /export:nC.runtime.json.jsonNewInt"+
+                        " /export:nC.runtime.json.jsonNewString"+
+                        " /export:nC.runtime.json.jsonNewArray"+
+                        " /export:nC.runtime.json.jsonArrayPush"+
+                        " /export:nC.runtime.json.jsonArrayBorrow"+
+                        " /export:nC.runtime.json.jsonArrayLen"+
+                        " /export:nC.runtime.json.jsonGetInt"+
+                        " /export:nC.runtime.json.jsonStringView"+
+                        " /export:nC.runtime.json.jsonObjectRemove"+
+                        " /export:nC.runtime.json.jsonEquals"+
+                        " /export:nC.runtime.json.jsonObjectKeyAt"+
+                        " /export:nC.runtime.json.jsonStringify"+
+                        " "+quote(exported)+" "+quote(renderExported)+" "+quote(stringExported)+" "+quote(jsonExported)+" "+quote(host)+" "+quote(heap)+" "+quote(kernel32)+" "+quote(compilerSupport),windows)) return 1;
+                } else {
+                    exports >> str <- out+"/runtime.exports.map";
+                    if (!write(exports,"NC_RUNTIME_51 { global: \"nC.runtime.heap.alloc\"; \"nC.runtime.heap.calloc\"; "+
+                        "\"nC.runtime.heap.realloc\"; \"nC.runtime.heap.free\"; \"nC.runtime.output.print\"; "+
+                        "\"nC.runtime.output.println\"; \"nC.runtime.output.flush\"; \"nC.runtime.output.writeBytes\"; "+
+                        "\"nC.runtime.render.renderInt\"; \"nC.runtime.render.renderBool\"; \"nC.runtime.render.renderChar\"; "+
+                        "\"nC.runtime.render.renderStr\"; local: *; };\n"+
+                        "NC_RUNTIME_53 { global: \"nC.runtime.string.strByteLen\"; \"nC.runtime.string.strLen\"; "+
+                        "\"nC.runtime.string.len\"; } NC_RUNTIME_51;\n"+
+                        "NC_RUNTIME_54 { global: "+
+                        "\"nC.runtime.json.jsonNewBool\"; "+
+                        "\"nC.runtime.json.jsonObjectSet\"; "+
+                        "\"nC.runtime.json.jsonNewObject\"; "+
+                        "\"nC.runtime.json.jsonRelease\"; "+
+                        "\"nC.runtime.json.jsonGetBool\"; "+
+                        "\"nC.runtime.json.jsonKind\"; "+
+                        "\"nC.runtime.json.jsonObjectBorrow\"; "+
+                        "\"nC.runtime.json.jsonObjectLen\"; "+
+                        "\"nC.runtime.json.jsonObjectHas\"; "+
+                        "\"nC.runtime.json.jsonObjectGet\"; "+
+                        "\"nC.runtime.json.jsonClone\"; "+
+                        "\"nC.runtime.json.jsonNewNull\"; "+
+                        "\"nC.runtime.json.jsonNewInt\"; "+
+                        "\"nC.runtime.json.jsonNewString\"; "+
+                        "\"nC.runtime.json.jsonNewArray\"; "+
+                        "\"nC.runtime.json.jsonArrayPush\"; "+
+                        "\"nC.runtime.json.jsonArrayBorrow\"; "+
+                        "\"nC.runtime.json.jsonArrayLen\"; "+
+                        "\"nC.runtime.json.jsonGetInt\"; "+
+                        "\"nC.runtime.json.jsonStringView\"; "+
+                        "\"nC.runtime.json.jsonObjectRemove\"; "+
+                        "\"nC.runtime.json.jsonEquals\"; "+
+                        "\"nC.runtime.json.jsonObjectKeyAt\"; "+
+                        "\"nC.runtime.json.jsonStringify\"; "+
+                        "} NC_RUNTIME_53;\n")) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+
+                        quote(exports)+" -o "+quote(artifact)+" "+quote(exported)+" "+quote(renderExported)+" "+quote(stringExported)+" "+quote(jsonExported)+" "+quote(host)+" "+quote(heap)+" -lc",windows)) return 1;
+                }
+                if (fsSize(artifact) <= 0) return 74;
+                println("JSON, string, output and heap providers built from nC: "+artifact);
+                return 0;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

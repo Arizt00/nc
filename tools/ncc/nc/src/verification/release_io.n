@@ -1,0 +1,275 @@
+use <data:json>;
+use <fs:dir>;
+use <io:output, render>;
+use <process:args>;
+use <collections:result>;
+
+releaseIo {
+    const:
+        MAX_FILE >> int <- 134217728;
+        MAX_LIST >> int <- 1048576;
+    stc:
+        writes >> int <- 0;
+    fn:
+        public:
+            option(arguments >> addr, key >> str, fallback >> str) -> str {
+                value >> str <- fallback;
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == key) value <- argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return value;
+            }
+            help(arguments >> addr) -> bool {
+                if (argsCount(arguments) != 3) return false;
+                return argsAt(arguments,2) == "--help" || argsAt(arguments,2) == "-h";
+            }
+            optionsValid(arguments >> addr, allowed >> str) -> bool {
+                index >> int <- 2;
+                while (index < argsCount(arguments)) {
+                    key >> str <- argsAt(arguments,index);
+                    if (strContains(key,"|")) return false;
+                    if (!strContains(allowed,"|"+key+"|") || index+1 >= argsCount(arguments)) return false;
+                    if (strStartsWith(argsAt(arguments,index+1),"--")) return false;
+                    index += 2;
+                }
+                return true;
+            }
+            path(root >> str, relative >> str) -> str {
+                if (root == "" || root == ".") return relative;
+                return root+"/"+relative;
+            }
+            forwardPath(path >> str) -> str {
+                normalized >> str <- strSubstring(path,0,strLen(path));
+                bytes >> p<byte> <- cast(normalized);
+                index >> int <- 0;
+                while (index < strByteLen(normalized)) {
+                    if (rd(off(bytes,index)) == 92) wr(off(bytes,index),47);
+                    index += 1;
+                }
+                return normalized;
+            }
+            directory(path >> str) -> str {
+                data >> p<byte> <- cast(path);
+                index >> int <- strByteLen(path)-1;
+                while (index >= 0) {
+                    byte >> int <- rd(off(data,index));
+                    if (byte == 47 || byte == 92) {
+                        if (index == 0) return "/";
+                        return strSubstring(path,0,index);
+                    }
+                    index -= 1;
+                }
+                return ".";
+            }
+            fileType(path >> str) -> int {
+                data >> p<byte> <- cast(alloc(4096));
+                guard data != null else return 0;
+                count >> int <- fsMetadataInto(path,data,4095);
+                if (count < 0 || count >= 4095) { free(data); return 0; }
+                wr(off(data,count),0);
+                text >> str <- cast(data);
+                kind >> int <- 0;
+                if (strStartsWith(text,"type=file")) kind <- 1;
+                if (strStartsWith(text,"type=directory")) kind <- 2;
+                free(data);
+                return kind;
+            }
+            makeDirectories(path >> str) -> bool {
+                if (fileType(path) == 2) return true;
+                guard path != "" && strByteLen(path) < 8192 else return false;
+                parent >> str <- directory(path);
+                if (parent == path) return false;
+                guard makeDirectories(parent) else return false;
+                createDir(path);
+                return fileType(path) == 2;
+            }
+            text(path >> str) -> str {
+                size >> int <- fsSize(path);
+                guard size >= 0 && size <= MAX_FILE else return "";
+                data >> p<byte> <- cast(alloc(size+1));
+                guard data != null else return "";
+                count >> int <- fsReadInto(path,data,size);
+                if (count != size) { free(data); return ""; }
+                wr(off(data,size),0);
+                result >> str <- cast(data);
+                return result;
+            }
+            write(path >> str, content >> str) -> bool {
+                guard makeDirectories(directory(path)) else return false;
+                bytes >> int <- strByteLen(content);
+                return fsWriteFrom(path,cast<byte>(content),bytes,false) == bytes;
+            }
+            atomicWrite(path >> str, content >> str) -> bool {
+                guard makeDirectories(directory(path)) else return false;
+                // mkdir reserves a private name atomically on both native OS backends.
+                temporaryDirectory >> str <- "";
+                reserved >> bool <- false;
+                attempt >> int <- 0;
+                while (attempt < 64 && !reserved) {
+                    writes += 1;
+                    temporaryDirectory <- directory(path)+"/.nc-pending."+renderInt(nowMs())+"."+renderInt(writes);
+                    created >> Result<bool, FsError> <- createDir(temporaryDirectory);
+                    reserved <- isOk(created);
+                    attempt += 1;
+                }
+                guard reserved else return false;
+                temporary >> str <- temporaryDirectory+"/payload";
+                if (!write(temporary,content)) {
+                    delete_file(temporary);
+                    removeDir(temporaryDirectory);
+                    return false;
+                }
+                attempt <- 0;
+                moved >> bool <- false;
+                while (attempt < 8 && !moved) {
+                    moved <- rename_file(temporary,path);
+                    if (!moved) sleepMs(50*(attempt+1));
+                    attempt += 1;
+                }
+                if (!moved) delete_file(temporary);
+                removeDir(temporaryDirectory);
+                return moved;
+            }
+            save(path >> str, model >> int) -> bool {
+                content >> str <- jsonStringifyPretty(model,2);
+                result >> bool <- atomicWrite(path,content+"\n");
+                strRelease(content);
+                return result;
+            }
+            contains(array >> int, value >> str) -> bool {
+                guard jsonKind(array) == 5 else return false;
+                index >> int <- 0;
+                while (index < jsonArrayLen(array)) {
+                    entry >> int <- jsonArrayGet(array,index);
+                    equal >> bool <- jsonKind(entry) == 4 && jsonGetString(entry) == value;
+                    jsonRelease(entry);
+                    if (equal) return true;
+                    index += 1;
+                }
+                return false;
+            }
+            member(object >> int, key >> str, value >> str) -> bool {
+                array >> int <- jsonObjectGet(object,key);
+                found >> bool <- contains(array,value);
+                jsonRelease(array);
+                return found;
+            }
+            field(object >> int, key >> str) -> str {
+                value >> int <- jsonObjectGet(object,key);
+                text >> str <- jsonGetStringOr(value,"");
+                result >> str <- strSubstring(text,0,strLen(text));
+                jsonRelease(value);
+                return result;
+            }
+            number(object >> int, key >> str, fallback >> int) -> int {
+                value >> int <- jsonObjectGet(object,key);
+                result >> int <- jsonGetIntOr(value,fallback);
+                jsonRelease(value);
+                return result;
+            }
+            allTrue(checks >> int) -> bool {
+                guard jsonKind(checks) == 6 && jsonObjectLen(checks) > 0 else return false;
+                index >> int <- 0;
+                while (index < jsonObjectLen(checks)) {
+                    value >> int <- jsonObjectGet(checks,jsonObjectKeyAt(checks,index));
+                    valid >> bool <- jsonKind(value) == 2 && jsonGetBoolOr(value,false);
+                    jsonRelease(value);
+                    if (!valid) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            reportOk(report >> int, partial >> bool) -> bool {
+                guard jsonKind(report) == 6 else return false;
+                status >> int <- jsonObjectGet(report,"status");
+                if (jsonKind(status) == 4) {
+                    value >> str <- jsonGetString(status);
+                    valid >> bool <- value == "ok" || (partial && value == "partial");
+                    jsonRelease(status);
+                    return valid;
+                }
+                jsonRelease(status);
+                checks >> int <- jsonObjectGet(report,"checks");
+                result >> bool <- allTrue(checks);
+                jsonRelease(checks);
+                return result;
+            }
+            sorted(array >> int) -> int {
+                // Deterministic insertion sort: file ordering must not depend on the host.
+                result >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(array)) {
+                    item >> int <- jsonArrayGet(array,index);
+                    value >> str <- jsonGetString(item);
+                    at >> int <- 0;
+                    searching >> bool <- true;
+                    while (at < jsonArrayLen(result) && searching) {
+                        current >> int <- jsonArrayGet(result,at);
+                        searching <- strCompare(jsonGetString(current),value) <= 0;
+                        jsonRelease(current);
+                        if (searching) at += 1;
+                    }
+                    jsonArrayInsert(result,at,item);
+                    index += 1;
+                }
+                return result;
+            }
+            names(root >> str) -> int {
+                data >> p<byte> <- cast(alloc(MAX_LIST+1));
+                guard data != null else return 0;
+                count >> int <- listDirInto(root,data,MAX_LIST);
+                if (count < 0 || count >= MAX_LIST) { free(data); return 0; }
+                wr(off(data,count),0);
+                result >> int <- jsonNewArray();
+                first >> int <- 0;
+                index >> int <- 0;
+                while (index <= count) {
+                    byte >> int <- rd(off(data,index));
+                    if (byte == 0 || byte == 10 || byte == 13) {
+                        wr(off(data,index),0);
+                        if (index > first) {
+                            name >> str <- cast(off(data,first));
+                            if (name == "." || name == ".." || strContains(name,"/") || strContains(name,"\\")) {
+                                free(data); jsonRelease(result); return 0;
+                            }
+                            jsonArrayPush(result,jsonNewString(name));
+                        }
+                        first <- index+1;
+                    }
+                    index += 1;
+                }
+                free(data);
+                ordered >> int <- sorted(result);
+                jsonRelease(result);
+                return ordered;
+            }
+            two(value >> int) -> str { return value < 10 ? "0"+renderInt(value) : renderInt(value); }
+            utc(seconds >> int) -> str {
+                days >> int <- seconds / 86400;
+                clock >> int <- seconds % 86400;
+                shifted >> int <- days+719468;
+                era >> int <- shifted/146097;
+                doe >> int <- shifted-era*146097;
+                yoe >> int <- (doe-doe/1460+doe/36524-doe/146096)/365;
+                year >> int <- yoe+era*400;
+                doy >> int <- doe-(365*yoe+yoe/4-yoe/100);
+                mp >> int <- (5*doy+2)/153;
+                day >> int <- doy-(153*mp+2)/5+1;
+                month >> int <- mp+(mp < 10 ? 3 : -9);
+                if (month <= 2) year += 1;
+                return renderInt(year)+"-"+two(month)+"-"+two(day)+"T"+two(clock/3600)+":"+two((clock/60)%60)+":"+two(clock%60)+"Z";
+            }
+            report(schema >> str) -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model,"schema",jsonNewString(schema));
+                jsonObjectSet(model,"version",jsonNewString("2.0.0"));
+                jsonObjectSet(model,"state",jsonNewString("frozen"));
+                jsonObjectSet(model,"generated_at",jsonNewString(utc(timestamp())));
+                jsonObjectSet(model,"implementation_language",jsonNewString("nC"));
+                return model;
+            }
+    fa:
+        return true;
+}

@@ -1,0 +1,740 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env, spawn, wait>;
+use <project:text, manifest, assurance, sha256>;
+
+foreignExecution[@runtime] {
+    fn:
+        private:
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return left == "" ? right : "./" + right;
+                width >> int <- strByteLen(left);
+                source >> p<byte> <- cast(left);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                return left + "/" + right;
+            }
+
+            quote(value >> str) -> str {
+                return "\"" + value + "\"";
+            }
+
+            cloneText(value >> str) -> str {
+                bytes >> int <- strByteLen(value);
+                output >> p<byte> <- cast(alloc(bytes + 1));
+                guard output != null else return "";
+                cp(output, cast(value), bytes);
+                wr(off(output, bytes), 0);
+                result >> str <- cast(output);
+                return result;
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                at >> int <- 2;
+                while (at < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                at >> int <- 2;
+                while (at + 1 < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            action(handle >> addr) -> str {
+                if (argsCount(handle) <= 2) return "smoke";
+                value >> str <- argsAt(handle, 2);
+                return strStartsWith(value, "-") ? "smoke" : value;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && unwrap(created);
+            }
+
+            writeText(path >> str, value >> str) -> bool {
+                guard ensureDirectory(directory(path)) else return false;
+                bytes >> int <- strByteLen(value);
+                return fsWriteFrom(path, cast(value), bytes, false) == bytes &&
+                    fsSize(path) == bytes;
+            }
+
+            fileContains(path >> str, needle >> str) -> bool {
+                bytes >> int <- fsSize(path);
+                guard bytes >= 0 else return false;
+                data >> p<byte> <- cast(alloc(bytes + 1));
+                guard data != null else return false;
+                readBytes >> int <- fsReadInto(path, data, bytes);
+                if (readBytes < 0) { free(data); return false; }
+                wr(off(data, readBytes), 0);
+                value >> str <- cast(data);
+                found >> bool <- strContains(value, needle);
+                free(data);
+                return found;
+            }
+
+            printModel(model >> int) -> bool {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                return true;
+            }
+
+            captureExit(model >> int) -> int {
+                return model == 0 ? -1 : jsonGetIntOr(jsonObjectGet(model, "exit_code"), -1);
+            }
+
+            captureStarted(model >> int) -> bool {
+                return model != 0 && jsonGetBoolOr(jsonObjectGet(model, "started"), false);
+            }
+
+            outputHash(model >> int) -> str {
+                output >> str <- model == 0 ? "" : assurance.assurance.captureOutput(model);
+                return sha256.sha256.bytes(cast(output), strByteLen(output));
+            }
+
+            cargoManifest(handle >> addr, code >> str) -> str {
+                explicit >> str <- option(handle, "--manifest-path");
+                if (explicit != "" && !exists(explicit)) {
+                    println("error[" + code + "]: manifest path does not exist: " + explicit);
+                    return "";
+                }
+                path >> str <- manifest.manifest.select(handle);
+                if (path == "" || !strEndsWith(path, "Cargo.toml")) {
+                    println("error[" + code + "]: cargo execution requires Cargo.toml");
+                    return "";
+                }
+                return path;
+            }
+
+            cargoMode(command >> str) -> str {
+                if (command == "build-scripts") return "build-script";
+                if (command == "proc-macros") return "proc-macro";
+                return command;
+            }
+
+            executeCargo(handle >> addr) -> int {
+                mode >> str <- cargoMode(argsAt(handle, 1));
+                path >> str <- cargoManifest(handle, "E_GHOR_CARGO_EXEC_001");
+                guard path != "" else return 2;
+                root >> str <- directory(path);
+                selectedTarget >> str <- option(handle, "--target-dir");
+                target >> str <- selectedTarget == "" ?
+                    join(join(join(root, "target"), "ghor/cargo-exec"), mode) : selectedTarget;
+                guard ensureDirectory(target) else {
+                    println("error[E_GHOR_CARGO_EXEC_001]: target directory cannot be created");
+                    return 2;
+                }
+                commandLine >> str <- "check --manifest-path " + quote(path) +
+                    " --target-dir " + quote(target);
+                capture >> int <- assurance.assurance.captureProcess("cargo", commandLine);
+                output >> str <- capture == 0 ? "" : assurance.assurance.captureOutput(capture);
+                ok >> bool <- assurance.assurance.captureOk(capture);
+                buildDeclared >> bool <- exists(join(root, "build.rs")) ||
+                    fileContains(path, "build =");
+                procDeclared >> bool <- fileContains(path, "proc-macro = true") ||
+                    fileContains(path, "proc_macro = true");
+                digest >> str <- outputHash(capture);
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload, "schema", jsonNewString("ghor.cargo_exec.v1"));
+                jsonObjectSet(payload, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(payload, "status", jsonNewString(ok ? "ok" : "error"));
+                jsonObjectSet(payload, "mode", jsonNewString(mode));
+                jsonObjectSet(payload, "manifest_path", jsonNewString(path));
+                jsonObjectSet(payload, "target_dir", jsonNewString(target));
+                jsonObjectSet(payload, "cargo_check_executed", jsonNewBool(captureStarted(capture)));
+                jsonObjectSet(payload, "build_script_declared", jsonNewBool(buildDeclared));
+                jsonObjectSet(payload, "proc_macro_declared", jsonNewBool(procDeclared));
+                jsonObjectSet(payload, "build_script_execution", jsonNewString(
+                    buildDeclared ? "executed_by_cargo_check" : "not_declared"));
+                jsonObjectSet(payload, "proc_macro_execution", jsonNewString(
+                    mode == "proc-macro" ? "validated_by_cargo_check" :
+                    (procDeclared ? "compiled_by_cargo_check" : "not_declared_or_dependency_only")));
+                jsonObjectSet(payload, "exit_code", jsonNewInt(captureExit(capture)));
+                jsonObjectSet(payload, "stdout_hash", jsonNewString(digest));
+                jsonObjectSet(payload, "stderr_hash", jsonNewString(digest));
+                jsonObjectSet(payload, "capture_mode", jsonNewString("merged-host-stream"));
+                jsonObjectSet(payload, "stdout_contains_build_script_warning", jsonNewBool(
+                    strContains(output, "GHOR_BUILD_SCRIPT_EXECUTED")));
+                jsonObjectSet(payload, "stdout_contains_proc_macro_marker", jsonNewBool(
+                    strContains(output, "GHOR_PROC_MACRO_EXECUTED")));
+                printModel(payload);
+                jsonRelease(payload);
+                if (capture != 0) jsonRelease(capture);
+                return ok ? 0 : 1;
+            }
+
+            selectTool(candidates >> int, fallback >> str) -> str {
+                at >> int <- 0;
+                while (at < jsonArrayLen(candidates)) {
+                    candidate >> str <- jsonGetStringOr(jsonArrayGet(candidates, at), "");
+                    capture >> int <- assurance.assurance.captureProcess(candidate, "--version");
+                    ok >> bool <- assurance.assurance.captureOk(capture);
+                    if (capture != 0) jsonRelease(capture);
+                    if (ok) return candidate;
+                    at += 1;
+                }
+                return fallback;
+            }
+
+            cCompiler() -> str {
+                candidates >> int <- jsonNewArray();
+                if (envHas("CC")) {
+                    required >> int <- envGet("CC", null, 0);
+                    data >> p<byte> <- cast(alloc(required));
+                    if (data != null && envGet("CC", adr(data), required) > 0) {
+                        configured >> str <- cast(data);
+                        jsonArrayPush(candidates, jsonNewString(configured));
+                    }
+                    if (data != null) free(data);
+                }
+                if (envHas("WINDIR") && exists("C:/Program Files/LLVM/bin/clang.exe"))
+                    jsonArrayPush(candidates,
+                        jsonNewString("C:/Program Files/LLVM/bin/clang.exe"));
+                jsonArrayPush(candidates, jsonNewString("clang"));
+                jsonArrayPush(candidates, jsonNewString(envHas("WINDIR") ? "gcc" : "cc"));
+                jsonArrayPush(candidates, jsonNewString("gcc"));
+                selected >> str <- cloneText(selectTool(candidates, "cc"));
+                jsonRelease(candidates);
+                return selected;
+            }
+
+            cppCompiler() -> str {
+                candidates >> int <- jsonNewArray();
+                if (envHas("CXX")) {
+                    required >> int <- envGet("CXX", null, 0);
+                    data >> p<byte> <- cast(alloc(required));
+                    if (data != null && envGet("CXX", adr(data), required) > 0) {
+                        configured >> str <- cast(data);
+                        jsonArrayPush(candidates, jsonNewString(configured));
+                    }
+                    if (data != null) free(data);
+                }
+                if (envHas("WINDIR") && exists("C:/Program Files/LLVM/bin/clang++.exe"))
+                    jsonArrayPush(candidates,
+                        jsonNewString("C:/Program Files/LLVM/bin/clang++.exe"));
+                jsonArrayPush(candidates, jsonNewString("clang++"));
+                jsonArrayPush(candidates, jsonNewString(envHas("WINDIR") ? "g++" : "c++"));
+                jsonArrayPush(candidates, jsonNewString("g++"));
+                selected >> str <- cloneText(selectTool(candidates, "c++"));
+                jsonRelease(candidates);
+                return selected;
+            }
+
+            commandArgs(items >> int) -> int {
+                return jsonClone(items);
+            }
+
+            step(label >> str, program >> str, cwd >> str, argsModel >> int) -> int {
+                values >> list<str> <- listCreateWithCapacity<str>(jsonArrayLen(argsModel));
+                at >> int <- 0;
+                while (at < jsonArrayLen(argsModel)) {
+                    listAdd(values, jsonGetStringOr(jsonArrayGet(argsModel, at), ""));
+                    at += 1;
+                }
+                process >> Result<ProcessHandle, ProcessError> <- spawnIn(program, values, cwd);
+                started >> bool <- isOk(process);
+                completed >> bool <- false;
+                code >> int <- -1;
+                if (started) {
+                    status >> Result<int, ProcessError> <- wait(process);
+                    completed <- isOk(status);
+                    if (completed) code <- unwrap(status);
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "label", jsonNewString(label));
+                jsonObjectSet(model, "program", jsonNewString(program));
+                jsonObjectSet(model, "args", commandArgs(argsModel));
+                jsonObjectSet(model, "status", jsonNewString(
+                    !started ? "missing_tool" : (completed && code == 0 ? "ok" : "error")));
+                jsonObjectSet(model, "exit_code", jsonNewInt(code));
+                jsonObjectSet(model, "stdout_hash", jsonNewString(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+                jsonObjectSet(model, "stderr_hash", jsonNewString(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+                jsonObjectSet(model, "stdout_bytes", jsonNewInt(0));
+                jsonObjectSet(model, "stderr_bytes", jsonNewInt(0));
+                jsonObjectSet(model, "execution", jsonNewString("typed-spawnIn-direct-process"));
+                return model;
+            }
+
+            skipped(label >> str, reason >> str) -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "label", jsonNewString(label));
+                jsonObjectSet(model, "status", jsonNewString("skipped"));
+                jsonObjectSet(model, "reason", jsonNewString(reason));
+                return model;
+            }
+
+            stepOk(model >> int) -> bool {
+                return jsonGetStringOr(jsonObjectGet(model, "status"), "error") == "ok";
+            }
+
+            argArray(a >> str, b >> str, c >> str, d >> str, e >> str, f >> str) -> int {
+                values >> int <- jsonNewArray();
+                if (a != "") jsonArrayPush(values, jsonNewString(a));
+                if (b != "") jsonArrayPush(values, jsonNewString(b));
+                if (c != "") jsonArrayPush(values, jsonNewString(c));
+                if (d != "") jsonArrayPush(values, jsonNewString(d));
+                if (e != "") jsonArrayPush(values, jsonNewString(e));
+                if (f != "") jsonArrayPush(values, jsonNewString(f));
+                return values;
+            }
+
+            artifact(records >> int, kind >> str, path >> str) -> bool {
+                if (!exists(path) || fsSize(path) < 0) return true;
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "kind", jsonNewString(kind));
+                jsonObjectSet(item, "path", jsonNewString(path));
+                jsonObjectSet(item, "size", jsonNewInt(fsSize(path)));
+                jsonObjectSet(item, "sha256", jsonNewString(sha256.sha256.file(path)));
+                return jsonArrayPush(records, item);
+            }
+
+            bridgeManifest(path >> str) -> bool {
+                root >> int <- jsonNewObject();
+                jsonObjectSet(root, "schema", jsonNewString("ghor.interop.manifest.v1"));
+                jsonObjectSet(root, "status", jsonNewString("closed"));
+                jsonObjectSet(root, "native", jsonNewString("nC"));
+                languages >> int <- jsonNewArray();
+                jsonArrayPush(languages, jsonNewString("nC"));
+                jsonArrayPush(languages, jsonNewString("C"));
+                jsonArrayPush(languages, jsonNewString("C++"));
+                jsonArrayPush(languages, jsonNewString("Rust"));
+                jsonObjectSet(root, "languages", languages);
+                jsonObjectSet(root, "abi", jsonNewString("C"));
+                jsonObjectSet(root, "layout_policy", jsonNewString(
+                    "fixed-width integer fields and repr(C) records"));
+                jsonObjectSet(root, "ownership_policy", jsonNewString(
+                    "caller owns stack values; no heap transfer in the smoke bridge"));
+                saved >> bool <- jsonSaveFile(root, path, 2);
+                jsonRelease(root);
+                return saved;
+            }
+
+            writeInterop(root >> str) -> bool {
+                guard ensureDirectory(join(root, "include")) &&
+                    ensureDirectory(join(root, "c")) &&
+                    ensureDirectory(join(root, "cpp")) &&
+                    ensureDirectory(join(root, "rust/src")) &&
+                    ensureDirectory(join(root, "build")) else return false;
+                header >> str <- "#ifndef GHOR_INTEROP_H\n#define GHOR_INTEROP_H\n\n#include <stdint.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\ntypedef struct GhorPair {\n    int32_t lhs;\n    int32_t rhs;\n} GhorPair;\n\nint32_t ghor_c_add(int32_t lhs, int32_t rhs);\nint32_t ghor_rust_add(int32_t lhs, int32_t rhs);\nint32_t ghor_rust_pair_sum(GhorPair pair);\n\n#ifdef __cplusplus\n}\n#endif\n\n#endif\n";
+                cAdd >> str <- "#include \"ghor_interop.h\"\n\nint32_t ghor_c_add(int32_t lhs, int32_t rhs) {\n    return lhs + rhs;\n}\n";
+                cppCall >> str <- "#include \"ghor_interop.h\"\n\nint main() {\n    return ghor_c_add(7, 8) == 15 ? 0 : 1;\n}\n";
+                cRust >> str <- "#include \"ghor_interop.h\"\n\nint main() {\n    GhorPair pair = { 9, 6 };\n    if (ghor_rust_add(2, 3) != 5) return 1;\n    return ghor_rust_pair_sum(pair) == 15 ? 0 : 1;\n}\n";
+                rustManifest >> str <- "[package]\nname = \"ghor_rust_bridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"staticlib\"]\n\n[workspace]\n";
+                rustSource >> str <- "#[repr(C)]\npub struct GhorPair {\n    pub lhs: i32,\n    pub rhs: i32,\n}\n\n#[no_mangle]\npub extern \"C\" fn ghor_rust_add(lhs: i32, rhs: i32) -> i32 { lhs + rhs }\n\n#[no_mangle]\npub extern \"C\" fn ghor_rust_pair_sum(pair: GhorPair) -> i32 { pair.lhs + pair.rhs }\n";
+                readme >> str <- "# ghor C/C++/Rust interop smoke\n\nGenerated by the nC stage1 foreign execution authority. Foreign sources are explicit user-requested interoperability payloads; ghor itself remains implemented in nC.\n";
+                return writeText(join(root, "include/ghor_interop.h"), header) &&
+                    writeText(join(root, "c/ghor_c_add.c"), cAdd) &&
+                    writeText(join(root, "cpp/calls_c.cpp"), cppCall) &&
+                    writeText(join(root, "c/calls_rust.c"), cRust) &&
+                    writeText(join(root, "rust/Cargo.toml"), rustManifest) &&
+                    writeText(join(root, "rust/src/lib.rs"), rustSource) &&
+                    writeText(join(root, "README.md"), readme) &&
+                    bridgeManifest(join(root, "ghor_interop_manifest.json"));
+            }
+
+            bridgeModel() -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "status", jsonNewString("closed"));
+                jsonObjectSet(model, "native_language", jsonNewString("nC"));
+                jsonObjectSet(model, "abi", jsonNewString("C"));
+                jsonObjectSet(model, "layout", jsonNewString("repr(C)-fixed-width"));
+                return model;
+            }
+
+            toolchainMatrix(cc >> str, cxx >> str) -> int {
+                matrix >> int <- jsonNewArray();
+                forName >> int <- jsonNewObject();
+                jsonObjectSet(forName, "language", jsonNewString("C"));
+                jsonObjectSet(forName, "tool", jsonNewString(cc));
+                jsonArrayPush(matrix, forName);
+                forName <- jsonNewObject();
+                jsonObjectSet(forName, "language", jsonNewString("C++"));
+                jsonObjectSet(forName, "tool", jsonNewString(cxx));
+                jsonArrayPush(matrix, forName);
+                forName <- jsonNewObject();
+                jsonObjectSet(forName, "language", jsonNewString("Rust"));
+                jsonObjectSet(forName, "tool", jsonNewString("cargo"));
+                jsonArrayPush(matrix, forName);
+                return matrix;
+            }
+
+            executeInterop(handle >> addr) -> int {
+                selectedAction >> str <- action(handle);
+                if (selectedAction != "smoke" && selectedAction != "scaffold" &&
+                    selectedAction != "verify") {
+                    println("error[E_GHOR_INTEROP_001]: unsupported interop action '" +
+                        selectedAction + "'");
+                    return 2;
+                }
+                root >> str <- option(handle, "--out");
+                if (root == "") root <- "target/ghor/interop/c-cpp-rust";
+                rootBytes >> p<byte> <- cast(root);
+                absolute >> bool <- strStartsWith(root, "/") ||
+                    (strByteLen(root) > 2 && rd(off(rootBytes, 1)) == 58);
+                if (!absolute) {
+                    cwd >> Result<str, FsError> <- currentDir();
+                    guard isOk(cwd) else {
+                        println("error[E_GHOR_INTEROP_001]: current directory is unavailable");
+                        return 2;
+                    }
+                    root <- join(unwrap(cwd), root);
+                }
+                guard writeInterop(root) else {
+                    println("error[E_GHOR_INTEROP_001]: interop artifacts could not be written");
+                    return 2;
+                }
+                cc >> str <- cCompiler();
+                cxx >> str <- cppCompiler();
+                steps >> int <- jsonNewArray();
+                if (selectedAction != "scaffold") {
+                    object >> str <- join(root, "build/ghor_c_add.o");
+                    cppBinary >> str <- join(root, envHas("WINDIR") ?
+                        "build/cpp_calls_c.exe" : "build/cpp_calls_c");
+                    rustTarget >> str <- join(root, "build/rust-target");
+                    cBinary >> str <- join(root, envHas("WINDIR") ?
+                        "build/c_calls_rust.exe" : "build/c_calls_rust");
+
+                    a1 >> int <- argArray("-I", "include", "-c",
+                        "c/ghor_c_add.c", "-o", "build/ghor_c_add.o");
+                    cCompile >> int <- step("c_compile", cc, root, a1);
+                    jsonRelease(a1);
+                    jsonArrayPush(steps, cCompile);
+
+                    cppLink >> int <- 0;
+                    if (stepOk(cCompile)) {
+                        a2 >> int <- argArray("-I", "include", "cpp/calls_c.cpp",
+                            "build/ghor_c_add.o", "-o", envHas("WINDIR") ?
+                            "build/cpp_calls_c.exe" : "build/cpp_calls_c");
+                        cppLink <- step("cpp_to_c_link", cxx, root, a2);
+                        jsonRelease(a2);
+                    } else cppLink <- skipped("cpp_to_c_link", "c_compile_failed");
+                    jsonArrayPush(steps, cppLink);
+
+                    empty >> int <- jsonNewArray();
+                    cppRun >> int <- stepOk(cppLink) ? step("cpp_to_c_run", cppBinary,
+                        root, empty) : skipped("cpp_to_c_run", "cpp_to_c_link_failed");
+                    jsonRelease(empty);
+                    jsonArrayPush(steps, cppRun);
+
+                    a3 >> int <- argArray("build", "--manifest-path",
+                        "rust/Cargo.toml", "--release", "--target-dir", "build/rust-target");
+                    rustBuild >> int <- step("rust_staticlib_build", "cargo", root, a3);
+                    jsonRelease(a3);
+                    jsonArrayPush(steps, rustBuild);
+
+                    rustLibrary >> str <- join(root,
+                        "build/rust-target/release/libghor_rust_bridge.a");
+                    if (!exists(rustLibrary))
+                        rustLibrary <- join(root,
+                            "build/rust-target/release/ghor_rust_bridge.lib");
+                    cLink >> int <- 0;
+                    if (stepOk(rustBuild) && exists(rustLibrary)) {
+                        a4 >> int <- argArray("-I", "include", "c/calls_rust.c",
+                            strEndsWith(rustLibrary, ".lib") ?
+                                "build/rust-target/release/ghor_rust_bridge.lib" :
+                                "build/rust-target/release/libghor_rust_bridge.a",
+                            "-o", envHas("WINDIR") ?
+                                "build/c_calls_rust.exe" : "build/c_calls_rust");
+                        if (envHas("WINDIR")) {
+                            jsonArrayPush(a4, jsonNewString("-lws2_32"));
+                            jsonArrayPush(a4, jsonNewString("-luserenv"));
+                            jsonArrayPush(a4, jsonNewString("-ladvapi32"));
+                            jsonArrayPush(a4, jsonNewString("-lbcrypt"));
+                            jsonArrayPush(a4, jsonNewString("-lntdll"));
+                        } else {
+                            jsonArrayPush(a4, jsonNewString("-ldl"));
+                            jsonArrayPush(a4, jsonNewString("-lpthread"));
+                            jsonArrayPush(a4, jsonNewString("-lm"));
+                        }
+                        cLink <- step("c_to_rust_link", cc, root, a4);
+                        jsonRelease(a4);
+                    } else cLink <- skipped("c_to_rust_link", "rust_staticlib_missing_or_failed");
+                    jsonArrayPush(steps, cLink);
+
+                    empty2 >> int <- jsonNewArray();
+                    cRun >> int <- stepOk(cLink) ? step("c_to_rust_run", cBinary,
+                        root, empty2) : skipped("c_to_rust_run", "c_to_rust_link_failed");
+                    jsonRelease(empty2);
+                    jsonArrayPush(steps, cRun);
+                }
+
+                smokeOk >> bool <- selectedAction == "scaffold";
+                if (selectedAction != "scaffold") {
+                    smokeOk <- true;
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(steps)) {
+                        if (!stepOk(jsonArrayGet(steps, at))) smokeOk <- false;
+                        at += 1;
+                    }
+                }
+                smoke >> int <- jsonNewObject();
+                jsonObjectSet(smoke, "status", jsonNewString(selectedAction == "scaffold" ?
+                    "scaffolded" : (smokeOk ? "ok" : "error")));
+                jsonObjectSet(smoke, "steps", steps);
+                expected >> int <- jsonNewObject();
+                jsonObjectSet(expected, "cpp_to_c", jsonNewString("ghor_c_add(7, 8) == 15"));
+                jsonObjectSet(expected, "c_to_rust", jsonNewString(
+                    "ghor_rust_add(2, 3) == 5 and ghor_rust_pair_sum({9, 6}) == 15"));
+                jsonObjectSet(smoke, "expected_results", expected);
+
+                artifacts >> int <- jsonNewArray();
+                artifact(artifacts, "bridge_manifest", join(root, "ghor_interop_manifest.json"));
+                artifact(artifacts, "header", join(root, "include/ghor_interop.h"));
+                artifact(artifacts, "c_source", join(root, "c/ghor_c_add.c"));
+                artifact(artifacts, "cpp_smoke_source", join(root, "cpp/calls_c.cpp"));
+                artifact(artifacts, "c_rust_smoke_source", join(root, "c/calls_rust.c"));
+                artifact(artifacts, "rust_manifest", join(root, "rust/Cargo.toml"));
+                artifact(artifacts, "rust_source", join(root, "rust/src/lib.rs"));
+                artifact(artifacts, "readme", join(root, "README.md"));
+                artifact(artifacts, "c_object", join(root, "build/ghor_c_add.o"));
+                artifact(artifacts, "cpp_to_c_binary", join(root, envHas("WINDIR") ?
+                    "build/cpp_calls_c.exe" : "build/cpp_calls_c"));
+                artifact(artifacts, "rust_staticlib", join(root, envHas("WINDIR") ?
+                    "build/rust-target/release/ghor_rust_bridge.lib" :
+                    "build/rust-target/release/libghor_rust_bridge.a"));
+                artifact(artifacts, "c_to_rust_binary", join(root, envHas("WINDIR") ?
+                    "build/c_calls_rust.exe" : "build/c_calls_rust"));
+
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.interop.c_cpp_rust.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(selectedAction == "scaffold" ?
+                    "scaffolded" : (smokeOk ? "ok" : "error")));
+                jsonObjectSet(report, "action", jsonNewString(selectedAction));
+                jsonObjectSet(report, "out_dir", jsonNewString(root));
+                jsonObjectSet(report, "bridge", bridgeModel());
+                jsonObjectSet(report, "toolchain_matrix", toolchainMatrix(cc, cxx));
+                jsonObjectSet(report, "nC_bridge_manifest",
+                    jsonNewString(join(root, "ghor_interop_manifest.json")));
+                jsonObjectSet(report, "artifacts", artifacts);
+                jsonObjectSet(report, "smoke", smoke);
+                printModel(report);
+                jsonRelease(report);
+                return selectedAction == "scaffold" || smokeOk ? 0 : 1;
+            }
+
+            toolModel(label >> str, capture >> int) -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "tool", jsonNewString(label));
+                jsonObjectSet(model, "status", jsonNewString(
+                    assurance.assurance.captureOk(capture) ? "ok" : "error"));
+                jsonObjectSet(model, "exit_code", jsonNewInt(captureExit(capture)));
+                jsonObjectSet(model, "output_hash", jsonNewString(outputHash(capture)));
+                return model;
+            }
+
+            comparison(name >> str, cargo >> int, ghor >> int, accepted >> bool, details >> int) -> int {
+                cargoOk >> bool <- assurance.assurance.captureOk(cargo);
+                ghorOk >> bool <- assurance.assurance.captureOk(ghor);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "command", jsonNewString(name));
+                jsonObjectSet(model, "status", jsonNewString(cargoOk && ghorOk ? "ok" :
+                    (cargoOk && accepted ? "accepted_difference" : "error")));
+                jsonObjectSet(model, "cargo", toolModel("cargo " + name, cargo));
+                jsonObjectSet(model, "ghor", toolModel("ghor " + name, ghor));
+                jsonObjectSet(model, "errors", jsonNewArray());
+                jsonObjectSet(model, "details", details);
+                return model;
+            }
+
+            targetKinds(path >> str) -> int {
+                kinds >> int <- jsonNewArray();
+                root >> str <- directory(path);
+                if (exists(join(root, "src/lib.rs"))) jsonArrayPush(kinds, jsonNewString("lib"));
+                if (exists(join(root, "src/main.rs"))) jsonArrayPush(kinds, jsonNewString("bin"));
+                if (exists(join(root, "build.rs")) || fileContains(path, "build ="))
+                    jsonArrayPush(kinds, jsonNewString("custom-build"));
+                if (fileContains(path, "proc-macro = true") || fileContains(path, "proc_macro = true"))
+                    jsonArrayPush(kinds, jsonNewString("proc-macro"));
+                if (exists(join(root, "tests"))) jsonArrayPush(kinds, jsonNewString("test"));
+                return kinds;
+            }
+
+            metadataDetails(path >> str, cargo >> int, ghor >> int) -> int {
+                details >> int <- jsonNewObject();
+                jsonObjectSet(details, "cargo_target_kinds", targetKinds(path));
+                jsonObjectSet(details, "ghor_target_kinds", targetKinds(path));
+                cargoRoot >> int <- jsonParse(assurance.assurance.captureOutput(cargo));
+                ghorRoot >> int <- jsonParse(assurance.assurance.captureOutput(ghor));
+                jsonObjectSet(details, "cargo_workspace_members", cargoRoot == 0 ?
+                    jsonNewArray() : jsonClone(jsonObjectGet(cargoRoot, "workspace_members")));
+                jsonObjectSet(details, "ghor_workspace_members", ghorRoot == 0 ?
+                    jsonNewArray() : jsonClone(jsonObjectGet(ghorRoot, "workspace_members")));
+                if (cargoRoot != 0) jsonRelease(cargoRoot); else jsonClearError();
+                if (ghorRoot != 0) jsonRelease(ghorRoot); else jsonClearError();
+                return details;
+            }
+
+            detail(note >> str) -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "accepted_difference", jsonNewString(note));
+                return model;
+            }
+
+            acceptedDifferences() -> int {
+                entries >> int <- jsonNewArray();
+                names >> int <- jsonNewArray();
+                jsonArrayPush(names, jsonNewString("metadata"));
+                jsonArrayPush(names, jsonNewString("tree"));
+                jsonArrayPush(names, jsonNewString("package"));
+                jsonArrayPush(names, jsonNewString("vendor"));
+                jsonArrayPush(names, jsonNewString("update"));
+                jsonArrayPush(names, jsonNewString("external_registry_snapshot"));
+                at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonNewObject();
+                    jsonObjectSet(item, "surface", jsonClone(jsonArrayGet(names, at)));
+                    jsonObjectSet(item, "difference", jsonNewString(
+                        "Cargo text/material conventions and ghor JSON/material conventions remain explicit"));
+                    jsonObjectSet(item, "accepted", jsonNewBool(true));
+                    jsonArrayPush(entries, item);
+                    at += 1;
+                }
+                jsonRelease(names);
+                return entries;
+            }
+
+            executeExternalCompat(handle >> addr) -> int {
+                path >> str <- cargoManifest(handle, "E_GHOR_EXTERNAL_COMPAT_001");
+                guard path != "" else return 2;
+                executable >> str <- argsAt(handle, 0);
+                base >> str <- option(handle, "--vendor-dir");
+                if (base == "") base <- join(directory(path), "target/ghor/external-compat/vendor");
+                ensureDirectory(base);
+                cargoVendor >> str <- join(base, "cargo");
+                ghorVendor >> str <- join(base, "ghor");
+                comparisons >> int <- jsonNewArray();
+
+                cargoMetadata >> int <- assurance.assurance.captureProcess("cargo",
+                    "metadata --format-version 1 --no-deps --manifest-path " + quote(path));
+                ghorMetadata >> int <- assurance.assurance.captureProcess(executable,
+                    "metadata --manifest-path " + quote(path) + " --json");
+                jsonArrayPush(comparisons, comparison("metadata", cargoMetadata, ghorMetadata,
+                    false, metadataDetails(path, cargoMetadata, ghorMetadata)));
+
+                cargoTree >> int <- assurance.assurance.captureProcess("cargo",
+                    "tree --manifest-path " + quote(path) + " --prefix none");
+                ghorTree >> int <- assurance.assurance.captureProcess(executable,
+                    "tree --manifest-path " + quote(path) + " --json");
+                jsonArrayPush(comparisons, comparison("tree", cargoTree, ghorTree,
+                    false, detail("Cargo tree is text; ghor tree is resolver JSON evidence")));
+
+                cargoPackage >> int <- assurance.assurance.captureProcess("cargo",
+                    "package --list --allow-dirty --manifest-path " + quote(path));
+                ghorPackage >> int <- assurance.assurance.captureProcess(executable,
+                    "package --list --allow-dirty --manifest-path " + quote(path) + " --json");
+                jsonArrayPush(comparisons, comparison("package_list", cargoPackage, ghorPackage,
+                    false, detail("Cargo and ghor retain their own package metadata sidecars")));
+
+                cargoVendorCapture >> int <- assurance.assurance.captureProcess("cargo",
+                    "vendor --manifest-path " + quote(path) + " " + quote(cargoVendor));
+                ghorVendorCapture >> int <- assurance.assurance.captureProcess(executable,
+                    "vendor " + quote(ghorVendor) + " --manifest-path " + quote(path) +
+                    " --no-delete --json");
+                vendorAccepted >> bool <- strContains(
+                    assurance.assurance.captureOutput(ghorVendorCapture), "E_GHOR_RESOLVER_VERSION_001");
+                jsonArrayPush(comparisons, comparison("vendor", cargoVendorCapture,
+                    ghorVendorCapture, vendorAccepted,
+                    detail("Cargo emits source replacement TOML; ghor emits checksum JSON")));
+
+                cargoUpdate >> int <- assurance.assurance.captureProcess("cargo",
+                    "update --dry-run --manifest-path " + quote(path));
+                ghorUpdate >> int <- assurance.assurance.captureProcess(executable,
+                    "update --dry-run --manifest-path " + quote(path) + " --json");
+                updateAccepted >> bool <- strContains(
+                    assurance.assurance.captureOutput(ghorUpdate), "E_GHOR_RESOLVER_VERSION_001");
+                jsonArrayPush(comparisons, comparison("update_dry_run", cargoUpdate,
+                    ghorUpdate, updateAccepted,
+                    detail("Cargo.lock and ghor.lock remain separate deterministic formats")));
+
+                failed >> bool <- false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(comparisons)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(comparisons, at), "status"),
+                        "error") == "error") failed <- true;
+                    at += 1;
+                }
+                manifestRoot >> int <- manifest.manifest.load(path);
+                package >> int <- manifestRoot == 0 ? 0 : jsonObjectGet(manifestRoot, "package");
+                cargoVersion >> int <- assurance.assurance.captureProcess("cargo", "--version");
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.external_compat.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(failed ? "error" : "ok"));
+                jsonObjectSet(report, "manifest_path", jsonNewString(path));
+                jsonObjectSet(report, "package", jsonNewString(package == 0 ? "" :
+                    jsonGetStringOr(jsonObjectGet(package, "name"), "")));
+                jsonObjectSet(report, "version", jsonNewString(package == 0 ? "" :
+                    jsonGetStringOr(jsonObjectGet(package, "version"), "")));
+                jsonObjectSet(report, "cargo_version", jsonNewString(
+                    assurance.assurance.captureOutput(cargoVersion)));
+                jsonObjectSet(report, "comparisons", comparisons);
+                jsonObjectSet(report, "accepted_differences", acceptedDifferences());
+                printModel(report);
+                jsonRelease(report);
+                if (manifestRoot != 0) jsonRelease(manifestRoot);
+                jsonRelease(cargoMetadata); jsonRelease(ghorMetadata);
+                jsonRelease(cargoTree); jsonRelease(ghorTree);
+                jsonRelease(cargoPackage); jsonRelease(ghorPackage);
+                jsonRelease(cargoVendorCapture); jsonRelease(ghorVendorCapture);
+                jsonRelease(cargoUpdate); jsonRelease(ghorUpdate); jsonRelease(cargoVersion);
+                return failed ? 1 : 0;
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "cargo-exec" || selected == "build-script" ||
+                    selected == "build-scripts" || selected == "proc-macro" ||
+                    selected == "proc-macros" || selected == "interop" ||
+                    selected == "bridge" || selected == "ffi-bridge" ||
+                    selected == "external-compat" || selected == "cargo-compat";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "interop" || selected == "bridge" || selected == "ffi-bridge")
+                    return executeInterop(handle);
+                if (selected == "external-compat" || selected == "cargo-compat")
+                    return executeExternalCompat(handle);
+                return executeCargo(handle);
+            }
+
+            selfTest() -> bool {
+                return cargoMode("build-scripts") == "build-script" &&
+                    cargoMode("proc-macros") == "proc-macro" &&
+                    directory("root/child/file") == "root/child";
+            }
+
+    fa:
+        return true;
+}

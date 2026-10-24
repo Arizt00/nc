@@ -1,0 +1,426 @@
+use <io:output, render>;
+use <project:parser_ast, diagnostics>;
+
+nccTypeContractSema {
+    const:
+        RESULT_BYTES >> int <- 24;
+    fn:
+        private:
+            kind(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeKind(m,n); }
+            child(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeFirstChild(m,n); }
+            next(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeNextSibling(m,n); }
+            first(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeFirstToken(m,n); }
+            end(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeEndToken(m,n); }
+            nodeFlags(m >> p<byte>, n >> int) -> int {
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,n);
+                value >> int <- parser_ast.nccParserAst.materialNodeFlags(m,n);
+                return kind == 11 || kind == 13 ? value & 255 : value;
+            }
+            lower(value >> int) -> int { return value >= 65 && value <= 90 ? value + 32 : value; }
+            tokenEqual(m >> p<byte>, a >> int, b >> int, fold >> bool) -> bool {
+                bytes >> int <- parser_ast.nccParserAst.materialTokenEnd(m,a) - parser_ast.nccParserAst.materialTokenStart(m,a);
+                if (bytes != parser_ast.nccParserAst.materialTokenEnd(m,b) - parser_ast.nccParserAst.materialTokenStart(m,b)) return false;
+                left >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,a);
+                right >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,b);
+                at >> int <- 0;
+                while (at < bytes) {
+                    x >> int <- rd(off(left,at)) & 255; y >> int <- rd(off(right,at)) & 255;
+                    if (fold) { x <- lower(x); y <- lower(y); }
+                    if (x != y) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            word(m >> p<byte>, token >> int, value >> str) -> bool {
+                bytes >> int <- parser_ast.nccParserAst.materialTokenEnd(m,token) - parser_ast.nccParserAst.materialTokenStart(m,token);
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,token);
+                text >> p<byte> <- cast(value); at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(text,at)) == 0) return false;
+                    if (lower(rd(off(data,at)) & 255) != lower(rd(off(text,at)) & 255)) return false;
+                    at += 1;
+                }
+                return rd(off(text,bytes)) == 0;
+            }
+            has(m >> p<byte>, n >> int, value >> str) -> bool {
+                at >> int <- first(m,n);
+                while (at <= end(m,n)) { if (word(m,at,value)) return true; at += 1; }
+                return false;
+            }
+            find(m >> p<byte>, n >> int, value >> str) -> int {
+                at >> int <- first(m,n);
+                while (at <= end(m,n)) { if (word(m,at,value)) return at; at += 1; }
+                return -1;
+            }
+            fail(result >> p<byte>, code >> int, n >> int) -> bool {
+                if (rd<int>(result) == 0) { wr<int>(result,code); wr<int>(off(result,4),n); }
+                return false;
+            }
+            fieldNamed(m >> p<byte>, declaration >> int, token >> int, before >> int) -> int {
+                at >> int <- child(m,declaration);
+                while (at >= 0 && at != before) {
+                    if (kind(m,at) == 14 && tokenEqual(m,first(m,at),token,false)) return at;
+                    at <- next(m,at);
+                }
+                return -1;
+            }
+            builtin(m >> p<byte>, token >> int) -> bool {
+                return word(m,token,"int") || word(m,token,"u64") || word(m,token,"byte") ||
+                    word(m,token,"word") || word(m,token,"dword") || word(m,token,"qword") ||
+                    word(m,token,"bool") || word(m,token,"str") || word(m,token,"text") ||
+                    word(m,token,"char") || word(m,token,"ft32") || word(m,token,"ft64") ||
+                    word(m,token,"addr") || word(m,token,"usize") || word(m,token,"isize") ||
+                    word(m,token,"void") || word(m,token,"null") || word(m,token,"cpu") ||
+                    word(m,token,"mmio") || word(m,token,"physical") || word(m,token,"phys") ||
+                    word(m,token,"dma") || word(m,token,"iommu") || word(m,token,"iova") ||
+                    word(m,token,"gpu") || word(m,token,"device") || word(m,token,"firmware") ||
+                    word(m,token,"fw") || word(m,token,"target") || word(m,token,"native") ||
+                    word(m,token,"i8") || word(m,token,"u8") || word(m,token,"i16") || word(m,token,"u16") ||
+                    word(m,token,"i32") || word(m,token,"u32") || word(m,token,"i64");
+            }
+            genericArity(m >> p<byte>, declaration >> int) -> int {
+                count >> int <- 0; at >> int <- child(m,declaration);
+                while (at >= 0) { if (kind(m,at) == 89) count += 1; at <- next(m,at); }
+                return count;
+            }
+            argumentCount(m >> p<byte>, n >> int) -> int {
+                count >> int <- 0; at >> int <- child(m,n);
+                while (at >= 0) { count += 1; at <- next(m,at); }
+                return count;
+            }
+            importedType(m >> p<byte>, n >> int) -> bool {
+                k >> int <- kind(m,n);
+                if (k != 18 && k != 30) return false;
+                token >> int <- first(m,n);
+                if (k != 18) {
+                    parent >> int <- parser_ast.nccParserAst.materialNodeParent(m,n);
+                    callee >> int <- child(m,parent);
+                    if (k != 30 || kind(m,parent) != 29 || next(m,callee) != n ||
+                        !(word(m,first(m,callee),"sizeOf") || word(m,first(m,callee),"alignOf") || word(m,first(m,callee),"offsetOf"))) return false;
+                }
+                if (end(m,n) != token+4 ||
+                    !word(m,token+1,".") || !word(m,token+3,".")) return false;
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialTokenCount(m)) {
+                    if (word(m,at,"use")) {
+                        cursor >> int <- at+1;
+                        if (word(m,cursor,"<")) cursor += 1;
+                        project >> bool <- word(m,cursor,"project") && word(m,cursor+1,":");
+                        cursor += 2;
+                        while (cursor < parser_ast.nccParserAst.materialTokenCount(m) && !word(m,cursor,";")) {
+                            if (project && tokenEqual(m,cursor,token,false)) return true;
+                            cursor += 1;
+                        }
+                        at <- cursor;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+            knownType(m >> p<byte>, declaration >> int, n >> int, result >> p<byte>) -> bool {
+                if (n < 0) return false;
+                token >> int <- first(m,n); k >> int <- kind(m,n);
+                if (k < 18 || k > 24) return false;
+                if (k == 18 || k == 24) {
+                    if (rd<int>(off(result,20)) != 0 && importedType(m,n)) return true;
+                    if (builtin(m,token) || parser_ast.nccParserAst.materialTokenKind(m,token) == 2) return true;
+                    at >> int <- 0;
+                    while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                        candidate >> int <- kind(m,at);
+                        if (candidate == 11 || candidate == 13) {
+                            if (tokenEqual(m,first(m,at),token,true)) return true;
+                        }
+                        if (candidate == 89 && parser_ast.nccParserAst.materialNodeParent(m,at) == declaration) {
+                            if (tokenEqual(m,first(m,at),token,false)) return true;
+                        }
+                        at += 1;
+                    }
+                    return false;
+                }
+                if (k == 19) {
+                    baseKnown >> bool <- word(m,token,"list") || word(m,token,"queue") || word(m,token,"vector") ||
+                        word(m,token,"Result") || word(m,token,"Option") || word(m,token,"dinArray") ||
+                        word(m,token,"memRegion") || word(m,token,"cap") || word(m,token,"matrix") ||
+                        word(m,token,"tensor") || word(m,token,"member") || word(m,token,"pm") ||
+                        word(m,token,"array2") || word(m,token,"array3") || word(m,token,"xy") ||
+                        word(m,token,"xyz") || word(m,token,"x2y2") || word(m,token,"x2y2z2") ||
+                        word(m,token,"x3y3") || word(m,token,"x3y3z3");
+                    at >> int <- 0;
+                    while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                        if (kind(m,at) == 11 || kind(m,at) == 13) {
+                            if (tokenEqual(m,first(m,at),token,true)) {
+                                baseKnown <- true;
+                                if (argumentCount(m,n) != genericArity(m,at)) return fail(result,27,n);
+                            }
+                        }
+                        at += 1;
+                    }
+                    if (!baseKnown) return false;
+                }
+                at >> int <- child(m,n);
+                while (at >= 0) { if (!knownType(m,declaration,at,result)) return false; at <- next(m,at); }
+                return true;
+            }
+            binaryType(m >> p<byte>, n >> int) -> bool {
+                if (kind(m,n) == 20) return true;
+                token >> int <- first(m,n);
+                if (kind(m,n) == 18) return builtin(m,token) && !word(m,token,"str") &&
+                    !word(m,token,"text") && !word(m,token,"void") && !word(m,token,"null");
+                if (kind(m,n) == 19) return false;
+                at >> int <- child(m,n);
+                while (at >= 0) { if (!binaryType(m,at)) return false; at <- next(m,at); }
+                return true;
+            }
+            decimal(m >> p<byte>, token >> int) -> int {
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,token);
+                bytes >> int <- parser_ast.nccParserAst.materialTokenEnd(m,token) - parser_ast.nccParserAst.materialTokenStart(m,token);
+                value >> int <- 0; at >> int <- 0;
+                if (bytes == 0) return -1;
+                while (at < bytes) {
+                    digit >> int <- (rd(off(data,at)) & 255) - 48;
+                    if (digit < 0 || digit > 9 || value > 214748364 || (value == 214748364 && digit > 7)) return -1;
+                    value <- value * 10 + digit; at += 1;
+                }
+                return value;
+            }
+            layout(m >> p<byte>, declaration >> int, clause >> int, result >> p<byte>) -> bool {
+                seen >> int <- 0; item >> int <- child(m,clause);
+                while (item >= 0) {
+                    token >> int <- first(m,item); style >> int <- nodeFlags(m,item); bit >> int <- 0;
+                    valueToken >> int <- token + 2;
+                    if (style >= 2 && style <= 4) valueToken <- token + 1;
+                    if (word(m,token,"binary") || word(m,token,"unbinary") || word(m,token,"kind")) {
+                        if (word(m,token,"kind") && !word(m,valueToken,"binary") && !word(m,valueToken,"unbinary") &&
+                            !word(m,valueToken,"stable") && !word(m,valueToken,"runtime")) return fail(result,1,item);
+                    } else if (word(m,token,"packed")) bit <- 1;
+                    else if (word(m,token,"repr") || style == 5) {
+                        bit <- 2;
+                        if (style != 5 && !word(m,valueToken,"c") && !word(m,valueToken,"native")) return fail(result,2,item);
+                    } else if (word(m,token,"align")) {
+                        bit <- 4; alignment >> int <- decimal(m,valueToken);
+                        if (alignment <= 0 || (alignment & (alignment - 1)) != 0) return fail(result,3,item);
+                    } else if (word(m,token,"size")) {
+                        bit <- 8; if (decimal(m,valueToken) <= 0) return fail(result,4,item);
+                    } else if (word(m,token,"endian") || style == 6 || style == 7) {
+                        bit <- 16;
+                        if (style < 6 && !word(m,valueToken,"native") && !word(m,valueToken,"little") &&
+                            !word(m,valueToken,"le") && !word(m,valueToken,"big") && !word(m,valueToken,"be")) return fail(result,5,item);
+                    } else if (word(m,token,"flexible")) {
+                        bit <- 32; field >> int <- fieldNamed(m,declaration,valueToken,-1);
+                        if (field < 0 || nodeFlags(m,declaration) != 1) return fail(result,6,item);
+                        type >> int <- child(m,field);
+                        if (kind(m,type) != 21) return fail(result,6,item);
+                        dimension >> int <- next(m,child(m,type));
+                        if (dimension >= 0) {
+                            if (next(m,dimension) >= 0 || decimal(m,first(m,dimension)) != 0)
+                                return fail(result,6,item);
+                        }
+                        scan >> int <- next(m,field);
+                        while (scan >= 0) { if (kind(m,scan) == 14) return fail(result,6,item); scan <- next(m,scan); }
+                    } else if (word(m,token,"bitfield")) {
+                        if (nodeFlags(m,declaration) >= 3) return fail(result,7,item);
+                        member >> int <- fieldNamed(m,declaration,token + 2,-1);
+                        storage >> int <- fieldNamed(m,declaration,token + 4,-1);
+                        bitOffset >> int <- decimal(m,token + 6); bitWidth >> int <- decimal(m,token + 8);
+                        if (member < 0 || storage < 0 || bitOffset < 0 || bitWidth <= 0 || end(m,item) != token + 9)
+                            return fail(result,7,item);
+                    } else return fail(result,8,item);
+                    if (bit != 0) {
+                        if ((seen & bit) != 0) return fail(result,bit == 1 ? 9 : (bit == 2 ? 2 : (bit == 4 ? 3 : (bit == 8 ? 4 : (bit == 16 ? 5 : 6)))),item);
+                        seen <- seen | bit;
+                    }
+                    item <- next(m,item);
+                }
+                return true;
+            }
+            clause(m >> p<byte>, declaration >> int, n >> int, result >> p<byte>) -> bool {
+                code >> int <- nodeFlags(m,n); item >> int <- child(m,n); policy >> bool <- false; ffi >> bool <- false;
+                if (code == 1) return layout(m,declaration,n,result);
+                while (item >= 0) {
+                    if (code == 2 && word(m,end(m,item),"false")) {
+                        if (first(m,item) == end(m,item) || word(m,end(m,item) - 1,"==")) return fail(result,10,item);
+                    }
+                    if (code == 3 || code == 10 || code == 11) {
+                        colon >> int <- find(m,item,":");
+                        if (colon < 0 || colon == end(m,item)) return fail(result,code == 3 ? 11 : (code == 10 ? 17 : 18),item);
+                    }
+                    if (code == 4) {
+                        arrow >> int <- find(m,item,"->");
+                        if (arrow < 0) return fail(result,12,item);
+                        if (!tokenEqual(m,arrow + 1,first(m,declaration),true)) return fail(result,12,item);
+                    }
+                    if (code == 5) {
+                        cursor >> int <- find(m,item,"{");
+                        if (cursor >= 0) {
+                            cursor += 1;
+                            while (cursor <= end(m,item) && !word(m,cursor,"}")) {
+                                if (!word(m,cursor,",")) {
+                                    if (fieldNamed(m,declaration,cursor,n) < 0) return fail(result,13,item);
+                                }
+                                cursor += 1;
+                            }
+                        }
+                    }
+                    if (code >= 6 && code <= 8) {
+                        if (has(m,item,"allowed") || has(m,item,"denied")) policy <- true;
+                        if (code != 8 && (has(m,item,"shallow") || has(m,item,"deep") || has(m,item,"binary") || has(m,item,"unbinary"))) policy <- true;
+                        if (code == 6 && has(m,item,"view")) policy <- true;
+                        if (code == 7 && has(m,item,"region")) policy <- true;
+                    }
+                    if (code == 9) {
+                        repr >> int <- find(m,item,"repr");
+                        if (repr >= 0 && word(m,repr + 1,":")) {
+                            ffi <- true;
+                            if (!word(m,repr + 2,"c") && !word(m,repr + 2,"rust") && !word(m,repr + 2,"cpp")) return fail(result,16,item);
+                        }
+                    }
+                    if (code == 12 && !has(m,item,"self")) return fail(result,19,item);
+                    item <- next(m,item);
+                }
+                if (code >= 6 && code <= 8 && !policy) return fail(result,code == 6 ? 14 : (code == 7 ? 15 : 20),n);
+                if (code == 9 && !ffi) return fail(result,16,n);
+                return true;
+            }
+            declaration(m >> p<byte>, n >> int, result >> p<byte>) -> bool {
+                fields >> int <- 0; variants >> int <- 0; hasLayout >> bool <- false; hasFfi >> bool <- false; binary >> bool <- false;
+                at >> int <- child(m,n);
+                while (at >= 0) {
+                    k >> int <- kind(m,at);
+                    if (k == 14) {
+                        fields += 1;
+                        if (!knownType(m,n,child(m,at),result)) return fail(result,21,at);
+                        if (fieldNamed(m,n,first(m,at),at) >= 0) return fail(result,22,at);
+                    }
+                    if (k == 88) {
+                        variants += 1; previous >> int <- child(m,n);
+                        while (previous >= 0 && previous != at) {
+                            if (kind(m,previous) == 88 && tokenEqual(m,first(m,previous),first(m,at),true)) return fail(result,23,at);
+                            previous <- next(m,previous);
+                        }
+                        payload >> int <- child(m,at);
+                        while (payload >= 0) { if (!knownType(m,n,child(m,payload),result)) return fail(result,21,payload); payload <- next(m,payload); }
+                    }
+                    if (k == 86) {
+                        wr<int>(off(result,8),rd<int>(off(result,8)) + 1);
+                        if (nodeFlags(m,at) == 1) {
+                            hasLayout <- true;
+                            if (has(m,at,"binary") && !has(m,at,"unbinary")) binary <- true;
+                        }
+                        if (nodeFlags(m,at) == 9) hasFfi <- true;
+                        item >> int <- child(m,at);
+                        while (item >= 0) { wr<int>(off(result,12),rd<int>(off(result,12)) + 1); item <- next(m,item); }
+                        if (!clause(m,n,at,result)) return false;
+                    }
+                    at <- next(m,at);
+                }
+                if (nodeFlags(m,n) <= 2 && fields == 0) return fail(result,nodeFlags(m,n) == 2 ? 24 : 21,n);
+                if (nodeFlags(m,n) >= 3 && variants == 0) return fail(result,nodeFlags(m,n) == 3 ? 25 : 24,n);
+                if (hasFfi && !hasLayout) return fail(result,16,n);
+                if (binary) {
+                    at <- child(m,n);
+                    while (at >= 0) {
+                        if (kind(m,at) == 14 && !binaryType(m,child(m,at))) return fail(result,26,at);
+                        if (kind(m,at) == 88) {
+                            payload >> int <- child(m,at);
+                            while (payload >= 0) { if (!binaryType(m,child(m,payload))) return fail(result,26,payload); payload <- next(m,payload); }
+                        }
+                        at <- next(m,at);
+                    }
+                }
+                return true;
+            }
+            errorCode(code >> int) -> str {
+                if (code == 1) return "E_TYPE_LAYOUT_001";
+                if (code == 2) return "E_LAYOUT_REPR_001";
+                if (code == 3) return "E_LAYOUT_ALIGN_001";
+                if (code == 4) return "E_LAYOUT_SIZE_001";
+                if (code == 5) return "E_LAYOUT_ENDIAN_001";
+                if (code == 6) return "E_LAYOUT_FLEXIBLE_ARRAY_001";
+                if (code == 7) return "E_LAYOUT_BITFIELD_001";
+                if (code == 8) return "E_LAYOUT_ITEM_001";
+                if (code == 9) return "E_LAYOUT_PACKED_001";
+                if (code == 10) return "E_TYPE_INVARIANT_001";
+                if (code == 11) return "E_TYPE_BOUNDS_001";
+                if (code == 12) return "E_TYPE_CONSTRUCTURE_001";
+                if (code == 13) return "E_TYPE_DESTRUCTURE_001";
+                if (code == 14) return "E_TYPE_COPY_001";
+                if (code == 15) return "E_TYPE_CLONE_001";
+                if (code == 16) return "E_TYPE_FFI_REPR_001";
+                if (code == 17) return "E_TYPE_OWNERSHIP_001";
+                if (code == 18) return "E_TYPE_NULLABILITY_001";
+                if (code == 19) return "E_TYPE_METHOD_001";
+                if (code == 20) return "E_TYPE_MOVE_001";
+                if (code == 21) return "E_TYPE_FIELD_001";
+                if (code == 22) return "E_TYPE_FIELD_DUPLICATE_001";
+                if (code == 23) return "E_TYPE_VARIANT_001";
+                if (code == 24) return "E_TYPE_UNION_001";
+                if (code == 25) return "E_TYPE_ENUM_001";
+                if (code == 27) return "E_TYPE_GENERIC_ARITY_001";
+                return "E_TYPE_BINARY_LAYOUT_001";
+            }
+        public:
+            projectTypeReference(m >> p<byte>, n >> int) -> bool { return importedType(m,n); }
+            projectTypesPending(m >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                    if (importedType(m,at)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+            validate(m >> p<byte>) -> p<byte> { return validateFor(m,false); }
+            validateFor(m >> p<byte>, project >> bool) -> p<byte> {
+                if (m == null) return null;
+                if (!parser_ast.nccParserAst.materialReady(m)) return null;
+                result >> p<byte> <- cast(alloc(RESULT_BYTES));
+                if (result == null) return null;
+                at >> int <- 0;
+                while (at < RESULT_BYTES) { wr<byte>(off(result,at),0); at += 1; }
+                wr<int>(off(result,20),project ? 1 : 0);
+                at <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                    if (kind(m,at) == 11 || kind(m,at) == 13) {
+                        wr<int>(off(result,16),rd<int>(off(result,16)) + 1);
+                        if (!declaration(m,at,result)) return result;
+                    }
+                    at += 1;
+                }
+                return result;
+            }
+            analyzeMaterial(m >> p<byte>, path >> str, json >> bool, quiet >> bool) -> int {
+                return analyzeFor(m,path,json,quiet,false);
+            }
+            analyzeProjectMaterial(m >> p<byte>, path >> str) -> int { return analyzeFor(m,path,false,true,true); }
+            analyzeFor(m >> p<byte>, path >> str, json >> bool, quiet >> bool, project >> bool) -> int {
+                result >> p<byte> <- validateFor(m,project);
+                if (result == null) return 70;
+                code >> int <- rd<int>(result); n >> int <- rd<int>(off(result,4));
+                if (code != 0) {
+                    print("error["); print(errorCode(code)); println("] sema.type");
+                    print(" --> "); print(path); print(":"); print(renderInt(parser_ast.nccParserAst.materialNodeLine(m,n)));
+                    print(":"); println(renderInt(parser_ast.nccParserAst.materialNodeColumn(m,n)));
+                    println("     | type contract violates its declared field, clause or layout requirements");
+                } else if (!quiet && json) {
+                    print("{\"schema\":\"nc.bootstrap.sema.type-contracts.v45\",\"types\":"); print(renderInt(rd<int>(off(result,16))));
+                    print(",\"clauses\":"); print(renderInt(rd<int>(off(result,8))));
+                    print(",\"items\":"); print(renderInt(rd<int>(off(result,12)))); println("}");
+                }
+                free(result); return code == 0 ? 0 : 1;
+            }
+            analyzeFile(path >> str, json >> bool, quiet >> bool) -> int {
+                m >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                if (m == null) return 66;
+                if (!parser_ast.nccParserAst.materialReady(m)) {
+                    lexerError >> int <- parser_ast.nccParserAst.materialLexerError(m);
+                    parserError >> int <- parser_ast.nccParserAst.materialParserError(m);
+                    code >> int <- lexerError != 0 ? diagnostics.nccDiagnostics.emitDiagnostic(lexerError,
+                        parser_ast.nccParserAst.materialErrorLine(m),parser_ast.nccParserAst.materialErrorColumn(m),path) :
+                        diagnostics.nccDiagnostics.emitParser(parserError,parser_ast.nccParserAst.materialErrorLine(m),
+                            parser_ast.nccParserAst.materialErrorColumn(m),path);
+                    parser_ast.nccParserAst.closeMaterial(m); return code;
+                }
+                code >> int <- analyzeMaterial(m,path,json,quiet);
+                parser_ast.nccParserAst.closeMaterial(m); return code;
+            }
+    fa: return true;
+}

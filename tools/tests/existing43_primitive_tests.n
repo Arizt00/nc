@@ -1,0 +1,53 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output>;
+use <project:physical43_primitive, physical43_common, physical43_json, release43_host>;
+
+existing43PrimitiveTests {
+    stc:
+        rows >> int;
+        failures >> int <- 0;
+    fn:
+        private:
+            check(name >> str, valid >> bool) -> void {
+                row >> int <- jsonNewObject(); physical43_common.physical43Common.put(row,"name",jsonNewString(name)); physical43_common.physical43Common.put(row,"passed",jsonNewBool(valid)); physical43_common.physical43Common.push(rows,row);
+                if (!valid) { failures += 1; println("FAIL "+name); }
+                physical43_common.physical43Common.reset();
+            }
+            write(path >> str, text >> str) -> void { check("write-"+path,physical43_common.physical43Common.write(path,text)); }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 2;
+                work >> str <- argsAt(arguments,1); path >> str <- work+"/evidence.txt"; serial >> str <- work+"/serial.log";
+                rows <- jsonNewArray(); check("work-directory",physical43_common.physical43Common.directories(work));
+                write(path,"ignored\r\n primitive-image-size = 512 \rprimitive-boot-signature=55aa\nprimitive-opcodes=ba,ee,ec,a8,f4\nprimitive-elf-magic=7f454c46\nqemu-mode=native-qemu\n");
+                write(serial,"n.C primitive\r\nalive\n");
+                model >> int <- physical43_primitive.physical43Primitive.kv(path); check("kv-normal-five-fields",jsonObjectLen(model) == 5); check("fields-normal",physical43_primitive.physical43Primitive.fields(model,serial)); jsonRelease(model);
+                space >> str <- physical43_json.physical43Json.scalarText(160); newline >> str <- physical43_json.physical43Json.scalarText(8232);
+                vertical >> str <- physical43_json.physical43Json.scalarText(11); form >> str <- physical43_json.physical43Json.scalarText(12);
+                write(path,space+"primitive-image-size"+space+"="+space+"512"+space+newline+"primitive-boot-signature=55aa"+vertical+"primitive-opcodes=ba,ee,ec,a8,f4"+form+"primitive-elf-magic=7f454c46\nqemu-mode=with=equals\nqemu-mode=last"); strRelease(vertical); strRelease(form);
+                model <- physical43_primitive.physical43Primitive.kv(path); check("kv-unicode-lines-and-strip",physical43_primitive.physical43Primitive.fields(model,serial)); check("kv-duplicate-last",physical43_common.physical43Common.field(model,"qemu-mode") == "last"); jsonRelease(model); strRelease(space); strRelease(newline);
+                write(path,"qemu-mode=\n=no-key\nignored\n"); model <- physical43_primitive.physical43Primitive.kv(path); check("kv-empty-key-and-value",jsonObjectLen(model) == 2 && physical43_common.physical43Common.field(model,"qemu-mode") == ""); jsonRelease(model);
+                data >> p<byte> <- cast(alloc(64)); text >> str <- "qemu-mode=before"; count >> int <- strByteLen(text); cp(data,cast<byte>(text),count); wr(off(data,count),0); cp(off(data,count+1),cast<byte>("after"),5);
+                check("write-nul-evidence",release43_host.release43Host.writeRaw(path,data,count+6,false) == count+6);
+                model <- physical43_primitive.physical43Primitive.kv(path); value >> int <- jsonObjectBorrow(model,"qemu-mode"); view >> str <- jsonStringView(value,""); rawBytes >> p<byte> <- physical43_json.physical43Json.rawData(view);
+                check("kv-nul-preserved",physical43_json.physical43Json.rawLength(view) == 12 && rd(off(rawBytes,6)) == 0 && rd(off(rawBytes,7)) == 97); jsonRelease(value); jsonRelease(model);
+                wr(data,255); cp(off(data,1),cast<byte>("ignored"),7); check("write-invalid-kv-utf8",release43_host.release43Host.writeRaw(path,data,8,false) == 8);
+                model <- physical43_primitive.physical43Primitive.kv(path); check("kv-invalid-utf8-even-ignored-line",model == 0); if (model != 0) jsonRelease(model);
+                write(serial,"nCprimitivealive"); check("serial-exact",physical43_primitive.physical43Primitive.serialAlive(serial));
+                wr(data,255); cp(off(data,1),cast<byte>("nCprimitivealive"),16); check("write-invalid-serial-prefix",release43_host.release43Host.writeRaw(serial,data,17,false) == 17); check("serial-invalid-utf8-ignored",physical43_primitive.physical43Primitive.serialAlive(serial));
+                write(serial,"nC primitive dead"); check("serial-negative",!physical43_primitive.physical43Primitive.serialAlive(serial));
+                write(serial,"nCprimitivealive"); model <- jsonParse("{\"primitive-image-size\":512,\"primitive-boot-signature\":\"55aa\",\"primitive-opcodes\":\"ba,ee,ec,a8,f4\",\"primitive-elf-magic\":\"7f454c46\"}"); check("fields-string-type-required",!physical43_primitive.physical43Primitive.fields(model,serial)); jsonRelease(model);
+                words >> int <- jsonNewArray(); physical43_common.physical43Common.push(words,jsonNewString(envHas("WINDIR") ? "C:/msys64/usr/bin/bash.exe" : "bash")); physical43_common.physical43Common.push(words,jsonNewString("-c"));
+                physical43_common.physical43Common.push(words,jsonNewString("printf '\\302\\240before\\0after\\302\\240'; printf '\\302\\240error\\0tail\\302\\240' >&2"));
+                model <- physical43_primitive.physical43Primitive.runCommand(words,work); jsonRelease(words); check("command-success",physical43_common.physical43Common.succeeded(model));
+                value <- jsonObjectBorrow(model,"stdout"); view <- jsonStringView(value,""); rawBytes <- physical43_json.physical43Json.rawData(view);
+                check("command-stdout-nul-and-unicode-strip",physical43_json.physical43Json.rawLength(view) == 12 && rd(off(rawBytes,6)) == 0 && rd(off(rawBytes,7)) == 97); jsonRelease(value);
+                value <- jsonObjectBorrow(model,"stderr"); view <- jsonStringView(value,""); rawBytes <- physical43_json.physical43Json.rawData(view);
+                check("command-stderr-nul-and-unicode-strip",physical43_json.physical43Json.rawLength(view) == 10 && rd(off(rawBytes,5)) == 0 && rd(off(rawBytes,6)) == 116); jsonRelease(value); jsonRelease(model);
+                free(data); report >> int <- jsonNewObject(); physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.existing43.primitive-native-tests.v43")); physical43_common.physical43Common.put(report,"passed",jsonNewBool(failures == 0)); physical43_common.physical43Common.put(report,"failures",jsonNewInt(failures)); physical43_common.physical43Common.put(report,"cases",rows);
+                saved >> bool <- physical43_common.physical43Common.save(argsAt(arguments,2),report); physical43_common.physical43Common.print(report); jsonRelease(report); argsRelease(arguments); return failures == 0 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

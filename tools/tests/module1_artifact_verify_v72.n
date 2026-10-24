@@ -1,0 +1,67 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:sha256>;
+
+module1ArtifactVerify72 {
+    text(model >> int, key >> str) -> str {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(field,"");
+        jsonRelease(field);
+        return value;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 3) return 64;
+        manifest >> int <- jsonParseFile(argsAt(arguments,1));
+        if (manifest == 0) { argsRelease(arguments); return 65; }
+        entries >> int <- jsonObjectBorrow(manifest,"artifacts");
+        rows >> int <- jsonNewArray();
+        valid >> bool <- jsonKind(entries) == 5 && jsonArrayLen(entries) > 0;
+        at >> int <- 0;
+        while (at < jsonArrayLen(entries)) {
+            entry >> int <- jsonArrayBorrow(entries,at);
+            left >> str <- text(entry,"reference");
+            right >> str <- text(entry,"candidate");
+            name >> str <- text(entry,"name");
+            profile >> str <- text(entry,"normalization");
+            size >> int <- fsSize(left);
+            a >> str <- "";
+            b >> str <- "";
+            equal >> bool <- false;
+            if (name != "" && left != "" && right != "" && left != right &&
+                profile == "none" && size > 0 && size == fsSize(right)) {
+                a <- sha256.nccSha256.file(left);
+                b <- sha256.nccSha256.file(right);
+                equal <- strByteLen(a) == 64 && strByteLen(b) == 64 && a == b;
+            }
+            row >> int <- jsonNewObject();
+            jsonObjectSet(row,"name",jsonNewString(name));
+            jsonObjectSet(row,"reference",jsonNewString(left));
+            jsonObjectSet(row,"candidate",jsonNewString(right));
+            jsonObjectSet(row,"reference_sha256",jsonNewString(a));
+            jsonObjectSet(row,"candidate_sha256",jsonNewString(b));
+            jsonObjectSet(row,"bytes",jsonNewInt(size));
+            jsonObjectSet(row,"normalization",jsonNewString(profile));
+            jsonObjectSet(row,"exact",jsonNewBool(equal));
+            jsonArrayPush(rows,row);
+            jsonRelease(row); jsonRelease(entry);
+            if (a != "") strRelease(a);
+            if (b != "") strRelease(b);
+            valid <- valid && equal;
+            at += 1;
+        }
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.module1.artifact-equivalence.v72"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"stage3_promotable",jsonNewBool(false));
+        jsonObjectSet(report,"artifacts",rows);
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,2),2);
+        jsonRelease(rows); jsonRelease(report); jsonRelease(entries); jsonRelease(manifest);
+        argsRelease(arguments);
+        println(valid && saved ? "module1 artifacts PASS" : "module1 artifacts FAIL");
+        return valid && saved ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

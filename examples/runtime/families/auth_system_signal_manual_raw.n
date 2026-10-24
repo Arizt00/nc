@@ -1,0 +1,34 @@
+use <auth.system:signal>;
+use <memory:stack>;
+use <io:output>;
+
+authSystemSignalManualRaw {
+    fn:
+        strideCheck() -> bool { return authSignalStride() == 64; }
+        writeCopy(table >> p<byte>) -> bool {
+            return authSignalWrite(table, 0, 601, 990, 15, 7, 4, 66, 5, 1) &&
+                authSignalCopy(table, 1, table, 0);
+        }
+        identity(table >> p<byte>) -> bool {
+            return authSignalKey(table, 1) == 601 && authSignalTarget(table, 1) == 990 &&
+                authSignalCode(table, 1) == 15 && authSignalOwner(table, 1) == 66 &&
+                authSignalGeneration(table, 1) == 5;
+        }
+        authority(table >> p<byte>) -> bool {
+            return authSignalRights(table, 1) == 7 && authSignalFlags(table, 1) == 4 &&
+                authSignalState(table, 1) == 1 && authSignalAllows(table, 1, 3);
+        }
+        clearRecord(table >> p<byte>) -> bool {
+            return authSignalClear(table, 1) && authSignalState(table, 1) == 0;
+        }
+        run() -> bool {
+            table >> p<byte> <- stackAlloc(authSignalStride() * 2, 8);
+            ok >> bool <- strideCheck() && writeCopy(table) && identity(table) &&
+                authority(table) && clearRecord(table);
+            println("manual nC auth system signal backend: " + (ok ? "true" : "false"));
+            return ok;
+        }
+    ref main ->> run;
+    fa:
+        return true;
+}

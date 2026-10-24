@@ -1,0 +1,180 @@
+use foreign { c };
+use <data:json>;
+use <io:render>;
+use <project:cert_json, release_io>;
+
+release43Host {
+    foreign:
+        c symbol "MultiByteToWideChar" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(u32,u32,addr,i32,addr,i32) -> i32; }
+        c symbol "WideCharToMultiByte" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(u32,u32,addr,i32,addr,i32,addr,addr) -> i32; }
+        c symbol "GetFileAttributesW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: readsMemory; signature: fn(addr) -> u32; }
+        c symbol "GetFullPathNameW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u32,addr,addr) -> u32; }
+        c symbol "GetFinalPathNameByHandleW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u32,u32) -> u32; }
+        c symbol "DeviceIoControl" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u32,addr,u32,addr,u32,addr,addr) -> i32; }
+        c symbol "GetLastError" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: readsMemory; signature: fn() -> u32; }
+        c symbol "CreateFileW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u32,u32,addr,u32,u32,addr) -> addr; }
+        c symbol "CloseHandle" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "ReadFile" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u32,addr,addr) -> i32; }
+        c symbol "WriteFile" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u32,addr,addr) -> i32; }
+        c symbol "GetFileSizeEx" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "GetFileInformationByHandle" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "CopyFileW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,i32) -> i32; }
+        c symbol "CreateHardLinkW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,addr) -> i32; }
+        c symbol "CreateSymbolicLinkW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u32) -> i32; }
+        c symbol "CreateDirectoryW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "DeleteFileW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "RemoveDirectoryW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "MoveFileExW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u32) -> i32; }
+        c symbol "FindFirstFileW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> addr; }
+        c symbol "FindNextFileW" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "FindClose" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "GetFileTime" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,addr,addr) -> i32; }
+        c symbol "SetFileTime" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,addr,addr) -> i32; }
+        c symbol "SetFilePointerEx" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,i64,addr,u32) -> i32; }
+        c symbol "SetEndOfFile" { abi: C; header: "windows.h"; library: "kernel32"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+    fn:
+        private:
+            unsigned(value >> int) -> u32 { return value; }
+            invalid(handle >> addr) -> bool { return handle == null || handle == cast<addr>(-1); }
+            nativePath(path >> str) -> p<u16> {
+                input >> p<u16> <- utf16(path); data >> p<u16> <- cast(alloc(65536)); if (input == null || data == null) { free(input); free(data); return null; }
+                count >> u32 <- GetFullPathNameW(adr(input),32768,adr(data),null); free(input);
+                if (count == 0 || count >= 32760) { free(data); return null; }
+                full >> str <- utf8(data); free(data);
+                if (!strStartsWith(full,"\\\\?\\")) full <- strStartsWith(full,"\\\\") ? "\\\\?\\UNC\\"+strSubstring(full,2,strByteLen(full)-2) : "\\\\?\\"+full;
+                result >> p<u16> <- utf16(full); strRelease(full); return result;
+            }
+            open(path >> str, access >> int, disposition >> int) -> addr {
+                wide >> p<u16> <- nativePath(path); if (wide == null) return null;
+                handle >> addr <- CreateFileW(adr(wide),unsigned(access),7,null,unsigned(disposition),128,null); free(wide); return invalid(handle) ? null : handle;
+            }
+        public:
+            lastError() -> int { return GetLastError(); }
+            roundTrip(text >> str) -> str { data >> p<u16> <- utf16(text); if (data == null) return "INVALID UTF8"; result >> str <- utf8(data); free(data); return result; }
+            utf16(text >> str) -> p<u16> {
+                input >> p<byte> <- cast(text); count >> i32 <- MultiByteToWideChar(65001,8,adr(input),-1,null,0);
+                if (count <= 0) return null; data >> p<u16> <- cast(alloc(count*2)); if (data == null) return null;
+                written >> i32 <- MultiByteToWideChar(65001,8,adr(input),-1,adr(data),count);
+                if (written != count) { free(data); return null; } return data;
+            }
+            utf8(wide >> p<u16>) -> str {
+                count >> i32 <- WideCharToMultiByte(65001,128,adr(wide),-1,null,0,null,null);
+                if (count <= 0) return ""; data >> p<byte> <- cast(alloc(count)); if (data == null) return "";
+                written >> i32 <- WideCharToMultiByte(65001,128,adr(wide),-1,adr(data),count,null,null);
+                if (written != count) { free(data); return ""; } return cast(data);
+            }
+            kind(path >> str) -> int {
+                wide >> p<u16> <- nativePath(path); if (wide == null) return 0;
+                attrs >> u32 <- GetFileAttributesW(adr(wide)); free(wide); if (attrs == unsigned(-1)) return 0;
+                return (attrs & 16) != 0 ? 2 : 1;
+            }
+            link(path >> str) -> bool {
+                wide >> p<u16> <- nativePath(path); if (wide == null) return false;
+                attrs >> u32 <- GetFileAttributesW(adr(wide)); free(wide); return attrs != unsigned(-1) && (attrs & 1024) != 0;
+            }
+            size(path >> str) -> int { value >> i64 <- size64(path); return value > 2147483647 ? -1 : value; }
+            mode(path >> str) -> int {
+                wide >> p<u16> <- nativePath(path); if (wide == null) return 0; attributes >> u32 <- GetFileAttributesW(adr(wide)); free(wide);
+                if (attributes == unsigned(-1)) return 0; return (attributes & 1) != 0 ? 292 : 438;
+            }
+            size64(path >> str) -> i64 {
+                handle >> addr <- open(path,0,3); if (handle == null) return -1; storage >> p<i64> <- cast(alloc(8)); if (storage == null) { CloseHandle(handle); return -1; }
+                status >> i32 <- GetFileSizeEx(handle,adr(storage)); value >> i64 <- rd<i64>(storage); free(storage); CloseHandle(handle); if (status == 0) return -1; return value;
+            }
+            identity(path >> str) -> str {
+                handle >> addr <- open(path,0,3); if (handle == null) return ""; data >> p<byte> <- cast(alloc(52)); if (data == null) { CloseHandle(handle); return ""; }
+                status >> i32 <- GetFileInformationByHandle(handle,adr(data)); CloseHandle(handle); result >> str <- "";
+                if (status != 0 && rd<u32>(cast<u32>(off(data,40))) > 1) result <- renderInt(rd<u32>(cast<u32>(off(data,28))))+":"+renderInt(rd<u32>(cast<u32>(off(data,44))))+":"+renderInt(rd<u32>(cast<u32>(off(data,48))));
+                free(data); return result;
+            }
+            createHardLink(source >> str, target >> str) -> bool {
+                a >> p<u16> <- nativePath(source); b >> p<u16> <- nativePath(target); if (a == null || b == null) { free(a); free(b); return false; }
+                status >> i32 <- CreateHardLinkW(adr(b),adr(a),null); free(a); free(b); return status != 0;
+            }
+            createSymlink(target >> str, path >> str, directory >> bool) -> bool {
+                a >> p<u16> <- utf16(target); b >> p<u16> <- nativePath(path); if (a == null || b == null) { free(a); free(b); return false; }
+                status >> i32 <- CreateSymbolicLinkW(adr(b),adr(a),directory ? 3 : 2); free(a); free(b); return status != 0;
+            }
+            readRange(path >> str, data >> p<byte>, count >> int, position >> i64) -> int {
+                handle >> addr <- open(path,-2147483648,3); if (handle == null) return -1;
+                if (SetFilePointerEx(handle,position,null,0) == 0) { CloseHandle(handle); return -1; }
+                got >> p<u32> <- cast(alloc(4)); if (got == null) { CloseHandle(handle); return -1; }
+                wr<u32>(got,0); status >> i32 <- ReadFile(handle,adr(data),unsigned(count),adr(got),null); amount >> int <- rd<u32>(got); free(got); CloseHandle(handle); return status == 0 ? -1 : amount;
+            }
+            resize(path >> str, size >> i64) -> bool {
+                handle >> addr <- open(path,1073741824,4); if (handle == null) return false; got >> p<u32> <- cast(alloc(4)); if (got == null) { CloseHandle(handle); return false; }
+                wr<u32>(got,0); DeviceIoControl(handle,590020,null,0,null,0,adr(got),null); free(got);
+                good >> bool <- SetFilePointerEx(handle,size,null,0) != 0; if (good) good <- SetEndOfFile(handle) != 0; CloseHandle(handle); return good;
+            }
+            read(path >> str, data >> p<byte>, count >> int) -> int {
+                handle >> addr <- open(path,-2147483648,3); if (handle == null) return -1;
+                got >> p<u32> <- cast(alloc(4)); if (got == null) { CloseHandle(handle); return -1; }
+                wr<u32>(got,0); status >> i32 <- ReadFile(handle,adr(data),unsigned(count),adr(got),null); amount >> int <- rd<u32>(got); free(got); CloseHandle(handle); return status == 0 ? -1 : amount;
+            }
+            writeRaw(path >> str, data >> p<byte>, count >> int, append >> bool) -> int {
+                handle >> addr <- open(path,1073741824,append ? 4 : 2); if (handle == null) return -1;
+                if (append) SetFilePointerEx(handle,0,null,2);
+                got >> p<u32> <- cast(alloc(4)); if (got == null) { CloseHandle(handle); return -1; }
+                wr<u32>(got,0); status >> i32 <- WriteFile(handle,adr(data),unsigned(count),adr(got),null); amount >> int <- rd<u32>(got); free(got); CloseHandle(handle); return status == 0 ? -1 : amount;
+            }
+            mkdir(path >> str) -> bool { wide >> p<u16> <- nativePath(path); if (wide == null) return false; status >> i32 <- CreateDirectoryW(adr(wide),null); free(wide); return status != 0; }
+            deleteFile(path >> str) -> bool { wide >> p<u16> <- nativePath(path); if (wide == null) return false; status >> i32 <- DeleteFileW(adr(wide)); free(wide); return status != 0; }
+            rmdir(path >> str) -> bool { wide >> p<u16> <- nativePath(path); if (wide == null) return false; status >> i32 <- RemoveDirectoryW(adr(wide)); free(wide); return status != 0; }
+            rename(source >> str, target >> str) -> bool { a >> p<u16> <- nativePath(source); b >> p<u16> <- nativePath(target); if (a == null || b == null) { free(a); free(b); return false; } status >> i32 <- MoveFileExW(adr(a),adr(b),9); free(a); free(b); return status != 0; }
+            copy(source >> str, target >> str) -> bool {
+                a >> p<u16> <- nativePath(source); b >> p<u16> <- nativePath(target); if (a == null || b == null) { free(a); free(b); return false; }
+                status >> i32 <- CopyFileW(adr(a),adr(b),0); free(a); free(b); if (status == 0) return false;
+                from >> addr <- open(source,0,3); to >> addr <- open(target,256,3);
+                if (from == null || to == null) { if (from != null) CloseHandle(from); if (to != null) CloseHandle(to); return false; }
+                times >> p<byte> <- cast(alloc(16)); if (times == null) { CloseHandle(from); CloseHandle(to); return false; }
+                status <- GetFileTime(from,null,adr(times),adr(off(times,8)));
+                if (status != 0) status <- SetFileTime(to,null,adr(times),adr(off(times,8)));
+                free(times); CloseHandle(from); CloseHandle(to); return status != 0;
+            }
+            names(path >> str) -> int {
+                pattern >> p<u16> <- nativePath(path+"/*"); data >> p<byte> <- cast(alloc(592)); if (pattern == null || data == null) { free(pattern); free(data); return 0; }
+                handle >> addr <- FindFirstFileW(adr(pattern),adr(data)); free(pattern); if (invalid(handle)) { free(data); return kind(path) == 2 ? jsonNewArray() : 0; }
+                rows >> int <- jsonNewArray(); more >> i32 <- 1;
+                while (more != 0) {
+                    name >> str <- utf8(cast<u16>(off(data,44)));
+                    if (name != "." && name != "..") cert_json.certJson.push(rows,jsonNewString(name));
+                    strRelease(name); more <- FindNextFileW(handle,adr(data));
+                }
+                FindClose(handle); free(data); return rows;
+            }
+            absolute(path >> str) -> str {
+                input >> p<u16> <- nativePath(path); data >> p<u16> <- cast(alloc(65536)); if (input == null || data == null) { free(input); free(data); return ""; }
+                handle >> addr <- CreateFileW(adr(input),0,7,null,3,33554432,null);
+                count >> u32 <- 0; if (!invalid(handle)) { count <- GetFinalPathNameByHandleW(handle,adr(data),32768,0); CloseHandle(handle); }
+                result >> str <- count > 0 && count < 32768 ? utf8(data) : utf8(input); free(input); free(data);
+                if (strStartsWith(result,"\\\\?\\UNC\\")) result <- "\\\\"+strSubstring(result,8,strByteLen(result)-8);
+                else if (strStartsWith(result,"\\\\?\\")) result <- strSubstring(result,4,strByteLen(result)-4);
+                normalized >> str <- release_io.releaseIo.forwardPath(result);
+                if (count == 0) {
+                    parent >> str <- release_io.releaseIo.directory(normalized);
+                    if (parent != normalized && strByteLen(normalized) > 3) {
+                        canonical >> str <- absolute(parent);
+                        if (canonical != "") normalized <- canonical+strSubstring(normalized,strByteLen(parent),strByteLen(normalized)-strByteLen(parent));
+                    }
+                }
+                return normalized;
+            }
+            linkTarget(path >> str) -> str {
+                wide >> p<u16> <- nativePath(path); data >> p<byte> <- cast(alloc(16384)); got >> p<u32> <- cast(alloc(4));
+                if (wide == null || data == null || got == null) { free(wide); free(data); free(got); return ""; }
+                handle >> addr <- CreateFileW(adr(wide),0,7,null,3,35651584,null); free(wide);
+                if (invalid(handle)) { free(data); free(got); return ""; }
+                status >> i32 <- DeviceIoControl(handle,589992,null,0,adr(data),16384,adr(got),null); CloseHandle(handle); free(got);
+                if (status == 0) { free(data); return ""; }
+                tag >> u32 <- rd<u32>(cast<u32>(data)); start >> int <- 0; length >> int <- 0;
+                if (tag == unsigned(-1610612724)) { start <- 20+rd<u16>(cast<u16>(off(data,12))); length <- rd<u16>(cast<u16>(off(data,14))); }
+                else if (tag == unsigned(-1610612733)) { start <- 16+rd<u16>(cast<u16>(off(data,12))); length <- rd<u16>(cast<u16>(off(data,14))); }
+                else { free(data); return ""; }
+                if (length == 0) { start <- (tag == unsigned(-1610612724) ? 20 : 16)+rd<u16>(cast<u16>(off(data,8))); length <- rd<u16>(cast<u16>(off(data,10))); }
+                if (start+length > 16382) { free(data); return ""; }
+                wr(off(data,start+length),0); wr(off(data,start+length+1),0); result >> str <- utf8(cast<u16>(off(data,start))); free(data);
+                if (strStartsWith(result,"\\??\\")) result <- strSubstring(result,4,strByteLen(result)-4);
+                return release_io.releaseIo.forwardPath(result);
+            }
+    fa: return true;
+}

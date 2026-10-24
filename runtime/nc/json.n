@@ -1,0 +1,1102 @@
+/*
+ * Manual JSON provider for native nC projects.
+ *
+ * Handles are stable 32-bit tokens resolved through an explicit address table.
+ * Nodes, keys, strings and serialized output are explicit heap blocks; arrays
+ * and objects are intrusive linked lists.
+ * No C source, collection runtime, ownership engine or hidden scheduler is
+ * involved in this provider.
+ */
+nccJsonRuntime :: runtime {
+    const:
+        MAGIC >> u64 <- 0x4E434A534F4E3031;
+        NODE_BYTES >> int <- 96;
+        PARSER_BYTES >> int <- 40;
+
+        K_NULL >> int <- 1;
+        K_BOOL >> int <- 2;
+        K_NUMBER >> int <- 3;
+        K_STRING >> int <- 4;
+        K_ARRAY >> int <- 5;
+        K_OBJECT >> int <- 6;
+
+        O_MAGIC >> int <- 0;
+        O_KIND >> int <- 8;
+        O_FLAG >> int <- 16;
+        O_INTEGER >> int <- 24;
+        O_FLOAT >> int <- 32;
+        O_TEXT >> int <- 40;
+        O_LEN >> int <- 48;
+        O_HEAD >> int <- 56;
+        O_TAIL >> int <- 64;
+        O_NEXT >> int <- 72;
+        O_KEY >> int <- 80;
+
+        HANDLE_OWNED >> byte <- 1;
+        HANDLE_BORROWED >> byte <- 2;
+
+        P_SOURCE >> int <- 0;
+        P_POS >> int <- 8;
+        P_LEN >> int <- 16;
+        P_LINE >> int <- 24;
+        P_COLUMN >> int <- 32;
+
+    stc:
+        errorCode >> int <- 0;
+        errorLine >> int <- 0;
+        errorColumn >> int <- 0;
+        errorMessage >> str <- "";
+        errorPath >> str <- "";
+        handles >> p<addr> <- null;
+        handleModes >> p<byte> <- null;
+        handleCapacity >> int <- 0;
+        nextHandle >> int <- 1;
+        freeHandle >> int <- 0;
+        cursorParent >> p<byte> <- null;
+        cursorHead >> p<byte> <- null;
+        cursorChild >> p<byte> <- null;
+        cursorIndex >> int <- 0;
+        cursorLength >> int <- 0;
+
+    fn:
+        private:
+            clearError() -> bool {
+                errorCode <- 0;
+                errorLine <- 0;
+                errorColumn <- 0;
+                errorMessage <- "";
+                errorPath <- "";
+                return true;
+            }
+
+            fail(code >> int, message >> str, line >> int, column >> int, path >> str) -> bool {
+                errorCode <- code;
+                errorMessage <- message;
+                errorLine <- line;
+                errorColumn <- column;
+                errorPath <- path;
+                return false;
+            }
+
+            textLen(value >> str) -> int {
+                bytes >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                guard bytes != null else return 0;
+                while (rd(off(bytes, at)) != 0) { at += 1; }
+                return at;
+            }
+
+            rawLen(bytes >> p<byte>) -> int {
+                at >> int <- 0;
+                guard bytes != null else return 0;
+                while (rd(off(bytes, at)) != 0) { at += 1; }
+                return at;
+            }
+
+            copyBytes(out >> p<byte>, at >> int, source >> p<byte>, count >> int) -> int {
+                index >> int <- 0;
+                while (index < count) {
+                    wr(off(out, at + index), rd(off(source, index)));
+                    index += 1;
+                }
+                return at + count;
+            }
+
+            duplicate(value >> str) -> p<byte> {
+                guard cast<byte>(value) != null else return null;
+                return duplicateSized(cast(value), textLen(value));
+            }
+
+            duplicateSized(value >> p<byte>, count >> int) -> p<byte> {
+                out >> p<byte> <- cast<byte>(alloc(count + 1));
+                guard out != null else return null;
+                copyBytes(out, 0, value, count);
+                wr(off(out, count), 0);
+                return out;
+            }
+
+            bytesText(value >> p<byte>) -> str {
+                return cast(value);
+            }
+
+            same(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast<byte>(left);
+                b >> p<byte> <- cast<byte>(right);
+                at >> int <- 0;
+                guard a != null && b != null else return a == b;
+                while (rd(off(a, at)) != 0 && rd(off(a, at)) == rd(off(b, at))) {
+                    at += 1;
+                }
+                return rd(off(a, at)) == rd(off(b, at));
+            }
+
+            ensureHandleCapacity(required >> int) -> bool {
+                if (required < handleCapacity) return true;
+                capacity >> int <- handleCapacity == 0 ? 64 : handleCapacity;
+                while (capacity <= required) { capacity *= 2; }
+                bytes >> int <- capacity * sizeOf<addr>();
+                grown >> p<addr> <- cast<addr>(alloc(bytes));
+                guard grown != null else return false;
+                grownModes >> p<byte> <- cast<byte>(alloc(capacity));
+                guard grownModes != null else { free(grown); return false; }
+                at >> int <- 0;
+                while (at < capacity) {
+                    value >> addr <- 0;
+                    mode >> byte <- 0;
+                    if (at < handleCapacity) value <- rd(off(handles, at));
+                    if (at < handleCapacity) mode <- rd(off(handleModes, at));
+                    wr(off(grown, at), value);
+                    wr(off(grownModes, at), mode);
+                    at += 1;
+                }
+                if (handles != null) free(handles);
+                if (handleModes != null) free(handleModes);
+                handles <- grown;
+                handleModes <- grownModes;
+                handleCapacity <- capacity;
+                return true;
+            }
+
+            nodeOf(handle >> int) -> p<byte> {
+                guard handle > 0 && handle < nextHandle && handles != null &&
+                    handleModes != null && rd(off(handleModes, handle)) != 0 else return null;
+                node >> p<byte> <- cast<byte>(rd(off(handles, handle)));
+                guard node != null else return null;
+                guard rd<u64>(off(node, O_MAGIC)) == MAGIC else return null;
+                return node;
+            }
+
+            handleWithMode(node >> p<byte>, mode >> byte) -> int {
+                guard node != null else return 0;
+                handle >> int <- freeHandle;
+                if (handle != 0) {
+                    freeHandle <- cast<int>(rd<addr>(off(handles, handle)));
+                } else {
+                    handle <- nextHandle;
+                    guard handle > 0 && ensureHandleCapacity(handle) else return 0;
+                    nextHandle += 1;
+                }
+                wr(off(handles, handle), adr(node));
+                wr(off(handleModes, handle), mode);
+                return handle;
+            }
+
+            handleOf(node >> p<byte>) -> int {
+                handle >> int <- handleWithMode(node, HANDLE_OWNED);
+                if (handle == 0 && node != null) releaseNode(node);
+                return handle;
+            }
+
+            borrowedHandleOf(node >> p<byte>) -> int {
+                return handleWithMode(node, HANDLE_BORROWED);
+            }
+
+            releaseHandle(handle >> int) -> bool {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null else return true;
+                mode >> byte <- rd(off(handleModes, handle));
+                wr(off(handleModes, handle), 0);
+                wr<addr>(off(handles, handle), cast<addr>(freeHandle));
+                freeHandle <- handle;
+                return mode == HANDLE_OWNED ? releaseNode(node) : true;
+            }
+
+            rawAddress(node >> p<byte>) -> addr {
+                address >> addr <- 0;
+                if (node != null) { address <- adr(node); }
+                return address;
+            }
+
+            newNode(kind >> int) -> p<byte> {
+                node >> p<byte> <- cast<byte>(alloc(NODE_BYTES));
+                guard node != null else return null;
+                at >> int <- 0;
+                while (at < NODE_BYTES) {
+                    wr(off(node, at), 0);
+                    at += 1;
+                }
+                wr<u64>(off(node, O_MAGIC), MAGIC);
+                wr<int>(off(node, O_KIND), kind);
+                return node;
+            }
+
+            childNext(node >> p<byte>) -> p<byte> {
+                return cast<byte>(rd<addr>(off(node, O_NEXT)));
+            }
+
+            nodeHead(node >> p<byte>) -> p<byte> {
+                return cast<byte>(rd<addr>(off(node, O_HEAD)));
+            }
+
+            nodeTail(node >> p<byte>) -> p<byte> {
+                return cast<byte>(rd<addr>(off(node, O_TAIL)));
+            }
+
+            nodeText(node >> p<byte>) -> str {
+                return cast(rd<addr>(off(node, O_TEXT)));
+            }
+
+            nodeKey(node >> p<byte>) -> str {
+                return cast(rd<addr>(off(node, O_KEY)));
+            }
+
+            invalidateCursor(parent >> p<byte>) -> void {
+                if (parent == cursorParent) {
+                    cursorParent <- null;
+                    cursorHead <- null;
+                    cursorChild <- null;
+                }
+            }
+
+            appendOwned(parent >> p<byte>, child >> p<byte>) -> bool {
+                guard parent != null && child != null else return false;
+                invalidateCursor(parent);
+                wr<addr>(off(child, O_NEXT), 0);
+                tail >> p<byte> <- nodeTail(parent);
+                if (tail == null) {
+                    wr<addr>(off(parent, O_HEAD), adr(child));
+                } else {
+                    wr<addr>(off(tail, O_NEXT), adr(child));
+                }
+                wr<addr>(off(parent, O_TAIL), adr(child));
+                wr<int>(off(parent, O_LEN), rd<int>(off(parent, O_LEN)) + 1);
+                return true;
+            }
+
+            cloneNode(node >> p<byte>) -> p<byte> {
+                guard node != null else return null;
+                copy >> p<byte> <- newNode(rd<int>(off(node, O_KIND)));
+                guard copy != null else return null;
+                wr<int>(off(copy, O_FLAG), rd<int>(off(node, O_FLAG)));
+                wr<i64>(off(copy, O_INTEGER), rd<i64>(off(node, O_INTEGER)));
+                wr<ft64>(off(copy, O_FLOAT), rd<ft64>(off(node, O_FLOAT)));
+                textAddress >> addr <- rd<addr>(off(node, O_TEXT));
+                if (textAddress != null) {
+                    text >> str <- cast(textAddress);
+                    textCopy >> p<byte> <- null;
+                    if (rd<int>(off(node, O_KIND)) == K_STRING) {
+                        textCopy <- duplicateSized(cast(text), rd<int>(off(node, O_LEN)));
+                        wr<int>(off(copy, O_LEN), rd<int>(off(node, O_LEN)));
+                    } else textCopy <- duplicate(text);
+                    guard textCopy != null else { releaseNode(copy); return null; }
+                    wr<addr>(off(copy, O_TEXT), adr(textCopy));
+                }
+                keyAddress >> addr <- rd<addr>(off(node, O_KEY));
+                if (keyAddress != null) {
+                    key >> str <- cast(keyAddress);
+                    keyCopy >> p<byte> <- duplicate(key);
+                    guard keyCopy != null else { releaseNode(copy); return null; }
+                    wr<addr>(off(copy, O_KEY), adr(keyCopy));
+                }
+                child >> p<byte> <- nodeHead(node);
+                while (child != null) {
+                    childCopy >> p<byte> <- cloneNode(child);
+                    guard childCopy != null else { releaseNode(copy); return null; }
+                    appendOwned(copy, childCopy);
+                    child <- childNext(child);
+                }
+                return copy;
+            }
+
+            releaseNode(node >> p<byte>) -> bool {
+                guard node != null else return true;
+                if (node == cursorParent || node == cursorChild) {
+                    cursorParent <- null;
+                    cursorHead <- null;
+                    cursorChild <- null;
+                }
+                child >> p<byte> <- nodeHead(node);
+                while (child != null) {
+                    next >> p<byte> <- childNext(child);
+                    releaseNode(child);
+                    child <- next;
+                }
+                text >> p<byte> <- cast<byte>(rd<addr>(off(node, O_TEXT)));
+                key >> p<byte> <- cast<byte>(rd<addr>(off(node, O_KEY)));
+                if (text != null) { free(text); }
+                if (key != null) { free(key); }
+                wr<u64>(off(node, O_MAGIC), 0);
+                free(node);
+                return true;
+            }
+
+            childAt(parent >> p<byte>, index >> int) -> p<byte> {
+                guard parent != null && index >= 0 else return null;
+                head >> p<byte> <- nodeHead(parent);
+                length >> int <- rd<int>(off(parent,O_LEN));
+                child >> p<byte> <- head;
+                at >> int <- 0;
+                // A cursor does not own nodes. Head/length changes invalidate its position.
+                if (parent == cursorParent && head == cursorHead && length == cursorLength &&
+                    cursorChild != null && index >= cursorIndex) {
+                    child <- cursorChild;
+                    at <- cursorIndex;
+                }
+                while (child != null && at < index) {
+                    child <- childNext(child);
+                    at += 1;
+                }
+                cursorParent <- child == null ? null : parent;
+                cursorHead <- head;
+                cursorChild <- child;
+                cursorIndex <- index;
+                cursorLength <- length;
+                return child;
+            }
+
+            objectChild(parent >> p<byte>, key >> str) -> p<byte> {
+                child >> p<byte> <- nodeHead(parent);
+                while (child != null) {
+                    if (same(nodeKey(child), key)) { return child; }
+                    child <- childNext(child);
+                }
+                return null;
+            }
+
+            parserPeek(parser >> p<byte>) -> byte {
+                pos >> int <- rd<int>(off(parser, P_POS));
+                len >> int <- rd<int>(off(parser, P_LEN));
+                guard pos < len else return 0;
+                source >> p<byte> <- cast<byte>(rd<addr>(off(parser, P_SOURCE)));
+                return rd(off(source, pos));
+            }
+
+            parserTake(parser >> p<byte>) -> byte {
+                code >> byte <- parserPeek(parser);
+                guard code != 0 else return 0;
+                pos >> int <- rd<int>(off(parser, P_POS)) + 1;
+                wr<int>(off(parser, P_POS), pos);
+                if (code == 10) {
+                    wr<int>(off(parser, P_LINE), rd<int>(off(parser, P_LINE)) + 1);
+                    wr<int>(off(parser, P_COLUMN), 1);
+                } else {
+                    wr<int>(off(parser, P_COLUMN), rd<int>(off(parser, P_COLUMN)) + 1);
+                }
+                return code;
+            }
+
+            parserSpace(parser >> p<byte>) -> bool {
+                code >> byte <- parserPeek(parser);
+                while (code == 32 || code == 9 || code == 10 || code == 13) {
+                    parserTake(parser);
+                    code <- parserPeek(parser);
+                }
+                return true;
+            }
+
+            hexValue(code >> byte) -> int {
+                if (code >= 48 && code <= 57) { return code - 48; }
+                if (code >= 65 && code <= 70) { return code - 55; }
+                if (code >= 97 && code <= 102) { return code - 87; }
+                return -1;
+            }
+
+            writeUtf8(out >> p<byte>, at >> int, scalar >> int) -> int {
+                if (scalar <= 0x7F) {
+                    wr(off(out, at), cast<byte>(scalar));
+                    return at + 1;
+                }
+                if (scalar <= 0x7FF) {
+                    wr(off(out, at), cast<byte>(0xC0 | (scalar >> 6)));
+                    wr(off(out, at + 1), cast<byte>(0x80 | (scalar & 0x3F)));
+                    return at + 2;
+                }
+                if (scalar <= 0xFFFF) {
+                    wr(off(out, at), cast<byte>(0xE0 | (scalar >> 12)));
+                    wr(off(out, at + 1), cast<byte>(0x80 | ((scalar >> 6) & 0x3F)));
+                    wr(off(out, at + 2), cast<byte>(0x80 | (scalar & 0x3F)));
+                    return at + 3;
+                }
+                wr(off(out, at), cast<byte>(0xF0 | (scalar >> 18)));
+                wr(off(out, at + 1), cast<byte>(0x80 | ((scalar >> 12) & 0x3F)));
+                wr(off(out, at + 2), cast<byte>(0x80 | ((scalar >> 6) & 0x3F)));
+                wr(off(out, at + 3), cast<byte>(0x80 | (scalar & 0x3F)));
+                return at + 4;
+            }
+
+            unicodeHex(parser >> p<byte>) -> int {
+                value >> int <- 0; at >> int <- 0;
+                while (at < 4) {
+                    digit >> int <- hexValue(parserTake(parser));
+                    if (digit < 0) return -1;
+                    value <- value * 16 + digit; at += 1;
+                }
+                return value;
+            }
+
+            copyUtf8(parser >> p<byte>, out >> p<byte>, at >> int, lead >> int) -> int {
+                width >> int <- lead >= 0xC2 && lead <= 0xDF ? 2 :
+                    (lead >= 0xE0 && lead <= 0xEF ? 3 : (lead >= 0xF0 && lead <= 0xF4 ? 4 : 0));
+                if (width == 0) return -1;
+                scalar >> int <- lead & (width == 2 ? 31 : (width == 3 ? 15 : 7));
+                wr(off(out, at), lead);
+                index >> int <- 1;
+                while (index < width) {
+                    code >> int <- parserTake(parser) & 255;
+                    if (code < 128 || code > 191) return -1;
+                    scalar <- (scalar << 6) | (code & 63);
+                    wr(off(out, at + index), code); index += 1;
+                }
+                minimum >> int <- width == 2 ? 128 : (width == 3 ? 2048 : 65536);
+                if (scalar < minimum || scalar > 0x10FFFF || (scalar >= 0xD800 && scalar <= 0xDFFF)) return -1;
+                return at + width;
+            }
+
+            parseStringNode(parser >> p<byte>) -> p<byte> {
+                guard parserTake(parser) == 34 else return null;
+                remaining >> int <- rd<int>(off(parser, P_LEN)) - rd<int>(off(parser, P_POS));
+                out >> p<byte> <- cast<byte>(alloc(remaining * 3 + 1));
+                guard out != null else return null;
+                at >> int <- 0;
+                closed >> bool <- false;
+                while (parserPeek(parser) != 0) {
+                    code >> int <- parserTake(parser) & 255;
+                    if (code == 34) { closed <- true; break; }
+                    if (code < 32) { free(out); return null; }
+                    if (code != 92) {
+                        if (code >= 128) {
+                            at <- copyUtf8(parser, out, at, code);
+                            if (at < 0) { free(out); return null; }
+                            continue;
+                        }
+                        wr(off(out, at), code);
+                        at += 1;
+                        continue;
+                    }
+                    escaped >> byte <- parserTake(parser);
+                    if (escaped == 34 || escaped == 92 || escaped == 47) {
+                        wr(off(out, at), escaped);
+                        at += 1;
+                    } else if (escaped == 98) {
+                        wr(off(out, at), 8); at += 1;
+                    } else if (escaped == 102) {
+                        wr(off(out, at), 12); at += 1;
+                    } else if (escaped == 110) {
+                        wr(off(out, at), 10); at += 1;
+                    } else if (escaped == 114) {
+                        wr(off(out, at), 13); at += 1;
+                    } else if (escaped == 116) {
+                        wr(off(out, at), 9); at += 1;
+                    } else if (escaped == 117) {
+                        scalar >> int <- unicodeHex(parser);
+                        if (scalar < 0) { free(out); return null; }
+                        if (scalar >= 0xD800 && scalar <= 0xDBFF) {
+                            if (parserTake(parser) != 92) { free(out); return null; }
+                            if (parserTake(parser) != 117) { free(out); return null; }
+                            low >> int <- unicodeHex(parser);
+                            if (low < 0xDC00 || low > 0xDFFF) { free(out); return null; }
+                            scalar <- 0x10000 + ((scalar - 0xD800) << 10) + low - 0xDC00;
+                        } else if (scalar >= 0xDC00 && scalar <= 0xDFFF) {
+                            free(out); return null;
+                        }
+                        at <- writeUtf8(out, at, scalar);
+                    } else {
+                        free(out);
+                        return null;
+                    }
+                }
+                guard closed else { free(out); return null; }
+                wr(off(out, at), 0);
+                node >> p<byte> <- newNode(K_STRING);
+                guard node != null else { free(out); return null; }
+                wr<addr>(off(node, O_TEXT), adr(out));
+                wr<int>(off(node, O_LEN), at);
+                return node;
+            }
+
+            parseNumberNode(parser >> p<byte>) -> p<byte> {
+                start >> int <- rd<int>(off(parser, P_POS));
+                code >> byte <- parserPeek(parser);
+                if (code == 45) { parserTake(parser); code <- parserPeek(parser); }
+                guard code >= 48 && code <= 57 else return null;
+                if (code == 48) {
+                    parserTake(parser);
+                } else {
+                    while (parserPeek(parser) >= 48 && parserPeek(parser) <= 57) { parserTake(parser); }
+                }
+                if (parserPeek(parser) == 46) {
+                    parserTake(parser);
+                    guard parserPeek(parser) >= 48 && parserPeek(parser) <= 57 else return null;
+                    while (parserPeek(parser) >= 48 && parserPeek(parser) <= 57) { parserTake(parser); }
+                }
+                code <- parserPeek(parser);
+                if (code == 69 || code == 101) {
+                    parserTake(parser);
+                    code <- parserPeek(parser);
+                    if (code == 43 || code == 45) { parserTake(parser); }
+                    guard parserPeek(parser) >= 48 && parserPeek(parser) <= 57 else return null;
+                    while (parserPeek(parser) >= 48 && parserPeek(parser) <= 57) { parserTake(parser); }
+                }
+                finish >> int <- rd<int>(off(parser, P_POS));
+                count >> int <- finish - start;
+                source >> p<byte> <- cast<byte>(rd<addr>(off(parser, P_SOURCE)));
+                text >> p<byte> <- cast<byte>(alloc(count + 1));
+                guard text != null else return null;
+                copyBytes(text, 0, off(source, start), count);
+                wr(off(text, count), 0);
+                node >> p<byte> <- newNode(K_NUMBER);
+                guard node != null else { free(text); return null; }
+                wr<int>(off(node, O_FLAG), 2);
+                wr<addr>(off(node, O_TEXT), adr(text));
+                return node;
+            }
+
+            parseLiteral(parser >> p<byte>, word >> str, kind >> int, truth >> bool) -> p<byte> {
+                source >> p<byte> <- cast<byte>(word);
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0) {
+                    guard parserTake(parser) == rd(off(source, at)) else return null;
+                    at += 1;
+                }
+                node >> p<byte> <- newNode(kind);
+                guard node != null else return null;
+                wr<int>(off(node, O_FLAG), truth ? 1 : 0);
+                return node;
+            }
+
+            parseArrayNode(parser >> p<byte>) -> p<byte> {
+                guard parserTake(parser) == 91 else return null;
+                array >> p<byte> <- newNode(K_ARRAY);
+                guard array != null else return null;
+                parserSpace(parser);
+                if (parserPeek(parser) == 93) { parserTake(parser); return array; }
+                while (true) {
+                    child >> p<byte> <- parseValueNode(parser);
+                    guard child != null else { releaseNode(array); return null; }
+                    appendOwned(array, child);
+                    parserSpace(parser);
+                    code >> byte <- parserTake(parser);
+                    if (code == 93) { return array; }
+                    guard code == 44 else { releaseNode(array); return null; }
+                    parserSpace(parser);
+                }
+                return array;
+            }
+
+            parseObjectNode(parser >> p<byte>) -> p<byte> {
+                guard parserTake(parser) == 123 else return null;
+                object >> p<byte> <- newNode(K_OBJECT);
+                guard object != null else return null;
+                parserSpace(parser);
+                if (parserPeek(parser) == 125) { parserTake(parser); return object; }
+                while (true) {
+                    keyNode >> p<byte> <- parseStringNode(parser);
+                    guard keyNode != null else { releaseNode(object); return null; }
+                    parserSpace(parser);
+                    guard parserTake(parser) == 58 else {
+                        releaseNode(keyNode); releaseNode(object); return null;
+                    }
+                    parserSpace(parser);
+                    child >> p<byte> <- parseValueNode(parser);
+                    guard child != null else {
+                        releaseNode(keyNode); releaseNode(object); return null;
+                    }
+                    key >> p<byte> <- cast<byte>(rd<addr>(off(keyNode, O_TEXT)));
+                    wr<addr>(off(keyNode, O_TEXT), 0);
+                    wr<addr>(off(child, O_KEY), adr(key));
+                    releaseNode(keyNode);
+                    appendOwned(object, child);
+                    parserSpace(parser);
+                    code >> byte <- parserTake(parser);
+                    if (code == 125) { return object; }
+                    guard code == 44 else { releaseNode(object); return null; }
+                    parserSpace(parser);
+                }
+                return object;
+            }
+
+            parseValueNode(parser >> p<byte>) -> p<byte> {
+                parserSpace(parser);
+                code >> byte <- parserPeek(parser);
+                if (code == 34) { return parseStringNode(parser); }
+                if (code == 91) { return parseArrayNode(parser); }
+                if (code == 123) { return parseObjectNode(parser); }
+                if (code == 116) { return parseLiteral(parser, "true", K_BOOL, true); }
+                if (code == 102) { return parseLiteral(parser, "false", K_BOOL, false); }
+                if (code == 110) { return parseLiteral(parser, "null", K_NULL, false); }
+                return parseNumberNode(parser);
+            }
+
+            parseDocument(value >> p<byte>) -> p<byte> {
+                clearError();
+                parser >> p<byte> <- cast<byte>(alloc(PARSER_BYTES));
+                guard parser != null else return null;
+                wr<addr>(off(parser, P_SOURCE), adr(value));
+                wr<int>(off(parser, P_POS), 0);
+                wr<int>(off(parser, P_LEN), rawLen(value));
+                wr<int>(off(parser, P_LINE), 1);
+                wr<int>(off(parser, P_COLUMN), 1);
+                root >> p<byte> <- parseValueNode(parser);
+                parserSpace(parser);
+                valid >> bool <- root != null && rd<int>(off(parser, P_POS)) == rd<int>(off(parser, P_LEN));
+                if (!valid) {
+                    if (root != null) { releaseNode(root); }
+                    fail(1, "invalid JSON document", rd<int>(off(parser, P_LINE)), rd<int>(off(parser, P_COLUMN)), "");
+                    root <- null;
+                }
+                free(parser);
+                return root;
+            }
+
+            escapedSize(value >> str) -> int {
+                return escapedSized(cast(value), textLen(value));
+            }
+
+            escapedSized(bytes >> p<byte>, count >> int) -> int {
+                at >> int <- 0;
+                total >> int <- 2;
+                while (at < count) {
+                    code >> int <- rd(off(bytes, at)) & 255;
+                    total += code == 34 || code == 92 ? 2 : (code < 32 ? 6 : 1);
+                    at += 1;
+                }
+                return total;
+            }
+
+            indentSize(depth >> int, indent >> int) -> int {
+                return indent == 0 ? 0 : 1 + depth * indent;
+            }
+
+            numberTextOwned(node >> p<byte>) -> str {
+                mode >> int <- rd<int>(off(node, O_FLAG));
+                if (mode == 0) {
+                    return formatIntRaw(rd<i64>(off(node, O_INTEGER)), "");
+                }
+                if (mode == 1) {
+                    return fromFloatRaw(rd<ft64>(off(node, O_FLOAT)));
+                }
+                return cast(duplicate(nodeText(node)));
+            }
+
+            serializedSize(node >> p<byte>, indent >> int, depth >> int) -> int {
+                kind >> int <- rd<int>(off(node, O_KIND));
+                if (kind == K_NULL) { return 4; }
+                if (kind == K_BOOL) { return rd<int>(off(node, O_FLAG)) == 0 ? 5 : 4; }
+                if (kind == K_STRING) { return escapedSized(cast(nodeText(node)), rd<int>(off(node, O_LEN))); }
+                if (kind == K_NUMBER) {
+                    numberText >> str <- numberTextOwned(node);
+                    numberSize >> int <- textLen(numberText);
+                    if (rd<int>(off(node, O_FLAG)) == 2) { free(cast<byte>(numberText)); }
+                    else { releaseRaw(numberText); }
+                    return numberSize;
+                }
+                count >> int <- rd<int>(off(node, O_LEN));
+                guard count > 0 else return 2;
+                total >> int <- 2;
+                child >> p<byte> <- nodeHead(node);
+                index >> int <- 0;
+                while (child != null) {
+                    total += indentSize(depth + 1, indent);
+                    if (kind == K_OBJECT) { total += escapedSize(nodeKey(child)) + (indent == 0 ? 1 : 2); }
+                    total += serializedSize(child, indent, depth + 1);
+                    if (index + 1 < count) { total += 1; }
+                    child <- childNext(child);
+                    index += 1;
+                }
+                total += indentSize(depth, indent);
+                return total;
+            }
+
+            writeIndent(out >> p<byte>, at >> int, depth >> int, indent >> int) -> int {
+                guard indent > 0 else return at;
+                wr(off(out, at), 10);
+                at += 1;
+                count >> int <- depth * indent;
+                index >> int <- 0;
+                while (index < count) { wr(off(out, at), 32); at += 1; index += 1; }
+                return at;
+            }
+
+            writeHex4(out >> p<byte>, at >> int, value >> int) -> int {
+                shift >> int <- 12;
+                while (shift >= 0) {
+                    digit >> int <- (value >> shift) & 15;
+                    wr(off(out, at), cast<byte>(digit < 10 ? 48 + digit : 55 + digit));
+                    at += 1;
+                    shift -= 4;
+                }
+                return at;
+            }
+
+            writeEscaped(out >> p<byte>, at >> int, value >> str) -> int {
+                return writeEscapedSized(out, at, cast(value), textLen(value));
+            }
+
+            writeEscapedSized(out >> p<byte>, at >> int, bytes >> p<byte>, count >> int) -> int {
+                wr(off(out, at), 34); at += 1;
+                index >> int <- 0;
+                while (index < count) {
+                    code >> int <- rd(off(bytes, index)) & 255;
+                    if (code == 34 || code == 92) {
+                        wr(off(out, at), 92); wr(off(out, at + 1), code); at += 2;
+                    } else if (code < 32) {
+                        wr(off(out, at), 92); wr(off(out, at + 1), 117);
+                        at <- writeHex4(out, at + 2, code);
+                    } else {
+                        wr(off(out, at), code); at += 1;
+                    }
+                    index += 1;
+                }
+                wr(off(out, at), 34);
+                return at + 1;
+            }
+
+            writeLiteral(out >> p<byte>, at >> int, value >> str) -> int {
+                return copyBytes(out, at, cast<byte>(value), textLen(value));
+            }
+
+            writeNode(out >> p<byte>, at >> int, node >> p<byte>, indent >> int, depth >> int) -> int {
+                kind >> int <- rd<int>(off(node, O_KIND));
+                if (kind == K_NULL) { return writeLiteral(out, at, "null"); }
+                if (kind == K_BOOL) { return writeLiteral(out, at, rd<int>(off(node, O_FLAG)) == 0 ? "false" : "true"); }
+                if (kind == K_STRING) { return writeEscapedSized(out, at, cast(nodeText(node)), rd<int>(off(node, O_LEN))); }
+                if (kind == K_NUMBER) {
+                    numberText >> str <- numberTextOwned(node);
+                    at <- writeLiteral(out, at, numberText);
+                    if (rd<int>(off(node, O_FLAG)) == 2) { free(cast<byte>(numberText)); }
+                    else { releaseRaw(numberText); }
+                    return at;
+                }
+                opening >> byte <- kind == K_ARRAY ? 91 : 123;
+                closing >> byte <- kind == K_ARRAY ? 93 : 125;
+                wr(off(out, at), opening); at += 1;
+                child >> p<byte> <- nodeHead(node);
+                while (child != null) {
+                    at <- writeIndent(out, at, depth + 1, indent);
+                    if (kind == K_OBJECT) {
+                        at <- writeEscaped(out, at, nodeKey(child));
+                        wr(off(out, at), 58); at += 1;
+                        if (indent > 0) { wr(off(out, at), 32); at += 1; }
+                    }
+                    at <- writeNode(out, at, child, indent, depth + 1);
+                    child <- childNext(child);
+                    if (child != null) { wr(off(out, at), 44); at += 1; }
+                }
+                if (rd<int>(off(node, O_LEN)) > 0) { at <- writeIndent(out, at, depth, indent); }
+                wr(off(out, at), closing);
+                return at + 1;
+            }
+
+            serialize(node >> p<byte>, indent >> int) -> str {
+                guard node != null && indent >= 0 else return "";
+                bytes >> int <- serializedSize(node, indent, 0);
+                out >> p<byte> <- cast<byte>(alloc(bytes + 1));
+                guard out != null else return "";
+                finish >> int <- writeNode(out, 0, node, indent, 0);
+                wr(off(out, finish), 0);
+                return cast(out);
+            }
+
+        public:
+            jsonParse(value >> str) -> int {
+                return handleOf(parseDocument(cast<byte>(value)));
+            }
+
+            jsonValidate(value >> str) -> bool {
+                node >> p<byte> <- parseDocument(cast<byte>(value));
+                guard node != null else return false;
+                releaseNode(node);
+                clearError();
+                return true;
+            }
+
+            jsonParseFile(path >> str) -> int {
+                bytes >> int <- fsSize(path);
+                guard bytes >= 0 else { fail(2, "cannot read JSON file", 0, 0, path); return 0; }
+                data >> p<byte> <- cast<byte>(alloc(bytes + 1));
+                guard data != null else return 0;
+                read >> int <- bytes == 0 ? 0 : fsReadInto(path, data, bytes);
+                guard read == bytes else { free(data); fail(2, "cannot read JSON file", 0, 0, path); return 0; }
+                wr(off(data, bytes), 0);
+                node >> p<byte> <- parseDocument(data);
+                free(data);
+                if (node == null) { errorPath <- path; }
+                return handleOf(node);
+            }
+
+            jsonStringify(handle >> int) -> str { return serialize(nodeOf(handle), 0); }
+            jsonStringifyPretty(handle >> int, indent >> int) -> str { return serialize(nodeOf(handle), indent); }
+
+            jsonSaveFile(handle >> int, path >> str, indent >> int) -> bool {
+                text >> str <- serialize(nodeOf(handle), indent);
+                guard text != "" else return false;
+                bytes >> int <- textLen(text);
+                written >> int <- fsWriteFrom(path, cast<byte>(text), bytes, false);
+                free(cast<byte>(text));
+                return written == bytes;
+            }
+
+            jsonClone(handle >> int) -> int { return handleOf(cloneNode(nodeOf(handle))); }
+            jsonRelease(handle >> int) -> bool { return releaseHandle(handle); }
+            jsonKind(handle >> int) -> int { node >> p<byte> <- nodeOf(handle); return node == null ? 0 : rd<int>(off(node, O_KIND)); }
+            jsonIsNull(handle >> int) -> bool { return jsonKind(handle) == K_NULL; }
+
+            jsonEquals(left >> int, right >> int) -> bool {
+                a >> str <- serialize(nodeOf(left), 0);
+                b >> str <- serialize(nodeOf(right), 0);
+                equal >> bool <- same(a, b);
+                if (a != "") { free(cast<byte>(a)); }
+                if (b != "") { free(cast<byte>(b)); }
+                return equal;
+            }
+
+            jsonGetString(handle >> int) -> str {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null && rd<int>(off(node, O_KIND)) == K_STRING else return "";
+                return cast(duplicateSized(cast(nodeText(node)), rd<int>(off(node, O_LEN))));
+            }
+
+            jsonGetBool(handle >> int) -> bool {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null else return false;
+                return rd<int>(off(node, O_KIND)) == K_BOOL && rd<int>(off(node, O_FLAG)) != 0;
+            }
+
+            jsonGetInt(handle >> int) -> int {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null && rd<int>(off(node, O_KIND)) == K_NUMBER else return 0;
+                if (rd<int>(off(node, O_FLAG)) == 0) { return rd<i64>(off(node, O_INTEGER)); }
+                return parseIntRaw(nodeText(node));
+            }
+
+            jsonGetFloat(handle >> int) -> ft64 {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null && rd<int>(off(node, O_KIND)) == K_NUMBER else return 0.0;
+                if (rd<int>(off(node, O_FLAG)) == 1) { return rd<ft64>(off(node, O_FLOAT)); }
+                if (rd<int>(off(node, O_FLAG)) == 0) { value >> ft64 <- cast(rd<i64>(off(node, O_INTEGER))); return value; }
+                return parseFloatRaw(nodeText(node));
+            }
+
+            jsonGetNumberText(handle >> int) -> str {
+                node >> p<byte> <- nodeOf(handle);
+                guard node != null && rd<int>(off(node, O_KIND)) == K_NUMBER else return "";
+                if (rd<int>(off(node, O_FLAG)) == 0) { return formatIntRaw(rd<i64>(off(node, O_INTEGER)), ""); }
+                if (rd<int>(off(node, O_FLAG)) == 1) { return fromFloatRaw(rd<ft64>(off(node, O_FLOAT))); }
+                return cast(duplicate(nodeText(node)));
+            }
+
+            jsonGetStringOr(handle >> int, fallback >> str) -> str {
+                node >> p<byte> <- nodeOf(handle);
+                return node != null && rd<int>(off(node, O_KIND)) == K_STRING ? jsonGetString(handle) : fallback;
+            }
+
+            jsonStringView(handle >> int, fallback >> str) -> str {
+                node >> p<byte> <- nodeOf(handle);
+                return node != null && rd<int>(off(node, O_KIND)) == K_STRING ?
+                    nodeText(node) : fallback;
+            }
+
+            jsonGetBoolOr(handle >> int, fallback >> bool) -> bool {
+                return jsonKind(handle) == K_BOOL ? jsonGetBool(handle) : fallback;
+            }
+
+            jsonGetIntOr(handle >> int, fallback >> int) -> int {
+                return jsonKind(handle) == K_NUMBER ? jsonGetInt(handle) : fallback;
+            }
+
+            jsonGetFloatOr(handle >> int, fallback >> ft64) -> ft64 {
+                return jsonKind(handle) == K_NUMBER ? jsonGetFloat(handle) : fallback;
+            }
+
+            jsonArrayLen(handle >> int) -> int {
+                node >> p<byte> <- nodeOf(handle);
+                return node != null && rd<int>(off(node, O_KIND)) == K_ARRAY ? rd<int>(off(node, O_LEN)) : 0;
+            }
+
+            jsonArrayGet(handle >> int, index >> int) -> int {
+                array >> p<byte> <- nodeOf(handle);
+                guard array != null && rd<int>(off(array, O_KIND)) == K_ARRAY else return 0;
+                return handleOf(cloneNode(childAt(array, index)));
+            }
+
+            jsonArrayBorrow(handle >> int, index >> int) -> int {
+                array >> p<byte> <- nodeOf(handle);
+                guard array != null && rd<int>(off(array, O_KIND)) == K_ARRAY else return 0;
+                return borrowedHandleOf(childAt(array, index));
+            }
+
+            jsonArrayPush(handle >> int, value >> int) -> bool {
+                array >> p<byte> <- nodeOf(handle);
+                guard array != null && rd<int>(off(array, O_KIND)) == K_ARRAY else return false;
+                copy >> p<byte> <- cloneNode(nodeOf(value));
+                return appendOwned(array, copy);
+            }
+
+            jsonArrayInsert(handle >> int, index >> int, value >> int) -> bool {
+                array >> p<byte> <- nodeOf(handle);
+                guard array != null && rd<int>(off(array, O_KIND)) == K_ARRAY && index >= 0 && index <= rd<int>(off(array, O_LEN)) else return false;
+                copy >> p<byte> <- cloneNode(nodeOf(value));
+                guard copy != null else return false;
+                if (index == rd<int>(off(array, O_LEN))) { return appendOwned(array, copy); }
+                current >> p<byte> <- childAt(array, index);
+                if (index == 0) {
+                    invalidateCursor(array);
+                    wr<addr>(off(copy, O_NEXT), adr(current));
+                    wr<addr>(off(array, O_HEAD), adr(copy));
+                } else {
+                    previous >> p<byte> <- childAt(array, index - 1);
+                    invalidateCursor(array);
+                    wr<addr>(off(copy, O_NEXT), adr(current));
+                    wr<addr>(off(previous, O_NEXT), adr(copy));
+                }
+                wr<int>(off(array, O_LEN), rd<int>(off(array, O_LEN)) + 1);
+                return true;
+            }
+
+            jsonArrayRemove(handle >> int, index >> int) -> int {
+                array >> p<byte> <- nodeOf(handle);
+                guard array != null && rd<int>(off(array, O_KIND)) == K_ARRAY && index >= 0 && index < rd<int>(off(array, O_LEN)) else return 0;
+                removed >> p<byte> <- childAt(array, index);
+                next >> p<byte> <- childNext(removed);
+                if (index == 0) { wr<addr>(off(array, O_HEAD), rawAddress(next)); }
+                else { previous >> p<byte> <- childAt(array, index - 1); wr<addr>(off(previous, O_NEXT), rawAddress(next)); }
+                if (nodeTail(array) == removed) {
+                    tail >> p<byte> <- null;
+                    if (index != 0) { tail <- childAt(array, index - 1); }
+                    wr<addr>(off(array, O_TAIL), rawAddress(tail));
+                }
+                wr<addr>(off(removed, O_NEXT), 0);
+                wr<int>(off(array, O_LEN), rd<int>(off(array, O_LEN)) - 1);
+                invalidateCursor(array);
+                return handleOf(removed);
+            }
+
+            jsonObjectLen(handle >> int) -> int {
+                node >> p<byte> <- nodeOf(handle);
+                return node != null && rd<int>(off(node, O_KIND)) == K_OBJECT ? rd<int>(off(node, O_LEN)) : 0;
+            }
+
+            jsonObjectHas(handle >> int, key >> str) -> bool {
+                node >> p<byte> <- nodeOf(handle);
+                return node != null && rd<int>(off(node, O_KIND)) == K_OBJECT && objectChild(node, key) != null;
+            }
+
+            jsonObjectGet(handle >> int, key >> str) -> int {
+                object >> p<byte> <- nodeOf(handle);
+                guard object != null && rd<int>(off(object, O_KIND)) == K_OBJECT else return 0;
+                return handleOf(cloneNode(objectChild(object, key)));
+            }
+
+            jsonObjectBorrow(handle >> int, key >> str) -> int {
+                object >> p<byte> <- nodeOf(handle);
+                guard object != null && rd<int>(off(object, O_KIND)) == K_OBJECT else return 0;
+                return borrowedHandleOf(objectChild(object, key));
+            }
+
+            jsonObjectKeyAt(handle >> int, index >> int) -> str {
+                object >> p<byte> <- nodeOf(handle);
+                guard object != null && rd<int>(off(object, O_KIND)) == K_OBJECT else return "";
+                child >> p<byte> <- childAt(object, index);
+                guard child != null else return "";
+                return cast(duplicate(nodeKey(child)));
+            }
+
+            jsonObjectSet(handle >> int, key >> str, value >> int) -> bool {
+                object >> p<byte> <- nodeOf(handle);
+                guard object != null && rd<int>(off(object, O_KIND)) == K_OBJECT else return false;
+                copy >> p<byte> <- cloneNode(nodeOf(value));
+                guard copy != null else return false;
+                keyCopy >> p<byte> <- duplicate(key);
+                guard keyCopy != null else { releaseNode(copy); return false; }
+                oldKey >> p<byte> <- cast<byte>(rd<addr>(off(copy, O_KEY)));
+                if (oldKey != null) free(oldKey);
+                wr<addr>(off(copy, O_KEY), adr(keyCopy));
+                existing >> p<byte> <- objectChild(object, key);
+                if (existing == null) { return appendOwned(object, copy); }
+                previous >> p<byte> <- null;
+                cursor >> p<byte> <- nodeHead(object);
+                while (cursor != existing) { previous <- cursor; cursor <- childNext(cursor); }
+                next >> p<byte> <- childNext(existing);
+                wr<addr>(off(copy, O_NEXT), rawAddress(next));
+                if (previous == null) { wr<addr>(off(object, O_HEAD), adr(copy)); }
+                else { wr<addr>(off(previous, O_NEXT), adr(copy)); }
+                if (nodeTail(object) == existing) { wr<addr>(off(object, O_TAIL), adr(copy)); }
+                wr<addr>(off(existing, O_NEXT), 0);
+                releaseNode(existing);
+                invalidateCursor(object);
+                return true;
+            }
+
+            jsonObjectRemove(handle >> int, key >> str) -> int {
+                object >> p<byte> <- nodeOf(handle);
+                guard object != null && rd<int>(off(object, O_KIND)) == K_OBJECT else return 0;
+                previous >> p<byte> <- null;
+                cursor >> p<byte> <- nodeHead(object);
+                while (cursor != null && !same(nodeKey(cursor), key)) { previous <- cursor; cursor <- childNext(cursor); }
+                guard cursor != null else return 0;
+                next >> p<byte> <- childNext(cursor);
+                if (previous == null) { wr<addr>(off(object, O_HEAD), rawAddress(next)); }
+                else { wr<addr>(off(previous, O_NEXT), rawAddress(next)); }
+                if (nodeTail(object) == cursor) { wr<addr>(off(object, O_TAIL), rawAddress(previous)); }
+                wr<addr>(off(cursor, O_NEXT), 0);
+                wr<int>(off(object, O_LEN), rd<int>(off(object, O_LEN)) - 1);
+                invalidateCursor(object);
+                return handleOf(cursor);
+            }
+
+            jsonPointer(handle >> int, pointer >> str) -> int {
+                guard pointer == "" else {
+                    bytes >> p<byte> <- cast<byte>(pointer);
+                    guard rd(bytes) == 47 else return 0;
+                }
+                current >> int <- jsonClone(handle);
+                guard pointer != "" else return current;
+                bytes >> p<byte> <- cast<byte>(pointer);
+                length >> int <- textLen(pointer);
+                start >> int <- 1;
+                while (start <= length) {
+                    finish >> int <- start;
+                    while (finish < length && rd(off(bytes, finish)) != 47) { finish += 1; }
+                    segment >> p<byte> <- cast<byte>(alloc(finish - start + 1));
+                    guard segment != null else { jsonRelease(current); return 0; }
+                    sourceAt >> int <- start;
+                    outAt >> int <- 0;
+                    while (sourceAt < finish) {
+                        code >> byte <- rd(off(bytes, sourceAt));
+                        if (code == 126 && sourceAt + 1 < finish) {
+                            escaped >> byte <- rd(off(bytes, sourceAt + 1));
+                            if (escaped == 48) { code <- 126; sourceAt += 1; }
+                            else if (escaped == 49) { code <- 47; sourceAt += 1; }
+                        }
+                        wr(off(segment, outAt), code); outAt += 1; sourceAt += 1;
+                    }
+                    wr(off(segment, outAt), 0);
+                    segmentText >> str <- bytesText(segment);
+                    next >> int <- jsonKind(current) == K_ARRAY ? jsonArrayGet(current, parseIntRaw(segmentText)) : jsonObjectGet(current, segmentText);
+                    free(segment);
+                    jsonRelease(current);
+                    guard next != 0 else return 0;
+                    current <- next;
+                    start <- finish + 1;
+                }
+                return current;
+            }
+
+            jsonNewNull() -> int { return handleOf(newNode(K_NULL)); }
+            jsonNewBool(value >> bool) -> int { node >> p<byte> <- newNode(K_BOOL); if (node != null) { wr<int>(off(node, O_FLAG), value ? 1 : 0); } return handleOf(node); }
+            jsonNewInt(value >> int) -> int { node >> p<byte> <- newNode(K_NUMBER); if (node != null) { wr<int>(off(node, O_FLAG), 0); wr<i64>(off(node, O_INTEGER), value); } return handleOf(node); }
+            jsonNewFloat(value >> ft64) -> int { node >> p<byte> <- newNode(K_NUMBER); if (node != null) { wr<int>(off(node, O_FLAG), 1); wr<ft64>(off(node, O_FLOAT), value); } return handleOf(node); }
+            jsonNewString(value >> str) -> int {
+                node >> p<byte> <- newNode(K_STRING);
+                guard node != null else return 0;
+                text >> p<byte> <- duplicate(value);
+                guard text != null else { releaseNode(node); return 0; }
+                wr<addr>(off(node, O_TEXT), adr(text)); wr<int>(off(node, O_LEN), textLen(value));
+                return handleOf(node);
+            }
+            jsonNewArray() -> int { return handleOf(newNode(K_ARRAY)); }
+            jsonNewObject() -> int { return handleOf(newNode(K_OBJECT)); }
+
+            jsonErrorCode() -> int { return errorCode; }
+            jsonErrorName() -> str {
+                if (errorCode == 0) { return "none"; }
+                if (errorCode == 1) { return "parse"; }
+                if (errorCode == 2) { return "io"; }
+                return "runtime";
+            }
+            jsonErrorMessage() -> str { return errorMessage; }
+            jsonErrorLine() -> int { return errorLine; }
+            jsonErrorColumn() -> int { return errorColumn; }
+            jsonErrorPath() -> str { return errorPath; }
+            jsonClearError() -> bool { return clearError(); }
+}

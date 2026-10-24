@@ -1,0 +1,111 @@
+nccCommandAbi {
+    fn:
+        internal:
+            same(data >> p<byte>, bytes >> int, text >> str, count >> int) -> bool {
+                if (data == null || bytes != count) return false;
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(data,at)) != rd<byte>(off(cast<byte>(text),at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            resolve(name >> p<byte>, bytes >> int) -> int {
+                if (same(name,bytes,"commandOpen",11)) return 1;
+                if (same(name,bytes,"commandStarted",14)) return 2;
+                if (same(name,bytes,"commandWait",11)) return 3;
+                if (same(name,bytes,"commandExitCode",15)) return 4;
+                if (same(name,bytes,"commandTerminate",16)) return 5;
+                if (same(name,bytes,"commandProcessHandle",20)) return 6;
+                if (same(name,bytes,"commandThreadHandle",19)) return 7;
+                if (same(name,bytes,"commandId",9)) return 8;
+                if (same(name,bytes,"commandThreadId",15)) return 9;
+                if (same(name,bytes,"commandError",12)) return 10;
+                if (same(name,bytes,"commandRelease",14)) return 11;
+                if (same(name,bytes,"commandPipeOpen",15)) return 12;
+                if (same(name,bytes,"commandPipeReadHandle",21)) return 13;
+                if (same(name,bytes,"commandPipeWriteHandle",22)) return 14;
+                if (same(name,bytes,"commandPipeRead",15)) return 15;
+                if (same(name,bytes,"commandPipeWrite",16)) return 16;
+                if (same(name,bytes,"commandPipeCloseRead",20)) return 17;
+                if (same(name,bytes,"commandPipeCloseWrite",21)) return 18;
+                if (same(name,bytes,"commandPipeError",16)) return 19;
+                if (same(name,bytes,"commandPipeRelease",18)) return 20;
+                return 0;
+            }
+            owned(name >> p<byte>, bytes >> int, owner >> p<byte>, ownerBytes >> int) -> int {
+                if (same(owner,ownerBytes,"env",3)) {
+                    if (same(name,bytes,"envOpen",7)) return 31;
+                    if (same(name,bytes,"envCount",8)) return 32;
+                    if (same(name,bytes,"envAt",5)) return 33;
+                    if (same(name,bytes,"envData",7)) return 34;
+                    if (same(name,bytes,"envBytes",8)) return 35;
+                    if (same(name,bytes,"envError",8)) return 36;
+                    if (same(name,bytes,"envRelease",10)) return 37;
+                    if (same(name,bytes,"envGet",6)) return 38;
+                    if (same(name,bytes,"envHas",6)) return 39;
+                    if (same(name,bytes,"envSet",6)) return 40;
+                    if (same(name,bytes,"envRemove",9)) return 41;
+                    if (same(name,bytes,"envExpand",9)) return 42;
+                    if (same(name,bytes,"envLastError",12)) return 43;
+                    return 0;
+                }
+                if (same(owner,ownerBytes,"args",4)) {
+                    if (same(name,bytes,"argsOpen",8)) return 24;
+                    if (same(name,bytes,"argsCount",9)) return 25;
+                    if (same(name,bytes,"argsAt",6)) return 26;
+                    if (same(name,bytes,"argsData",8)) return 27;
+                    if (same(name,bytes,"argsBytes",9)) return 28;
+                    if (same(name,bytes,"argsError",9)) return 29;
+                    if (same(name,bytes,"argsRelease",11)) return 30;
+                    return 0;
+                }
+                if (same(owner,ownerBytes,"std",3)) {
+                    if (same(name,bytes,"stdIn",5)) return 21;
+                    if (same(name,bytes,"stdOut",6)) return 22;
+                    if (same(name,bytes,"stdErr",6)) return 23;
+                    return 0;
+                }
+                return same(owner,ownerBytes,"command",7) ? resolve(name,bytes) : 0;
+            }
+            arity(id >> int) -> int {
+                if (id == 31 || id == 43) return 0;
+                if (id == 33 || id == 40) return 2;
+                if (id == 38 || id == 42) return 3;
+                if (id >= 32 && id <= 41) return 1;
+                if (id == 24) return 0;
+                if (id == 26) return 2;
+                if (id >= 25 && id <= 30) return 1;
+                if (id == 1) return 6;
+                if (id == 3 || id == 5 || id == 12) return 2;
+                if (id == 15 || id == 16) return 3;
+                if (id >= 21 && id <= 23) return 0;
+                return id >= 2 && id <= 20 ? 1 : -1;
+            }
+            argumentCode(id >> int, index >> int) -> int {
+                if (index < 0 || index >= arity(id)) return -1;
+                if (id == 38 || id == 42) return index == 0 ? 34 : index == 1 ? 8 : 20;
+                if (id == 39 || id == 40 || id == 41) return 34;
+                if (id >= 31 && id <= 43) return index == 1 ? 20 : 8;
+                if (id >= 24 && id <= 30) return index == 1 ? 20 : 8;
+                if (id == 1) return index < 2 ? 34 : index < 5 ? 8 : 20;
+                if (id == 12) return 33;
+                if ((id == 3 || id == 5) && index == 1) return 20;
+                if ((id == 15 || id == 16) && index == 2) return 20;
+                return 8;
+            }
+            resultCode(id >> int) -> int {
+                if (id == 31 || id == 34) return 8;
+                if (id == 33) return 34;
+                if (id == 37 || id == 39 || id == 40 || id == 41) return 33;
+                if (id >= 31 && id <= 43) return 20;
+                if (id == 24 || id == 27) return 8;
+                if (id == 26) return 34;
+                if (id == 30) return 33;
+                if (id >= 25 && id <= 29) return 20;
+                if (id == 1 || id == 6 || id == 7 || id == 12 || id == 13 || id == 14 || (id >= 21 && id <= 23)) return 8;
+                if (id == 2 || id == 5 || id == 11 || id == 17 || id == 18 || id == 20) return 33;
+                return id > 0 && id <= 20 ? 20 : -1;
+            }
+    fa: return true;
+}

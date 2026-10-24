@@ -1,0 +1,101 @@
+use <data:json>;
+use <io:output, render>;
+use <project:frontend_session, frontend_material, contract_checks, release_io, tool_cli, frontend_promotion>;
+
+frontendTypesVerify {
+    fn:
+        private:
+            collect(model >> int, types >> int) -> void {
+                if (jsonKind(model) == 6 && jsonObjectHas(model, "TypeContracts")) {
+                    values >> int <- jsonObjectGet(model, "TypeContracts");
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(values)) { jsonArrayPush(types, jsonArrayGet(values, at)); at += 1; }
+                    jsonRelease(values); return;
+                }
+                count >> int <- jsonKind(model) == 6 ? jsonObjectLen(model) : (jsonKind(model) == 5 ? jsonArrayLen(model) : 0);
+                at >> int <- 0;
+                while (at < count) {
+                    entry >> int <- jsonKind(model) == 6 ? jsonObjectGet(model, jsonObjectKeyAt(model, at)) : jsonArrayGet(model, at);
+                    collect(entry, types); jsonRelease(entry); at += 1;
+                }
+            }
+            reject(path >> str, expected >> str) -> bool {
+                row >> int <- frontend_session.frontendSession.invoke("candidate",
+                    frontend_session.frontendSession.args("type-contracts", path, "--json", ""));
+                out >> str <- release_io.releaseIo.field(row, "stdout") + release_io.releaseIo.field(row, "stderr");
+                ok >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row, "code", 0) == 1 &&
+                    strContains(out, expected);
+                strRelease(out); jsonRelease(row);
+                return ok && frontend_session.frontendSession.rejection("stage0", "ast", path) &&
+                    frontend_session.frontendSession.rejection("baseline", "type-contracts", path);
+            }
+            contained(material >> int) -> bool {
+                nodes >> int <- jsonObjectGet(material, "nodes");
+                at >> int <- 0; ok >> bool <- true;
+                while (at < jsonArrayLen(nodes) && ok) {
+                    parent >> int <- frontend_material.frontendMaterial.fieldAt(nodes, at, "parent");
+                    if (parent >= 0) {
+                        ok <- frontend_material.frontendMaterial.fieldAt(nodes, at, "start") >=
+                            frontend_material.frontendMaterial.fieldAt(nodes, parent, "start") &&
+                            frontend_material.frontendMaterial.fieldAt(nodes, at, "end") <=
+                            frontend_material.frontendMaterial.fieldAt(nodes, parent, "end");
+                    }
+                    at += 1;
+                }
+                jsonRelease(nodes); return ok;
+            }
+        public:
+            collectTypes(model >> int, types >> int) -> void { collect(model,types); }
+            run(arguments >> addr) -> int {
+                if (!frontend_session.frontendSession.open(arguments)) return 2;
+                details >> int <- jsonNewObject();
+                frontend_session.frontendSession.check(
+                    frontend_session.frontendSession.compiler("candidate") !=
+                    frontend_session.frontendSession.compiler("baseline"), "distinct-generation-paths");
+                frontend_session.frontendSession.check(frontend_promotion.frontendPromotion.selfTest(), "promotion-fail-closed");
+                catalog >> int <- jsonParseFile(frontend_session.frontendSession.rootPath() + "/bootstrap/frontend-v44-cases.json");
+                cases >> int <- jsonObjectGet(catalog, "cases");
+                frontend_session.frontendSession.check(jsonArrayLen(cases) >= 20, "type-corpus-inventory");
+                positives >> int <- 0; negatives >> int <- 0; nodesCount >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(cases) && frontend_session.frontendSession.good()) {
+                    entry >> int <- jsonArrayGet(cases, at);
+                    name >> str <- release_io.releaseIo.field(entry, "name");
+                    source >> str <- release_io.releaseIo.field(entry, "source");
+                    path >> str <- frontend_session.frontendSession.fixture(name, source);
+                    error >> str <- release_io.releaseIo.field(entry, "error");
+                    if (error != "") {
+                        frontend_session.frontendSession.check(reject(path, error), "reject-" + name); negatives += 1;
+                    } else {
+                        material >> int <- frontend_session.frontendSession.document("candidate", "ast-head", path, "--material", "");
+                        frontend_session.frontendSession.check(frontend_material.frontendMaterial.validate(material, fsSize(path)), "spans-" + name);
+                        frontend_session.frontendSession.check(contained(material), "parent-containment-" + name);
+                        nodes >> int <- jsonObjectGet(material, "nodes"); nodesCount += jsonArrayLen(nodes); jsonRelease(nodes);
+                        previous >> int <- frontend_session.frontendSession.document("baseline", "ast-head", path, "--material", "");
+                        frontend_session.frontendSession.check(contract_checks.contractChecks.equal(material, previous), "material-generations-" + name);
+                        jsonRelease(material); jsonRelease(previous);
+                        native >> int <- frontend_session.frontendSession.document("candidate", "type-contracts", path, "--json", "");
+                        rust >> int <- frontend_session.frontendSession.document("stage0", "ast", path, "--json", "");
+                        if (jsonKind(native) != 6 || jsonKind(rust) != 6) {
+                            jsonRelease(native); jsonRelease(rust); jsonRelease(entry);
+                            strRelease(name); strRelease(source); strRelease(error); break;
+                        }
+                        expected >> int <- jsonNewArray(); collect(rust, expected);
+                        actual >> int <- jsonObjectGet(native, "types");
+                        frontend_session.frontendSession.check(jsonArrayLen(expected) > 0 &&
+                            contract_checks.contractChecks.equal(actual, expected), "full-type-contract-" + name);
+                        jsonRelease(actual); jsonRelease(expected); jsonRelease(native); jsonRelease(rust); positives += 1;
+                    }
+                    jsonRelease(entry); strRelease(name); strRelease(source); strRelease(error); at += 1;
+                }
+                jsonRelease(cases); jsonRelease(catalog);
+                jsonObjectSet(details, "positive_cases", jsonNewInt(positives));
+                jsonObjectSet(details, "negative_cases", jsonNewInt(negatives));
+                jsonObjectSet(details, "material_nodes", jsonNewInt(nodesCount));
+                jsonObjectSet(details, "contract_scope", jsonNewString("type declarations, clauses and token ownership; not whole Rust grammar"));
+                jsonObjectSet(details, "stage2_frontend_complete", jsonNewBool(false));
+                jsonObjectSet(details, "generations", jsonNewString("distinct candidate inputs; rebuild provenance must accompany this report; not complete Stage2 self-build"));
+                return frontend_session.frontendSession.finish("nc.frontend.type-equivalence.v44", details);
+            }
+    fa: return true;
+}

@@ -1,0 +1,144 @@
+use <io:output, render>;
+use <data:json>;
+use <fs:dir>;
+use <process:args, env, command>;
+use <project:sha256>;
+
+nccConstantProbe {
+    const:
+        CAPTURE_BYTES >> int <- 1048576;
+        TIMEOUT_MS >> int <- 30000;
+    fn:
+        private:
+            quoted(value >> str) -> str {
+                // commandOpen tokenizes this command directly; no shell is involved.
+                source >> p<byte> <- cast<byte>(value);
+                count >> int <- strByteLen(value);
+                buffer >> p<byte> <- cast<byte>(alloc(count * 2 + 3));
+                guard buffer != null else return "";
+                wr<byte>(buffer,34);
+                cursor >> int <- 1;
+                at >> int <- 0;
+                while (at < count) {
+                    code >> int <- rd<byte>(off(source,at)) & 255;
+                    if (code == 34 || code == 92) { wr<byte>(off(buffer,cursor),92); cursor += 1; }
+                    wr<byte>(off(buffer,cursor),code); cursor += 1; at += 1;
+                }
+                wr<byte>(off(buffer,cursor),34); wr<byte>(off(buffer,cursor+1),0);
+                return cast(buffer);
+            }
+            hexBytes(data >> p<byte>, bytes >> int) -> str {
+                digits >> p<byte> <- cast<byte>("0123456789abcdef");
+                result >> p<byte> <- cast<byte>(alloc(bytes * 2 + 1));
+                guard result != null else return "";
+                at >> int <- 0;
+                while (at < bytes) {
+                    current >> int <- rd<byte>(off(data,at)) & 255;
+                    wr<byte>(off(result,at*2),rd<byte>(off(digits,current/16)));
+                    wr<byte>(off(result,at*2+1),rd<byte>(off(digits,current%16)));
+                    at += 1;
+                }
+                wr<byte>(off(result,bytes*2),0);
+                return cast(result);
+            }
+            readPipe(pipe >> addr, row >> int, name >> str, textName >> str) -> void {
+                data >> p<byte> <- cast<byte>(alloc(CAPTURE_BYTES+1));
+                guard data != null else { jsonObjectSet(row,"truncated",jsonNewBool(true)); return; }
+                count >> int <- 0;
+                received >> int <- commandPipeRead(pipe,adr(data),CAPTURE_BYTES);
+                while (received > 0) {
+                    count += received;
+                    if (count == CAPTURE_BYTES) { jsonObjectSet(row,"truncated",jsonNewBool(true)); break; }
+                    received <- commandPipeRead(pipe,adr(off(data,count)),CAPTURE_BYTES-count);
+                }
+                wr<byte>(off(data,count),0);
+                hex >> str <- hexBytes(data,count);
+                jsonObjectSet(row,name,jsonNewString(hex));
+                decoded >> str <- cast(data);
+                jsonObjectSet(row,textName,jsonNewString(decoded));
+                strRelease(hex); free(data);
+            }
+            capture(line >> str) -> int {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"exit_code",jsonNewInt(-1));
+                jsonObjectSet(row,"timed_out",jsonNewBool(false));
+                jsonObjectSet(row,"truncated",jsonNewBool(false));
+                output >> addr <- commandPipeOpen(false,true);
+                errors >> addr <- commandPipeOpen(false,true);
+                if (output == null || errors == null || commandPipeError(output) != 0 || commandPipeError(errors) != 0) {
+                    if (output != null) commandPipeRelease(output);
+                    if (errors != null) commandPipeRelease(errors);
+                    return row;
+                }
+                child >> addr <- commandOpen(line,"",null,commandPipeWriteHandle(output),commandPipeWriteHandle(errors),0);
+                commandPipeCloseWrite(output); commandPipeCloseWrite(errors);
+                started >> bool <- child != null && commandStarted(child);
+                if (started) {
+                    status >> int <- commandWait(child,TIMEOUT_MS);
+                    if (status != 0) {
+                        jsonObjectSet(row,"timed_out",jsonNewBool(true));
+                        commandTerminate(child,15); commandWait(child,3000);
+                    }
+                    jsonObjectSet(row,"exit_code",jsonNewInt(commandExitCode(child)));
+                    readPipe(output,row,"stdout_hex","stdout");
+                    readPipe(errors,row,"stderr_hex","stderr");
+                }
+                if (child != null) commandRelease(child);
+                commandPipeRelease(output); commandPipeRelease(errors);
+                return row;
+            }
+            cleanCapture(row >> int) -> bool {
+                return !jsonGetBoolOr(jsonObjectGet(row,"timed_out"),true) &&
+                    !jsonGetBoolOr(jsonObjectGet(row,"truncated"),true);
+            }
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                at >> int <- 2;
+                while (at + 1 < argsCount(arguments)) {
+                    if (argsAt(arguments,at) == name) return argsAt(arguments,at+1);
+                    at += 1;
+                }
+                return fallback;
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                candidate >> str <- option(arguments,"--candidate",argsAt(arguments,0));
+                directory >> str <- option(arguments,"--out","target/backend-v37/constant-probe");
+                source >> str <- option(arguments,"--source","bootstrap/corpus/ncc-stage2-lexer/mct_global_const_return.n");
+                windows >> bool <- envHas("WINDIR");
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                program >> str <- directory + (windows ? "/constant.exe" : "/constant");
+                if (!exists(directory)) { createDir(directory); }
+                guard exists(directory) && exists(candidate) && exists(source) else return 2;
+                built >> int <- capture(quoted(candidate) + " compiler emit-executable " + quoted(source) +
+                    " --target " + target + " --out " + quoted(program) + " --json");
+                validBuild >> bool <- cleanCapture(built) && jsonGetIntOr(jsonObjectGet(built,"exit_code"),-1) == 0;
+                if (validBuild && !windows) {
+                    chmod >> int <- capture("chmod +x " + quoted(program));
+                    validBuild <- cleanCapture(chmod) && jsonGetIntOr(jsonObjectGet(chmod,"exit_code"),-1) == 0;
+                    jsonRelease(chmod);
+                }
+                ran >> int <- validBuild ? capture(quoted(program)) : jsonNewObject();
+                actual >> int <- jsonGetIntOr(jsonObjectGet(ran,"exit_code"),-1);
+                passed >> bool <- validBuild && cleanCapture(ran) && actual == 42;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.stage3.constant-execution.v2"));
+                jsonObjectSet(report,"implementation_language",jsonNewString("nC"));
+                jsonObjectSet(report,"target",jsonNewString(target));
+                jsonObjectSet(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                jsonObjectSet(report,"source_sha256",jsonNewString(sha256.nccSha256.file(source)));
+                jsonObjectSet(report,"image_sha256",jsonNewString(validBuild ? sha256.nccSha256.file(program) : ""));
+                jsonObjectSet(report,"expected_exit_code",jsonNewInt(42));
+                jsonObjectSet(report,"observed_exit_code",jsonNewInt(actual));
+                jsonObjectSet(report,"passed",jsonNewBool(passed));
+                jsonObjectSet(report,"build",built);
+                jsonObjectSet(report,"execution",ran);
+                serialized >> str <- jsonStringifyPretty(report,2);
+                bytes >> int <- strByteLen(serialized);
+                written >> int <- fsWriteFrom(directory + "/report.json",cast<byte>(serialized),bytes,false);
+                println(serialized);
+                strRelease(serialized); jsonRelease(report);
+                return passed && written == bytes ? 0 : 1;
+            }
+    fa:
+        return true;
+}

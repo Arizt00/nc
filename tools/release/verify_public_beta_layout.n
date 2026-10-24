@@ -1,0 +1,260 @@
+use <io:output, render>;
+use <data:json>;
+use <fs:dir>;
+use <process:args>;
+use <project:release43_host>;
+
+verify_public_beta_layout {
+    const:
+        MAX_TEXT_BYTES >> int <- 134217728;
+        MAX_DEPTH >> int <- 256;
+    local:
+        failure >> str <- "";
+        visited >> int <- 0;
+    fn:
+        private:
+            reject(message >> str) -> bool {
+                if (failure == "") failure <- message;
+                return false;
+            }
+            option(arguments >> addr, key >> str, fallback >> str) -> str {
+                index >> int <- 1;
+                while (index + 1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == key) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return fallback;
+            }
+            pathJoin(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                return left + "/" + right;
+            }
+            absolute(path >> str) -> bool {
+                bytes >> p<byte> <- cast(path);
+                return strStartsWith(path,"/") || strStartsWith(path,"\\") ||
+                    (strByteLen(path) >= 2 && rd(off(bytes,1)) == 58);
+            }
+            parseFile(path >> str) -> int {
+                size >> int <- release43_host.release43Host.size(path);
+                if (size < 0 || size > MAX_TEXT_BYTES) return 0;
+                data >> p<byte> <- cast(alloc(size+1));
+                if (data == null) return 0;
+                count >> int <- release43_host.release43Host.read(path,data,size);
+                if (count != size) { free(data); return 0; }
+                wr(off(data,size),0);
+                content >> str <- cast(data);
+                result >> int <- strByteLen(content) == size ? jsonParse(content) : 0;
+                free(data); return result;
+            }
+            list(manifest >> int, key >> str, fallback >> str) -> int {
+                if (manifest == 0) return jsonParse(fallback);
+                value >> int <- jsonObjectGet(manifest,key);
+                if (jsonKind(value) == 5) return value;
+                if (value != 0) jsonRelease(value);
+                return jsonParse(fallback);
+            }
+            contains(values >> int, value >> str) -> bool {
+                index >> int <- 0;
+                while (index < jsonArrayLen(values)) {
+                    if (jsonGetStringOr(jsonArrayGet(values,index),"") == value) return true;
+                    index += 1;
+                }
+                return false;
+            }
+            validateLists(rules >> int) -> bool {
+                key >> int <- 0;
+                while (key < jsonObjectLen(rules)) {
+                    values >> int <- jsonObjectGet(rules,jsonObjectKeyAt(rules,key));
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(values)) {
+                        item >> int <- jsonArrayGet(values,index);
+                        valid >> bool <- jsonKind(item) == 4;
+                        jsonRelease(item);
+                        if (!valid) { jsonRelease(values); return reject("manifest filters must contain strings"); }
+                        index += 1;
+                    }
+                    jsonRelease(values);
+                    key += 1;
+                }
+                return true;
+            }
+            containsFragment(values >> int, text >> str, fold >> bool) -> bool {
+                haystack >> str <- fold ? strToLower(text) : text;
+                index >> int <- 0;
+                while (index < jsonArrayLen(values)) {
+                    value >> int <- jsonArrayGet(values,index);
+                    if (jsonKind(value) != 4) return reject("manifest filter must contain strings");
+                    fragment >> str <- jsonGetString(value);
+                    if (fold) fragment <- strToLower(fragment);
+                    if (strContains(haystack,fragment)) return true;
+                    index += 1;
+                }
+                return false;
+            }
+            suffix(name >> str) -> str {
+                data >> p<byte> <- cast(name);
+                index >> int <- strByteLen(name)-1;
+                while (index > 0) {
+                    if (rd(off(data,index)) == 46) return strSubstring(name,index,strByteLen(name)-index);
+                    index -= 1;
+                }
+                return "";
+            }
+            publicText(path >> str, fragments >> int) -> bool {
+                size >> int <- release43_host.release43Host.size(path);
+                guard size >= 0 && size <= MAX_TEXT_BYTES else return reject("unreadable or oversized text: " + path);
+                data >> p<byte> <- cast(alloc(size+1));
+                guard data != null else return reject("allocation failed reading " + path);
+                read >> int <- release43_host.release43Host.read(path,data,size);
+                if (read != size) { free(data); return reject("incomplete text read: " + path); }
+                // Check bytes, including fragments beyond an embedded NUL.
+                index >> int <- 0;
+                while (index < jsonArrayLen(fragments)) {
+                    entry >> int <- jsonArrayGet(fragments,index);
+                    if (jsonKind(entry) != 4) { free(data); return reject("text filters must be strings"); }
+                    fragment >> str <- jsonGetString(entry);
+                    needle >> p<byte> <- cast(fragment);
+                    width >> int <- strByteLen(fragment);
+                    at >> int <- 0;
+                    while (at + width <= size) {
+                        same >> bool <- true;
+                        cursor >> int <- 0;
+                        while (cursor < width && same) {
+                            same <- rd(off(data,at+cursor)) == rd(off(needle,cursor));
+                            cursor += 1;
+                        }
+                        if (same) { free(data); return reject("private text leaked into " + path); }
+                        at += 1;
+                    }
+                    index += 1;
+                }
+                free(data);
+                return true;
+            }
+            walk(root >> str, relative >> str, rules >> int, depth >> int) -> bool {
+                guard depth <= MAX_DEPTH else return reject("directory nesting exceeds verification limit");
+                path >> str <- relative == "" ? root : pathJoin(root,relative);
+                names >> int <- release43_host.release43Host.names(path);
+                guard names != 0 else return reject("directory listing incomplete: " + path);
+                at >> int <- 0;
+                valid >> bool <- true;
+                while (at < jsonArrayLen(names) && valid) {
+                            entry >> int <- jsonArrayGet(names,at);
+                            name >> str <- jsonGetString(entry);
+                            child >> str <- relative == "" ? name : pathJoin(relative,name);
+                            full >> str <- pathJoin(root,child);
+                            visited += 1;
+                            if (name == "." || name == ".." || strContains(name,"/") || strContains(name,"\\")) valid <- reject("invalid directory entry: " + child);
+                            else if (relative == "" && contains(jsonObjectGet(rules,"roots"),name)) valid <- reject("private root leaked: " + child);
+                            else if (contains(jsonObjectGet(rules,"segments"),name)) valid <- reject("private segment leaked: " + child);
+                            else {
+                                kind >> int <- release43_host.release43Host.kind(full);
+                                directory >> bool <- kind == 2;
+                                file >> bool <- kind == 1;
+                                extension >> str <- suffix(name);
+                                if (!directory && !file) valid <- reject("unreadable or unsupported entry: " + child);
+                                else if (file && contains(jsonObjectGet(rules,"suffixes"),extension)) valid <- reject("private build artifact leaked: " + child);
+                                else {
+                                    example >> bool <- child == "examples" || strStartsWith(child,"examples/");
+                                    test >> bool <- child == "tests" || strStartsWith(child,"tests/");
+                                    compatibility >> bool <- child == "tests/fixtures/old_examples" || strStartsWith(child,"tests/fixtures/old_examples/");
+                                    if ((example || (test && !compatibility)) && containsFragment(jsonObjectGet(rules,"tokens"),child,true)) valid <- reject("historical path name: " + child);
+                                    if (failure != "") valid <- false;
+                                    if (valid && directory) valid <- walk(root,child,rules,depth+1);
+                                    else if (valid && file && contains(jsonObjectGet(rules,"text_suffixes"),strToLower(extension))) valid <- publicText(full,jsonObjectGet(rules,"text"));
+                                }
+                            }
+                            jsonRelease(entry);
+                    at += 1;
+                }
+                jsonRelease(names);
+                return valid;
+            }
+            nativeClosure(root >> str) -> bool {
+                path >> str <- pathJoin(root,"bootstrap/native-tools-v43.json");
+                declared >> bool <- release43_host.release43Host.kind(path) == 1;
+                if (!declared) return true;
+                build >> int <- parseFile(path); if (build == 0) return reject("native build manifest is invalid");
+                families >> int <- jsonObjectGet(build,"families"); valid >> bool <- jsonKind(families) == 5 && jsonArrayLen(families) > 0; at >> int <- 0;
+                if (!valid) reject("native build manifest has no families");
+                while (at < jsonArrayLen(families) && valid) {
+                    family >> int <- jsonArrayGet(families,at); sources >> int <- jsonObjectGet(family,"sources"); index >> int <- 0;
+                    if (jsonKind(sources) != 5 || jsonArrayLen(sources) == 0) valid <- reject("native family has no source closure");
+                    while (index < jsonArrayLen(sources) && valid) {
+                        row >> int <- jsonArrayGet(sources,index); fields >> int <- jsonParse("[\"source\",\"windows\",\"linux\"]"); fieldAt >> int <- 0;
+                        while (fieldAt < 3 && valid) {
+                            key >> int <- jsonArrayGet(fields,fieldAt); value >> int <- jsonObjectGet(row,jsonGetString(key));
+                            if (value == 0 && fieldAt == 0) valid <- reject("native source path is missing");
+                            else if (value != 0) {
+                                name >> str <- jsonGetStringOr(value,"");
+                                if (jsonKind(value) != 4 || name == "" || absolute(name) || strContains(name,"..")) valid <- reject("invalid native source path");
+                                else if (release43_host.release43Host.kind(pathJoin(root,name)) != 1) valid <- reject("native source closure missing: "+name);
+                            }
+                            if (value != 0) jsonRelease(value); jsonRelease(key); fieldAt += 1;
+                        }
+                        jsonRelease(fields); jsonRelease(row); index += 1;
+                    }
+                    if (sources != 0) jsonRelease(sources); jsonRelease(family); at += 1;
+                }
+                if (families != 0) jsonRelease(families); jsonRelease(build); return valid;
+            }
+            verify(manifest >> int, root >> str) -> bool {
+                failure <- "";
+                visited <- 0;
+                guard jsonKind(manifest) == 6 else return reject("manifest is not a JSON object");
+                directory >> bool <- release43_host.release43Host.kind(root) == 2;
+                guard directory else return reject("distribution directory does not exist: " + root);
+                rules >> int <- jsonNewObject();
+                jsonObjectSet(rules,"roots",list(manifest,"forbidden_public_roots","[\"_archive\",\"_tmp\",\"reports\",\"target\",\".ncc\"]"));
+                jsonObjectSet(rules,"segments",list(manifest,"private_segments","[]"));
+                jsonObjectSet(rules,"suffixes",list(manifest,"private_file_suffixes","[\".log\",\".tmp\",\".bak\",\".old\",\".orig\",\".ll\",\".o\",\".obj\",\".exe\",\".bin\",\".map\",\".profraw\",\".profdata\"]"));
+                jsonObjectSet(rules,"text",list(manifest,"forbidden_text_fragments","[]"));
+                policy >> int <- jsonObjectGet(manifest,"public_example_name_policy");
+                jsonObjectSet(rules,"tokens",list(policy,"forbid_path_tokens","[\"phase\",\"p11\"]"));
+                jsonObjectSet(rules,"text_suffixes",jsonParse("[\".md\",\".json\",\".toml\",\".n\",\".nb\",\".nbb\",\".nm\",\".ncp\",\".rs\",\".py\",\".sh\",\".cmd\"]"));
+                valid >> bool <- validateLists(rules);
+                if (valid) valid <- walk(root,"",rules,0);
+                required >> int <- jsonParse("[\"README.md\",\"CHANGELOG.md\",\"ROADMAP.md\",\"docs/beta.md\",\"docs/examples.md\",\"tests/README.md\",\"tools/release/public_beta_manifest.json\",\"PUBLIC_BETA_LAYOUT.md\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(required) && valid) {
+                    name >> str <- jsonGetString(jsonArrayGet(required,index));
+                    if (release43_host.release43Host.kind(pathJoin(root,name)) != 1) valid <- reject("required public file missing: " + name);
+                    index += 1;
+                }
+                jsonRelease(required); jsonRelease(rules); if (policy != 0) jsonRelease(policy);
+                if (valid) valid <- nativeClosure(root);
+                return valid;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                repo >> str <- option(arguments,"--root",".");
+                manifestPath >> str <- option(arguments,"--manifest",pathJoin(repo,"tools/release/public_beta_manifest.json"));
+                manifest >> int <- parseFile(manifestPath);
+                if (manifest == 0) { println("FAIL: invalid public manifest"); argsRelease(arguments); return 1; }
+                configured >> str <- jsonGetStringOr(jsonObjectGet(manifest,"dist_root"),"");
+                selected >> str <- option(arguments,"--dist","");
+                dist >> str <- selected != "" ? selected : (absolute(configured) ? configured : pathJoin(repo,configured));
+                reportPath >> str <- option(arguments,"--report","");
+                passed >> bool <- false;
+                if (selected != "" || configured != "") passed <- verify(manifest,dist);
+                if (failure == "" && !passed) failure <- "manifest requires dist_root";
+                if (reportPath != "") {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report,"schema",jsonNewString("nc.public-beta.layout.verification.v2"));
+                    jsonObjectSet(report,"implementation_language",jsonNewString("nC"));
+                    jsonObjectSet(report,"passed",jsonNewBool(passed));
+                    jsonObjectSet(report,"dist",jsonNewString(dist));
+                    jsonObjectSet(report,"visited",jsonNewInt(visited));
+                    jsonObjectSet(report,"failure",jsonNewString(failure));
+                    if (!jsonSaveFile(report,reportPath,2)) passed <- false;
+                    jsonRelease(report);
+                }
+                println(passed ? "OK: public beta layout verified at " + dist : "FAIL: " + failure);
+                jsonRelease(manifest); argsRelease(arguments);
+                return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

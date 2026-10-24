@@ -1,0 +1,119 @@
+// --- IMPORTACION DE MODULOS PARA MOVIL ---
+use <io:output, render, input>;
+
+// --- CONFIGURACION DEL RASTREADOR ---
+TRACKER_NAME :: const <- "GeoCaller_V1";
+API_KEY :: const <- "TU_API_DE_GEOLOCACION";
+LANGUAGE_CODE :: const <- "es-ES";
+
+// --- BUCLE DE EJECUCION EN SEGUNDO PLANO ---
+abrirServicioMovil :: runtime {
+    stc:
+        estadoLlamada     >> str <- "";
+        numeroEntrante    >> str <- "";
+        direccionRecibida >> str <- "";
+
+        ttsEngine >> Object;
+
+    fn:
+        inicializarMotorVoz() -> bool {
+            println("[GeoCaller]: Inicializando motor de voz...");
+            if (tts_engine::connect(LANGUAGE_CODE)) {
+                println(colorBold("Motor de voz conectado.", "green"));
+                return true;
+            } else {
+                println(colorBold("Fallo al conectar TTS. Verifica permisos.", "red"));
+                return false;
+            }
+        }
+
+        obtenerNumeroActual() -> str {
+            numeroEntrante <- telephony::getIncomingNumber();
+
+            if (numeroEntrante == "") {
+                println(colorBold("Sin numero detectado en entrada.", "yellow"));
+                return "";
+            }
+
+            return renderStr(numeroEntrante);
+        }
+
+        consultarUbicacion() -> bool {
+            println("[GeoCaller]: Consultando base de datos global...");
+
+            var result <- network::request(
+                "https://api.geolocate/v1/phone=" + numeroEntrante
+            );
+
+            if (result.status == 200) {
+                direccionRecibida <- result.json("city") + ", " + result.json("country");
+
+                if (result.json("type") == "VOIP") {
+                    direccionRecibida += " [Ubicacion por IP]";
+                } else {
+                    direccionRecibida += " [Antena Movil]";
+                }
+
+                println(colorBold(
+                    "Datos recibidos: " + renderStr(direccionRecibida),
+                    "cyan"
+                ));
+                return true;
+            } else {
+                direccionRecibida <- "Region desconocida / Numero fijo.";
+                return false;
+            }
+        }
+
+        anunciarLlamada() -> bool {
+            println("[GeoCaller]: Ejecutando aviso de voz...");
+
+            sleep(1);
+
+            var mensaje <- "Llamante: " + numeroEntrante;
+            mensaje += ". Se encuentra en: ";
+            mensaje += direccionRecibida;
+
+            tts_engine::speak(mensaje);
+            return true;
+        }
+
+        monitorEstado() -> bool {
+            while (true) {
+                estadoLlamada <- telephony::getState();
+
+                if (estadoLlamada == "INCOMING") {
+                    println(colorBold("[ALERTA] Llamada detectada.", "red"));
+
+                    obtenerNumeroActual();
+                    if (!obtenerNumeroActual()) continue;
+
+                    consultarUbicacion();
+                    anunciarLlamada();
+                }
+
+                sleep(2);
+            }
+        }
+
+        run() -> bool {
+            println(colorBold("=== INICIANDO GEOCALLER TRACKER ===", "magenta"));
+
+            if (!permissions::request([PERM_PHONE, PERM_NET])) {
+                println(colorBold("Falta permiso de Telefonia.", "red"));
+                return false;
+            }
+
+            if (!inicializarMotorVoz()) return false;
+
+            monitorEstado();
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

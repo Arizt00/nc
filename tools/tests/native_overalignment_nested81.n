@@ -1,0 +1,28 @@
+use <io:output>;
+
+nativeOveralignmentNested81 {
+    type:
+        Block { public: value >> u64; layout: align(4096); }
+    bump(value >> Block) -> Block {
+        if (adr(&value) % 4096 != 0) return Block(value: 0);
+        value.value += 1; return value;
+    }
+    sum(first >> Block, second >> Block, third >> Block) -> u64 {
+        if (adr(&first) % 4096 != 0 || adr(&second) % 4096 != 0 || adr(&third) % 4096 != 0) return 0;
+        return first.value+second.value+third.value;
+    }
+    descend(value >> Block, depth >> int) -> u64 {
+        if (adr(&value) % 4096 != 0) return 0;
+        if (depth == 0) return value.value;
+        return descend(bump(value),depth-1);
+    }
+    run() -> int {
+        if (17+sum(bump(Block(value: 3)),bump(bump(Block(value: 3))),bump(bump(bump(Block(value: 3))))) != 32) return 1;
+        callback >> fn(Block,Block,Block) -> u64 <- &sum;
+        if (callback(bump(Block(value: 3)),bump(bump(Block(value: 3))),bump(bump(bump(Block(value: 3))))) != 15) return 2;
+        if (descend(Block(value: 7),12) != 19) return 3;
+        println("native-overalignment-nested-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

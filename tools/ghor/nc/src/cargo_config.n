@@ -1,0 +1,699 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:render>;
+use <process:args, command, env>;
+use <project:text, manifest>;
+
+cargoConfig[@runtime] {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            space(value >> byte) -> bool {
+                return value == 32 || value == 9 || value == 10 || value == 13;
+            }
+
+            sliceFrom(value >> str, start >> int) -> str {
+                source >> p<byte> <- cast(value);
+                width >> int <- length(source);
+                if (start < 0) start <- 0;
+                if (start > width) start <- width;
+                output >> p<byte> <- cast(alloc(width - start + 1));
+                guard output != null else return "";
+                at >> int <- start;
+                written >> int <- 0;
+                while (at < width) {
+                    wr(off(output, written), rd(off(source, at)));
+                    at += 1;
+                    written += 1;
+                }
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            trimProviderText(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                width >> int <- length(source);
+                first >> int <- 0;
+                while (first < width && space(rd(off(source, first)))) { first += 1; }
+                last >> int <- width;
+                while (last > first && space(rd(off(source, last - 1)))) { last -= 1; }
+                output >> p<byte> <- cast(alloc(last - first + 1));
+                guard output != null else return "";
+                at >> int <- first;
+                written >> int <- 0;
+                while (at < last) {
+                    wr(off(output, written), rd(off(source, at)));
+                    at += 1;
+                    written += 1;
+                }
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            quotePosix(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                width >> int <- length(source);
+                output >> p<byte> <- cast(alloc(width * 4 + 3));
+                guard output != null else return "''";
+                written >> int <- 0;
+                wr(off(output, written), 39);
+                written += 1;
+                at >> int <- 0;
+                while (at < width) {
+                    byteValue >> byte <- rd(off(source, at));
+                    if (byteValue == 39) {
+                        wr(off(output, written), 39);
+                        wr(off(output, written + 1), 92);
+                        wr(off(output, written + 2), 39);
+                        wr(off(output, written + 3), 39);
+                        written += 4;
+                    }
+                    else {
+                        wr(off(output, written), byteValue);
+                        written += 1;
+                    }
+                    at += 1;
+                }
+                wr(off(output, written), 39);
+                wr(off(output, written + 1), 0);
+                return cast(output);
+            }
+
+            quoteWindows(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                width >> int <- length(source);
+                output >> p<byte> <- cast(alloc(width * 2 + 3));
+                guard output != null else return "\"\"";
+                written >> int <- 0;
+                wr(off(output, written), 34);
+                written += 1;
+                at >> int <- 0;
+                while (at < width) {
+                    slashes >> int <- 0;
+                    while (at < width && rd(off(source, at)) == 92) {
+                        slashes += 1;
+                        at += 1;
+                    }
+                    if (at == width) {
+                        emitted >> int <- 0;
+                        while (emitted < slashes * 2) {
+                            wr(off(output, written), 92);
+                            written += 1;
+                            emitted += 1;
+                        }
+                    }
+                    else {
+                        byteValue >> byte <- rd(off(source, at));
+                        needed >> int <- byteValue == 34 ? slashes * 2 + 1 : slashes;
+                        emitted >> int <- 0;
+                        while (emitted < needed) {
+                            wr(off(output, written), 92);
+                            written += 1;
+                            emitted += 1;
+                        }
+                        wr(off(output, written), byteValue);
+                        written += 1;
+                        at += 1;
+                    }
+                }
+                wr(off(output, written), 34);
+                wr(off(output, written + 1), 0);
+                return cast(output);
+            }
+
+            quote(value >> str) -> str {
+                return envHas("WINDIR") ? quoteWindows(value) : quotePosix(value);
+            }
+
+            appendWord(line >> str, word >> str) -> str {
+                selected >> str <- quote(word);
+                return line == "" ? selected : line + " " + selected;
+            }
+
+            commandFromNode(node >> int) -> str {
+                count >> int <- jsonArrayLen(node);
+                if (count == 0) return jsonGetStringOr(node, "");
+                line >> str <- "";
+                at >> int <- 0;
+                while (at < count) {
+                    line <- appendWord(line, jsonGetStringOr(jsonArrayGet(node, at), ""));
+                    at += 1;
+                }
+                return line;
+            }
+
+            providerCommand(config >> int, selected >> str) -> str {
+                alias >> int <- jsonObjectGet(jsonObjectGet(config, "credential_alias"), selected);
+                if (alias != 0) return commandFromNode(alias);
+                prefix >> str <- "cargo:token-from-stdout";
+                if (starts(selected, prefix)) return trimProviderText(sliceFrom(selected, 23));
+                return selected;
+            }
+
+            restoreEnv(name >> str, present >> bool, value >> str) -> bool {
+                if (present) return envSet(name, value);
+                return envRemove(name);
+            }
+
+            executeProvider(config >> int, selected >> str, registryRef >> str, name >> str) -> str {
+                if (selected == "" || selected == "cargo:token") return "";
+                line >> str <- providerCommand(config, selected);
+                guard line != "" else return "";
+                output >> p<byte> <- cast(alloc(65537));
+                guard output != null else return "";
+                pipe >> addr <- commandPipeOpen(false, true);
+                guard pipe != null && commandPipeError(pipe) == 0 else {
+                    free(output);
+                    return "";
+                }
+                writer >> addr <- commandPipeWriteHandle(pipe);
+                indexWasSet >> bool <- envHas("CARGO_REGISTRY_INDEX_URL");
+                nameWasSet >> bool <- envHas("CARGO_REGISTRY_NAME_OPT");
+                oldIndex >> str <- indexWasSet ? envText("CARGO_REGISTRY_INDEX_URL") : "";
+                oldName >> str <- nameWasSet ? envText("CARGO_REGISTRY_NAME_OPT") : "";
+                envSet("CARGO_REGISTRY_INDEX_URL", registryRef);
+                envSet("CARGO_REGISTRY_NAME_OPT", name);
+                process >> addr <- commandOpen(line, "", null, writer, null, 134217728);
+                commandPipeCloseWrite(pipe);
+                started >> bool <- process != null && commandStarted(process);
+                waited >> int <- started ? commandWait(process, 30000) : -1;
+                if (waited == 258) {
+                    commandTerminate(process, 15);
+                    commandWait(process, -1);
+                }
+                received >> int <- waited == 0 ?
+                    commandPipeRead(pipe, adr(output), 65536) : -1;
+                code >> int <- process == null ? -1 : commandExitCode(process);
+                if (received >= 0) wr(off(output, received), 0);
+                outputText >> str <- cast(output);
+                captured >> bool <- received > 0 && code == 0;
+                tokenValue >> str <- captured ?
+                    trimProviderText(outputText) : "";
+                if (process != null) commandRelease(process);
+                commandPipeRelease(pipe);
+                restoreEnv("CARGO_REGISTRY_INDEX_URL", indexWasSet, oldIndex);
+                restoreEnv("CARGO_REGISTRY_NAME_OPT", nameWasSet, oldName);
+                free(output);
+                if (captured && tokenValue == "") {
+                    free(cast(tokenValue));
+                    return "";
+                }
+                return tokenValue;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            absolute(path >> str) -> bool {
+                source >> p<byte> <- cast(path);
+                return starts(path, "http://") || starts(path, "https://") ||
+                    starts(path, "file://") || rd(source) == 47 || rd(source) == 92 ||
+                    (length(source) >= 2 && rd(off(source, 1)) == 58);
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, buffer, required);
+                if (written <= 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            workspaceRoot(handle >> addr) -> str {
+                selected >> str <- manifest.manifest.select(handle);
+                if (selected == "") return ".";
+                return directory(selected);
+            }
+
+            pathSeen(paths >> int, path >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(paths)) {
+                    if (same(jsonGetStringOr(jsonArrayGet(paths, at), ""), path)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            mergeObject(target >> int, source >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonObjectLen(source)) {
+                    key >> str <- jsonObjectKeyAt(source, at);
+                    jsonObjectSet(target, key, jsonClone(jsonObjectGet(source, key)));
+                    at += 1;
+                }
+                return true;
+            }
+
+            mergeNamed(target >> int, source >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonObjectLen(source)) {
+                    name >> str <- jsonObjectKeyAt(source, at);
+                    incoming >> int <- jsonObjectGet(source, name);
+                    current >> int <- jsonObjectGet(target, name);
+                    if (current == 0) current <- jsonNewObject();
+                    mergeObject(current, incoming);
+                    jsonObjectSet(target, name, current);
+                    at += 1;
+                }
+                return true;
+            }
+
+            normalizePathFields(section >> int, base >> str, first >> str, second >> str) -> bool {
+                names >> array<str> <- [first, second];
+                at >> int <- 0;
+                while (at < 2) {
+                    name >> str <- names[at];
+                    value >> str <- jsonGetStringOr(jsonObjectGet(section, name), "");
+                    if (value != "" && !absolute(value)) {
+                        jsonObjectSet(section, name, jsonNewString(join(base, value)));
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            mergeFile(config >> int, path >> str) -> bool {
+                guard exists(path) else return true;
+                paths >> int <- jsonObjectGet(config, "paths");
+                if (pathSeen(paths, path)) return true;
+                parsed >> int <- manifest.manifest.load(path);
+                guard parsed != 0 else return false;
+                base >> str <- directory(path);
+                http >> int <- jsonClone(jsonObjectGet(parsed, "http"));
+                git >> int <- jsonClone(jsonObjectGet(parsed, "git"));
+                normalizePathFields(http, base, "cainfo", "proxy-cainfo");
+                normalizePathFields(git, base, "cainfo", "");
+                registry >> int <- jsonObjectGet(config, "registry");
+                registries >> int <- jsonObjectGet(config, "registries");
+                sources >> int <- jsonObjectGet(config, "source_replacements");
+                aliases >> int <- jsonObjectGet(config, "credential_alias");
+                net >> int <- jsonObjectGet(config, "net");
+                effectiveHttp >> int <- jsonObjectGet(config, "http");
+                effectiveGit >> int <- jsonObjectGet(config, "git");
+                mergeObject(registry, jsonObjectGet(parsed, "registry"));
+                mergeNamed(registries, jsonObjectGet(parsed, "registries"));
+                mergeNamed(sources, jsonObjectGet(parsed, "source_replacements"));
+                mergeObject(aliases, jsonObjectGet(parsed, "credential-alias"));
+                mergeObject(net, jsonObjectGet(parsed, "net"));
+                mergeObject(effectiveHttp, http);
+                mergeObject(effectiveGit, git);
+                jsonObjectSet(config, "registry", registry);
+                jsonObjectSet(config, "registries", registries);
+                jsonObjectSet(config, "source_replacements", sources);
+                jsonObjectSet(config, "credential_alias", aliases);
+                jsonObjectSet(config, "net", net);
+                jsonObjectSet(config, "http", effectiveHttp);
+                jsonObjectSet(config, "git", effectiveGit);
+                jsonArrayPush(paths, jsonNewString(path));
+                jsonObjectSet(config, "paths", paths);
+                jsonRelease(http);
+                jsonRelease(git);
+                jsonRelease(parsed);
+                return true;
+            }
+
+            mergePair(config >> int, root >> str) -> bool {
+                cargo >> str <- join(root, ".cargo");
+                return mergeFile(config, join(cargo, "config.toml")) &&
+                    mergeFile(config, join(cargo, "config"));
+            }
+
+            mergeAncestors(config >> int, root >> str) -> bool {
+                parent >> str <- directory(root);
+                if (parent != "." && parent != "" && parent != root) {
+                    guard mergeAncestors(config, parent) else return false;
+                }
+                return mergePair(config, root);
+            }
+
+            empty() -> int {
+                config >> int <- jsonNewObject();
+                jsonObjectSet(config, "schema", jsonNewString("ghor.cargo_config.v1"));
+                jsonObjectSet(config, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(config, "paths", jsonNewArray());
+                jsonObjectSet(config, "registry", jsonNewObject());
+                jsonObjectSet(config, "registries", jsonNewObject());
+                jsonObjectSet(config, "source_replacements", jsonNewObject());
+                jsonObjectSet(config, "credential_alias", jsonNewObject());
+                jsonObjectSet(config, "net", jsonNewObject());
+                jsonObjectSet(config, "http", jsonNewObject());
+                jsonObjectSet(config, "git", jsonNewObject());
+                return config;
+            }
+
+            registryNodeValue(node >> int) -> str {
+                selected >> str <- jsonGetStringOr(node, "");
+                if (selected != "") return selected;
+                selected <- jsonGetStringOr(jsonObjectGet(node, "index"), "");
+                if (selected != "") return selected;
+                return jsonGetStringOr(jsonObjectGet(node, "registry"), "");
+            }
+
+            namedReference(config >> int, model >> int, name >> str) -> str {
+                configured >> int <- jsonObjectGet(jsonObjectGet(config, "registries"), name);
+                selected >> str <- registryNodeValue(configured);
+                if (selected != "") return selected;
+                return registryNodeValue(jsonObjectGet(jsonObjectGet(model, "registries"), name));
+            }
+
+            envRegistryName(name >> str) -> str {
+                source >> p<byte> <- cast(name);
+                width >> int <- length(source);
+                output >> p<byte> <- cast(alloc(width + 1));
+                guard output != null else return "";
+                at >> int <- 0;
+                while (at < width) {
+                    value >> byte <- rd(off(source, at));
+                    if (value >= 97 && value <= 122) value <- value - 32;
+                    else if (!((value >= 65 && value <= 90) ||
+                        (value >= 48 && value <= 57))) value <- 95;
+                    wr(off(output, at), value);
+                    at += 1;
+                }
+                wr(off(output, width), 0);
+                return cast(output);
+            }
+
+            configuredToken(config >> int, name >> str) -> str {
+                if (name != "") {
+                    envName >> str <- envRegistryName(name);
+                    selected >> str <- envText("CARGO_REGISTRIES_" + envName + "_TOKEN");
+                    if (selected == "") selected <- envText(
+                        "GHOR_REGISTRIES_" + envName + "_TOKEN");
+                    if (selected != "") return selected;
+                    selected <- jsonGetStringOr(jsonObjectGet(
+                        jsonObjectGet(jsonObjectGet(config, "registries"), name), "token"), "");
+                    if (selected != "") return selected;
+                }
+                return jsonGetStringOr(jsonObjectGet(
+                    jsonObjectGet(config, "registry"), "token"), "");
+            }
+
+            provider(config >> int, name >> str) -> str {
+                if (name != "") {
+                    selected >> str <- jsonGetStringOr(jsonObjectGet(
+                        jsonObjectGet(jsonObjectGet(config, "registries"), name),
+                        "credential-provider"), "");
+                    if (selected != "") return selected;
+                }
+                registry >> int <- jsonObjectGet(config, "registry");
+                selected >> str <- jsonGetStringOr(jsonObjectGet(
+                    registry, "credential-provider"), "");
+                if (selected != "") return selected;
+                globals >> int <- jsonObjectGet(registry, "global-credential-providers");
+                count >> int <- jsonArrayLen(globals);
+                if (count > 0) return jsonGetStringOr(jsonArrayGet(globals, count - 1), "");
+                return jsonGetStringOr(globals, "");
+            }
+
+            valueText(node >> int) -> str {
+                selected >> str <- jsonGetStringOr(node, "");
+                if (selected != "") return selected;
+                number >> int <- jsonGetIntOr(node, -2147483647);
+                if (number != -2147483647) return renderInt(number);
+                return jsonGetBoolOr(node, false) ? "true" : "false";
+            }
+
+            stringMap(source >> int, redactToken >> bool) -> int {
+                target >> int <- jsonNewObject();
+                at >> int <- 0;
+                while (at < jsonObjectLen(source)) {
+                    key >> str <- jsonObjectKeyAt(source, at);
+                    value >> str <- redactToken && key == "token" ?
+                        "<redacted>" : valueText(jsonObjectGet(source, key));
+                    jsonObjectSet(target, key, jsonNewString(value));
+                    at += 1;
+                }
+                return target;
+            }
+
+            namedStringMap(source >> int) -> int {
+                target >> int <- jsonNewObject();
+                at >> int <- 0;
+                while (at < jsonObjectLen(source)) {
+                    key >> str <- jsonObjectKeyAt(source, at);
+                    jsonObjectSet(target, key, stringMap(jsonObjectGet(source, key), true));
+                    at += 1;
+                }
+                return target;
+            }
+
+            unsafeConfigValue(value >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0) {
+                    current >> byte <- rd(off(source, at));
+                    if (current == 0 || current == 10 || current == 13 || current == 34) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            appendOption(body >> str, name >> str, value >> str) -> str {
+                if (value == "" || unsafeConfigValue(value)) return body;
+                return body + name + " = \"" + value + "\"\n";
+            }
+
+            policyRoot(handle >> addr) -> str {
+                return join(workspaceRoot(handle), "target/ghor/effective-config");
+            }
+
+        public:
+            load(handle >> addr) -> int {
+                config >> int <- empty();
+                cargoHome >> str <- envText("CARGO_HOME");
+                if (cargoHome != "") {
+                    mergeFile(config, join(cargoHome, "config.toml"));
+                    mergeFile(config, join(cargoHome, "config"));
+                }
+                else {
+                    home >> str <- envText("HOME");
+                    if (home == "") home <- envText("USERPROFILE");
+                    if (home != "") mergePair(config, home);
+                }
+                mergeAncestors(config, workspaceRoot(handle));
+                return config;
+            }
+
+            apply(handle >> addr, model >> int) -> int {
+                guard model != 0 else return 0;
+                config >> int <- load(handle);
+                registry >> int <- jsonObjectGet(model, "registry");
+                registries >> int <- jsonObjectGet(model, "registries");
+                sources >> int <- jsonObjectGet(model, "source_replacements");
+                mergeObject(registry, jsonObjectGet(config, "registry"));
+                mergeNamed(registries, jsonObjectGet(config, "registries"));
+                mergeNamed(sources, jsonObjectGet(config, "source_replacements"));
+                jsonObjectSet(model, "registry", registry);
+                jsonObjectSet(model, "registries", registries);
+                jsonObjectSet(model, "source_replacements", sources);
+                jsonObjectSet(model, "cargo_config", config);
+                return model;
+            }
+
+            registryName(handle >> addr, model >> int) -> str {
+                requested >> str <- option(handle, "--registry");
+                config >> int <- model == 0 ? load(handle) : jsonObjectGet(model, "cargo_config");
+                if (requested == "") requested <- jsonGetStringOr(jsonObjectGet(
+                    jsonObjectGet(config, "registry"), "default"), "");
+                if (requested == "" && model != 0) requested <- jsonGetStringOr(jsonObjectGet(
+                    jsonObjectGet(model, "registry"), "default"), "");
+                return requested;
+            }
+
+            reference(handle >> addr, model >> int) -> str {
+                config >> int <- model == 0 ? load(handle) : jsonObjectGet(model, "cargo_config");
+                requested >> str <- registryName(handle, model);
+                if (requested == "") return "registry";
+                selected >> str <- namedReference(config, model, requested);
+                return selected == "" ? requested : selected;
+            }
+
+            token(handle >> addr, model >> int) -> str {
+                selected >> str <- option(handle, "--token");
+                if (selected != "") return selected;
+                selected <- envText("GHOR_REGISTRY_TOKEN");
+                if (selected != "") return selected;
+                config >> int <- model == 0 ? load(handle) : jsonObjectGet(model, "cargo_config");
+                name >> str <- registryName(handle, model);
+                selected <- configuredToken(config, name);
+                if (selected != "") return selected;
+                return executeProvider(config, provider(config, name), reference(handle, model),
+                    name == "" ? "registry" : name);
+            }
+
+            credentialProvider(handle >> addr, model >> int) -> str {
+                config >> int <- model == 0 ? load(handle) : jsonObjectGet(model, "cargo_config");
+                return provider(config, registryName(handle, model));
+            }
+
+            offline(handle >> addr) -> bool {
+                if (hasFlag(handle, "--offline") || hasFlag(handle, "--frozen")) return true;
+                config >> int <- load(handle);
+                result >> bool <- jsonGetBoolOr(jsonObjectGet(
+                    jsonObjectGet(config, "net"), "offline"), false);
+                jsonRelease(config);
+                return result;
+            }
+
+            curlPolicy(handle >> addr) -> str {
+                config >> int <- load(handle);
+                net >> int <- jsonObjectGet(config, "net");
+                http >> int <- jsonObjectGet(config, "http");
+                retry >> int <- jsonGetIntOr(jsonObjectGet(net, "retry"), 2);
+                timeout >> int <- jsonGetIntOr(jsonObjectGet(http, "timeout"), 120);
+                body >> str <- "retry = " + renderInt(retry) + "\n" +
+                    "connect-timeout = " + renderInt(timeout) + "\n" +
+                    "max-time = " + renderInt(timeout) + "\n";
+                body <- appendOption(body, "proxy", jsonGetStringOr(
+                    jsonObjectGet(http, "proxy"), ""));
+                body <- appendOption(body, "cacert", jsonGetStringOr(
+                    jsonObjectGet(http, "cainfo"), ""));
+                body <- appendOption(body, "proxy-cacert", jsonGetStringOr(
+                    jsonObjectGet(http, "proxy-cainfo"), ""));
+                if (jsonObjectHas(http, "check-revoke") &&
+                    !jsonGetBoolOr(jsonObjectGet(http, "check-revoke"), true)) {
+                    body <- body + "ssl-no-revoke\n";
+                }
+                root >> str <- policyRoot(handle);
+                ensureDirectory(root);
+                path >> str <- join(root, "curl.conf");
+                fswrite(path, body);
+                jsonRelease(config);
+                return path;
+            }
+
+            gitPolicy(handle >> addr) -> str {
+                config >> int <- load(handle);
+                git >> int <- jsonObjectGet(config, "git");
+                body >> str <- "[http]\n";
+                proxy >> str <- jsonGetStringOr(jsonObjectGet(git, "proxy"), "");
+                ca >> str <- jsonGetStringOr(jsonObjectGet(git, "cainfo"), "");
+                if (proxy != "" && !unsafeConfigValue(proxy)) body <- body + "\tproxy = " + proxy + "\n";
+                if (ca != "" && !unsafeConfigValue(ca)) body <- body + "\tsslCAInfo = " + ca + "\n";
+                if (jsonObjectHas(git, "ssl-verify")) body <- body + "\tsslVerify = " +
+                    (jsonGetBoolOr(jsonObjectGet(git, "ssl-verify"), true) ? "true" : "false") + "\n";
+                root >> str <- policyRoot(handle);
+                ensureDirectory(root);
+                path >> str <- join(root, "git.conf");
+                fswrite(path, body);
+                jsonRelease(config);
+                return path;
+            }
+
+            report(handle >> addr, model >> int) -> int {
+                config >> int <- model == 0 ? load(handle) : jsonObjectGet(model, "cargo_config");
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "paths", jsonClone(jsonObjectGet(config, "paths")));
+                jsonObjectSet(result, "registry", stringMap(jsonObjectGet(config, "registry"), true));
+                jsonObjectSet(result, "registries", namedStringMap(
+                    jsonObjectGet(config, "registries")));
+                jsonObjectSet(result, "source", jsonClone(
+                    jsonObjectGet(config, "source_replacements")));
+                aliases >> int <- jsonNewArray();
+                aliasSource >> int <- jsonObjectGet(config, "credential_alias");
+                aliasAt >> int <- 0;
+                while (aliasAt < jsonObjectLen(aliasSource)) {
+                    jsonArrayPush(aliases, jsonNewString(jsonObjectKeyAt(aliasSource, aliasAt)));
+                    aliasAt += 1;
+                }
+                jsonObjectSet(result, "credential_aliases", aliases);
+                jsonObjectSet(result, "net", stringMap(jsonObjectGet(config, "net"), false));
+                jsonObjectSet(result, "http", stringMap(jsonObjectGet(config, "http"), false));
+                jsonObjectSet(result, "git", stringMap(jsonObjectGet(config, "git"), false));
+                jsonObjectSet(result, "offline", jsonNewBool(offline(handle)));
+                jsonObjectSet(result, "credential_provider", jsonNewString(
+                    credentialProvider(handle, model)));
+                jsonObjectSet(result, "selected_registry_name", jsonNewString(
+                    registryName(handle, model)));
+                jsonObjectSet(result, "curl_policy", jsonNewString(curlPolicy(handle)));
+                jsonObjectSet(result, "git_policy", jsonNewString(gitPolicy(handle)));
+                jsonObjectSet(result, "token_available", jsonNewBool(token(handle, model) != ""));
+                return result;
+            }
+
+            selfTest() -> bool {
+                return space(32) && space(9) && space(10) &&
+                    space(13) && !space(65);
+            }
+}

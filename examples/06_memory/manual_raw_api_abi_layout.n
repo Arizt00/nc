@@ -1,0 +1,101 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:heap, stack>;
+
+manualRawApiAbiLayout {
+    const:
+        TEXT_BYTES >> usize <- 64;
+        CELL_COUNT >> usize <- 4;
+
+    type:
+        Packet {
+            public:
+                tag >> int;
+                flags >> byte;
+            layout:
+                repr(C);
+                align(16);
+                endian(little);
+        }
+
+    stc:
+        executions >> u64 <- 0;
+
+    fn:
+        internal:
+            twiceBody(env >> addr, value >> int) -> int {
+                return value * 2;
+            }
+
+            fillCells(cells >> p<int>, items >> list<int>) -> void {
+                wr(off(cells, 0), 7);
+                wr(off(cells, 1), 11);
+                items.len <- 2;
+            }
+
+            fillHeap(heap >> p<int>) -> int {
+                wr(heap, 5);
+                next >> p<int> <- off(heap, 1);
+                wr(next, 9);
+                return rd(heap) + rd(next);
+            }
+
+            writeText(text >> p<byte>) -> void {
+                cp(text, adr(b"manual "), 7);
+                cp(off(text, 7), adr(b"nC"), 2);
+                wr(off(text, 9), 0);
+            }
+
+            copyPacket(source >> p<Packet>, destination >> p<Packet>) -> void {
+                cp(destination, source, sizeOf(Packet));
+            }
+
+            makeTwice(storage >> p<byte>) -> fn(int) -> int {
+                bytes >> usize <- closureSize(&twiceBody);
+                return closureAt(storage, bytes, &twiceBody, 0);
+            }
+
+        public:
+            run() -> bool {
+                mark >> p<byte> <- stackMark();
+                text >> p<byte> <- stackAlloc(TEXT_BYTES, 16);
+                cells >> p<int> <- cast(
+                    stackAlloc(CELL_COUNT * sizeOf(int), alignOf(int))
+                );
+                heap >> p<int> <- cast(alloc(4 * sizeOf(int)));
+                items >> list<int> <- listAt(cells, 0, CELL_COUNT);
+
+                fillCells(cells, items);
+                sum >> int <- fillHeap(heap);
+                writeText(text);
+
+                source >> Packet <- Packet { tag: 42, flags: 3 };
+                copy >> Packet;
+                copyPacket(&source, &copy);
+
+                closureMemory >> p<byte> <- stackAlloc(
+                    closureSize(&twiceBody),
+                    closureAlign(&twiceBody)
+                );
+                twice >> fn(int) -> int <- makeTwice(closureMemory);
+                answer >> int <- call(twice, rd(off(cells, 1)));
+
+                executions += 1;
+                ok >> bool <-
+                    !(sum == 0) &&
+                    sum == 14 &&
+                    copy.tag == 42 &&
+                    answer == 22;
+
+                println("manual raw ABI/layout: " + (ok ? "true" : "false"));
+                free(heap);
+                stackRestore(mark);
+                return ok;
+            }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

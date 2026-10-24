@@ -1,0 +1,30 @@
+primitive[@] target x86_64:
+    type material_target = "x86_64-unknown-none";
+    type material_environment = "freestanding";
+    type material_protocol = "UART";
+
+    capability hardware_uart_material:
+        allow port.read;
+        allow port.write;
+        deny host.console.write;
+
+    bus port_io_legacy:
+        kind port_io;
+        width 8;
+        endian little;
+        volatile true;
+
+    port uart.com1.data:
+        bus port_io_legacy;
+        addr ioaddr(0x03F8);
+        width 8;
+        access rw;
+
+    operation kernelEntry():
+        capability hardware_uart_material;
+        writes uart.com1.data;
+        write uart.com1.data <- 0x6E;
+        write uart.com1.data <- 0x43;
+        barrier io;
+
+    export kernelEntry as _start;

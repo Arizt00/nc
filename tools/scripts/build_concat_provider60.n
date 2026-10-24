@@ -1,0 +1,112 @@
+use <io:output, render, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildConcatProvider60 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                at >> int <- 1;
+                while (at+1 < argsCount(arguments)) { if (argsAt(arguments,at) == name) return argsAt(arguments,at+1); at += 1; }
+                return fallback;
+            }
+            parent(path >> str) -> str {
+                at >> int <- strByteLen(path)-1;
+                while (at >= 0) { code >> byte <- rd<byte>(off(cast<byte>(path),at)); if (code == 47 || code == 92) return at == 0 ? "/" : strSubstring(path,0,at); at -= 1; }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                above >> str <- parent(path); if (above == path || !mkdir(above)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            copied(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source); if (bytes <= 0 || bytes > 4194304) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes)); if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes && fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child); waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child); commandRelease(child);
+                if (!started || waited != 0 || code != 0) { println("concat provider build failed: "+line); return false; }
+                return true;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                base >> str <- option(arguments,"--base",""); out >> str <- option(arguments,"--out","");
+                native >> str <- option(arguments,"--native-object","");
+                generation >> str <- option(arguments,"--object-generation","candidate");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                support >> str <- option(arguments,"--compiler-support","C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+                kernel >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                shell >> str <- option(arguments,"--shell32","C:/msys64/mingw64/lib/libshell32.a");
+                if ((generation != "candidate" && generation != "stage0") || base == "" || out == "" || native == "" || quote(base) == "" || quote(out) == "" || quote(native) == "" ||
+                    quote(linker) == "" || quote(objcopy) == "" || quote(support) == "" || quote(kernel) == "" || quote(shell) == "") return 64;
+                if (!mkdir(out)) return 73;
+                suffix >> str <- windows ? ".obj" : ".o";
+                exported >> str <- out+"/concat.exports"+suffix;
+                functions >> str <- "concat concat3";
+                heapNames >> str <- " --redefine-sym malloc=nC.runtime.heap.alloc --redefine-sym calloc=nC.runtime.heap.calloc --redefine-sym free=nC.runtime.heap.free ";
+                rename >> str <- generation == "stage0" ? heapNames : ""; at >> int <- 0; start >> int <- 0;
+                while (at <= strByteLen(functions)) {
+                    if (at == strByteLen(functions) || rd<byte>(off(cast<byte>(functions),at)) == 32) {
+                        name >> str <- strSubstring(functions,start,at-start);
+                        original >> str <- generation == "stage0" ? "stringConcatProvider_provider_concat_"+name : "nc$S$P$20$stringConcatProvider$"+renderInt(16+strByteLen(name))+"$provider_concat_"+name;
+                        rename += " --redefine-sym "+original+"=nC.runtime.concat."+name;
+                        start <- at+1;
+                    }
+                    at += 1;
+                }
+                if (!invoke(quote(objcopy)+rename+" "+quote(native)+" "+quote(exported),windows)) return 1;
+                names >> str <- "heap.exports output.exports render.exports string_length.exports json.exports output_host command.exports command_host.exports string_release.exports json_bool_default.exports args.exports args_host env.exports env_host";
+                inputs >> str <- " "+quote(exported); at <- 0; start <- 0;
+                while (at <= strByteLen(names)) {
+                    if (at == strByteLen(names) || rd<byte>(off(cast<byte>(names),at)) == 32) {
+                        name >> str <- strSubstring(names,start,at-start)+suffix;
+                        if (!copied(base+"/"+name,out+"/"+name)) return 74;
+                        inputs += " "+quote(out+"/"+name); start <- at+1;
+                    }
+                    at += 1;
+                }
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                if (windows) {
+                    families >> str <- "heap output render string json command std args env concat";
+                    functions <- "alloc calloc realloc free|print println flush writeBytes|renderInt renderBool renderChar renderStr|strByteLen strLen len strRelease|jsonNewBool jsonObjectSet jsonNewObject jsonRelease jsonGetBool jsonKind jsonObjectBorrow jsonObjectLen jsonObjectHas jsonObjectGet jsonClone jsonNewNull jsonNewInt jsonNewString jsonNewArray jsonArrayPush jsonArrayBorrow jsonArrayLen jsonGetInt jsonStringView jsonObjectRemove jsonEquals jsonObjectKeyAt jsonStringify jsonGetBoolOr|commandOpen commandStarted commandWait commandExitCode commandTerminate commandProcessHandle commandThreadHandle commandId commandThreadId commandError commandRelease commandPipeOpen commandPipeReadHandle commandPipeWriteHandle commandPipeRead commandPipeWrite commandPipeCloseRead commandPipeCloseWrite commandPipeError commandPipeRelease|stdIn stdOut stdErr|argsOpen argsCount argsAt argsData argsBytes argsError argsRelease|envOpen envCount envAt envData envBytes envError envRelease envGet envHas envSet envRemove envExpand envLastError|concat concat3";
+                    exports >> str <- ""; familyStart >> int <- 0; familyEnd >> int <- 0;
+                    at <- 0; start <- 0; bytes >> int <- strByteLen(functions);
+                    while (at <= bytes) {
+                        code >> int <- at == bytes ? 124 : rd<byte>(off(cast<byte>(functions),at));
+                        if (code == 32 || code == 124) {
+                            familyEnd <- familyStart;
+                            while (familyEnd < strByteLen(families) && rd<byte>(off(cast<byte>(families),familyEnd)) != 32) { familyEnd += 1; }
+                            exports += " /export:nC.runtime."+strSubstring(families,familyStart,familyEnd-familyStart)+"."+strSubstring(functions,start,at-start);
+                            start <- at+1; if (code == 124) familyStart <- familyEnd+1;
+                        }
+                        at += 1;
+                    }
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:"+quote(artifact)+exports+inputs+" "+quote(kernel)+" "+quote(shell)+" "+quote(support),windows)) return 1;
+                } else {
+                    if (!copied(base+"/runtime.exports.map",out+"/runtime.exports.map")) return 74;
+                    version >> str <- "NC_RUNTIME_60 { global: \"nC.runtime.concat.concat\"; \"nC.runtime.concat.concat3\"; } NC_RUNTIME_59;\n";
+                    if (fsWriteFrom(out+"/runtime.exports.map",cast<byte>(version),strByteLen(version),true) != strByteLen(version)) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+quote(out+"/runtime.exports.map")+" -o "+quote(artifact)+inputs+" -lc",windows)) return 1;
+                }
+                println("concat provider built from nC objects: "+artifact);
+                return fsSize(artifact) > 0 ? 0 : 74;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

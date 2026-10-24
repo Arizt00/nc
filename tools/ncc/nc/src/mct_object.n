@@ -1,0 +1,1830 @@
+use <io:output, render>;
+use <project:ir, mct, mct_debug, mct_platform_debug, mct_native_unwind, mct_symbol_bundle, sema, diagnostics>;
+
+nccMctObject {
+    const:
+        DESCRIPTOR_BYTES >> int <- 24;
+        D_DATA >> int <- 0;
+        D_SIZE >> int <- 8;
+        D_FORMAT >> int <- 12;
+        D_HASH >> int <- 16;
+
+        FORMAT_ELF64 >> int <- 1;
+        FORMAT_ELF32 >> int <- 2;
+        FORMAT_COFF64 >> int <- 3;
+        FORMAT_MACHO64 >> int <- 4;
+        FORMAT_WASM >> int <- 5;
+
+        IR_CALL >> int <- 8;
+        IR_FUNCTION >> int <- 2;
+        IR_BRANCH >> int <- 12;
+        IR_JUMP >> int <- 13;
+        IR_CLOSURE >> int <- 15;
+        IR_ENTRY >> int <- 19;
+
+        FLAG_PROJECT_EXPORT >> int <- 1048576;
+
+        RELOC_X86_PCREL32 >> int <- 1;
+        RELOC_X86_BRANCH32 >> int <- 2;
+        RELOC_X86_DATA_PCREL32 >> int <- 3;
+        RELOC_AARCH64_CALL26 >> int <- 4;
+        RELOC_AARCH64_BRANCH26 >> int <- 5;
+        RELOC_AARCH64_CONDBR19 >> int <- 6;
+        RELOC_AARCH64_ADR_PREL21 >> int <- 7;
+        RELOC_ARM_CALL >> int <- 8;
+        RELOC_ARM_JUMP24 >> int <- 9;
+        RELOC_ARM_REL32 >> int <- 10;
+        RELOC_RISCV_CALL >> int <- 11;
+        RELOC_RISCV_BRANCH >> int <- 12;
+        RELOC_RISCV_JAL >> int <- 13;
+        RELOC_RISCV_PCREL_HI20 >> int <- 14;
+
+        TARGET_NONE >> int <- 0;
+        TARGET_LOCAL_SYMBOL >> int <- 1;
+        TARGET_EXTERNAL_SYMBOL >> int <- 2;
+        TARGET_CONTROL_NODE >> int <- 3;
+        TARGET_UNRESOLVED >> int <- 4;
+
+        EXTERNAL_RUNTIME >> int <- 3;
+
+        VIS_DEFAULT >> int <- 0;
+        VIS_PUBLIC >> int <- 1;
+        VIS_PRIVATE >> int <- 2;
+        VIS_INTERNAL >> int <- 3;
+
+    type:
+        ObjectTarget {
+            public:
+                target >> int;
+                format >> int;
+                machine >> int;
+                pointerBits >> int;
+                alignment >> int;
+        }
+
+        ObjectLayout {
+            public:
+                textOffset >> int;
+                relocationOffset >> int;
+                symbolOffset >> int;
+                stringOffset >> int;
+                sectionOffset >> int;
+                bytes >> int;
+        }
+
+    stc:
+        objects >> u64 <- 0;
+        objectBytes >> u64 <- 0;
+
+    local:
+        lastFormat >> int <- 0;
+        lastSize >> int <- 0;
+        lastHash >> int <- 0;
+
+    fn:
+        private:
+            alignUp(value >> int, boundary >> int) -> int {
+                remainder >> int <- value % boundary;
+                return remainder == 0 ? value : value + boundary - remainder;
+            }
+
+            putU8(out >> p<byte>, at >> int, value >> int) -> void {
+                wr<byte>(off(out, at), value & 255);
+            }
+
+            putU16(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+            }
+
+            putU32(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+                putU8(out, at + 2, value >>> 16);
+                putU8(out, at + 3, value >>> 24);
+            }
+
+            putU64(out >> p<byte>, at >> int, low >> int, high >> int) -> void {
+                putU32(out, at, low);
+                putU32(out, at + 4, high);
+            }
+
+            literal(out >> p<byte>, at >> int, value >> str, bytes >> int) -> int {
+                cp(off(out, at), cast<byte>(value), bytes);
+                return at + bytes;
+            }
+
+            zero(out >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) { putU8(out, at, 0); at += 1; }
+            }
+
+            descriptor(data >> p<byte>, byteCount >> int, format >> int) -> p<byte> {
+                result >> p<byte> <- cast<byte>(alloc(DESCRIPTOR_BYTES));
+                guard result != null else { free(data); return null; }
+                zero(result, DESCRIPTOR_BYTES);
+                wr<addr>(off(result, D_DATA), adr(data));
+                putU32(result, D_SIZE, byteCount);
+                putU32(result, D_FORMAT, format);
+                return result;
+            }
+
+            data(result >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(result, D_DATA)));
+            }
+
+            objectSize(result >> p<byte>) -> int {
+                return rd<int>(off(result, D_SIZE));
+            }
+
+            objectHash(bytes >> p<byte>, count >> int) -> int {
+                value >> int <- 786433;
+                at >> int <- 0;
+                while (at < count) {
+                    weight >> int <- (at % 251) + 1;
+                    value <- (value + (rd<byte>(off(bytes, at)) & 255) * weight + at * 13) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            bytesEqual(left >> p<byte>, leftBytes >> int,
+                right >> p<byte>, rightBytes >> int) -> bool {
+                guard leftBytes == rightBytes else return false;
+                at >> int <- 0;
+                while (at < leftBytes) {
+                    if (rd<byte>(off(left, at)) != rd<byte>(off(right, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            isLocalTarget(material >> p<byte>, node >> int) -> bool {
+                return mct_symbol_bundle.nccMctSymbolBundle.isLocalTarget(material, node);
+            }
+
+            isTargetRecord(material >> p<byte>, node >> int) -> bool {
+                return mct_symbol_bundle.nccMctSymbolBundle.isTargetRecord(material, node);
+            }
+
+            sameTarget(material >> p<byte>, left >> int, right >> int) -> bool {
+                return mct_symbol_bundle.nccMctSymbolBundle.sameTarget(material, left, right);
+            }
+
+            firstTargetRecord(material >> p<byte>, node >> int) -> bool {
+                guard isTargetRecord(material, node) else return false;
+                at >> int <- 0;
+                while (at < node) {
+                    if (isTargetRecord(material, at) && sameTarget(material, at, node)) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            targetCountByClass(material >> p<byte>, localClass >> bool) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetCountByClass(
+                    material, localClass);
+            }
+
+            targetSymbolCount(material >> p<byte>) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetSymbolCount(material);
+            }
+
+            targetCountKind(material >> p<byte>, wantedKind >> int) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetCountKind(
+                    material, wantedKind);
+            }
+
+            targetOrdinal(material >> p<byte>, wanted >> int) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetOrdinal(material, wanted);
+            }
+
+            targetNode(material >> p<byte>, ordinal >> int) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetNode(material, ordinal);
+            }
+
+            targetTextOffset(material >> p<byte>, node >> int) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetTextOffset(material, node);
+            }
+            storageRelocations(material >> p<byte>, section >> int) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordSection(material,node) == section &&
+                        mct.nccMct.artifactRecordRelocation(material,node) != 0) count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+            objectSection(material >> p<byte>, node >> int, coff >> bool) -> int {
+                section >> int <- mct_symbol_bundle.nccMctSymbolBundle.targetSection(material,node);
+                return section <= 1 ? section : (coff ? section+5 : section+11);
+            }
+            storageNames(out >> p<byte>, at >> int) -> void {
+                literal(out,at+131,".data",5); literal(out,at+137,".bss",4);
+                literal(out,at+142,".rodata",7); literal(out,at+150,".rela.data",10);
+                literal(out,at+161,".note.GNU-stack",15);
+            }
+
+            entryTargetNode(material >> p<byte>) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.entryTargetNode(material);
+            }
+
+            hostedEntryCount(material >> p<byte>) -> int {
+                return entryTargetNode(material) >= 0 ? 1 : 0;
+            }
+
+            hostedEntryOffset(material >> p<byte>) -> int {
+                entry >> int <- entryTargetNode(material);
+                return entry >= 0 ? mct.nccMct.artifactRecordTextOffset(material, entry) : 0;
+            }
+
+            hostedEntryStringBytes(material >> p<byte>, macho >> bool) -> int {
+                return hostedEntryCount(material) == 0 ? 0 : (macho ? 6 : 5);
+            }
+
+            writeHostedEntryName(out >> p<byte>, at >> int, macho >> bool) -> int {
+                cursor >> int <- at;
+                if (macho) { putU8(out, cursor, 95); cursor += 1; }
+                cursor <- literal(out, cursor, "main", 4);
+                putU8(out, cursor, 0);
+                return cursor + 1 - at;
+            }
+
+            hexDigit(value >> int) -> int {
+                return value < 10 ? 48 + value : 55 + value;
+            }
+
+            decimalDigits(value >> int) -> int {
+                if (value < 10) return 1;
+                count >> int <- 0;
+                rest >> int <- value;
+                while (rest > 0) { rest <- rest / 10; count += 1; }
+                return count;
+            }
+
+            putDecimal(out >> p<byte>, at >> int, value >> int) -> int {
+                digits >> int <- decimalDigits(value);
+                cursor >> int <- at + digits - 1;
+                rest >> int <- value;
+                while (cursor >= at) {
+                    putU8(out, cursor, 48 + (rest % 10));
+                    rest <- rest / 10;
+                    cursor -= 1;
+                }
+                return at + digits;
+            }
+
+            visibilityTag(value >> int) -> int {
+                if (value == VIS_PUBLIC) return 80;
+                if (value == VIS_PRIVATE) return 82;
+                if (value == VIS_INTERNAL) return 73;
+                return 68;
+            }
+
+            isRuntimeTarget(material >> p<byte>, node >> int) -> bool {
+                return node >= 0 &&
+                    mct.nccMct.artifactRecordTargetKind(material, node) ==
+                        TARGET_EXTERNAL_SYMBOL &&
+                    mct.nccMct.artifactRecordTargetClass(material, node) == EXTERNAL_RUNTIME;
+            }
+
+            mangleBytes(material >> p<byte>, node >> int, macho >> bool) -> int {
+                kind >> int <- node >= 0 ?
+                    mct.nccMct.artifactRecordTargetKind(material, node) : TARGET_UNRESOLVED;
+                if (kind == TARGET_CONTROL_NODE) return (macho ? 1 : 0) + 13;
+                nameBytes >> int <- node >= 0 ?
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node) : 0;
+                ownerBytes >> int <- node >= 0 ?
+                    mct.nccMct.artifactRecordTargetOwnerBytes(material, node) : 0;
+                if (isRuntimeTarget(material, node))
+                    return (macho ? 1 : 0) + 12 + ownerBytes + nameBytes;
+                return (macho ? 1 : 0) + 10 + decimalDigits(ownerBytes) + ownerBytes +
+                    decimalDigits(nameBytes) + nameBytes;
+            }
+
+            writeSymbolName(out >> p<byte>, at >> int, material >> p<byte>,
+                node >> int, macho >> bool, terminate >> bool) -> int {
+                cursor >> int <- at;
+                if (macho) { putU8(out, cursor, 95); cursor += 1; }
+                if (isRuntimeTarget(material, node)) {
+                    cursor <- literal(out, cursor, "nC.runtime.", 11);
+                    ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                        material, node);
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetOwner(
+                        material, node), ownerBytes);
+                    cursor += ownerBytes;
+                    putU8(out, cursor, 46); cursor += 1;
+                    nameBytes >> int <- mct.nccMct.artifactRecordTargetNameBytes(
+                        material, node);
+                    cp(off(out, cursor), mct.nccMct.artifactRecordTargetName(
+                        material, node), nameBytes);
+                    cursor += nameBytes;
+                    if (terminate) { putU8(out, cursor, 0); cursor += 1; }
+                    return cursor - at;
+                }
+                putU8(out, cursor, 110);
+                putU8(out, cursor + 1, 99);
+                putU8(out, cursor + 2, 36);
+                kind >> int <- node >= 0 ?
+                    mct.nccMct.artifactRecordTargetKind(material, node) : TARGET_UNRESOLVED;
+                if (kind == TARGET_CONTROL_NODE) {
+                    putU8(out, cursor + 3, 67);
+                    putU8(out, cursor + 4, 36);
+                    value >> int <- mct.nccMct.artifactRecordTargetValue(material, node);
+                    shift >> int <- 28;
+                    digit >> int <- 0;
+                    while (digit < 8) {
+                        putU8(out, cursor + 5 + digit, hexDigit((value >>> shift) & 15));
+                        shift -= 4;
+                        digit += 1;
+                    }
+                    cursor += 13;
+                } else {
+                    putU8(out, cursor + 3, kind == TARGET_UNRESOLVED ? 85 : 83);
+                    putU8(out, cursor + 4, 36);
+                    visibility >> int <- node >= 0 ?
+                        mct.nccMct.artifactRecordTargetVisibility(material, node) : VIS_DEFAULT;
+                    putU8(out, cursor + 5, visibilityTag(visibility));
+                    putU8(out, cursor + 6, 36);
+                    cursor <- putDecimal(out, cursor + 7,
+                        node >= 0 ? mct.nccMct.artifactRecordTargetOwnerBytes(material, node) : 0);
+                    putU8(out, cursor, 36); cursor += 1;
+                    if (node >= 0) {
+                        ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                            material, node);
+                        cp(off(out, cursor), mct.nccMct.artifactRecordTargetOwner(
+                            material, node), ownerBytes);
+                        cursor += ownerBytes;
+                    }
+                    putU8(out, cursor, 36); cursor += 1;
+                    nameBytes >> int <- node >= 0 ?
+                        mct.nccMct.artifactRecordTargetNameBytes(material, node) : 0;
+                    cursor <- putDecimal(out, cursor, nameBytes);
+                    putU8(out, cursor, 36); cursor += 1;
+                    if (node >= 0) {
+                        cp(off(out, cursor), mct.nccMct.artifactRecordTargetName(
+                            material, node), nameBytes);
+                        cursor += nameBytes;
+                    }
+                }
+                if (terminate) { putU8(out, cursor, 0); cursor += 1; }
+                return cursor - at;
+            }
+
+            targetStringBytes(material >> p<byte>, macho >> bool) -> int {
+                total >> int <- 0;
+                ordinal >> int <- 0;
+                while (ordinal < targetSymbolCount(material)) {
+                    total += mangleBytes(material, targetNode(material, ordinal), macho) + 1;
+                    ordinal += 1;
+                }
+                return total;
+            }
+
+            targetStringOffset(material >> p<byte>, wanted >> int,
+                macho >> bool) -> int {
+                byteAt >> int <- 1;
+                ordinal >> int <- 0;
+                while (ordinal < wanted) {
+                    byteAt += mangleBytes(material, targetNode(material, ordinal), macho) + 1;
+                    ordinal += 1;
+                }
+                return byteAt;
+            }
+
+            targetCountVisibility(material >> p<byte>, wanted >> int) -> int {
+                return mct_symbol_bundle.nccMctSymbolBundle.targetCountVisibility(
+                    material, wanted);
+            }
+
+            isDefinedTarget(material >> p<byte>, node >> int) -> bool {
+                return mct_symbol_bundle.nccMctSymbolBundle.isDefinedTarget(material, node);
+            }
+
+            finish(result >> p<byte>) -> p<byte> {
+                putU32(result, D_HASH, objectHash(data(result), objectSize(result)));
+                return result;
+            }
+
+            elfMachine(target >> int) -> int {
+                if (target == 1) return 62;
+                if (target == 4) return 3;
+                if (target == 5) return 183;
+                if (target == 7) return 40;
+                if (target == 8 || target == 9) return 243;
+                return 0;
+            }
+
+            elfFlags(target >> int) -> int {
+                if (target == 7) return 0x05000400;
+                if (target == 8) return 1;
+                return 0;
+            }
+
+            elfRelocation(target >> int, relocation >> int) -> int {
+                if (target == 1 || target == 4) return relocation == 18 ? 1 : 2;
+                if (target == 5) {
+                    if (relocation == RELOC_AARCH64_CALL26) return 283;
+                    if (relocation == RELOC_AARCH64_BRANCH26) return 282;
+                    if (relocation == RELOC_AARCH64_CONDBR19) return 280;
+                    if (relocation == RELOC_AARCH64_ADR_PREL21) return 274;
+                }
+                if (target == 7) {
+                    if (relocation == RELOC_ARM_CALL) return 28;
+                    if (relocation == RELOC_ARM_JUMP24) return 29;
+                    if (relocation == RELOC_ARM_REL32) return 3;
+                }
+                if (target == 8 || target == 9) {
+                    if (relocation == RELOC_RISCV_CALL) return 18;
+                    if (relocation == RELOC_RISCV_BRANCH) return 16;
+                    if (relocation == RELOC_RISCV_JAL) return 17;
+                    if (relocation == RELOC_RISCV_PCREL_HI20) return 23;
+                }
+                return 0;
+            }
+
+            relocationAddend(target >> int, opcode >> int) -> int {
+                if ((target == 1 || target == 4) &&
+                    (opcode == IR_CALL || opcode == IR_ENTRY || opcode == IR_BRANCH ||
+                    opcode == IR_JUMP || opcode == IR_CLOSURE)) return -4;
+                return 0;
+            }
+
+            elfUnwindRelocation(target >> int, width >> int) -> int {
+                if (target == 1) return 1;
+                if (target == 4) return 1;
+                if (target == 5 || target == 6) return width == 8 ? 257 : 258;
+                if (target == 7) return 2;
+                if (target == 8) return 1;
+                if (target == 9) return width == 8 ? 2 : 1;
+                return 0;
+            }
+
+            elf64Section(out >> p<byte>, at >> int, name >> int, kind >> int,
+                flags >> int, fileAt >> int, bytes >> int, link >> int,
+                info >> int, alignment >> int, entryBytes >> int) -> void {
+                putU32(out, at, name);
+                putU32(out, at + 4, kind);
+                putU64(out, at + 8, flags, 0);
+                putU64(out, at + 16, 0, 0);
+                putU64(out, at + 24, fileAt, 0);
+                putU64(out, at + 32, bytes, 0);
+                putU32(out, at + 40, link);
+                putU32(out, at + 44, info);
+                putU64(out, at + 48, alignment, 0);
+                putU64(out, at + 56, entryBytes, 0);
+            }
+
+            elf32Section(out >> p<byte>, at >> int, name >> int, kind >> int,
+                flags >> int, fileAt >> int, bytes >> int, link >> int,
+                info >> int, alignment >> int, entryBytes >> int) -> void {
+                putU32(out, at, name);
+                putU32(out, at + 4, kind);
+                putU32(out, at + 8, flags);
+                putU32(out, at + 12, 0);
+                putU32(out, at + 16, fileAt);
+                putU32(out, at + 20, bytes);
+                putU32(out, at + 24, link);
+                putU32(out, at + 28, info);
+                putU32(out, at + 32, alignment);
+                putU32(out, at + 36, entryBytes);
+            }
+
+            writeElfStrings(material >> p<byte>, out >> p<byte>, strAt >> int,
+                shstrAt >> int) -> void {
+                putU8(out, strAt, 0);
+                cursor >> int <- strAt + 1;
+                ordinal >> int <- 0;
+                while (ordinal < targetSymbolCount(material)) {
+                    node >> int <- targetNode(material, ordinal);
+                    cursor += writeSymbolName(out, cursor, material, node, false, true);
+                    ordinal += 1;
+                }
+
+                putU8(out, shstrAt, 0);
+                literal(out, shstrAt + 1, ".text", 5); putU8(out, shstrAt + 6, 0);
+                literal(out, shstrAt + 7, ".rela.text", 10); putU8(out, shstrAt + 17, 0);
+                literal(out, shstrAt + 18, ".symtab", 7); putU8(out, shstrAt + 25, 0);
+                literal(out, shstrAt + 26, ".strtab", 7); putU8(out, shstrAt + 33, 0);
+                literal(out, shstrAt + 34, ".ncc.debug", 10); putU8(out, shstrAt + 44, 0);
+                literal(out, shstrAt + 45, ".debug_abbrev", 13); putU8(out, shstrAt + 58, 0);
+                literal(out, shstrAt + 59, ".debug_info", 11); putU8(out, shstrAt + 70, 0);
+                literal(out, shstrAt + 71, ".debug_line", 11); putU8(out, shstrAt + 82, 0);
+                literal(out, shstrAt + 83, ".eh_frame", 9); putU8(out, shstrAt + 92, 0);
+                literal(out, shstrAt + 93, ".rela.eh_frame", 14); putU8(out, shstrAt + 107, 0);
+                literal(out, shstrAt + 108, ".ncc.symbols", 12); putU8(out, shstrAt + 120, 0);
+                literal(out, shstrAt + 121, ".shstrtab", 9); putU8(out, shstrAt + 130, 0);
+            }
+
+            emitElf64(material >> p<byte>) -> p<byte> {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                relocations >> int <- storageRelocations(material,1);
+                dataRelocations >> int <- storageRelocations(material,2);
+                dataBytes >> int <- mct.nccMct.artifactSectionBytes(material,2);
+                bssBytes >> int <- mct.nccMct.artifactSectionBytes(material,3);
+                rodataBytes >> int <- mct.nccMct.artifactSectionBytes(material,4);
+                symbols >> int <- targetSymbolCount(material);
+                hosted >> int <- hostedEntryCount(material);
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return null;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return null;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return null;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return null;
+                }
+                debugBytes >> int <- mct_debug.nccMctDebug.bytes(debugData);
+                abbrevBytes >> int <- mct_platform_debug.nccMctPlatformDebug.abbrevBytes(platformData);
+                infoBytes >> int <- mct_platform_debug.nccMctPlatformDebug.infoBytes(platformData);
+                lineBytes >> int <- mct_platform_debug.nccMctPlatformDebug.lineBytes(platformData);
+                ehBytes >> int <- mct_native_unwind.nccMctNativeUnwind.ehBytes(unwindData);
+                ehRelocations >> int <- mct_native_unwind.nccMctNativeUnwind.relocations(unwindData);
+                symbolBundleBytes >> int <- mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData);
+                textAt >> int <- 64;
+                relaAt >> int <- alignUp(textAt + textBytes, 8);
+                relaBytes >> int <- relocations * 24;
+                symAt >> int <- alignUp(relaAt + relaBytes, 8);
+                symBytes >> int <- (2 + symbols + hosted) * 24;
+                strAt >> int <- symAt + symBytes;
+                strBytes >> int <- 1 + targetStringBytes(material, false) +
+                    hostedEntryStringBytes(material, false);
+                debugAt >> int <- alignUp(strAt + strBytes, 4);
+                abbrevAt >> int <- alignUp(debugAt + debugBytes, 4);
+                infoAt >> int <- alignUp(abbrevAt + abbrevBytes, 4);
+                lineAt >> int <- alignUp(infoAt + infoBytes, 4);
+                ehAt >> int <- alignUp(lineAt + lineBytes, 8);
+                ehRelaAt >> int <- alignUp(ehAt + ehBytes, 8);
+                ehRelaBytes >> int <- ehRelocations * 24;
+                symbolBundleAt >> int <- alignUp(ehRelaAt + ehRelaBytes, 4);
+                storageAlignment >> int <- mct.nccMct.artifactStorageAlignment(material);
+                dataAt >> int <- alignUp(symbolBundleAt+symbolBundleBytes,storageAlignment);
+                rodataAt >> int <- dataAt+dataBytes;
+                dataRelaAt >> int <- alignUp(rodataAt+rodataBytes,8);
+                shstrAt >> int <- dataRelaAt+dataRelocations*24;
+                sectionsAt >> int <- alignUp(shstrAt + 177, 8);
+                total >> int <- sectionsAt + 18 * 64;
+                out >> p<byte> <- cast<byte>(alloc(total));
+                guard out != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return null;
+                }
+                zero(out, total);
+
+                putU8(out, 0, 0x7F); putU8(out, 1, 69); putU8(out, 2, 76); putU8(out, 3, 70);
+                putU8(out, 4, 2); putU8(out, 5, 1); putU8(out, 6, 1);
+                putU16(out, 16, 1); putU16(out, 18, elfMachine(target));
+                putU32(out, 20, 1); putU64(out, 40, sectionsAt, 0);
+                putU32(out, 48, elfFlags(target));
+                putU16(out, 52, 64); putU16(out, 58, 64); putU16(out, 60, 18); putU16(out, 62, 12);
+                cp(off(out, textAt), mct.nccMct.artifactText(material), textBytes);
+                cp(off(out,dataAt),mct.nccMct.artifactSectionData(material,2),dataBytes);
+                cp(off(out,rodataAt),mct.nccMct.artifactSectionData(material,4),rodataBytes);
+                cp(off(out, debugAt), mct_debug.nccMctDebug.data(debugData), debugBytes);
+                mct_debug.nccMctDebug.release(debugData);
+                cp(off(out, abbrevAt),
+                    mct_platform_debug.nccMctPlatformDebug.abbrevData(platformData), abbrevBytes);
+                cp(off(out, infoAt),
+                    mct_platform_debug.nccMctPlatformDebug.infoData(platformData), infoBytes);
+                cp(off(out, lineAt),
+                    mct_platform_debug.nccMctPlatformDebug.lineData(platformData), lineBytes);
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                cp(off(out, ehAt), mct_native_unwind.nccMctNativeUnwind.ehData(unwindData), ehBytes);
+                cp(off(out, symbolBundleAt), mct_symbol_bundle.nccMctSymbolBundle.data(symbolData),
+                    symbolBundleBytes);
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+
+                row >> int <- 0;
+                dataRow >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        inData >> bool <- mct.nccMct.artifactRecordSection(material,node) == 2;
+                        at >> int <- inData ? dataRelaAt+dataRow*24 : relaAt + row * 24;
+                        putU64(out, at, mct.nccMct.artifactRecordRelocationOffset(material, node), 0);
+                        externalCall >> bool <- target == 1 && relocation == RELOC_X86_PCREL32 && !isDefinedTarget(material,node);
+                        putU64(out, at + 8, externalCall ? 4 : elfRelocation(target, relocation),
+                            2 + targetOrdinal(material, node));
+                        addend >> int <- relocation == 18 ? mct.nccMct.artifactRecordAddend(material,node) :
+                            (relocation == RELOC_X86_DATA_PCREL32 ? -4 :
+                                relocationAddend(target,mct.nccMct.artifactRecordOpcode(material,node)));
+                        putU32(out,at+16,addend); putU32(out,at+20,addend < 0 ? -1 : 0);
+                        if (relocation == 18) {
+                            slotAt >> int <- mct.nccMct.artifactRecordRelocationOffset(material,node);
+                            cp(off(out,at+16),off<byte>(mct.nccMct.artifactSectionData(material,2),slotAt),8);
+                        }
+                        if (inData) dataRow += 1; else row += 1;
+                    }
+                    node += 1;
+                }
+
+                unwindRow >> int <- 0;
+                while (unwindRow < ehRelocations) {
+                    at >> int <- ehRelaAt + unwindRow * 24;
+                    width >> int <- mct_native_unwind.nccMctNativeUnwind.relocationWidth(
+                        unwindData, unwindRow);
+                    putU64(out, at, mct_native_unwind.nccMctNativeUnwind.relocationOffset(
+                        unwindData, unwindRow), 0);
+                    relative >> bool <- target == 1 && mct_native_unwind.nccMctNativeUnwind.relocationKind(unwindData,unwindRow) == 3;
+                    putU64(out, at + 8, relative ? 2 : elfUnwindRelocation(target, width), 1);
+                    putU32(out, at + 16, mct_native_unwind.nccMctNativeUnwind.relocationAddend(
+                        unwindData, unwindRow));
+                    putU32(out, at + 20, 0);
+                    unwindRow += 1;
+                }
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+
+                putU8(out, symAt + 24 + 4, 3); putU16(out, symAt + 24 + 6, 1);
+                ordinal >> int <- 0;
+                while (ordinal < symbols) {
+                    node <- targetNode(material, ordinal);
+                    kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                    at >> int <- symAt + (2 + ordinal) * 24;
+                    putU32(out, at, targetStringOffset(material, ordinal, false));
+                    symbolType >> int <- objectSection(material,node,false) > 1 ? 1 :
+                        (kind == TARGET_CONTROL_NODE ? 0 : 2);
+                    putU8(out,at+4,symbolType+(isLocalTarget(material,node) ? 0 : 16));
+                    if (mct.nccMct.artifactRecordTargetVisibility(material, node) ==
+                        VIS_INTERNAL) putU8(out, at + 5, 2);
+                    if (isDefinedTarget(material, node)) {
+                        putU16(out, at + 6, objectSection(material,node,false));
+                        putU64(out, at + 8, targetTextOffset(material, node), 0);
+                        if (symbolType == 1) putU64(out,at+16,mct_symbol_bundle.nccMctSymbolBundle.targetBytes(material,node),0);
+                    }
+                    ordinal += 1;
+                }
+                writeElfStrings(material, out, strAt, shstrAt);
+                storageNames(out,shstrAt);
+                if (hosted != 0) {
+                    hostedAt >> int <- symAt + (2 + symbols) * 24;
+                    putU32(out, hostedAt, 1 + targetStringBytes(material, false));
+                    putU8(out, hostedAt + 4, 0x12);
+                    putU16(out, hostedAt + 6, 1);
+                    putU64(out, hostedAt + 8, hostedEntryOffset(material), 0);
+                    writeHostedEntryName(out,
+                        strAt + 1 + targetStringBytes(material, false), false);
+                }
+
+                elf64Section(out, sectionsAt + 64, 1, 1, 6, textAt, textBytes, 0, 0, 16, 0);
+                elf64Section(out, sectionsAt + 128, 7, 4, 0, relaAt, relaBytes, 3, 1, 8, 24);
+                elf64Section(out, sectionsAt + 192, 18, 2, 0, symAt, symBytes, 4,
+                    2 + targetCountByClass(material, true), 8, 24);
+                elf64Section(out, sectionsAt + 256, 26, 3, 0, strAt, strBytes, 0, 0, 1, 0);
+                elf64Section(out, sectionsAt + 320, 34, 1, 0, debugAt, debugBytes, 0, 0, 4, 0);
+                elf64Section(out, sectionsAt + 384, 45, 1, 0, abbrevAt, abbrevBytes, 0, 0, 1, 0);
+                elf64Section(out, sectionsAt + 448, 59, 1, 0, infoAt, infoBytes, 0, 0, 1, 0);
+                elf64Section(out, sectionsAt + 512, 71, 1, 0, lineAt, lineBytes, 0, 0, 1, 0);
+                elf64Section(out, sectionsAt + 576, 83, 1, 2, ehAt, ehBytes, 0, 0, 8, 0);
+                elf64Section(out, sectionsAt + 640, 93, 4, 0, ehRelaAt, ehRelaBytes, 3, 9, 8, 24);
+                elf64Section(out, sectionsAt + 704, 108, 1, 0, symbolBundleAt,
+                    symbolBundleBytes, 0, 0, 4, 0);
+                elf64Section(out, sectionsAt + 768, 121, 3, 0, shstrAt, 177, 0, 0, 1, 0);
+                elf64Section(out,sectionsAt+832,131,1,3,dataAt,dataBytes,0,0,storageAlignment,0);
+                elf64Section(out,sectionsAt+896,137,8,3,dataAt,bssBytes,0,0,storageAlignment,0);
+                elf64Section(out,sectionsAt+960,142,1,2,rodataAt,rodataBytes,0,0,1,0);
+                elf64Section(out,sectionsAt+1024,150,4,0,dataRelaAt,dataRelocations*24,3,13,8,24);
+                elf64Section(out,sectionsAt+1088,161,1,0,0,0,0,0,1,0);
+                return finish(descriptor(out, total, FORMAT_ELF64));
+            }
+
+            emitElf32(material >> p<byte>) -> p<byte> {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                relocations >> int <- mct.nccMct.artifactRelocations(material);
+                symbols >> int <- targetSymbolCount(material);
+                hosted >> int <- hostedEntryCount(material);
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return null;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return null;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return null;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return null;
+                }
+                debugBytes >> int <- mct_debug.nccMctDebug.bytes(debugData);
+                abbrevBytes >> int <- mct_platform_debug.nccMctPlatformDebug.abbrevBytes(platformData);
+                infoBytes >> int <- mct_platform_debug.nccMctPlatformDebug.infoBytes(platformData);
+                lineBytes >> int <- mct_platform_debug.nccMctPlatformDebug.lineBytes(platformData);
+                ehBytes >> int <- mct_native_unwind.nccMctNativeUnwind.ehBytes(unwindData);
+                ehRelocations >> int <- mct_native_unwind.nccMctNativeUnwind.relocations(unwindData);
+                symbolBundleBytes >> int <- mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData);
+                textAt >> int <- alignUp(52, 16);
+                relaAt >> int <- alignUp(textAt + textBytes, 4);
+                relaBytes >> int <- relocations * 12;
+                symAt >> int <- alignUp(relaAt + relaBytes, 4);
+                symBytes >> int <- (2 + symbols + hosted) * 16;
+                strAt >> int <- symAt + symBytes;
+                strBytes >> int <- 1 + targetStringBytes(material, false) +
+                    hostedEntryStringBytes(material, false);
+                debugAt >> int <- alignUp(strAt + strBytes, 4);
+                abbrevAt >> int <- alignUp(debugAt + debugBytes, 4);
+                infoAt >> int <- alignUp(abbrevAt + abbrevBytes, 4);
+                lineAt >> int <- alignUp(infoAt + infoBytes, 4);
+                ehAt >> int <- alignUp(lineAt + lineBytes, 4);
+                ehRelaAt >> int <- alignUp(ehAt + ehBytes, 4);
+                ehRelaBytes >> int <- ehRelocations * 12;
+                symbolBundleAt >> int <- alignUp(ehRelaAt + ehRelaBytes, 4);
+                shstrAt >> int <- symbolBundleAt + symbolBundleBytes;
+                sectionsAt >> int <- alignUp(shstrAt + 131, 4);
+                total >> int <- sectionsAt + 13 * 40;
+                out >> p<byte> <- cast<byte>(alloc(total));
+                guard out != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return null;
+                }
+                zero(out, total);
+
+                putU8(out, 0, 0x7F); putU8(out, 1, 69); putU8(out, 2, 76); putU8(out, 3, 70);
+                putU8(out, 4, 1); putU8(out, 5, 1); putU8(out, 6, 1);
+                putU16(out, 16, 1); putU16(out, 18, elfMachine(target));
+                putU32(out, 20, 1); putU32(out, 32, sectionsAt); putU32(out, 36, elfFlags(target));
+                putU16(out, 40, 52); putU16(out, 46, 40); putU16(out, 48, 13); putU16(out, 50, 12);
+                cp(off(out, textAt), mct.nccMct.artifactText(material), textBytes);
+                cp(off(out, debugAt), mct_debug.nccMctDebug.data(debugData), debugBytes);
+                mct_debug.nccMctDebug.release(debugData);
+                cp(off(out, abbrevAt),
+                    mct_platform_debug.nccMctPlatformDebug.abbrevData(platformData), abbrevBytes);
+                cp(off(out, infoAt),
+                    mct_platform_debug.nccMctPlatformDebug.infoData(platformData), infoBytes);
+                cp(off(out, lineAt),
+                    mct_platform_debug.nccMctPlatformDebug.lineData(platformData), lineBytes);
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                cp(off(out, ehAt), mct_native_unwind.nccMctNativeUnwind.ehData(unwindData), ehBytes);
+                cp(off(out, symbolBundleAt), mct_symbol_bundle.nccMctSymbolBundle.data(symbolData),
+                    symbolBundleBytes);
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+
+                row >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        at >> int <- relaAt + row * 12;
+                        putU32(out, at, mct.nccMct.artifactRecordRelocationOffset(material, node));
+                        putU32(out, at + 4,
+                            ((2 + targetOrdinal(material, node)) << 8) |
+                            elfRelocation(target, relocation));
+                        putU32(out, at + 8, relocationAddend(target,
+                            mct.nccMct.artifactRecordOpcode(material, node)));
+                        row += 1;
+                    }
+                    node += 1;
+                }
+
+                unwindRow >> int <- 0;
+                while (unwindRow < ehRelocations) {
+                    at >> int <- ehRelaAt + unwindRow * 12;
+                    width >> int <- mct_native_unwind.nccMctNativeUnwind.relocationWidth(
+                        unwindData, unwindRow);
+                    putU32(out, at, mct_native_unwind.nccMctNativeUnwind.relocationOffset(
+                        unwindData, unwindRow));
+                    putU32(out, at + 4, (1 << 8) | elfUnwindRelocation(target, width));
+                    putU32(out, at + 8, mct_native_unwind.nccMctNativeUnwind.relocationAddend(
+                        unwindData, unwindRow));
+                    unwindRow += 1;
+                }
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+
+                putU8(out, symAt + 16 + 12, 3); putU16(out, symAt + 16 + 14, 1);
+                ordinal >> int <- 0;
+                while (ordinal < symbols) {
+                    node <- targetNode(material, ordinal);
+                    kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                    at >> int <- symAt + (2 + ordinal) * 16;
+                    putU32(out, at, targetStringOffset(material, ordinal, false));
+                    putU8(out, at + 12, isLocalTarget(material, node) ?
+                        (kind == TARGET_CONTROL_NODE ? 0 : 2) : 0x12);
+                    if (mct.nccMct.artifactRecordTargetVisibility(material, node) ==
+                        VIS_INTERNAL) putU8(out, at + 13, 2);
+                    if (isDefinedTarget(material, node)) {
+                        putU32(out, at + 4, targetTextOffset(material, node));
+                        putU16(out, at + 14, 1);
+                    }
+                    ordinal += 1;
+                }
+                writeElfStrings(material, out, strAt, shstrAt);
+                if (hosted != 0) {
+                    hostedAt >> int <- symAt + (2 + symbols) * 16;
+                    putU32(out, hostedAt, 1 + targetStringBytes(material, false));
+                    putU32(out, hostedAt + 4, hostedEntryOffset(material));
+                    putU8(out, hostedAt + 12, 0x12);
+                    putU16(out, hostedAt + 14, 1);
+                    writeHostedEntryName(out,
+                        strAt + 1 + targetStringBytes(material, false), false);
+                }
+
+                elf32Section(out, sectionsAt + 40, 1, 1, 6, textAt, textBytes, 0, 0, 16, 0);
+                elf32Section(out, sectionsAt + 80, 7, 4, 0, relaAt, relaBytes, 3, 1, 4, 12);
+                elf32Section(out, sectionsAt + 120, 18, 2, 0, symAt, symBytes, 4,
+                    2 + targetCountByClass(material, true), 4, 16);
+                elf32Section(out, sectionsAt + 160, 26, 3, 0, strAt, strBytes, 0, 0, 1, 0);
+                elf32Section(out, sectionsAt + 200, 34, 1, 0, debugAt, debugBytes, 0, 0, 4, 0);
+                elf32Section(out, sectionsAt + 240, 45, 1, 0, abbrevAt, abbrevBytes, 0, 0, 1, 0);
+                elf32Section(out, sectionsAt + 280, 59, 1, 0, infoAt, infoBytes, 0, 0, 1, 0);
+                elf32Section(out, sectionsAt + 320, 71, 1, 0, lineAt, lineBytes, 0, 0, 1, 0);
+                elf32Section(out, sectionsAt + 360, 83, 1, 2, ehAt, ehBytes, 0, 0, 4, 0);
+                elf32Section(out, sectionsAt + 400, 93, 4, 0, ehRelaAt, ehRelaBytes, 3, 9, 4, 12);
+                elf32Section(out, sectionsAt + 440, 108, 1, 0, symbolBundleAt,
+                    symbolBundleBytes, 0, 0, 4, 0);
+                elf32Section(out, sectionsAt + 480, 121, 3, 0, shstrAt, 131, 0, 0, 1, 0);
+                return finish(descriptor(out, total, FORMAT_ELF32));
+            }
+
+            emitCoff64(material >> p<byte>) -> p<byte> {
+                storageAlignment >> int <- mct.nccMct.artifactStorageAlignment(material);
+                guard storageAlignment > 0 && storageAlignment <= 8192 &&
+                    (storageAlignment & (storageAlignment-1)) == 0 else return null;
+                alignmentCode >> int <- 1;
+                boundary >> int <- 1;
+                while (boundary < storageAlignment) { boundary *= 2; alignmentCode += 1; }
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                relocations >> int <- storageRelocations(material,1);
+                dataRelocations >> int <- storageRelocations(material,2);
+                dataBytes >> int <- mct.nccMct.artifactSectionBytes(material,2);
+                bssBytes >> int <- mct.nccMct.artifactSectionBytes(material,3);
+                rodataBytes >> int <- mct.nccMct.artifactSectionBytes(material,4);
+                symbols >> int <- targetSymbolCount(material);
+                hosted >> int <- hostedEntryCount(material);
+                guard relocations <= 65535 && dataRelocations <= 65535 else return null;
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return null;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return null;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return null;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return null;
+                }
+                debugBytes >> int <- mct_debug.nccMctDebug.bytes(debugData);
+                codeviewBytes >> int <- mct_platform_debug.nccMctPlatformDebug.codeviewBytes(platformData);
+                pdataBytes >> int <- mct_native_unwind.nccMctNativeUnwind.pdataBytes(unwindData);
+                xdataBytes >> int <- mct_native_unwind.nccMctNativeUnwind.xdataBytes(unwindData);
+                unwindRelocations >> int <- mct_native_unwind.nccMctNativeUnwind.relocations(unwindData);
+                symbolBundleBytes >> int <- mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData);
+                textAt >> int <- 384;
+                relocationAt >> int <- textAt + textBytes;
+                debugAt >> int <- alignUp(relocationAt + relocations * 10, 4);
+                codeviewAt >> int <- alignUp(debugAt + debugBytes, 4);
+                pdataAt >> int <- alignUp(codeviewAt + codeviewBytes, 4);
+                pdataRelocationAt >> int <- pdataAt + pdataBytes;
+                xdataAt >> int <- alignUp(pdataRelocationAt + unwindRelocations * 10, 4);
+                symbolBundleAt >> int <- alignUp(xdataAt + xdataBytes, 4);
+                dataAt >> int <- alignUp(symbolBundleAt+symbolBundleBytes,8);
+                rodataAt >> int <- dataAt+dataBytes;
+                dataRelocationAt >> int <- rodataAt+rodataBytes;
+                symbolAt >> int <- dataRelocationAt+dataRelocations*10;
+                totalSymbols >> int <- symbols + hosted + 2;
+                stringAt >> int <- symbolAt + totalSymbols * 18;
+                stringBytes >> int <- 4 + targetStringBytes(material, false);
+                total >> int <- stringAt + stringBytes;
+                out >> p<byte> <- cast<byte>(alloc(total));
+                guard out != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return null;
+                }
+                zero(out, total);
+
+                putU16(out, 0, 0x8664);
+                putU16(out, 2, 9);
+                putU32(out, 8, symbolAt);
+                putU32(out, 12, totalSymbols);
+
+                literal(out, 20, ".text", 5);
+                putU32(out, 20 + 16, textBytes);
+                putU32(out, 20 + 20, textAt);
+                putU32(out, 20 + 24, relocationAt);
+                putU16(out, 20 + 32, relocations);
+                putU32(out, 20 + 36, 0x60500020);
+                literal(out, 60, ".nccdbg", 7);
+                putU32(out, 60 + 16, debugBytes);
+                putU32(out, 60 + 20, debugAt);
+                putU32(out, 60 + 36, 0x40000040);
+                literal(out, 100, ".debug$S", 8);
+                putU32(out, 100 + 16, codeviewBytes);
+                putU32(out, 100 + 20, codeviewAt);
+                putU32(out, 100 + 36, 0x42000040);
+                literal(out, 140, ".pdata", 6);
+                putU32(out, 140 + 16, pdataBytes);
+                putU32(out, 140 + 20, pdataAt);
+                putU32(out, 140 + 24, pdataRelocationAt);
+                putU16(out, 140 + 32, unwindRelocations);
+                putU32(out, 140 + 36, 0x40300040);
+                literal(out, 180, ".xdata", 6);
+                putU32(out, 180 + 16, xdataBytes);
+                putU32(out, 180 + 20, xdataAt);
+                putU32(out, 180 + 36, 0x40300040);
+                literal(out, 220, ".nccsym", 7);
+                putU32(out, 220 + 16, symbolBundleBytes);
+                putU32(out, 220 + 20, symbolBundleAt);
+                putU32(out, 220 + 36, 0x40000040);
+                literal(out,260,".data",5);
+                putU32(out,276,dataBytes); putU32(out,280,dataAt); putU32(out,284,dataRelocationAt);
+                putU16(out,292,dataRelocations); putU32(out,296,0xC0000040 | (alignmentCode << 20));
+                literal(out,300,".bss",4); putU32(out,316,bssBytes); putU32(out,336,0xC0000080 | (alignmentCode << 20));
+                literal(out,340,".rdata",6); putU32(out,356,rodataBytes); putU32(out,360,rodataAt);
+                putU32(out,376,0x40100040);
+                cp(off(out, textAt), mct.nccMct.artifactText(material), textBytes);
+                cp(off(out,dataAt),mct.nccMct.artifactSectionData(material,2),dataBytes);
+                cp(off(out,rodataAt),mct.nccMct.artifactSectionData(material,4),rodataBytes);
+                cp(off(out, debugAt), mct_debug.nccMctDebug.data(debugData), debugBytes);
+                mct_debug.nccMctDebug.release(debugData);
+                cp(off(out, codeviewAt),
+                    mct_platform_debug.nccMctPlatformDebug.codeviewData(platformData),
+                    codeviewBytes);
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                cp(off(out, pdataAt), mct_native_unwind.nccMctNativeUnwind.pdataData(unwindData),
+                    pdataBytes);
+                cp(off(out, xdataAt), mct_native_unwind.nccMctNativeUnwind.xdataData(unwindData),
+                    xdataBytes);
+                cp(off(out, symbolBundleAt), mct_symbol_bundle.nccMctSymbolBundle.data(symbolData),
+                    symbolBundleBytes);
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+
+                row >> int <- 0;
+                dataRow >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        inData >> bool <- mct.nccMct.artifactRecordSection(material,node) == 2;
+                        at >> int <- inData ? dataRelocationAt+dataRow*10 : relocationAt + row * 10;
+                        putU32(out, at, mct.nccMct.artifactRecordRelocationOffset(material, node));
+                        putU32(out, at + 4, targetOrdinal(material, node) + 2);
+                        putU16(out, at + 8, relocation == 18 ? 1 : 4);
+                        if (inData) dataRow += 1; else row += 1;
+                    }
+                    node += 1;
+                }
+
+                unwindRow >> int <- 0;
+                while (unwindRow < unwindRelocations) {
+                    sectionOffset >> int <- mct_native_unwind.nccMctNativeUnwind.relocationOffset(
+                        unwindData, unwindRow);
+                    putU32(out, pdataAt + sectionOffset,
+                        mct_native_unwind.nccMctNativeUnwind.relocationAddend(
+                            unwindData, unwindRow));
+                    at >> int <- pdataRelocationAt + unwindRow * 10;
+                    putU32(out, at, sectionOffset);
+                    putU32(out, at + 4, unwindRow % 3 == 2 ? 1 : 0);
+                    putU16(out, at + 8, 3);
+                    unwindRow += 1;
+                }
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+
+                literal(out, symbolAt, ".text", 5);
+                putU16(out, symbolAt + 12, 1);
+                putU8(out, symbolAt + 16, 3);
+                literal(out, symbolAt + 18, ".xdata", 6);
+                putU16(out, symbolAt + 18 + 12, 5);
+                putU8(out, symbolAt + 18 + 16, 3);
+
+                ordinal >> int <- 0;
+                stringCursor >> int <- stringAt + 4;
+                while (ordinal < symbols) {
+                    node <- targetNode(material, ordinal);
+                    kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                    at >> int <- symbolAt + (ordinal + 2) * 18;
+                    putU32(out, at + 4, 4 + targetStringOffset(material, ordinal, false) - 1);
+                    if (isDefinedTarget(material, node)) {
+                        putU32(out, at + 8, targetTextOffset(material, node));
+                        putU16(out, at + 12, objectSection(material,node,true));
+                    }
+                    if (kind == TARGET_LOCAL_SYMBOL && objectSection(material,node,true) <= 1) putU16(out, at + 14, 0x20);
+                    putU8(out, at + 16, isLocalTarget(material, node) ? 3 : 2);
+                    stringCursor += writeSymbolName(out, stringCursor, material,
+                        node, false, true);
+                    ordinal += 1;
+                }
+                if (hosted != 0) {
+                    entryAt >> int <- symbolAt + (symbols + 2) * 18;
+                    literal(out, entryAt, "main", 4);
+                    putU32(out, entryAt + 8, hostedEntryOffset(material));
+                    putU16(out, entryAt + 12, 1);
+                    putU16(out, entryAt + 14, 0x20);
+                    putU8(out, entryAt + 16, 2);
+                }
+                putU32(out, stringAt, stringBytes);
+                return finish(descriptor(out, total, FORMAT_COFF64));
+            }
+
+            machoCpu(target >> int) -> int {
+                return target == 3 ? 0x01000007 : 0x0100000C;
+            }
+
+            machoCpuSubtype(target >> int) -> int {
+                return target == 3 ? 3 : 0;
+            }
+
+            machoRelocationType(target >> int, relocation >> int) -> int {
+                if (target == 3) {
+                    return relocation == RELOC_X86_DATA_PCREL32 ? 1 : 2;
+                }
+                return relocation == RELOC_AARCH64_ADR_PREL21 ? 3 : 2;
+            }
+
+            emitMacho64(material >> p<byte>) -> p<byte> {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                relocations >> int <- mct.nccMct.artifactRelocations(material);
+                targetSymbols >> int <- targetSymbolCount(material);
+                hosted >> int <- hostedEntryCount(material);
+                symbols >> int <- targetSymbols + hosted;
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return null;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return null;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return null;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return null;
+                }
+                debugBytes >> int <- mct_debug.nccMctDebug.bytes(debugData);
+                abbrevBytes >> int <- mct_platform_debug.nccMctPlatformDebug.abbrevBytes(platformData);
+                infoBytes >> int <- mct_platform_debug.nccMctPlatformDebug.infoBytes(platformData);
+                lineBytes >> int <- mct_platform_debug.nccMctPlatformDebug.lineBytes(platformData);
+                ehBytes >> int <- mct_native_unwind.nccMctNativeUnwind.ehBytes(unwindData);
+                ehRelocations >> int <- mct_native_unwind.nccMctNativeUnwind.relocations(unwindData);
+                compactBytes >> int <- mct_native_unwind.nccMctNativeUnwind.compactBytes(unwindData);
+                compactRelocations >> int <-
+                    mct_native_unwind.nccMctNativeUnwind.compactRelocations(unwindData);
+                symbolBundleBytes >> int <- mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData);
+                textAt >> int <- 768;
+                debugAt >> int <- alignUp(textAt + textBytes, 4);
+                abbrevAt >> int <- alignUp(debugAt + debugBytes, 4);
+                infoAt >> int <- alignUp(abbrevAt + abbrevBytes, 4);
+                lineAt >> int <- alignUp(infoAt + infoBytes, 4);
+                ehAt >> int <- alignUp(lineAt + lineBytes, 8);
+                compactAt >> int <- alignUp(ehAt + ehBytes, 8);
+                symbolBundleAt >> int <- alignUp(compactAt + compactBytes, 4);
+                relocationAt >> int <- alignUp(symbolBundleAt + symbolBundleBytes, 4);
+                ehRelocationAt >> int <- relocationAt + relocations * 8;
+                compactRelocationAt >> int <- ehRelocationAt + ehRelocations * 8;
+                symbolAt >> int <- alignUp(compactRelocationAt + compactRelocations * 8, 8);
+                stringAt >> int <- symbolAt + symbols * 16;
+                stringBytes >> int <- 1 + targetStringBytes(material, true) +
+                    hostedEntryStringBytes(material, true);
+                total >> int <- stringAt + stringBytes;
+                out >> p<byte> <- cast<byte>(alloc(total));
+                guard out != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return null;
+                }
+                zero(out, total);
+
+                putU32(out, 0, 0xFEEDFACF);
+                putU32(out, 4, machoCpu(target));
+                putU32(out, 8, machoCpuSubtype(target));
+                putU32(out, 12, 1);
+                putU32(out, 16, 2);
+                putU32(out, 20, 736);
+
+                putU32(out, 32, 0x19);
+                putU32(out, 36, 712);
+                segmentBytes >> int <- symbolBundleAt + symbolBundleBytes - textAt;
+                putU64(out, 64, segmentBytes, 0);
+                putU64(out, 72, textAt, 0);
+                putU64(out, 80, segmentBytes, 0);
+                putU32(out, 88, 7);
+                putU32(out, 92, 7);
+                putU32(out, 96, 8);
+
+                literal(out, 104, "__text", 6);
+                literal(out, 120, "__TEXT", 6);
+                putU64(out, 144, textBytes, 0);
+                putU32(out, 152, textAt);
+                putU32(out, 156, 4);
+                putU32(out, 160, relocationAt);
+                putU32(out, 164, relocations);
+                putU32(out, 168, 0x80000400);
+
+                literal(out, 184, "__ncc_debug", 11);
+                literal(out, 200, "__DWARF", 7);
+                putU64(out, 216, alignUp(textBytes, 4), 0);
+                putU64(out, 224, debugBytes, 0);
+                putU32(out, 232, debugAt);
+                putU32(out, 236, 2);
+                putU32(out, 248, 0x02000000);
+
+                literal(out, 264, "__debug_abbrev", 14);
+                literal(out, 280, "__DWARF", 7);
+                putU64(out, 296, abbrevAt - textAt, 0);
+                putU64(out, 304, abbrevBytes, 0);
+                putU32(out, 312, abbrevAt);
+                putU32(out, 316, 0);
+                putU32(out, 328, 0x02000000);
+
+                literal(out, 344, "__debug_info", 12);
+                literal(out, 360, "__DWARF", 7);
+                putU64(out, 376, infoAt - textAt, 0);
+                putU64(out, 384, infoBytes, 0);
+                putU32(out, 392, infoAt);
+                putU32(out, 396, 0);
+                putU32(out, 408, 0x02000000);
+
+                literal(out, 424, "__debug_line", 12);
+                literal(out, 440, "__DWARF", 7);
+                putU64(out, 456, lineAt - textAt, 0);
+                putU64(out, 464, lineBytes, 0);
+                putU32(out, 472, lineAt);
+                putU32(out, 476, 0);
+                putU32(out, 488, 0x02000000);
+
+                literal(out, 504, "__eh_frame", 10);
+                literal(out, 520, "__TEXT", 6);
+                putU64(out, 536, ehAt - textAt, 0);
+                putU64(out, 544, ehBytes, 0);
+                putU32(out, 552, ehAt);
+                putU32(out, 556, 3);
+                putU32(out, 560, ehRelocationAt);
+                putU32(out, 564, ehRelocations);
+                putU32(out, 568, 0x6800000B);
+
+                literal(out, 584, "__compact_unwind", 16);
+                literal(out, 600, "__LD", 4);
+                putU64(out, 616, compactAt - textAt, 0);
+                putU64(out, 624, compactBytes, 0);
+                putU32(out, 632, compactAt);
+                putU32(out, 636, 3);
+                putU32(out, 640, compactRelocationAt);
+                putU32(out, 644, compactRelocations);
+                putU32(out, 648, 0x02000000);
+
+                literal(out, 664, "__symbols", 9);
+                literal(out, 680, "__NCC", 5);
+                putU64(out, 696, symbolBundleAt - textAt, 0);
+                putU64(out, 704, symbolBundleBytes, 0);
+                putU32(out, 712, symbolBundleAt);
+                putU32(out, 716, 2);
+                putU32(out, 728, 0x02000000);
+
+                putU32(out, 744, 2);
+                putU32(out, 748, 24);
+                putU32(out, 752, symbolAt);
+                putU32(out, 756, symbols);
+                putU32(out, 760, stringAt);
+                putU32(out, 764, stringBytes);
+                cp(off(out, textAt), mct.nccMct.artifactText(material), textBytes);
+                cp(off(out, debugAt), mct_debug.nccMctDebug.data(debugData), debugBytes);
+                mct_debug.nccMctDebug.release(debugData);
+                cp(off(out, abbrevAt),
+                    mct_platform_debug.nccMctPlatformDebug.abbrevData(platformData), abbrevBytes);
+                cp(off(out, infoAt),
+                    mct_platform_debug.nccMctPlatformDebug.infoData(platformData), infoBytes);
+                cp(off(out, lineAt),
+                    mct_platform_debug.nccMctPlatformDebug.lineData(platformData), lineBytes);
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                cp(off(out, ehAt), mct_native_unwind.nccMctNativeUnwind.ehData(unwindData), ehBytes);
+                cp(off(out, compactAt),
+                    mct_native_unwind.nccMctNativeUnwind.compactData(unwindData), compactBytes);
+                cp(off(out, symbolBundleAt), mct_symbol_bundle.nccMctSymbolBundle.data(symbolData),
+                    symbolBundleBytes);
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+
+                row >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        at >> int <- relocationAt + row * 8;
+                        kind >> int <- machoRelocationType(target, relocation);
+                        putU32(out, at, mct.nccMct.artifactRecordRelocationOffset(material, node));
+                        putU32(out, at + 4, targetOrdinal(material, node) | (1 << 24) | (2 << 25) |
+                            (1 << 27) | (kind << 28));
+                        row += 1;
+                    }
+                    node += 1;
+                }
+
+                unwindRow >> int <- 0;
+                while (unwindRow < ehRelocations) {
+                    sectionOffset >> int <- mct_native_unwind.nccMctNativeUnwind.relocationOffset(
+                        unwindData, unwindRow);
+                    putU64(out, ehAt + sectionOffset,
+                        mct_native_unwind.nccMctNativeUnwind.relocationAddend(
+                            unwindData, unwindRow), 0);
+                    at >> int <- ehRelocationAt + unwindRow * 8;
+                    putU32(out, at, sectionOffset);
+                    putU32(out, at + 4, 1 | (3 << 25));
+                    unwindRow += 1;
+                }
+
+                compactRow >> int <- 0;
+                while (compactRow < compactRelocations) {
+                    sectionOffset >> int <-
+                        mct_native_unwind.nccMctNativeUnwind.compactRelocationOffset(
+                            unwindData, compactRow);
+                    putU64(out, compactAt + sectionOffset,
+                        mct_native_unwind.nccMctNativeUnwind.compactRelocationAddend(
+                            material, compactRow), 0);
+                    at >> int <- compactRelocationAt + compactRow * 8;
+                    putU32(out, at, sectionOffset);
+                    putU32(out, at + 4, 1 | (3 << 25));
+                    compactRow += 1;
+                }
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+
+                putU8(out, stringAt, 0);
+                ordinal >> int <- 0;
+                stringCursor >> int <- stringAt + 1;
+                while (ordinal < targetSymbols) {
+                    node <- targetNode(material, ordinal);
+                    targetKind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                    visibility >> int <- mct.nccMct.artifactRecordTargetVisibility(
+                        material, node);
+                    at >> int <- symbolAt + ordinal * 16;
+                    putU32(out, at, targetStringOffset(material, ordinal, true));
+                    if (targetKind == TARGET_CONTROL_NODE ||
+                        (targetKind == TARGET_LOCAL_SYMBOL && visibility == VIS_PRIVATE))
+                        putU8(out, at + 4, 0x0E);
+                    else if (targetKind == TARGET_LOCAL_SYMBOL && visibility == VIS_INTERNAL)
+                        putU8(out, at + 4, 0x1F);
+                    else if (targetKind == TARGET_LOCAL_SYMBOL) putU8(out, at + 4, 0x0F);
+                    else putU8(out, at + 4, 0x01);
+                    if (isDefinedTarget(material, node)) {
+                        putU8(out, at + 5, 1);
+                        putU64(out, at + 8, targetTextOffset(material, node), 0);
+                    }
+                    stringCursor += writeSymbolName(out, stringCursor, material,
+                        node, true, true);
+                    ordinal += 1;
+                }
+                if (hosted != 0) {
+                    hostedAt >> int <- symbolAt + targetSymbols * 16;
+                    putU32(out, hostedAt, 1 + targetStringBytes(material, true));
+                    putU8(out, hostedAt + 4, 0x0F);
+                    putU8(out, hostedAt + 5, 1);
+                    putU64(out, hostedAt + 8, hostedEntryOffset(material), 0);
+                    writeHostedEntryName(out,
+                        stringAt + 1 + targetStringBytes(material, true), true);
+                }
+                return finish(descriptor(out, total, FORMAT_MACHO64));
+            }
+
+            lebBytes(value >> int) -> int {
+                count >> int <- 1;
+                rest >> int <- value;
+                while (rest >= 128) { rest <- rest / 128; count += 1; }
+                return count;
+            }
+
+            putLeb(out >> p<byte>, at >> int, value >> int) -> int {
+                rest >> int <- value;
+                cursor >> int <- at;
+                while (rest >= 128) {
+                    putU8(out, cursor, (rest % 128) | 0x80);
+                    rest <- rest / 128;
+                    cursor += 1;
+                }
+                putU8(out, cursor, rest);
+                return cursor + 1;
+            }
+
+            emitWasm(material >> p<byte>) -> p<byte> {
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                relocations >> int <- mct.nccMct.artifactRelocations(material);
+                symbols >> int <- targetSymbolCount(material);
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return null;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return null;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return null;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return null;
+                }
+                debugBytes >> int <- mct_debug.nccMctDebug.bytes(debugData);
+                abbrevBytes >> int <- mct_platform_debug.nccMctPlatformDebug.abbrevBytes(platformData);
+                infoBytes >> int <- mct_platform_debug.nccMctPlatformDebug.infoBytes(platformData);
+                lineBytes >> int <- mct_platform_debug.nccMctPlatformDebug.lineBytes(platformData);
+                unwindBytes >> int <- mct_native_unwind.nccMctNativeUnwind.bytes(unwindData);
+                symbolBundleBytes >> int <- mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData);
+                entryNode >> int <- entryTargetNode(material);
+                entryNameBytes >> int <- mangleBytes(material, entryNode, false);
+                exportPayload >> int <- 1 + lebBytes(entryNameBytes) + entryNameBytes + 2;
+                mctPayload >> int <- 12 + textBytes;
+                linkPayload >> int <- 13;
+                linkAt >> int <- 0;
+                while (linkAt < symbols) {
+                    linkPayload += 16 + mangleBytes(material,
+                        targetNode(material, linkAt), false);
+                    linkAt += 1;
+                }
+                symbolPayload >> int <- 12 + symbolBundleBytes;
+                relocationPayload >> int <- 14 + relocations * 12;
+                debugPayload >> int <- 10 + debugBytes;
+                abbrevPayload >> int <- 14 + abbrevBytes;
+                infoPayload >> int <- 12 + infoBytes;
+                linePayload >> int <- 12 + lineBytes;
+                unwindPayload >> int <- 11 + unwindBytes;
+                total >> int <- 27 + 1 + lebBytes(exportPayload) + exportPayload +
+                    1 + lebBytes(mctPayload) + mctPayload +
+                    1 + lebBytes(linkPayload) + linkPayload +
+                    1 + lebBytes(symbolPayload) + symbolPayload +
+                    1 + lebBytes(relocationPayload) + relocationPayload +
+                    1 + lebBytes(debugPayload) + debugPayload +
+                    1 + lebBytes(abbrevPayload) + abbrevPayload +
+                    1 + lebBytes(infoPayload) + infoPayload +
+                    1 + lebBytes(linePayload) + linePayload +
+                    1 + lebBytes(unwindPayload) + unwindPayload;
+                out >> p<byte> <- cast<byte>(alloc(total));
+                guard out != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return null;
+                }
+                zero(out, total);
+
+                putU8(out, 0, 0); putU8(out, 1, 0x61); putU8(out, 2, 0x73); putU8(out, 3, 0x6D);
+                putU8(out, 4, 1);
+                cursor >> int <- 8;
+
+                putU8(out, cursor, 1); cursor += 1;
+                cursor <- putLeb(out, cursor, 5);
+                putU8(out, cursor, 1); putU8(out, cursor + 1, 0x60);
+                putU8(out, cursor + 2, 0); putU8(out, cursor + 3, 1);
+                putU8(out, cursor + 4, 0x7F); cursor += 5;
+
+                putU8(out, cursor, 3); cursor += 1;
+                cursor <- putLeb(out, cursor, 2);
+                putU8(out, cursor, 1); putU8(out, cursor + 1, 0); cursor += 2;
+
+                putU8(out, cursor, 7); cursor += 1;
+                cursor <- putLeb(out, cursor, exportPayload);
+                putU8(out, cursor, 1); cursor += 1;
+                cursor <- putLeb(out, cursor, entryNameBytes);
+                cursor += writeSymbolName(out, cursor, material, entryNode,
+                    false, false);
+                putU8(out, cursor, 0); putU8(out, cursor + 1, 0); cursor += 2;
+
+                putU8(out, cursor, 10); cursor += 1;
+                cursor <- putLeb(out, cursor, 6);
+                putU8(out, cursor, 1); putU8(out, cursor + 1, 4);
+                putU8(out, cursor + 2, 0); putU8(out, cursor + 3, 0x41);
+                putU8(out, cursor + 4, 0); putU8(out, cursor + 5, 0x0B); cursor += 6;
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, mctPayload);
+                putU8(out, cursor, 7); cursor += 1;
+                literal(out, cursor, "ncc.mct", 7); cursor += 7;
+                putU32(out, cursor, mct.nccMct.artifactFingerprint(material)); cursor += 4;
+                cp(off(out, cursor), mct.nccMct.artifactText(material), textBytes); cursor += textBytes;
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, linkPayload);
+                putU8(out, cursor, 8); cursor += 1;
+                literal(out, cursor, "ncc.link", 8); cursor += 8;
+                putU32(out, cursor, symbols); cursor += 4;
+                ordinal >> int <- 0;
+                while (ordinal < symbols) {
+                    symbolNode >> int <- targetNode(material, ordinal);
+                    kind >> int <- mct.nccMct.artifactRecordTargetKind(material, symbolNode);
+                    putU32(out, cursor, kind);
+                    putU32(out, cursor + 4,
+                        mct.nccMct.artifactRecordTargetValue(material, symbolNode));
+                    putU32(out, cursor + 8, targetTextOffset(material, symbolNode));
+                    nameBytes >> int <- mangleBytes(material, symbolNode, false);
+                    putU32(out, cursor + 12, nameBytes);
+                    cursor += 16;
+                    cursor += writeSymbolName(out, cursor, material, symbolNode,
+                        false, false);
+                    ordinal += 1;
+                }
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, symbolPayload);
+                putU8(out, cursor, 11); cursor += 1;
+                literal(out, cursor, "ncc.symbols", 11); cursor += 11;
+                cp(off(out, cursor), mct_symbol_bundle.nccMctSymbolBundle.data(symbolData),
+                    symbolBundleBytes);
+                cursor += symbolBundleBytes;
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, relocationPayload);
+                putU8(out, cursor, 9); cursor += 1;
+                literal(out, cursor, "ncc.reloc", 9); cursor += 9;
+                putU32(out, cursor, relocations); cursor += 4;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        putU32(out, cursor, mct.nccMct.artifactRecordRelocationOffset(material, node));
+                        putU32(out, cursor + 4, relocation);
+                        putU32(out, cursor + 8, targetOrdinal(material, node));
+                        cursor += 12;
+                    }
+                    node += 1;
+                }
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, debugPayload);
+                putU8(out, cursor, 9); cursor += 1;
+                literal(out, cursor, "ncc.debug", 9); cursor += 9;
+                cp(off(out, cursor), mct_debug.nccMctDebug.data(debugData), debugBytes);
+                cursor += debugBytes;
+                mct_debug.nccMctDebug.release(debugData);
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, abbrevPayload);
+                putU8(out, cursor, 13); cursor += 1;
+                literal(out, cursor, ".debug_abbrev", 13); cursor += 13;
+                cp(off(out, cursor),
+                    mct_platform_debug.nccMctPlatformDebug.abbrevData(platformData), abbrevBytes);
+                cursor += abbrevBytes;
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, infoPayload);
+                putU8(out, cursor, 11); cursor += 1;
+                literal(out, cursor, ".debug_info", 11); cursor += 11;
+                cp(off(out, cursor),
+                    mct_platform_debug.nccMctPlatformDebug.infoData(platformData), infoBytes);
+                cursor += infoBytes;
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, linePayload);
+                putU8(out, cursor, 11); cursor += 1;
+                literal(out, cursor, ".debug_line", 11); cursor += 11;
+                cp(off(out, cursor),
+                    mct_platform_debug.nccMctPlatformDebug.lineData(platformData), lineBytes);
+                cursor += lineBytes;
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putLeb(out, cursor, unwindPayload);
+                putU8(out, cursor, 10); cursor += 1;
+                literal(out, cursor, "ncc.unwind", 10); cursor += 10;
+                cp(off(out, cursor), unwindData, unwindBytes);
+                cursor += unwindBytes;
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                return finish(descriptor(out, total, FORMAT_WASM));
+            }
+
+            buildObject(material >> p<byte>) -> p<byte> {
+                format >> int <- mct.nccMct.artifactObjectFormat(material);
+                if (format == FORMAT_ELF64) return emitElf64(material);
+                if (format == FORMAT_ELF32) return emitElf32(material);
+                if (format == FORMAT_COFF64) return emitCoff64(material);
+                if (format == FORMAT_MACHO64) return emitMacho64(material);
+                if (format == FORMAT_WASM) return emitWasm(material);
+                return null;
+            }
+
+            formatName(format >> int) -> str {
+                if (format == FORMAT_ELF64) return "elf64";
+                if (format == FORMAT_ELF32) return "elf32";
+                if (format == FORMAT_COFF64) return "coff64";
+                if (format == FORMAT_MACHO64) return "macho64";
+                if (format == FORMAT_WASM) return "wasm";
+                return "unknown";
+            }
+
+            validMagic(result >> p<byte>) -> bool {
+                bytes >> p<byte> <- data(result);
+                format >> int <- rd<int>(off(result, D_FORMAT));
+                if (format == FORMAT_ELF64 || format == FORMAT_ELF32) {
+                    return rd<byte>(bytes) == 0x7F && rd<byte>(off(bytes, 1)) == 69 &&
+                        rd<byte>(off(bytes, 2)) == 76 && rd<byte>(off(bytes, 3)) == 70;
+                }
+                if (format == FORMAT_COFF64) {
+                    return (rd<byte>(bytes) & 255) == 0x64 &&
+                        (rd<byte>(off(bytes, 1)) & 255) == 0x86;
+                }
+                if (format == FORMAT_MACHO64) {
+                    return (rd<byte>(bytes) & 255) == 0xCF &&
+                        (rd<byte>(off(bytes, 1)) & 255) == 0xFA &&
+                        (rd<byte>(off(bytes, 2)) & 255) == 0xED &&
+                        (rd<byte>(off(bytes, 3)) & 255) == 0xFE;
+                }
+                return format == FORMAT_WASM && rd<byte>(bytes) == 0 &&
+                    rd<byte>(off(bytes, 1)) == 0x61 && rd<byte>(off(bytes, 2)) == 0x73 &&
+                    rd<byte>(off(bytes, 3)) == 0x6D;
+            }
+
+            writeObject(result >> p<byte>, path >> str) -> bool {
+                if (path == "") return true;
+                return fsWriteFrom(path, data(result), objectSize(result), false) == objectSize(result);
+            }
+
+            emitObject(material >> p<byte>, result >> p<byte>, json >> bool) -> bool {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                format >> int <- rd<int>(off(result, D_FORMAT));
+                debugData >> p<byte> <- mct_debug.nccMctDebug.build(material);
+                guard debugData != null else return false;
+                platformData >> p<byte> <- mct_platform_debug.nccMctPlatformDebug.build(material);
+                guard platformData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    return false;
+                }
+                unwindData >> p<byte> <- mct_native_unwind.nccMctNativeUnwind.build(material);
+                guard unwindData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    return false;
+                }
+                symbolData >> p<byte> <- mct_symbol_bundle.nccMctSymbolBundle.build(material);
+                guard symbolData != null else {
+                    mct_debug.nccMctDebug.release(debugData);
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    return false;
+                }
+                if (!json) {
+                    print("object target="); println(ir.nccIr.targetName(target));
+                    print("format="); print(formatName(format));
+                    print(" bytes="); println(renderInt(objectSize(result)));
+                    print("relocations="); println(renderInt(mct.nccMct.artifactRelocations(material)));
+                    print("debug_bytes="); print(renderInt(mct_debug.nccMctDebug.bytes(debugData)));
+                    print(" lines="); print(renderInt(mct_debug.nccMctDebug.lines(debugData)));
+                    print(" functions="); println(renderInt(mct_debug.nccMctDebug.functions(debugData)));
+                    mct_debug.nccMctDebug.release(debugData);
+                    print("platform_debug_bytes="); println(renderInt(
+                        mct_platform_debug.nccMctPlatformDebug.bytes(platformData)));
+                    mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                    print("native_unwind_bytes="); println(renderInt(
+                        mct_native_unwind.nccMctNativeUnwind.bytes(unwindData)));
+                    mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                    print("symbol_bundle_bytes="); print(renderInt(
+                        mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData)));
+                    print(" records="); println(renderInt(
+                        mct_symbol_bundle.nccMctSymbolBundle.records(symbolData)));
+                    mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.object.v5\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(target)); print("\"");
+                print(",\"format\":\""); print(formatName(format)); print("\"");
+                print(",\"bytes\":"); print(renderInt(objectSize(result)));
+                print(",\"text_bytes\":"); print(renderInt(mct.nccMct.artifactTextBytes(material)));
+                print(",\"relocations\":"); print(renderInt(mct.nccMct.artifactRelocations(material)));
+                print(",\"symbols\":"); print(renderInt(targetSymbolCount(material)));
+                print(",\"defined_symbols\":"); print(renderInt(
+                    targetCountKind(material, TARGET_LOCAL_SYMBOL) +
+                    targetCountKind(material, TARGET_CONTROL_NODE)));
+                print(",\"external_symbols\":"); print(renderInt(
+                    targetCountKind(material, TARGET_EXTERNAL_SYMBOL)));
+                print(",\"control_symbols\":"); print(renderInt(
+                    targetCountKind(material, TARGET_CONTROL_NODE)));
+                print(",\"unresolved_symbols\":"); print(renderInt(
+                    targetCountKind(material, TARGET_UNRESOLVED)));
+                print(",\"public_symbols\":"); print(renderInt(
+                    targetCountVisibility(material, VIS_PUBLIC)));
+                print(",\"private_symbols\":"); print(renderInt(
+                    targetCountVisibility(material, VIS_PRIVATE)));
+                print(",\"internal_symbols\":"); print(renderInt(
+                    targetCountVisibility(material, VIS_INTERNAL)));
+                print(",\"default_symbols\":"); print(renderInt(
+                    targetCountVisibility(material, VIS_DEFAULT)));
+                print(",\"identity_bytes\":"); print(renderInt(
+                    mct.nccMct.artifactIdentityBytes(material)));
+                print(",\"identity_fingerprint\":"); print(renderInt(
+                    mct.nccMct.artifactIdentityFingerprint(material)));
+                print(",\"mangle_bytes\":"); print(renderInt(
+                    targetStringBytes(material, false)));
+                print(",\"symbol_bundle_section\":\"");
+                print(format == FORMAT_COFF64 ? ".nccsym" :
+                    (format == FORMAT_MACHO64 ? "__NCC,__symbols" :
+                    (format == FORMAT_WASM ? "ncc.symbols" : ".ncc.symbols")));
+                print("\"");
+                print(",\"symbol_bundle_bytes\":"); print(renderInt(
+                    mct_symbol_bundle.nccMctSymbolBundle.bytes(symbolData)));
+                print(",\"symbol_bundle_records\":"); print(renderInt(
+                    mct_symbol_bundle.nccMctSymbolBundle.records(symbolData)));
+                print(",\"symbol_bundle_hash\":"); print(renderInt(
+                    mct_symbol_bundle.nccMctSymbolBundle.checksum(symbolData)));
+                print(",\"debug_section\":\"");
+                print(format == FORMAT_COFF64 ? ".nccdbg" :
+                    (format == FORMAT_MACHO64 ? "__DWARF,__ncc_debug" :
+                    (format == FORMAT_WASM ? "ncc.debug" : ".ncc.debug")));
+                print("\"");
+                print(",\"debug_bytes\":"); print(renderInt(
+                    mct_debug.nccMctDebug.bytes(debugData)));
+                print(",\"debug_lines\":"); print(renderInt(
+                    mct_debug.nccMctDebug.lines(debugData)));
+                print(",\"unwind_functions\":"); print(renderInt(
+                    mct_debug.nccMctDebug.functions(debugData)));
+                print(",\"debug_hash\":"); print(renderInt(
+                    mct_debug.nccMctDebug.checksum(debugData)));
+                print(",\"platform_debug_format\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.format(platformData)));
+                print(",\"platform_abbrev_bytes\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.abbrevBytes(platformData)));
+                print(",\"platform_info_bytes\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.infoBytes(platformData)));
+                print(",\"platform_line_bytes\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.lineBytes(platformData)));
+                print(",\"platform_codeview_bytes\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.codeviewBytes(platformData)));
+                print(",\"platform_debug_hash\":"); print(renderInt(
+                    mct_platform_debug.nccMctPlatformDebug.checksum(platformData)));
+                print(",\"native_unwind_format\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.format(unwindData)));
+                print(",\"native_unwind_bytes\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.bytes(unwindData)));
+                print(",\"native_unwind_relocations\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.relocations(unwindData)));
+                print(",\"eh_frame_bytes\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.ehBytes(unwindData)));
+                print(",\"pdata_bytes\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.pdataBytes(unwindData)));
+                print(",\"xdata_bytes\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.xdataBytes(unwindData)));
+                print(",\"compact_unwind_bytes\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.compactBytes(unwindData)));
+                print(",\"compact_unwind_relocations\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.compactRelocations(unwindData)));
+                print(",\"native_unwind_hash\":"); print(renderInt(
+                    mct_native_unwind.nccMctNativeUnwind.checksum(unwindData)));
+                print(",\"mct_fingerprint\":"); print(renderInt(mct.nccMct.artifactFingerprint(material)));
+                print(",\"object_hash\":"); print(renderInt(rd<int>(off(result, D_HASH))));
+                println("}");
+                mct_debug.nccMctDebug.release(debugData);
+                mct_platform_debug.nccMctPlatformDebug.release(platformData);
+                mct_native_unwind.nccMctNativeUnwind.release(unwindData);
+                mct_symbol_bundle.nccMctSymbolBundle.release(symbolData);
+                return true;
+            }
+
+            releaseObject(result >> p<byte>) -> void {
+                if (result != null) { free(data(result)); free(result); }
+            }
+
+        internal:
+            objectFromArtifact(material >> p<byte>) -> p<byte> {
+                result >> p<byte> <- buildObject(material);
+                mct_symbol_bundle.nccMctSymbolBundle.releaseMaterialIndex(material);
+                return result;
+            }
+
+            writeBuiltObject(result >> p<byte>, path >> str) -> bool {
+                return writeObject(result, path);
+            }
+
+            builtObjectBytes(result >> p<byte>) -> int {
+                return objectSize(result);
+            }
+
+            builtObjectHash(result >> p<byte>) -> int {
+                return rd<int>(off(result, D_HASH));
+            }
+
+            releaseBuiltObject(result >> p<byte>) -> void {
+                releaseObject(result);
+            }
+
+        public:
+            projectObjectFromArtifact(material >> p<byte>) -> p<byte> {
+                return objectFromArtifact(material);
+            }
+            projectWriteObject(result >> p<byte>, path >> str) -> bool {
+                return writeBuiltObject(result, path);
+            }
+            projectObjectBytes(result >> p<byte>) -> int {
+                return builtObjectBytes(result);
+            }
+            projectObjectHash(result >> p<byte>) -> int {
+                return builtObjectHash(result);
+            }
+            projectReleaseObject(result >> p<byte>) -> void {
+                releaseBuiltObject(result);
+            }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                result >> p<byte> <- buildObject(material);
+                guard result != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                guard validMagic(result) else {
+                    releaseObject(result); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                }
+                if (!writeObject(result, output)) {
+                    releaseObject(result); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitObject(material, result, json);
+                objects += 1;
+                objectBytes += objectSize(result);
+                lastFormat <- rd<int>(off(result, D_FORMAT));
+                lastSize <- objectSize(result);
+                lastHash <- rd<int>(off(result, D_HASH));
+                releaseObject(result);
+                mct.nccMct.releaseArtifact(material);
+                return 0;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedFormat >> int,
+                expectedBytes >> int, expectedRelocations >> int, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                result >> p<byte> <- buildObject(material);
+                guard result != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                valid >> bool <- validMagic(result) &&
+                    rd<int>(off(result, D_FORMAT)) == expectedFormat &&
+                    objectSize(result) == expectedBytes &&
+                    mct.nccMct.artifactRelocations(material) == expectedRelocations &&
+                    rd<int>(off(result, D_HASH)) == expectedHash;
+                releaseObject(result);
+                mct.nccMct.releaseArtifact(material);
+                return valid ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                return DESCRIPTOR_BYTES == 24 && FORMAT_ELF64 == 1 && FORMAT_ELF32 == 2 &&
+                    FORMAT_COFF64 == 3 && FORMAT_MACHO64 == 4 && FORMAT_WASM == 5 &&
+                    elfMachine(1) == 62 && elfMachine(5) == 183 && elfMachine(9) == 243 &&
+                    machoCpu(3) == 0x01000007 && lebBytes(127) == 1 && lebBytes(128) == 2 &&
+                    mct_debug.nccMctDebug.selfTest() &&
+                    mct_platform_debug.nccMctPlatformDebug.selfTest();
+            }
+
+    fa:
+        return true;
+}

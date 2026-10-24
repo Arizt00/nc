@@ -1,0 +1,93 @@
+use <audit:log, profile, status, trace, validate>;
+use <io:output>;
+use <memory:stack>;
+
+rawAuditFamily :: runtime {
+    fn:
+        testLog(table >> addr, text >> addr) -> bool {
+            written >> bool <- logWrite(table, 0, 2, 11, text, 3, 42, 5);
+            copied >> bool <- logCopy(table, 1, table, 0);
+            ok >> bool <- written && copied && logStride() == 48 &&
+                logLevel(table, 1) == 2 && logCategory(table, 1) == 11 &&
+                logMessage(table, 1) == text && logMessageBytes(table, 1) == 3 &&
+                logValue(table, 1) == 42 && logFlags(table, 1) == 5;
+            cleared >> bool <- logClear(table, 1);
+            return ok && cleared;
+        }
+
+        testProfile(table >> addr, target >> addr) -> bool {
+            written >> bool <- profileWrite(table, 0, 3, 7, 15, 3, target, 3);
+            copied >> bool <- profileCopy(table, 1, table, 0);
+            required >> bool <- profileRequire(table, 1, 3);
+            ok >> bool <- written && copied && required && profileStride() == 48 &&
+                profileMode(table, 1) == 3 && profileFlags(table, 1) == 7 &&
+                profileCpuFeatures(table, 1) == 15 &&
+                profileOptimization(table, 1) == 3 &&
+                profileTarget(table, 1) == target && profileTargetBytes(table, 1) == 3 &&
+                profileHas(table, 1, 1);
+            cleared >> bool <- profileClear(table, 1);
+            return ok && cleared;
+        }
+
+        testStatus(table >> addr, text >> addr) -> bool {
+            written >> bool <- statusWrite(table, 0, 1, 200, text, 3, 99);
+            copied >> bool <- statusCopy(table, 1, table, 0);
+            ok >> bool <- written && copied && statusStride() == 40 &&
+                statusKind(table, 1) == 1 && statusCode(table, 1) == 200 &&
+                statusMessage(table, 1) == text && statusMessageBytes(table, 1) == 3 &&
+                statusDetail(table, 1) == 99;
+            cleared >> bool <- statusClear(table, 1);
+            return ok && cleared;
+        }
+
+        testTrace(table >> addr, payload >> addr) -> bool {
+            written >> bool <- traceWrite(table, 0, 4, 100, 90, 1000, payload, 3, 77);
+            copied >> bool <- traceCopy(table, 1, table, 0);
+            ok >> bool <- written && copied && traceStride() == 56 &&
+                traceKind(table, 1) == 4 && traceId(table, 1) == 100 &&
+                traceParent(table, 1) == 90 && traceTick(table, 1) == 1000 &&
+                tracePayload(table, 1) == payload && tracePayloadBytes(table, 1) == 3 &&
+                traceValue(table, 1) == 77;
+            cleared >> bool <- traceClear(table, 1);
+            return ok && cleared;
+        }
+
+        testValidate(text >> addr, zero >> addr, utf8 >> addr) -> bool {
+            return validateNotNull(text) && validateRange(7, 0, 10) &&
+                validateLength(3, 1, 8) && validateEqual(text, 3, text, 3) &&
+                validateAscii(text, 3) && validateUtf8(text, 3) &&
+                validateUtf8(utf8, 3) && validateAligned(zero, 1) &&
+                validatePowerOfTwo(64) && validateZero(zero, 8) &&
+                validateMask(7, 3, 8);
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            logMemory >> p<byte> <- stackAlloc(logStride() * 2, 8);
+            profileMemory >> p<byte> <- stackAlloc(profileStride() * 2, 8);
+            statusMemory >> p<byte> <- stackAlloc(statusStride() * 2, 8);
+            traceMemory >> p<byte> <- stackAlloc(traceStride() * 2, 8);
+            zero >> p<byte> <- stackAlloc(8, 8);
+            utf8 >> p<byte> <- stackAlloc(3, 1);
+            i >> int <- 0;
+            while (i < 8) { wr(off(zero, i), 0); i += 1; }
+            wr(off(utf8, 0), 226);
+            wr(off(utf8, 1), 130);
+            wr(off(utf8, 2), 172);
+            text >> addr <- adr(b"raw");
+            ok >> bool <- testLog(adr(logMemory), text) &&
+                testProfile(adr(profileMemory), text) &&
+                testStatus(adr(statusMemory), text) &&
+                testTrace(adr(traceMemory), text) &&
+                testValidate(text, adr(zero), adr(utf8));
+            print("manual nC audit family backend: ");
+            if (ok) { println("true"); } else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

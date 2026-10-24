@@ -1,0 +1,67 @@
+use <auth.system:process, thread>;
+use <collections:result>;
+use <io:output, render, fsread, fsync>;
+
+backendMctRealBytes :: runtime {
+    stc:
+        processHandle >> Result<ProcessHandle, ProcessError>;
+        processStatus >> Result<int, ProcessError>;
+        threadHandle >> Result<ThreadHandle, ThreadError>;
+        threadStatus >> Result<int, ThreadError>;
+        fileRead >> result;
+        exitCode >> int;
+        threadValue >> int;
+        success >> bool;
+
+    fn:
+        worker() -> int {
+            fswrite("target/tmp/backend_mct_thread.txt", "thread-runtime-symbol");
+            fsync("target/tmp/backend_mct_thread.txt");
+            return 42;
+        }
+
+        run() -> bool {
+            fswrite("target/tmp/backend_mct_runtime.txt", "fs-runtime-symbol");
+            fsync("target/tmp/backend_mct_runtime.txt");
+            fileRead >> result <- fsread("target/tmp/backend_mct_runtime.txt");
+
+            processHandle >> Result<ProcessHandle, ProcessError> <- spawn("ncc", ["--help"]);
+            processStatus >> Result<int, ProcessError> <- wait(processHandle);
+
+            match (processStatus) {
+                Ok(code) => {
+                    exitCode >> int <- code;
+                }
+                Err(e) => {
+                    exitCode >> int <- -1;
+                }
+            }
+
+            threadHandle >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(worker));
+            threadStatus >> Result<int, ThreadError> <- threadJoin(threadHandle);
+
+            match (threadStatus) {
+                Ok(value) => {
+                    threadValue >> int <- value;
+                }
+                Err(e) => {
+                    threadValue >> int <- -1;
+                }
+            }
+
+            success >> bool <- exitCode == 0 && exists("target/tmp/backend_mct_thread.txt");
+
+            println(colorBold("Backend/MCT closed_real_backing_bytes", "green"));
+            println("fs-read-called=true");
+            println("process-exit=" + renderInt(exitCode));
+            println("thread-file=" + renderBool(exists("target/tmp/backend_mct_thread.txt")));
+            println("ok=" + renderBool(success));
+            return success;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

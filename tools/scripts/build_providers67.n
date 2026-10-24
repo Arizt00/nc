@@ -1,0 +1,121 @@
+use <data:json>;
+use <io:output, std>;
+use <process:args, command, env>;
+use <fs:dir>;
+
+buildProviders67 {
+    option(args >> addr, name >> str, fallback >> str) -> str {
+        at >> int <- 1;
+        while (at + 1 < argsCount(args)) {
+            if (argsAt(args, at) == name) return argsAt(args, at + 1);
+            at += 1;
+        }
+        return fallback;
+    }
+    quote(text >> str) -> str {
+        if (strContains(text, "\"") || strContains(text, "\n") || strContains(text, "\r")) return "";
+        return "\"" + text + "\"";
+    }
+    mkdir(path >> str) -> bool {
+        if (exists(path)) return true;
+        at >> int <- strByteLen(path) - 1;
+        data >> p<byte> <- cast<byte>(path);
+        while (at >= 0 && rd(off(data, at)) != 47 && rd(off(data, at)) != 92) { at -= 1; }
+        parent >> str <- at < 0 ? "." : (at == 0 ? "/" : strSubstring(path, 0, at));
+        if (parent == path || !mkdir(parent)) return false;
+        createDir(path);
+        return exists(path);
+    }
+    invoke(line >> str, windows >> bool) -> bool {
+        child >> addr <- commandOpen(line, ".", windows ? stdIn() : null,
+            windows ? stdOut() : null, windows ? stdErr() : null, 0);
+        if (child == null) return false;
+        started >> bool <- commandStarted(child);
+        waited >> int <- started ? commandWait(child, 120000) : -1;
+        if (started && waited != 0) { commandTerminate(child, 15); commandWait(child, 3000); }
+        code >> int <- commandExitCode(child);
+        commandRelease(child);
+        return started && waited == 0 && code == 0;
+    }
+    build(args >> addr, windows >> bool) -> int {
+        base >> str <- option(args, "--base", "");
+        previous >> str <- option(args, "--previous", "");
+        out >> str <- option(args, "--out", "");
+        manifest >> int <- jsonParseFile(option(args, "--manifest", "bootstrap/runtime-v67-exports.json"));
+        if (manifest == 0 || quote(base) == "" || quote(previous) == "" || quote(out) == "" ||
+            base == "" || previous == "" || out == "") return 64;
+        if (!mkdir(out)) return 73;
+        exports >> int <- jsonObjectGet(manifest, "exports");
+        additions >> int <- jsonObjectGet(manifest, "additions");
+        objects >> int <- jsonObjectGet(manifest, "objects");
+        if (jsonArrayLen(exports) != 145 || jsonArrayLen(additions) != 9 || jsonArrayLen(objects) != 24) return 65;
+        suffix >> str <- windows ? ".obj" : ".o";
+        objcopy >> str <- option(args, "--objcopy", windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "objcopy");
+        linker >> str <- option(args, "--linker", windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+        if (quote(objcopy) == "" || quote(linker) == "") return 64;
+        renames >> str <- "";
+        at >> int <- 0;
+        while (at < jsonArrayLen(additions)) {
+            name >> str <- jsonGetStringOr(jsonArrayGet(additions, at), "");
+            leaf >> str <- strSubstring(name, 16, strByteLen(name) - 16);
+            renames += " --redefine-sym jsonProvider54_" + leaf + "=" + name;
+            at += 1;
+        }
+        jsonObject >> str <- out + "/json.exports" + suffix;
+        if (!invoke(quote(objcopy) + renames + " " + quote(base + "/json.exports" + suffix) + " " + quote(jsonObject), windows)) return 1;
+        inputs >> str <- " " + quote(jsonObject) + " " + quote(previous + "/text_scalar.exports" + suffix);
+        at <- 0;
+        while (at < jsonArrayLen(objects)) {
+            name >> str <- jsonGetStringOr(jsonArrayGet(objects, at), "");
+            if (name != "json.exports") {
+                path >> str <- base + "/" + name + suffix;
+                if (fsSize(path) <= 0) return 74;
+                inputs += " " + quote(path);
+            }
+            at += 1;
+        }
+        artifact >> str <- out + (windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+        if (windows) {
+            published >> str <- "";
+            at <- 0;
+            while (at < jsonArrayLen(exports)) {
+                published += " /export:" + jsonGetStringOr(jsonArrayGet(exports, at), "");
+                at += 1;
+            }
+            support >> str <- option(args, "--compiler-support", "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+            if (!invoke(quote(linker) + " /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:" + quote(artifact) + published + inputs +
+                " C:/msys64/mingw64/lib/libkernel32.a C:/msys64/mingw64/lib/libshell32.a " + quote(support), windows)) return 1;
+        } else {
+            mapPath >> str <- previous + "/runtime.exports.map";
+            bytes >> int <- fsSize(mapPath);
+            if (bytes <= 0) return 74;
+            data >> p<byte> <- cast(alloc(bytes));
+            if (data == null) return 74;
+            valid >> bool <- fsReadInto(mapPath, data, bytes) == bytes &&
+                fsWriteFrom(out + "/runtime.exports.map", data, bytes, false) == bytes;
+            free(data);
+            if (!valid) return 74;
+            version >> str <- "NC_RUNTIME_67 { global: ";
+            at <- 0;
+            while (at < jsonArrayLen(additions)) {
+                version += "\"" + jsonGetStringOr(jsonArrayGet(additions, at), "") + "\"; ";
+                at += 1;
+            }
+            version += "} NC_RUNTIME_66;\n";
+            if (fsWriteFrom(out + "/runtime.exports.map", cast<byte>(version), strByteLen(version), true) != strByteLen(version)) return 74;
+            if (!invoke(quote(linker) + " -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script " +
+                quote(out + "/runtime.exports.map") + " -o " + quote(artifact) + inputs + " -lc", windows)) return 1;
+        }
+        jsonRelease(exports); jsonRelease(additions); jsonRelease(objects); jsonRelease(manifest);
+        println("provider v67 built: " + artifact);
+        return fsSize(artifact) > 0 ? 0 : 74;
+    }
+    run() -> int {
+        args >> addr <- argsOpen();
+        code >> int <- build(args, envHas("WINDIR"));
+        argsRelease(args);
+        return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

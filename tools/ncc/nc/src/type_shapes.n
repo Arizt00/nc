@@ -1,0 +1,388 @@
+use <data:json>;
+use <io:render>;
+use <project:parser_ast, binary_layout>;
+
+nccTypeShapes {
+    type:
+        ShapeContext {
+            public:
+                material >> p<byte>;
+                layout >> p<byte>;
+                seen >> p<int>;
+                nodes >> int;
+                count >> int;
+                failed >> bool;
+        }
+    fn:
+        private:
+            setInt(object >> int, key >> str, value >> int) -> void {
+                item >> int <- jsonNewInt(value); jsonObjectSet(object,key,item); jsonRelease(item);
+            }
+            setText(object >> int, key >> str, value >> str) -> void {
+                item >> int <- jsonNewString(value); jsonObjectSet(object,key,item); jsonRelease(item);
+            }
+            appendInt(array >> int, value >> int) -> void {
+                item >> int <- jsonNewInt(value); jsonArrayPush(array,item); jsonRelease(item);
+            }
+            token(m >> p<byte>, node >> int) -> int {
+                wanted >> int <- parser_ast.nccParserAst.materialNodeNameHash(m,node);
+                origin >> int <- parser_ast.nccParserAst.materialNodeOrigin(m,node);
+                if (origin >= 0 && (wanted == 0 || parser_ast.nccParserAst.materialIdentityHash(m,origin) == wanted)) return origin;
+                at >> int <- parser_ast.nccParserAst.materialNodeFirstToken(m,node);
+                end >> int <- parser_ast.nccParserAst.materialNodeEndToken(m,node);
+                while (at <= end) {
+                    if (wanted != 0 && parser_ast.nccParserAst.materialIdentityHash(m,at) == wanted) return at;
+                    at += 1;
+                }
+                return parser_ast.nccParserAst.materialNodeFirstToken(m,node);
+            }
+            name(m >> p<byte>, node >> int) -> str {
+                if (parser_ast.nccParserAst.materialNodeKind(m,node) == 18) {
+                    first >> int <- parser_ast.nccParserAst.materialNodeFirstToken(m,node);
+                    end >> int <- parser_ast.nccParserAst.materialNodeEndToken(m,node);
+                    if (end > first) {
+                        bytes >> int <- 0; at >> int <- first;
+                        while (at <= end) { bytes += parser_ast.nccParserAst.materialTokenEnd(m,at)-parser_ast.nccParserAst.materialTokenStart(m,at); at += 1; }
+                        data >> p<byte> <- cast<byte>(alloc(bytes+1));
+                        if (data == null) return cast<str>(null);
+                        at = first; cursor >> int <- 0;
+                        while (at <= end) {
+                            length >> int <- parser_ast.nccParserAst.materialTokenEnd(m,at)-parser_ast.nccParserAst.materialTokenStart(m,at);
+                            cp(off(data,cursor),parser_ast.nccParserAst.materialTokenData(m,at),length);
+                            cursor += length; at += 1;
+                        }
+                        wr(off(data,bytes),0); return cast<str>(data);
+                    }
+                }
+                t >> int <- token(m,node);
+                count >> int <- t < 0 ? 0 : parser_ast.nccParserAst.materialIdentityBytes(m,t);
+                data >> p<byte> <- cast<byte>(alloc(count+1));
+                if (data == null) return cast<str>(null);
+                if (count > 0) cp(data,parser_ast.nccParserAst.materialIdentityData(m,t),count);
+                wr(off(data,count),0); return cast<str>(data);
+            }
+            scope(m >> p<byte>, node >> int) -> int {
+                at >> int <- parser_ast.nccParserAst.materialNodeParent(m,node);
+                while (at >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,at);
+                    if (kind == 1 || kind == 3 || kind == 13 || kind == 15 || kind == 34) return at;
+                    at <- parser_ast.nccParserAst.materialNodeParent(m,at);
+                }
+                return -1;
+            }
+            same(m >> p<byte>, a >> int, b >> int) -> bool {
+                left >> int <- token(m,a); right >> int <- token(m,b);
+                if (left < 0 || right < 0) return false;
+                bytes >> int <- parser_ast.nccParserAst.materialIdentityBytes(m,left);
+                if (bytes != parser_ast.nccParserAst.materialIdentityBytes(m,right)) return false;
+                p >> p<byte> <- parser_ast.nccParserAst.materialIdentityData(m,left);
+                q >> p<byte> <- parser_ast.nccParserAst.materialIdentityData(m,right);
+                at >> int <- 0;
+                while (at < bytes) { if (rd(off(p,at)) != rd(off(q,at))) return false; at += 1; }
+                return true;
+            }
+            nominal(m >> p<byte>, node >> int) -> int {
+                t >> int <- token(m,node);
+                if (parser_ast.nccParserAst.materialTokenSame(m,t,"int") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"byte") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"bool") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"str") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"char") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"void") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"addr") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"usize") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"isize") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"i8") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"i16") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"i32") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"i64") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"u8") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"u16") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"u32") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"u64") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"ft32") ||
+                    parser_ast.nccParserAst.materialTokenSame(m,t,"ft64")) return -1;
+                owner >> int <- scope(m,node);
+                while (owner >= 0) {
+                    at >> int <- 0;
+                    while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                        kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,at);
+                        if ((kind == 11 || kind == 13) && scope(m,at) == owner && same(m,at,node)) return at;
+                        at += 1;
+                    }
+                    owner <- scope(m,owner);
+                }
+                return -1;
+            }
+            describeNode(c >> p<byte>, node >> int, depth >> int) -> int {
+                if (node < 0 || depth >= 128 || rd<byte>(off(c,32)) != 0) { wr<byte>(off(c,32),1); return -1; }
+                m >> p<byte> <- from<byte>(rd<addr>(c));
+                seen >> p<int> <- from<int>(rd<addr>(off(c,16)));
+                table >> int <- rd<int>(off(c,24));
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,node);
+                if (kind == 18) {
+                    found >> int <- nominal(m,node);
+                    if (found >= 0) node = found;
+                    kind = parser_ast.nccParserAst.materialNodeKind(m,node);
+                }
+                old >> int <- rd(off(seen,node));
+                if (old >= 0) return old;
+                index >> int <- rd<int>(off(c,28));
+                wr<int>(off(c,28),index+1);
+                item >> int <- jsonNewObject();
+                wr(off(seen,node),index);
+                setInt(item,"kind",kind);
+                setInt(item,"flags",parser_ast.nccParserAst.materialNodeFlags(m,node));
+                setInt(item,"role",parser_ast.nccParserAst.materialNodeRoleHash(m,node));
+                text >> str <- name(m,node);
+                if (cast<byte>(text) == null) { wr<byte>(off(c,32),1); jsonRelease(item); return -1; }
+                setText(item,"name",text); free(cast<byte>(text));
+                values >> array<u64,3>;
+                valid >> bool <- binary_layout.nccBinaryLayout.describe(from<byte>(rd<addr>(off(c,8))),node,cast<byte>(&values));
+                setInt(item,"layout_valid",valid ? 1 : 0);
+                setInt(item,"bytes",valid ? values[0] : 0);
+                setInt(item,"align",valid ? values[1] : 0);
+                setInt(item,"offset",valid ? values[2] : 0);
+                children >> int <- jsonNewArray();
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(m,node);
+                while (child >= 0) {
+                    childKind >> int <- parser_ast.nccParserAst.materialNodeKind(m,child);
+                    if ((childKind >= 18 && childKind <= 33) || childKind == 14 ||
+                        childKind == 72 || childKind == 73 || childKind == 77 || childKind == 78 ||
+                        childKind == 79 || childKind == 80 || (childKind >= 86 && childKind <= 89)) {
+                        appendInt(children,describeNode(c,child,depth+1));
+                    }
+                    child <- parser_ast.nccParserAst.materialNodeNextSibling(m,child);
+                }
+                jsonObjectSet(item,"children",children); jsonRelease(children);
+                key >> str <- renderInt(index);
+                if (!jsonObjectSet(table,key,item)) wr<byte>(off(c,32),1);
+                strRelease(key);
+                jsonRelease(item);
+                return index;
+            }
+        public:
+            declarationType(m >> p<byte>, declaration >> int) -> int {
+                at >> int <- parser_ast.nccParserAst.materialNodeFirstChild(m,declaration);
+                while (at >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,at);
+                    if (kind >= 18 && kind <= 24) return at;
+                    at <- parser_ast.nccParserAst.materialNodeNextSibling(m,at);
+                }
+                return -1;
+            }
+            signature(m >> p<byte>, function >> int, target >> int) -> int {
+                return signatureBound(m,function,target,0);
+            }
+            signatureBound(m >> p<byte>, function >> int, target >> int, symbols >> int) -> int {
+                layout >> p<byte> <- openBoundLayout(m,target,symbols);
+                if (layout == null) return 0;
+                result >> int <- signatureInLayout(m,function,target,layout);
+                binary_layout.nccBinaryLayout.close(layout); return result;
+            }
+            view(object >> int, key >> str) -> str {
+                value >> int <- jsonObjectBorrow(object,key);
+                result >> str <- jsonStringView(value,""); jsonRelease(value); return result;
+            }
+            openBoundLayout(m >> p<byte>, target >> int, symbols >> int) -> p<byte> {
+                layout >> p<byte> <- binary_layout.nccBinaryLayout.open(m,target);
+                if (layout == null) return null;
+                table >> int <- jsonNewObject(); index >> int <- 0;
+                while (symbols != 0 && index < jsonArrayLen(symbols)) {
+                    symbol >> int <- jsonArrayBorrow(symbols,index);
+                    if (view(symbol,"kind") == "type") {
+                        full >> str <- view(symbol,"unit")+"."+view(symbol,"name");
+                        shape >> int <- jsonObjectBorrow(symbol,"type_signature");
+                        types >> int <- jsonObjectBorrow(shape,"types");
+                        root >> int <- jsonArrayBorrow(types,getInt(shape,"result",-1));
+                        if (getInt(root,"layout_valid",0) == 1) jsonObjectSet(table,full,root);
+                        jsonRelease(root); jsonRelease(types); jsonRelease(shape); strRelease(full);
+                    }
+                    jsonRelease(symbol); index += 1;
+                }
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(m); at >> int <- 0;
+                while (symbols != 0 && at < count) {
+                    if (parser_ast.nccParserAst.materialNodeKind(m,at) == 18) {
+                        spelling >> str <- name(m,at);
+                        if (strIndexOf(spelling,".") >= 0) {
+                            root >> int <- jsonObjectBorrow(table,spelling);
+                            if (root != 0) binary_layout.nccBinaryLayout.bindType(layout,at,getInt(root,"bytes",0),getInt(root,"align",0));
+                            jsonRelease(root);
+                        }
+                        strRelease(spelling);
+                    }
+                    at += 1;
+                }
+                jsonRelease(table); return layout;
+            }
+            signatureInLayout(m >> p<byte>, function >> int, target >> int, layout >> p<byte>) -> int {
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(m);
+                seen >> p<int> <- cast<int>(alloc(count*sizeOf(int)));
+                if (seen == null || layout == null) { free(seen); return 0; }
+                at >> int <- 0;
+                while (at < count) { wr(off(seen,at),-1); at += 1; }
+                nodes >> int <- jsonNewObject();
+                context >> ShapeContext <- ShapeContext(material:m,layout:layout,seen:seen,nodes:nodes,count:0,failed:false);
+                result >> int <- jsonNewObject();
+                setText(result,"schema","nc.project.type-signature.v1");
+                setInt(result,"target",target);
+                application >> bool <- parser_ast.nccParserAst.materialNodeKind(m,function) == 74;
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,function);
+                type >> int <- application ? -1 : (kind == 11 || kind == 13 ? function : declarationType(m,function));
+                setInt(result,"result",type < 0 ? -1 : describeNode(cast<byte>(&context),type,0));
+                parameters >> int <- jsonNewArray();
+                generics >> int <- jsonNewArray();
+                contracts >> int <- jsonNewArray();
+                at = parser_ast.nccParserAst.materialNodeFirstChild(m,function);
+                while (at >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,at);
+                    if (kind == 16) appendInt(parameters,describeNode(cast<byte>(&context),declarationType(m,at),0));
+                    if (application && kind >= 18 && kind <= 24) appendInt(parameters,describeNode(cast<byte>(&context),at,0));
+                    if (kind == 72) appendInt(generics,describeNode(cast<byte>(&context),at,0));
+                    if (kind == 78) appendInt(contracts,describeNode(cast<byte>(&context),at,0));
+                    at = parser_ast.nccParserAst.materialNodeNextSibling(m,at);
+                }
+                jsonObjectSet(result,"parameters",parameters); jsonRelease(parameters);
+                jsonObjectSet(result,"generics",generics); jsonRelease(generics);
+                jsonObjectSet(result,"contracts",contracts); jsonRelease(contracts);
+                types >> int <- jsonNewArray();
+                at = 0;
+                while (at < context.count) {
+                    key >> str <- renderInt(at);
+                    item >> int <- jsonObjectBorrow(nodes,key);
+                    jsonArrayPush(types,item); jsonRelease(item); strRelease(key); at += 1;
+                }
+                jsonObjectSet(result,"types",types); jsonRelease(types); jsonRelease(nodes);
+                setInt(result,"valid",context.failed ? 0 : 1);
+                free(seen);
+                if (context.failed) { jsonRelease(result); return 0; }
+                return result;
+            }
+            closeBoundLayout(layout >> p<byte>) -> void { binary_layout.nccBinaryLayout.close(layout); }
+
+            cloneField(object >> int, key >> str) -> int {
+                value >> int <- jsonObjectBorrow(object,key);
+                cloned >> int <- jsonClone(value); jsonRelease(value); return cloned;
+            }
+            getInt(object >> int, key >> str, fallback >> int) -> int {
+                value >> int <- jsonObjectBorrow(object,key);
+                result >> int <- jsonGetIntOr(value,fallback); jsonRelease(value); return result;
+            }
+            getText(object >> int, key >> str) -> str {
+                value >> int <- jsonObjectBorrow(object,key);
+                result >> str <- jsonGetStringOr(value,""); jsonRelease(value); return result;
+            }
+            shiftedNode(node >> int, base >> int) -> int {
+                result >> int <- jsonClone(node);
+                source >> int <- jsonObjectBorrow(node,"children"); children >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    item >> int <- jsonArrayBorrow(source,at); appendInt(children,jsonGetIntOr(item,-1)+base);
+                    jsonRelease(item); at += 1;
+                }
+                jsonObjectSet(result,"children",children); jsonRelease(children); jsonRelease(source); return result;
+            }
+            resolveImported(signature >> int, symbols >> int) -> int {
+                guard signature != 0 else return 0;
+                result >> int <- jsonClone(signature);
+                types >> int <- jsonObjectBorrow(result,"types");
+                seen >> int <- jsonNewObject(); at >> int <- 0;
+                while (at < jsonArrayLen(types)) {
+                    node >> int <- jsonArrayBorrow(types,at);
+                    name >> str <- getText(node,"name");
+                    if (getInt(node,"kind",0) == 18 && strIndexOf(name,".") >= 0) {
+                        resolved >> int <- jsonObjectBorrow(seen,name);
+                        root >> int <- jsonGetIntOr(resolved,-1); jsonRelease(resolved);
+                        if (root < 0) {
+                            index >> int <- 0;
+                            while (index < jsonArrayLen(symbols) && root < 0) {
+                                symbol >> int <- jsonArrayBorrow(symbols,index);
+                                full >> str <- getText(symbol,"unit")+"."+getText(symbol,"name");
+                                if (getText(symbol,"kind") == "type" && full == name) {
+                                    shape >> int <- jsonObjectBorrow(symbol,"type_signature");
+                                    imported >> int <- jsonObjectBorrow(shape,"types");
+                                    base >> int <- jsonArrayLen(types);
+                                    reference >> int <- getInt(shape,"result",-1);
+                                    if (reference >= 0 && reference < jsonArrayLen(imported)) {
+                                        child >> int <- 0;
+                                        while (child < jsonArrayLen(imported)) {
+                                            value >> int <- jsonArrayBorrow(imported,child); shifted >> int <- shiftedNode(value,base);
+                                            jsonArrayPush(types,shifted); jsonRelease(shifted); jsonRelease(value); child += 1;
+                                        }
+                                        root = base+reference; setInt(seen,name,root);
+                                    }
+                                    jsonRelease(imported); jsonRelease(shape);
+                                }
+                                strRelease(full); jsonRelease(symbol); index += 1;
+                            }
+                        }
+                        if (root < 0) { strRelease(name); jsonRelease(node); jsonRelease(seen); jsonRelease(types); jsonRelease(result); return 0; }
+                        replacement >> int <- jsonArrayBorrow(types,root);
+                        keyIndex >> int <- 0;
+                        while (keyIndex < jsonObjectLen(replacement)) {
+                            key >> str <- jsonObjectKeyAt(replacement,keyIndex);
+                            value >> int <- jsonObjectBorrow(replacement,key); jsonObjectSet(node,key,value); jsonRelease(value); strRelease(key); keyIndex += 1;
+                        }
+                        jsonRelease(replacement);
+                    }
+                    strRelease(name); jsonRelease(node); at += 1;
+                }
+                jsonRelease(seen); jsonRelease(types); return result;
+            }
+            instantiate(signature >> int, arguments >> int) -> int {
+                if (arguments == 0) return jsonClone(signature);
+                generics >> int <- jsonObjectBorrow(signature,"generics");
+                source >> int <- jsonObjectBorrow(signature,"types");
+                argumentTypes >> int <- jsonObjectBorrow(arguments,"types");
+                argumentRoots >> int <- jsonObjectBorrow(arguments,"parameters");
+                formal >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(generics)) {
+                    root >> int <- jsonArrayBorrow(generics,at);
+                    declaration >> int <- jsonArrayBorrow(source,jsonGetIntOr(root,-1));
+                    children >> int <- jsonObjectBorrow(declaration,"children");
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(children)) {
+                        child >> int <- jsonArrayBorrow(children,index);
+                        parameter >> int <- jsonArrayBorrow(source,jsonGetIntOr(child,-1));
+                        if (getInt(parameter,"kind",0) == 73) { name >> str <- getText(parameter,"name"); item >> int <- jsonNewString(name); jsonArrayPush(formal,item); jsonRelease(item); strRelease(name); }
+                        jsonRelease(parameter); jsonRelease(child); index += 1;
+                    }
+                    jsonRelease(children); jsonRelease(declaration); jsonRelease(root); at += 1;
+                }
+                if (jsonArrayLen(formal) != jsonArrayLen(argumentRoots)) {
+                    jsonRelease(formal); jsonRelease(generics); jsonRelease(source); jsonRelease(argumentTypes); jsonRelease(argumentRoots); return 0;
+                }
+                result >> int <- jsonClone(signature); types >> int <- jsonNewArray();
+                base >> int <- jsonArrayLen(source); at = 0;
+                while (at < base) {
+                    node >> int <- jsonArrayBorrow(source,at);
+                    replacement >> int <- -1;
+                    if (getInt(node,"kind",0) == 18 || getInt(node,"kind",0) == 26) {
+                        name >> str <- getText(node,"name"); index >> int <- 0;
+                        while (index < jsonArrayLen(formal)) {
+                            item >> int <- jsonArrayBorrow(formal,index); parameterName >> str <- jsonGetStringOr(item,"");
+                            if (name == parameterName) {
+                                root >> int <- jsonArrayBorrow(argumentRoots,index); replacement = jsonGetIntOr(root,-1); jsonRelease(root);
+                            }
+                            strRelease(parameterName); jsonRelease(item); index += 1;
+                        }
+                        strRelease(name);
+                    }
+                    if (replacement >= 0) {
+                        supplied >> int <- jsonArrayBorrow(argumentTypes,replacement); shifted >> int <- shiftedNode(supplied,base);
+                        jsonArrayPush(types,shifted); jsonRelease(shifted); jsonRelease(supplied);
+                    } else jsonArrayPush(types,node);
+                    jsonRelease(node); at += 1;
+                }
+                at = 0;
+                while (at < jsonArrayLen(argumentTypes)) {
+                    node >> int <- jsonArrayBorrow(argumentTypes,at); shifted >> int <- shiftedNode(node,base);
+                    jsonArrayPush(types,shifted); jsonRelease(shifted); jsonRelease(node); at += 1;
+                }
+                jsonObjectSet(result,"types",types); jsonRelease(types);
+                jsonRelease(formal); jsonRelease(generics); jsonRelease(source); jsonRelease(argumentTypes); jsonRelease(argumentRoots);
+                return result;
+            }
+    fa: return true;
+}

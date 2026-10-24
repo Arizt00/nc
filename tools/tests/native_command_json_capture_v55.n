@@ -1,0 +1,28 @@
+use <process:command>;
+use <data:json>;
+use <io:output, std>;
+nativeCommandJsonCaptureV55 {
+    attach(row >> int, key >> str, data >> p<byte>) -> bool {
+        decoded >> str <- cast(data);
+        value >> int <- jsonNewString(decoded);
+        accepted >> bool <- value > 0 && jsonObjectSet(row,key,value);
+        jsonRelease(value);
+        return accepted;
+    }
+    run() -> int {
+        pipe >> addr <- commandPipeOpen(false,false);
+        guard pipe != null && commandPipeError(pipe) == 0 else return 1;
+        guard commandPipeWrite(pipe,adr("compiler capture"),16) == 16 && commandPipeCloseWrite(pipe) else return 2;
+        data >> p<byte> <- cast<byte>(alloc(17)); guard data != null else return 3;
+        count >> int <- commandPipeRead(pipe,adr(data),16);
+        guard count == 16 else return 4;
+        wr(off(data,count),0);
+        row >> int <- jsonNewObject();
+        guard row > 0 && attach(row,"stdout",data) else return 5;
+        free(data); commandPipeRelease(pipe);
+        text >> str <- jsonStringify(row);
+        println(text); free(cast<byte>(text)); jsonRelease(row); return 134;
+    }
+    ref main ->> run;
+    fa: return true;
+}

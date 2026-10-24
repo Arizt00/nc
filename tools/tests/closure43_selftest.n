@@ -1,0 +1,121 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output>;
+use <project:closure43_core, release_io, tool_cli, sha256, editor_json>;
+
+closure43Selftest {
+    fn:
+        private:
+            collectionsValid(value >> int, depth >> int) -> bool {
+                if (depth > 128) return false;
+                kind >> int <- jsonKind(value); index >> int <- 0;
+                if (kind == 5) {
+                    while (index < jsonArrayLen(value)) {
+                        child >> int <- jsonArrayGet(value,index); valid >> bool <- collectionsValid(child,depth+1); jsonRelease(child);
+                        if (!valid) return false; index += 1;
+                    }
+                }
+                if (kind == 6) {
+                    while (index < jsonObjectLen(value)) {
+                        key >> str <- jsonObjectKeyAt(value,index); child >> int <- jsonObjectGet(value,key);
+                        collection >> bool <- key == "checks" || key == "cases" || key == "rows"; free(cast<byte>(key));
+                        if (collection) {
+                            if (jsonKind(child) != 5 || jsonArrayLen(child) == 0) { jsonRelease(child); return false; }
+                            at >> int <- 0;
+                            while (at < jsonArrayLen(child)) {
+                                row >> int <- jsonArrayGet(child,at); name >> int <- jsonObjectGet(row,"name"); passed >> int <- jsonObjectGet(row,"passed");
+                                valid >> bool <- jsonKind(row) == 6 && jsonKind(name) == 4 && jsonStringView(name,"") != "" && jsonKind(passed) == 2 && jsonGetBoolOr(passed,false);
+                                jsonRelease(row); jsonRelease(name); jsonRelease(passed);
+                                if (!valid) { jsonRelease(child); return false; } at += 1;
+                            }
+                        }
+                        valid >> bool <- collectionsValid(child,depth+1); jsonRelease(child); if (!valid) return false; index += 1;
+                    }
+                }
+                return true;
+            }
+            receiptValid(value >> int) -> bool {
+                if (jsonKind(value) != 6) return false;
+                node >> int <- jsonObjectGet(value,"passed"); valid >> bool <- jsonKind(node) == 2 && jsonGetBoolOr(node,false); jsonRelease(node);
+                return valid && collectionsValid(value,0);
+            }
+            receiptContract(cases >> int) -> bool {
+                inputs >> int <- jsonParse("[{\"name\":\"valid-cases\",\"expected\":true,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\",\"passed\":true}]}},{\"name\":\"valid-checks\",\"expected\":true,\"value\":{\"passed\":true,\"checks\":[{\"name\":\"a\",\"passed\":true}]}},{\"name\":\"valid-nested-rows\",\"expected\":true,\"value\":{\"passed\":true,\"comparison\":{\"rows\":[{\"name\":\"a\",\"passed\":true}]}}},{\"name\":\"reject-map\",\"expected\":false,\"value\":{\"passed\":true,\"checks\":{\"a\":true}}},{\"name\":\"reject-scalar-collection\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":true}},{\"name\":\"reject-scalar-child\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[true]}},{\"name\":\"reject-string-passed\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\",\"passed\":\"true\"}]}},{\"name\":\"reject-number-passed\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\",\"passed\":1}]}},{\"name\":\"reject-missing-passed\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\"}]}},{\"name\":\"reject-missing-name\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"passed\":true}]}},{\"name\":\"reject-empty-name\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"\",\"passed\":true}]}},{\"name\":\"reject-child-false\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\",\"passed\":false}]}},{\"name\":\"reject-top-false\",\"expected\":false,\"value\":{\"passed\":false,\"cases\":[{\"name\":\"a\",\"passed\":true}]}},{\"name\":\"reject-nested-map\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[{\"name\":\"a\",\"passed\":true,\"comparison\":{\"rows\":{\"a\":true}}}]}},{\"name\":\"reject-empty-collection\",\"expected\":false,\"value\":{\"passed\":true,\"cases\":[]}}]");
+                rows >> int <- jsonNewArray(); index >> int <- 0; good >> bool <- jsonArrayLen(inputs) == 15;
+                while (index < jsonArrayLen(inputs)) {
+                    input >> int <- jsonArrayGet(inputs,index); value >> int <- jsonObjectGet(input,"value"); expected >> int <- jsonObjectGet(input,"expected");
+                    actual >> bool <- receiptValid(value); matched >> bool <- actual == jsonGetBoolOr(expected,false); if (!matched) good <- false;
+                    row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"name",closure43_core.closure43Core.field(input,"name"));
+                    closure43_core.closure43Core.put(row,"expected_accept",jsonNewBool(jsonGetBoolOr(expected,false))); closure43_core.closure43Core.put(row,"actual_accept",jsonNewBool(actual)); closure43_core.closure43Core.put(row,"passed",jsonNewBool(matched)); closure43_core.closure43Core.push(rows,row);
+                    jsonRelease(input); jsonRelease(value); jsonRelease(expected); index += 1;
+                }
+                comparison >> int <- jsonNewObject(); closure43_core.closure43Core.put(comparison,"passed",jsonNewBool(good)); closure43_core.closure43Core.put(comparison,"cases",rows);
+                group >> int <- jsonNewObject(); closure43_core.closure43Core.set(group,"name","receipt-collections-strict-15"); closure43_core.closure43Core.put(group,"passed",jsonNewBool(good)); closure43_core.closure43Core.put(group,"comparison",comparison); closure43_core.closure43Core.push(cases,group);
+                jsonRelease(inputs); println(good ? "receipt-collections-strict-15: passed" : "receipt-collections-strict-15: FAILED"); return good;
+            }
+            cargoEnvironment(package >> str, tools >> str, root >> str, host >> str, suffix >> str) -> void {
+                envSet("CLOSURE43_ROOT",root); envSet("CLOSURE43_DATA_ROOT",package);
+                proxy >> str <- tools+"/proxy/bin/closure43"+suffix;
+                if (host == "windows") proxy <- closure43_core.closure43Core.replace(proxy,"/","\\");
+                envSet("CLOSURE43_NCC",proxy); envSet("CLOSURE43_CARGO",proxy);
+                envSet("CLOSURE43_PROXY_CACHE",package+"/target/tmp/closure43/cache-compiler-live-"+host+"-v1");
+                envSet("CLOSURE43_PROXY_BINARY","must-not-execute"); envSet("CLOSURE43_EPOCH","1791244800");
+                envRemove("CLOSURE43_PROXY_CARGO_BINARY"); envRemove("CLOSURE43_PROXY_PRIMITIVE");
+            }
+            check(name >> str, words >> int, receipt >> str, cases >> int) -> bool {
+                record >> int <- tool_cli.toolCli.execute(words,"",3600000);
+                code >> int <- release_io.releaseIo.number(record,"code",-1);
+                good >> bool <- tool_cli.toolCli.clean(record) && code == 0;
+                row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"name",name);
+                closure43_core.closure43Core.put(row,"exit_code",jsonNewInt(code));
+                if (receipt != "") {
+                    text >> str <- release_io.releaseIo.text(receipt); value >> int <- editor_json.editorJson.parse(text); strRelease(text);
+                    good <- good && receiptValid(value);
+                    closure43_core.closure43Core.set(row,"receipt",receipt); closure43_core.closure43Core.set(row,"receipt_sha256",sha256.nccSha256.file(receipt));
+                    closure43_core.closure43Core.put(row,"comparison",value);
+                }
+                closure43_core.closure43Core.put(row,"passed",jsonNewBool(good));
+                closure43_core.closure43Core.set(row,"stdout",closure43_core.closure43Core.field(record,"stdout"));
+                closure43_core.closure43Core.set(row,"stderr",closure43_core.closure43Core.field(record,"stderr"));
+                closure43_core.closure43Core.push(cases,row); jsonRelease(record); jsonRelease(words);
+                println(name+(good ? ": passed" : ": FAILED")); return good;
+            }
+        public:
+            run() -> int {
+                package >> str <- closure43_core.closure43Core.packageRoot();
+                args >> addr <- argsOpen(); if (argsCount(args) != 3) return 2;
+                binary >> str <- tool_cli.toolCli.absolute(argsAt(args,1)); destination >> str <- tool_cli.toolCli.absolute(argsAt(args,2));
+                binaryHash >> str <- sha256.nccSha256.file(binary); if (binaryHash == "") return 3;
+                host >> str <- closure43_core.closure43Core.environment("WINDIR","") != "" ? "windows" : "linux";
+                suffix >> str <- host == "windows" ? ".exe" : "";
+                tools >> str <- package+"/target/tmp/closure43/"+host; base >> str <- release_io.releaseIo.directory(destination);
+                if (!release_io.releaseIo.makeDirectories(base)) return 4;
+                cases >> int <- jsonNewArray(); passed >> bool <- true;
+                if (!receiptContract(cases)) passed <- false;
+                words >> int <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(tools+"/negative/bin/closure43"+suffix)); closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString(base+"/cli.json"));
+                closure43_core.closure43Core.push(words,jsonNewString(package+"/bootstrap/closure43-cli-golden-"+host+".json"));
+                if (!check("cli-negative-23",words,base+"/cli.json",cases)) passed <- false;
+                words <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(tools+"/primitive_help/bin/closure43"+suffix)); closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString(base+"/must-stay-absent")); closure43_core.closure43Core.push(words,jsonNewString(base+"/primitive-help.json"));
+                if (!check("primitive-help-no-write-5",words,base+"/primitive-help.json",cases)) passed <- false;
+                words <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(tools+"/golden/bin/closure43"+suffix)); closure43_core.closure43Core.push(words,jsonNewString(package+"/bootstrap/closure43-golden-"+host+".json")); closure43_core.closure43Core.push(words,jsonNewString(base+"/golden.json")); closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString("--archive-private-lab"));
+                if (!check("complete-golden-trees-21",words,base+"/golden.json",cases)) passed <- false;
+                words <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(tools+"/core_tests/bin/closure43"+suffix));
+                if (!check("core-10",words,"",cases)) passed <- false;
+                root >> str <- host == "windows" ? closure43_core.closure43Core.environment("TEMP","")+"/closure43-compiler-live-windows-v1" : tools+"/compiler-live-replay";
+                cargoEnvironment(package,tools,root,host,suffix);
+                words <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(tools+"/compiler_failure/bin/closure43"+suffix)); closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString(base+"/compiler-failure.json"));
+                expectedError >> str <- host == "windows" ? "978970055634955148767bcad1aa32e8e9afae811b12de7cec1934f4b57cc0e8" : "7b8f24f9b357ce1defc2b12a3dff1e08aae1bbe37ce4f76fe0949fdae329e80d";
+                closure43_core.closure43Core.push(words,jsonNewString(expectedError));
+                if (!check("actual-cargo-failure-preserved",words,base+"/compiler-failure.json",cases)) passed <- false;
+                candidate >> int <- jsonNewObject(); closure43_core.closure43Core.set(candidate,"path",binary); closure43_core.closure43Core.set(candidate,"sha256",binaryHash);
+                if (sha256.nccSha256.file(binary) != binaryHash) passed <- false;
+                report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.uniform-selftest.v1");
+                closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed)); closure43_core.closure43Core.put(report,"native_only",jsonNewBool(true));
+                closure43_core.closure43Core.put(report,"candidate",candidate); closure43_core.closure43Core.put(report,"cases",cases);
+                if (!receiptValid(report)) { passed <- false; closure43_core.closure43Core.put(report,"passed",jsonNewBool(false)); }
+                if (!release_io.releaseIo.write(destination,closure43_core.closure43Core.pretty(report)+"\n")) passed <- false;
+                jsonRelease(report); argsRelease(args); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

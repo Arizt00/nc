@@ -1,0 +1,41 @@
+signatureApi70 {
+    type:
+        Packet { public: value >> int; flags >> byte; }
+        WidePacket { public: left >> i64; right >> i64; layout: repr(C); align(16); }
+        Node { public: value >> int; next >> p<Node>; }
+    fn:
+        public:
+            bytes(value >> p<byte>) -> p<byte> { return value; }
+            words(value >> p<u16>) -> p<u16> { return value; }
+            integers(value >> p<int>) -> p<int> { return value; }
+            wide(value >> p<i64>) -> p<i64> { return value; }
+            nested(value >> p<p<byte>>) -> p<p<byte>> { return value; }
+            cells(value >> p<array<int,3>>) -> p<array<int,3>> { return value; }
+            packet(value >> p<Packet>) -> p<Packet> { return value; }
+            signed(value >> i64) -> i64 { return value / 2; }
+            text(value >> str) -> str { return value; }
+            make(value >> int) -> Packet { return Packet(value:value,flags:7); }
+            transform(value >> WidePacket) -> WidePacket {
+                return WidePacket(left:value.left+1,right:value.right-1);
+            }
+            recurse(value >> p<int>, count >> int) -> int {
+                if (count <= 0) return rd(value);
+                wr(value,rd(value)+1); return recurse(value,count-1);
+            }
+            twice(value >> int) -> int { return value*2; }
+            callback() -> fn(int) -> int { return &twice; }
+            invoke(callback >> fn(int) -> int, value >> int) -> int { return callback(value); }
+            sumSeven(a >> i64,b >> i64,c >> i64,d >> i64,e >> i64,f >> i64,g >> i64) -> i64 {
+                return a+b+c+d+e+f+g;
+            }
+            wideCallback() -> fn(i64,i64,i64,i64,i64,i64,i64) -> i64 { return &sumSeven; }
+            recordCallback() -> fn(WidePacket) -> WidePacket { return &transform; }
+            applyRecord(callback >> fn(WidePacket) -> WidePacket, value >> WidePacket) -> WidePacket {
+                return callback(value);
+            }
+            writePacket(pointer >> p<Packet>, value >> Packet) -> void { wr(pointer,value); }
+            readPacket(pointer >> p<Packet>) -> Packet { return rd(pointer); }
+            identity<T>(pointer >> p<T>) -> p<T> { return pointer; }
+            node(pointer >> p<Node>) -> p<Node> { return pointer; }
+    fa: return true;
+}

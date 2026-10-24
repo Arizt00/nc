@@ -1,0 +1,163 @@
+use <io:output, render>;
+use <process:args>;
+
+nativeFileMapWindows75 {
+    const:
+        GRAN >> u64 <- 65536;
+        PAGE >> u64 <- 4096;
+        BYTES >> u64 <- 135168;
+        HIGH >> u64 <- 0x100010000;
+
+    wide(text >> str, target >> p<u16>) -> void {
+        at >> int <- 0;
+        while (at < strByteLen(text)) {
+            wr(off(target,at),rd(off(cast<byte>(text),at)));
+            at += 1;
+        }
+        wr(off(target,at),0);
+    }
+    fileName(target >> p<u16>, high >> bool) -> void {
+        wide(high ? "file75-high-X.bin" : "file75-main-X.bin",target);
+        wr(off(target,12),0x03A9);
+    }
+    pattern(at >> u64) -> byte { return (at * 37 + 11) & 255; }
+    expected(at >> u64, high >> bool) -> byte {
+        if (!high && at == PAGE-1) return 211;
+        if (!high && at == GRAN+23) return 165;
+        return pattern(at);
+    }
+    fail(code >> int) -> int {
+        error >> u32 <- osGetLastError();
+        print("windows-file-map-failure "); print(code);
+        print(" last-error "); println(error);
+        return code;
+    }
+    openFile(path >> p<u16>, creation >> u32, access >> u32) -> p<byte> {
+        return cast<byte>(osCreateFileW(path,access,7,null,creation,0,null));
+    }
+    valid(file >> p<byte>) -> bool { return adr(file) != 0xFFFFFFFFFFFFFFFF && file != null; }
+    writeFile(high >> bool) -> int {
+        path >> array<u16,64>;
+        name >> array<u16,64>;
+        fileName(cast<u16>(&path),high);
+        wide("Local\\nC.native.file.mapping.v75",cast<u16>(&name));
+        file >> p<byte> <- openFile(cast<u16>(&path),1,0xC0000000);
+        if (!valid(file)) return fail(1);
+        base >> u64 <- high ? HIGH : 0;
+        bytes >> u64 <- high ? PAGE : BYTES;
+        total >> i64 <- base+bytes;
+        returned >> u32 <- 0;
+        if (high && osDeviceIoControl(file,0x900C4,null,0,null,0,adr(&returned),null) == 0) return fail(2);
+        position >> i64 <- 0;
+        if (osSetFilePointerEx(file,total,adr(&position),0) == 0 || position != total ||
+            osSetEndOfFile(file) == 0) return fail(3);
+        size >> i64 <- 0;
+        if (osGetFileSizeEx(file,adr(&size)) == 0 || size != total) return fail(4);
+        mapping >> p<byte> <- cast<byte>(osCreateFileMappingW(file,null,4,0,0,cast<u16>(&name)));
+        if (mapping == null) return fail(5);
+        second >> p<byte> <- cast<byte>(osOpenFileMappingW(4,0,cast<u16>(&name)));
+        if (second == null) return fail(6);
+        view >> p<byte> <- vmMap(null,bytes,4,2,adr(mapping),base);
+        if (view == null) return fail(7);
+        at >> u64 <- 0;
+        while (at < bytes) { volatileWrite(off(view,at),expected(at,high)); at += 1; }
+        partOffset >> u64 <- high ? HIGH : GRAN;
+        part >> p<byte> <- vmMap(null,PAGE,2,4,adr(second),partOffset);
+        if (part == null) return fail(8);
+        at <- 0;
+        while (at < PAGE) {
+            if (volatileRead(off(part,at)) != expected((high ? 0 : GRAN)+at,high)) return fail(9);
+            at += 1;
+        }
+        copied >> p<byte> <- vmMap(null,PAGE,8,1,adr(mapping),partOffset);
+        if (copied == null) return fail(10);
+        original >> byte <- volatileRead(off(part,17));
+        volatileWrite(off(copied,17),original ^ 255);
+        if (volatileRead(off(copied,17)) == original || volatileRead(off(part,17)) != original) return fail(11);
+        if (!vmUnmap(copied,PAGE) || !vmUnmap(part,PAGE) || osCloseHandle(second) == 0) return fail(12);
+        osSetLastError(0);
+        bad >> p<byte> <- vmMap(null,PAGE,2,4,adr(mapping),base+1);
+        if (bad != null || osGetLastError() == 0) return fail(13);
+        osSetLastError(0);
+        bad <- vmMap(null,PAGE,2,4,adr(mapping),HIGH+GRAN*4);
+        if (bad != null || osGetLastError() == 0) return fail(14);
+        tail >> p<byte> <- vmMap(null,0,2,4,adr(mapping),partOffset);
+        if (tail == null || volatileRead(off(tail,bytes-(high ? 0 : GRAN)-1)) != expected(bytes-1,high)) return fail(15);
+        if (!vmUnmap(tail,bytes-(high ? 0 : GRAN))) return fail(16);
+        if (osCloseHandle(mapping) == 0) return fail(17);
+        if (volatileRead(off(view,bytes-1)) != expected(bytes-1,high)) return fail(18);
+        if (!vmSync(view,bytes,0) || osFlushFileBuffers(file) == 0 || !vmUnmap(view,bytes)) return fail(19);
+        if (osCloseHandle(file) == 0) return fail(20);
+        if (high) {
+            allocationHigh >> u32 <- 0;
+            allocationLow >> u32 <- osGetCompressedFileSizeW(cast<u16>(&path),adr(&allocationHigh));
+            if (allocationHigh != 0 || allocationLow >= 16777216) return fail(21);
+        }
+        return 0;
+    }
+    readFile(high >> bool) -> int {
+        path >> array<u16,64>;
+        fileName(cast<u16>(&path),high);
+        file >> p<byte> <- openFile(cast<u16>(&path),3,0x80000000);
+        if (!valid(file)) return fail(22);
+        base >> u64 <- high ? HIGH : 0;
+        bytes >> u64 <- high ? PAGE : BYTES;
+        size >> i64 <- 0;
+        if (osGetFileSizeEx(file,adr(&size)) == 0 || size != base+bytes) return fail(23);
+        position >> i64 <- 0;
+        if (osSetFilePointerEx(file,base,adr(&position),0) == 0 || position != base) return fail(24);
+        buffer >> array<byte,4096>;
+        at >> u64 <- 0;
+        sum >> u64 <- 0;
+        while (at < bytes) {
+            got >> u32 <- 0;
+            if (osReadFile(file,cast<byte>(&buffer),PAGE,adr(&got),null) == 0 || got == 0 || got > PAGE) return fail(25);
+            index >> u32 <- 0;
+            while (index < got) {
+                value >> byte <- rd(off(cast<byte>(&buffer),index));
+                if (at+index >= bytes || value != expected(at+index,high)) return fail(26);
+                sum += value;
+                index += 1;
+            }
+            at += got;
+        }
+        if (at != bytes || sum != (high ? 522240 : 17233972)) return fail(27);
+        got >> u32 <- 99;
+        if (osReadFile(file,cast<byte>(&buffer),1,adr(&got),null) == 0 || got != 0) return fail(28);
+        osSetLastError(0);
+        rejected >> p<byte> <- cast<byte>(osCreateFileMappingW(file,null,4,0,0,null));
+        if (rejected != null || osGetLastError() == 0) return fail(29);
+        if (osCloseHandle(file) == 0 || osDeleteFileW(cast<u16>(&path)) == 0) return fail(30);
+        return 0;
+    }
+    readonlyFault() -> int {
+        path >> array<u16,64>;
+        fileName(cast<u16>(&path),false);
+        file >> p<byte> <- openFile(cast<u16>(&path),3,0x80000000);
+        if (!valid(file)) return fail(32);
+        mapping >> p<byte> <- cast<byte>(osCreateFileMappingW(file,null,2,0,0,null));
+        if (mapping == null) return fail(33);
+        view >> p<byte> <- vmMap(null,PAGE,2,4,adr(mapping),0);
+        if (view == null) return fail(34);
+        volatileWrite<byte>(view,1);
+        return fail(35);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        if (vmPageSize() != PAGE || vmAllocationGranularity() != GRAN) return fail(31);
+        mode >> str <- argsAt(arguments,1);
+        if (mode == "fault") return readonlyFault();
+        writer >> bool <- mode == "write";
+        if (!writer && mode != "read") return 65;
+        first >> int <- writer ? writeFile(false) : readFile(false);
+        if (first != 0) return first;
+        second >> int <- writer ? writeFile(true) : readFile(true);
+        if (second != 0) return second;
+        argsRelease(arguments);
+        println(writer ? "file-map-write-ok" : "file-map-read-ok");
+        return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

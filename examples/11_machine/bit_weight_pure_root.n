@@ -1,0 +1,148 @@
+bitWeightPureRoot[@] {
+    stc:
+        machineWidth >> int <- 32;
+
+        sampleA >> int <- 11;
+        sampleB >> int <- -1;
+        sampleC >> int <- 0;
+
+        inputAddrA >> addr <- 0x1000;
+        inputAddrB >> addr <- 0x1004;
+        inputAddrC >> addr <- 0x1008;
+
+        outputAddrA1 >> addr <- 0x2000;
+        outputAddrA2 >> addr <- 0x2004;
+
+        outputAddrB1 >> addr <- 0x2008;
+        outputAddrB2 >> addr <- 0x200C;
+
+        outputAddrC1 >> addr <- 0x2010;
+        outputAddrC2 >> addr <- 0x2014;
+
+    binary:
+        wordWidth >> int <- 32;
+        oneMask >> int <- 0b00000000000000000000000000000001;
+        nullWord >> int <- 0b00000000000000000000000000000000;
+
+    fn:
+        loadWord(address >> addr) -> int {
+            pointer >> p<int> <- from(address);
+            return rd(pointer);
+        }
+
+        storeWord(address >> addr, value >> int) -> void {
+            pointer >> p<int> <- from(address);
+            wr(pointer, value);
+        }
+
+        seedInputMemory() -> bool {
+            storeWord(inputAddrA, sampleA);
+            storeWord(inputAddrB, sampleB);
+            storeWord(inputAddrC, sampleC);
+            return true;
+        }
+
+        hammingShiftFromMemory(src >> addr, dst >> addr) -> bool {
+            value >> int <- 0;
+            count >> int <- 0;
+            bit >> int <- 0;
+
+            raw {
+                value >> int <- loadWord(src);
+                count >> int <- 0;
+
+                while (value != 0) {
+                    bit >> int <- value & oneMask;
+                    count >> int <- count + bit;
+                    value >> int <- value >>> 1;
+                }
+
+                storeWord(dst, count);
+            }
+
+            return true;
+        }
+
+        hammingFoldFromMemory(src >> addr, dst >> addr) -> bool {
+            value >> int <- 0;
+            count >> int <- 0;
+
+            raw {
+                value >> int <- loadWord(src);
+                count >> int <- 0;
+
+                while (value != 0) {
+                    value >> int <- value & (value - 1);
+                    count >> int <- count + 1;
+                }
+
+                storeWord(dst, count);
+            }
+
+            return true;
+        }
+
+        validateStoredWeight(dst >> addr) -> bool {
+            weight >> int <- loadWord(dst);
+
+            if (weight < 0) {
+                dev(irregular);
+            }
+
+            if (weight > machineWidth) {
+                dev(MemoryOverflow);
+            }
+
+            return true;
+        }
+
+    probe:
+        if (!fn(seedInputMemory)) { dev(CompilerFault); }
+        if (!fn(hammingShiftFromMemory, inputAddrA, outputAddrA1)) { dev(CompilerFault); }
+        if (!fn(hammingFoldFromMemory,  inputAddrA, outputAddrA2)) { dev(CompilerFault); }
+
+        if (!fn(hammingShiftFromMemory, inputAddrB, outputAddrB1)) { dev(CompilerFault); }
+        if (!fn(hammingFoldFromMemory,  inputAddrB, outputAddrB2)) { dev(CompilerFault); }
+
+        if (!fn(hammingShiftFromMemory, inputAddrC, outputAddrC1)) { dev(CompilerFault); }
+        if (!fn(hammingFoldFromMemory,  inputAddrC, outputAddrC2)) { dev(CompilerFault); }
+
+        if (loadWord(outputAddrA1) != 3)  { dev(CompilerFault); }
+        if (loadWord(outputAddrA2) != 3)  { dev(CompilerFault); }
+
+        if (loadWord(outputAddrB1) != 32) { dev(CompilerFault); }
+        if (loadWord(outputAddrB2) != 32) { dev(CompilerFault); }
+
+        if (loadWord(outputAddrC1) != 0)  { dev(CompilerFault); }
+        if (loadWord(outputAddrC2) != 0)  { dev(CompilerFault); }
+
+        if (!fn(validateStoredWeight, outputAddrA1)) { dev(irregular); }
+        if (!fn(validateStoredWeight, outputAddrA2)) { dev(irregular); }
+        if (!fn(validateStoredWeight, outputAddrB1)) { dev(irregular); }
+        if (!fn(validateStoredWeight, outputAddrB2)) { dev(irregular); }
+        if (!fn(validateStoredWeight, outputAddrC1)) { dev(irregular); }
+        if (!fn(validateStoredWeight, outputAddrC2)) { dev(irregular); }
+
+    final:
+        println("bitWeightPureRoot::validated");
+
+        print("11 shift @0x2000 -> ");
+        println(loadWord(outputAddrA1));
+
+        print("11 fold  @0x2004 -> ");
+        println(loadWord(outputAddrA2));
+
+        print("-1 shift @0x2008 -> ");
+        println(loadWord(outputAddrB1));
+
+        print("-1 fold  @0x200C -> ");
+        println(loadWord(outputAddrB2));
+
+        print("0 shift  @0x2010 -> ");
+        println(loadWord(outputAddrC1));
+
+        print("0 fold   @0x2014 -> ");
+        println(loadWord(outputAddrC2));
+
+        return true;
+}

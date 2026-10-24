@@ -1,0 +1,53 @@
+use <project:fs_path_host, fault_heap>;
+
+fsPathProvider {
+    stc:
+        checks >> int <- 0;
+    fill(out >> p<byte>, capacity >> int) -> void {
+        at >> int <- 0;
+        while (at < capacity) { wr(off(out,at),165); at += 1; }
+    }
+    unchanged(out >> p<byte>, capacity >> int) -> bool {
+        at >> int <- 0;
+        while (at < capacity) { if (rd(off(out,at)) != 165) return false; at += 1; }
+        return true;
+    }
+    runCase(path >> str, out >> p<byte>, capacity >> int, failAt >> int, persistent >> bool) -> int {
+        fill(out,capacity);
+        fault_heap.runtimeFaultHeap78.configure(failAt,persistent);
+        result >> int <- fs_path_host.fsPathHost.absolute(path,out,capacity);
+        failed >> bool <- fault_heap.runtimeFaultHeap78.didFail();
+        calls >> int <- fault_heap.runtimeFaultHeap78.allocations();
+        fault_heap.runtimeFaultHeap78.configure(0,false);
+        valid >> bool <- failAt > 0 ? failed && result == -4 && unchanged(out,capacity) : result > 0 && !failed;
+        valid <- valid && fault_heap.runtimeFaultHeap78.outstanding() == 0 &&
+            fault_heap.runtimeFaultHeap78.outstandingBytes() == 0 && fault_heap.runtimeFaultHeap78.invalidFrees() == 0;
+        checks += 1;
+        return valid ? calls : -1;
+    }
+    fn:
+        public:
+            provider_fs_absolutePathInto(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                if (capacity < 16384 || !fault_heap.runtimeFaultHeap78.open()) return -1;
+                absolute >> p<byte> <- alloc(16384);
+                if (absolute == null) return -1;
+                calls >> int <- runCase(path,absolute,16384,0,false);
+                if (calls <= 0) return -1;
+                mode >> int <- 0;
+                while (mode < 2) {
+                    at >> int <- 1;
+                    while (at <= calls) { if (runCase(path,out,16384,at,mode != 0) < 0) return -1; at += 1; }
+                    mode += 1;
+                }
+                calls <- runCase(cast<str>(absolute),out,16384,0,false);
+                if (calls <= 0) return -1;
+                mode <- 0;
+                while (mode < 2) {
+                    at >> int <- 1;
+                    while (at <= calls) { if (runCase(cast<str>(absolute),out,16384,at,mode != 0) < 0) return -1; at += 1; }
+                    mode += 1;
+                }
+                free(absolute); fault_heap.runtimeFaultHeap78.close(); return checks;
+            }
+    fa: return true;
+}

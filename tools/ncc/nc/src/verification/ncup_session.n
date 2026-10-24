@@ -1,0 +1,138 @@
+use <data:json>;
+use <io:output, render>;
+use <process:env>;
+use <fs:dir>;
+use <collections:result>;
+use <project:release_io, tool_cli>;
+
+ncupSession {
+    stc:
+        root >> str;
+        work >> str;
+        home >> str;
+        project >> str;
+        compiler >> str;
+        cargo >> str;
+        checks >> int;
+        commands >> int;
+    fn:
+        public:
+            rootPath() -> str { return root; }
+            homePath() -> str { return home; }
+            projectPath() -> str { return project; }
+            open(options >> int) -> bool {
+                root <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                compiler <- tool_cli.toolCli.value(options,"--candidate","");
+                if (compiler != "") compiler <- tool_cli.toolCli.absolute(compiler);
+                cargo <- tool_cli.toolCli.value(options,"--cargo","cargo");
+                checks <- jsonNewObject(); commands <- jsonNewArray();
+                work <- tool_cli.toolCli.value(options,"--work","");
+                automatic >> bool <- work == "";
+                temporary >> str <- environment(envHas("WINDIR") ? "TEMP" : "TMPDIR");
+                if (temporary == "") temporary <- environment("TMP");
+                if (temporary == "") temporary <- envHas("WINDIR") ? environment("WINDIR")+"/Temp" : "/tmp";
+                prefix >> str <- tool_cli.toolCli.absolute(temporary)+"/ncup-native-probes";
+                if (automatic && !release_io.releaseIo.makeDirectories(prefix)) return false;
+                reserved >> bool <- false;
+                attempt >> int <- 0;
+                while (!reserved && attempt < 64) {
+                    if (automatic) work <- prefix+"/run-"+renderInt(nowMs())+"-"+renderInt(attempt);
+                    else work <- tool_cli.toolCli.absolute(work);
+                    if (!release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(work))) return false;
+                    result >> Result<bool, FsError> <- createDir(work);
+                    reserved <- isOk(result);
+                    if (!automatic && !reserved) return false;
+                    attempt += 1;
+                }
+                guard reserved else return false;
+                home <- work+"/home"; project <- work+"/project";
+                return release_io.releaseIo.makeDirectories(project);
+            }
+            record(key >> str, passed >> bool) -> void { jsonObjectSet(checks,key,jsonNewBool(passed)); }
+            arguments(tail >> str) -> int {
+                words >> int <- jsonParse(tail);
+                expanded >> int <- jsonNewArray();
+                count >> int <- jsonArrayLen(words);
+                index >> int <- 0;
+                while (index < count) {
+                    item >> int <- jsonArrayGet(words,index);
+                    value >> str <- jsonGetString(item);
+                    if (value == "$home") value <- home;
+                    if (value == "$project") value <- project;
+                    tool_cli.toolCli.append(expanded,value);
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(words);
+                return expanded;
+            }
+            invoke(binary >> str, words >> int, cwd >> str) -> int {
+                argv >> int <- jsonNewArray();
+                tool_cli.toolCli.append(argv,binary);
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) { jsonArrayPush(argv,jsonArrayGet(words,index)); index += 1; }
+                result >> int <- tool_cli.toolCli.execute(argv,cwd,600000);
+                jsonArrayPush(commands,result);
+                jsonRelease(argv); jsonRelease(words);
+                return result;
+            }
+            run(tail >> str) -> int {
+                words >> int <- arguments(tail);
+                prefix >> int <- jsonNewArray();
+                if (compiler == "") {
+                    base >> int <- jsonParse("[\"run\",\"-q\",\"-p\",\"ncc-cli\",\"--\"]");
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(base)) { jsonArrayPush(prefix,jsonArrayGet(base,index)); index += 1; }
+                    jsonRelease(base);
+                }
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) { jsonArrayPush(prefix,jsonArrayGet(words,index)); index += 1; }
+                jsonRelease(words);
+                return invoke(compiler == "" ? cargo : compiler,prefix,root);
+            }
+            runWith(tail >> str, key >> str, value >> str) -> int {
+                had >> bool <- envHas(key);
+                previous >> str <- environment(key);
+                envSet(key,value);
+                result >> int <- run(tail);
+                if (had) envSet(key,previous); else envRemove(key);
+                return result;
+            }
+            environment(key >> str) -> str {
+                size >> int <- envGet(key,null,0);
+                guard size >= 0 && size < 1048576 else return "";
+                data >> p<byte> <- cast(alloc(size+1));
+                guard data != null else return "";
+                copied >> int <- envGet(key,adr(data),size+1);
+                if (copied < 0 || copied > size) { free(data); return ""; }
+                wr(off(data,copied),0);
+                return cast(data);
+            }
+            ok(row >> int) -> bool { return tool_cli.toolCli.hasFlag(row,"ok"); }
+            document(row >> int) -> int { return jsonParse(release_io.releaseIo.field(row,"stdout")); }
+            failure(row >> int, first >> str, second >> str) -> bool {
+                text >> str <- release_io.releaseIo.field(row,"stdout")+"\n"+release_io.releaseIo.field(row,"stderr");
+                return tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) != 0 && strContains(text,first) && strContains(text,second);
+            }
+            finish(schema >> str, reportPath >> str) -> int {
+                passed >> bool <- release_io.releaseIo.allTrue(checks);
+                report >> int <- release_io.releaseIo.report(schema);
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"commands",commands);
+                jsonObjectSet(report,"status",jsonNewString(passed ? "ok" : "error"));
+                jsonObjectSet(report,"home",jsonNewString(home)); jsonObjectSet(report,"project",jsonNewString(project));
+                jsonObjectSet(report,"work_retained",jsonNewBool(true));
+                jsonObjectSet(report,"stage0_retained",jsonNewBool(true));
+                jsonObjectSet(report,"candidate",jsonNewString(compiler));
+                jsonObjectSet(report,"stage0_cargo_requested",jsonNewBool(compiler == ""));
+                if (schema == "nc.phase10.ncup.commands.report.v1") {
+                    state >> int <- jsonParseFile(home+"/manifests/toolchains.v1.json");
+                    installed >> int <- jsonObjectGet(state,"installed_toolchains");
+                    jsonObjectSet(report,"installed_toolchain_count_after_uninstall",jsonNewInt(jsonArrayLen(installed)));
+                    jsonRelease(installed); jsonRelease(state);
+                }
+                saved >> bool <- release_io.releaseIo.save(reportPath,report);
+                println((passed && saved ? "OK: " : "FAIL: ")+reportPath);
+                jsonRelease(report);
+                return passed && saved ? 0 : 1;
+            }
+    fa: return true;
+}

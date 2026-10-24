@@ -1,0 +1,32 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:mct_smoke, release_io>;
+
+existing43Mctpaths {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            if (argsCount(arguments) != 2) { argsRelease(arguments); return 2; }
+            pairs >> int <- jsonParse("[[\"report.json\",\"report.stderr.txt\"],[\"report.data\",\"report.stderr.txt\"],[\"report\",\"report.stderr.txt\"],[\".report\",\".report.stderr.txt\"],[\"report.\",\"report..stderr.txt\"],[\"path.with.dot/report\",\"path.with.dot/report.stderr.txt\"],[\"C:\\\\path.with.dot\\\\report.data\",\"C:\\\\path.with.dot\\\\report.stderr.txt\"],[\"foo.tar.gz\",\"foo.tar.stderr.txt\"],[\"path/.report\",\"path/.report.stderr.txt\"]]");
+            rows >> int <- jsonNewArray(); failures >> int <- 0; index >> int <- 0;
+            while (index < jsonArrayLen(pairs)) {
+                pair >> int <- jsonArrayGet(pairs,index); a >> int <- jsonArrayGet(pair,0); b >> int <- jsonArrayGet(pair,1);
+                input >> str <- jsonStringView(a,""); expected >> str <- jsonStringView(b,"");
+                actual >> str <- mct_smoke.mctSmoke.stderrPath(input);
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"path",jsonNewString(input)); jsonObjectSet(row,"actual",jsonNewString(actual));
+                jsonObjectSet(row,"expected",jsonNewString(expected)); jsonObjectSet(row,"passed",jsonNewBool(actual == expected));
+                if (actual != expected) { failures += 1; println("FAIL stderr path: "+input); }
+                jsonArrayPush(rows,row); jsonRelease(row); jsonRelease(a); jsonRelease(b); jsonRelease(pair); strRelease(actual); index += 1;
+            }
+            report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.mctpaths.v43"));
+            jsonObjectSet(report,"passed",jsonNewBool(failures == 0)); jsonObjectSet(report,"rows",rows);
+            written >> bool <- release_io.releaseIo.save(argsAt(arguments,1),report);
+            println("existing43 stderr path checks="+renderInt(index)+" failures="+renderInt(failures));
+            jsonRelease(report); jsonRelease(rows); jsonRelease(pairs); argsRelease(arguments);
+            return failures == 0 && written ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

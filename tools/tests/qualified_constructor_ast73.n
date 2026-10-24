@@ -1,0 +1,41 @@
+use <io:output>;
+use <process:args>;
+use <project:parser_ast>;
+
+qualifiedConstructorAst73 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(argsAt(arguments,1));
+        if (material == null) { argsRelease(arguments); return 65; }
+        valid >> bool <- parser_ast.nccParserAst.materialReady(material) &&
+            parser_ast.nccParserAst.materialTreeValid(material);
+        constructors >> int <- 0;
+        at >> int <- 0;
+        while (valid && at < parser_ast.nccParserAst.materialNodeCount(material)) {
+            if (parser_ast.nccParserAst.materialNodeKind(material,at) == 45) {
+                type >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,at);
+                valid <- type >= 0 && parser_ast.nccParserAst.materialNodeKind(material,type) == 18 &&
+                    parser_ast.nccParserAst.materialNodeParent(material,type) == at &&
+                    parser_ast.nccParserAst.materialNodeEndToken(material,type) ==
+                        parser_ast.nccParserAst.materialNodeFirstToken(material,type)+4;
+                field >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material,type);
+                while (valid && field >= 0) {
+                    valid <- parser_ast.nccParserAst.materialNodeKind(material,field) == 46 &&
+                        parser_ast.nccParserAst.materialNodeParent(material,field) == at &&
+                        parser_ast.nccParserAst.materialNodeFirstChild(material,field) >= 0;
+                    field <- parser_ast.nccParserAst.materialNodeNextSibling(material,field);
+                }
+                constructors += 1;
+            }
+            at += 1;
+        }
+        valid <- valid && constructors == 5;
+        parser_ast.nccParserAst.closeMaterial(material);
+        argsRelease(arguments);
+        println(valid ? "qualified-constructor-ast-ok" : "qualified-constructor-ast-failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

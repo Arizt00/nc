@@ -1,0 +1,120 @@
+
+commandHost {
+    fn:
+        private:
+            wide(text >> str) -> p<byte> {
+                if (cast<byte>(text) == null) return null;
+                units >> int <- osWMultiByteToWideChar(65001,8,adr(text),-1,null,0);
+                if (units <= 0 || units > 2147483647/2) return null;
+                data >> p<byte> <- cast<byte>(alloc(units*2));
+                if (data == null) return null;
+                if (osWMultiByteToWideChar(65001,8,adr(text),-1,adr(data),units) != units) { free(data); return null; }
+                return data;
+            }
+        public:
+            standard(channel >> int) -> addr { return osWGetStdHandle(-10-channel); }
+            open(data >> p<byte>, line >> str, cwd >> str, input >> addr, output >> addr, error >> addr, flags >> int) -> int {
+                if (cast<byte>(line) == null || rd<byte>(cast<byte>(line)) == 0) return 87;
+                command >> p<byte> <- wide(line);
+                if (command == null) return 1113;
+                directory >> p<byte> <- null;
+                if (cast<byte>(cwd) != null && rd<byte>(cast<byte>(cwd)) != 0) {
+                    directory <- wide(cwd);
+                    if (directory == null) { free(command); return 1113; }
+                }
+                startup >> p<byte> <- cast<byte>(calloc(1,112));
+                information >> p<byte> <- cast<byte>(calloc(1,24));
+                handles >> p<addr> <- cast<addr>(calloc(3,8));
+                if (startup == null || information == null || handles == null) {
+                    free(startup); free(information); free(handles); free(command); free(directory); return 8;
+                }
+                wr<u32>(startup,104);
+                redirected >> bool <- input != null || output != null || error != null;
+                status >> int <- 0;
+                attributes >> p<byte> <- null;
+                initialized >> bool <- false;
+                if (redirected) {
+                    // Duplicate only selected handles; concurrent children cannot inherit unrelated pipes.
+                    process >> addr <- osWGetCurrentProcess();
+                    index >> int <- 0;
+                    while (index < 3 && status == 0) {
+                        selected >> addr <- index == 0 ? input : index == 1 ? output : error;
+                        if (selected == null) selected <- osWGetStdHandle(-10-index);
+                        if (osWDuplicateHandle(process,selected,process,adr(off(handles,index)),0,1,2) == 0) status <- osWGetLastError();
+                        index += 1;
+                    }
+                    size >> u64 <- 0;
+                    if (status == 0) {
+                        osWInitializeProcThreadAttributeList(null,1,0,adr(&size));
+                        if (size == 0) status <- osWGetLastError();
+                        else attributes <- cast<byte>(alloc(size));
+                        if (attributes == null && status == 0) status <- 8;
+                    }
+                    if (status == 0) {
+                        initialized <- osWInitializeProcThreadAttributeList(adr(attributes),1,0,adr(&size)) != 0;
+                        if (!initialized) status <- osWGetLastError();
+                    }
+                    if (status == 0 && osWUpdateProcThreadAttribute(adr(attributes),0,0x20002,adr(handles),24,null,null) == 0) status <- osWGetLastError();
+                    if (status == 0) {
+                        wr<u32>(startup,112); wr<u32>(off(startup,60),256);
+                        wr<addr>(off(startup,80),rd(off(handles,0)));
+                        wr<addr>(off(startup,88),rd(off(handles,1)));
+                        wr<addr>(off(startup,96),rd(off(handles,2)));
+                        wr<addr>(off(startup,104),adr(attributes));
+                    }
+                }
+                if (status == 0) {
+                    created >> int <- osWCreateProcessW(null,adr(command),null,null,redirected ? 1 : 0,
+                        redirected ? flags | 0x80000 : flags & ~0x80000,null,adr(directory),adr(startup),adr(information));
+                    if (created == 0) status <- osWGetLastError();
+                    else {
+                        wr<addr>(data,rd<addr>(information)); wr<addr>(off(data,8),rd<addr>(off(information,8)));
+                        wr<int>(off(data,16),rd<u32>(off(information,16)));
+                        wr<int>(off(data,24),rd<u32>(off(information,20)));
+                    }
+                }
+                if (initialized) osWDeleteProcThreadAttributeList(adr(attributes));
+                index >> int <- 0;
+                while (index < 3) { native >> addr <- rd(off(handles,index)); if (native != null) osWCloseHandle(native); index += 1; }
+                free(attributes); free(handles); free(startup); free(information); free(command); free(directory);
+                return status;
+            }
+            wait(data >> p<byte>, timeout >> int) -> int {
+                if (rd<int>(off(data,44)) != 0) return 0;
+                result >> u32 <- osWWaitForSingleObject(rd<addr>(data),timeout < 0 ? 0xFFFFFFFF : timeout);
+                if (result == 258) return 258;
+                if (result != 0) return -osWGetLastError();
+                code >> u32 <- 0;
+                if (osWGetExitCodeProcess(rd<addr>(data),adr(&code)) == 0) return -osWGetLastError();
+                wr<int>(off(data,40),code); wr<int>(off(data,44),1); return 0;
+            }
+            terminate(native >> addr, code >> int) -> int { return osWTerminateProcess(native,code) != 0 ? 0 : osWGetLastError(); }
+            closeHandle(native >> addr) -> int { return osWCloseHandle(native) != 0 ? 0 : osWGetLastError(); }
+            release(data >> p<byte>) -> bool {
+                process >> addr <- rd<addr>(data); thread >> addr <- rd<addr>(off(data,8));
+                processOk >> bool <- process == null || osWCloseHandle(process) != 0;
+                threadOk >> bool <- thread == null || osWCloseHandle(thread) != 0;
+                return processOk && threadOk;
+            }
+            pipeOpen(data >> p<byte>, inheritRead >> bool, inheritWrite >> bool) -> int {
+                security >> array<u64,3>;
+                attributes >> p<byte> <- cast<byte>(&security);
+                wr<u64>(attributes,24); wr<u64>(off(attributes,8),0); wr<u64>(off(attributes,16),1);
+                if (osWCreatePipe(adr(data),adr(off(data,8)),adr(attributes),0) == 0) return osWGetLastError();
+                status >> int <- 0;
+                if (osWSetHandleInformation(rd<addr>(data),1,inheritRead ? 1 : 0) == 0) status <- osWGetLastError();
+                if (status == 0 && osWSetHandleInformation(rd<addr>(off(data,8)),1,inheritWrite ? 1 : 0) == 0) status <- osWGetLastError();
+                if (status != 0) {
+                    osWCloseHandle(rd<addr>(data)); osWCloseHandle(rd<addr>(off(data,8)));
+                    wr<addr>(data,null); wr<addr>(off(data,8),null);
+                }
+                return status;
+            }
+            transfer(native >> addr, buffer >> addr, bytes >> int, writing >> bool) -> int {
+                if (native == null) return -6;
+                count >> u32 <- 0;
+                status >> int <- writing ? osWWriteFile(native,buffer,bytes,adr(&count),null) : osWReadFile(native,buffer,bytes,adr(&count),null);
+                return status == 0 ? -osWGetLastError() : count;
+            }
+    fa: return true;
+}

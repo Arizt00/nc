@@ -1,0 +1,30 @@
+use <data:json>;
+use <io:output>;
+use <project:closure43_core, sha256, editor_json>;
+
+closure43CoreTests {
+    fn:
+        run() -> int {
+            closure43_core.closure43Core.init();
+            if (!sha256.nccSha256.selfTest()) return 1;
+            model >> int <- jsonParse("{\"z\":[true,null,3],\"a\":\"\\n\\\\u000a\"}");
+            encoded >> str <- closure43_core.closure43Core.dumps(model);
+            if (encoded != "{\"a\": \"\\n\\\\u000a\", \"z\": [true, null, 3]}") { println(encoded); return 2; }
+            if (closure43_core.closure43Core.passed("test result: ok. 12 passed\r\ntest result: ok. 3 passed") != 15) return 3;
+            if (closure43_core.closure43Core.passed("test result: ok. x passed\ntest result: ok. 5 failed") != 0) return 4;
+            if (closure43_core.closure43Core.quote("caf\u{e9}") != "\"caf\\u00e9\"") return 5;
+            if (closure43_core.closure43Core.quote("\u{1f642}") != "\"\\ud83d\\ude42\"") return 6;
+            unicode >> int <- editor_json.editorJson.parse("{\"unicode\":\"caf\\u00e9 \\ud83d\\ude42\\\\u000a\\n\"}");
+            if (unicode == 0) { println(jsonErrorMessage()); return 7; }
+            if (closure43_core.closure43Core.field(0,"absent") != "") return 8;
+            empty >> int <- jsonNewObject();
+            if (closure43_core.closure43Core.field(empty,"absent") != "") return 9;
+            jsonObjectSet(empty,"null_value",jsonNewNull());
+            if (closure43_core.closure43Core.field(empty,"null_value") != "") return 10;
+            jsonRelease(empty);
+            jsonRelease(unicode);
+            jsonRelease(model); println("closure43 core: 10 checks passed"); return 0;
+        }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,178 @@
+use <io:output, render>;
+
+nccMctImageContract {
+    const:
+        MAGIC >> int <- 1196249934;
+        VERSION >> int <- 1;
+        HEADER_BYTES >> int <- 40;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_FORMAT >> int <- 8;
+        H_TARGET >> int <- 12;
+        H_BYTES >> int <- 16;
+        H_ENTRY >> int <- 20;
+        H_PROVIDERS >> int <- 24;
+        H_HASH >> int <- 28;
+        H_FLAGS >> int <- 32;
+        H_RESERVED >> int <- 36;
+
+        FORMAT_PE64 >> int <- 1;
+        FORMAT_ELF64 >> int <- 2;
+        FORMAT_ELF32 >> int <- 3;
+        FORMAT_MACHO64 >> int <- 4;
+        FORMAT_WASM >> int <- 5;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return (rd<byte>(off(base, at)) & 255) |
+                    ((rd<byte>(off(base, at + 1)) & 255) << 8) |
+                    ((rd<byte>(off(base, at + 2)) & 255) << 16) |
+                    ((rd<byte>(off(base, at + 3)) & 255) << 24);
+            }
+
+            hashBytes(base >> p<byte>, count >> int) -> int {
+                value >> int <- 216613626;
+                at >> int <- 0;
+                while (at < count) {
+                    value <- ((value ^ (rd<byte>(off(base, at)) & 255)) * 16777619) &
+                        0x7FFFFFFF;
+                    at += 1;
+                }
+                return value;
+            }
+
+        public:
+            align(value >> int, boundary >> int) -> int {
+                guard boundary > 1 else return value;
+                return ((value + boundary - 1) / boundary) * boundary;
+            }
+
+            zero(base >> p<byte>, count >> int) -> void {
+                at >> int <- 0;
+                while (at < count) { wr<byte>(off(base, at), 0); at += 1; }
+            }
+
+            put8(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<byte>(off(base, at), value & 255);
+            }
+
+            put16(base >> p<byte>, at >> int, value >> int) -> void {
+                put8(base, at, value);
+                put8(base, at + 1, value >>> 8);
+            }
+
+            put32(base >> p<byte>, at >> int, value >> int) -> void {
+                put16(base, at, value);
+                put16(base, at + 2, value >>> 16);
+            }
+
+            put64(base >> p<byte>, at >> int, value >> u64) -> void {
+                put32(base, at, value);
+                put32(base, at + 4, value >>> 32);
+            }
+
+            put64Parts(base >> p<byte>, at >> int, low >> int, high >> int) -> void {
+                put32(base, at, low);
+                put32(base, at + 4, high);
+            }
+
+            putBe32(base >> p<byte>, at >> int, value >> int) -> void {
+                put8(base, at, value >>> 24);
+                put8(base, at + 1, value >>> 16);
+                put8(base, at + 2, value >>> 8);
+                put8(base, at + 3, value);
+            }
+
+            literal(base >> p<byte>, at >> int, text >> str, count >> int) -> int {
+                if (count > 0) cp(off(base, at), cast<byte>(text), count);
+                return at + count;
+            }
+
+            cstring(base >> p<byte>, at >> int, text >> str, count >> int) -> int {
+                cursor >> int <- literal(base, at, text, count);
+                put8(base, cursor, 0);
+                return cursor + 1;
+            }
+
+            make(format >> int, target >> int, bytes >> int,
+                entry >> int, providers >> int, flags >> int) -> p<byte> {
+                guard bytes > 0 else return null;
+                result >> p<byte> <- cast<byte>(alloc(HEADER_BYTES + bytes));
+                guard result != null else return null;
+                zero(result, HEADER_BYTES + bytes);
+                put32(result, H_MAGIC, MAGIC);
+                put32(result, H_VERSION, VERSION);
+                put32(result, H_FORMAT, format);
+                put32(result, H_TARGET, target);
+                put32(result, H_BYTES, bytes);
+                put32(result, H_ENTRY, entry);
+                put32(result, H_PROVIDERS, providers);
+                put32(result, H_FLAGS, flags);
+                return result;
+            }
+
+            data(result >> p<byte>) -> p<byte> {
+                return result == null ? null : off(result, HEADER_BYTES);
+            }
+
+            finish(result >> p<byte>) -> p<byte> {
+                guard result != null else return null;
+                put32(result, H_HASH, hashBytes(data(result), integer(result, H_BYTES)));
+                return result;
+            }
+
+            bytes(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_BYTES);
+            }
+
+            format(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_FORMAT);
+            }
+
+            target(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_TARGET);
+            }
+
+            entry(result >> p<byte>) -> int {
+                return result == null ? -1 : integer(result, H_ENTRY);
+            }
+
+            providers(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_PROVIDERS);
+            }
+
+            flags(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_FLAGS);
+            }
+
+            hash(result >> p<byte>) -> int {
+                return result == null ? 0 : integer(result, H_HASH);
+            }
+
+            write(result >> p<byte>, path >> str) -> bool {
+                guard result != null else return false;
+                if (path == "") return true;
+                return fsWriteFrom(path, data(result), bytes(result), false) == bytes(result);
+            }
+
+            release(result >> p<byte>) -> void {
+                if (result != null) free(result);
+            }
+
+            selfTest() -> bool {
+                test >> p<byte> <- make(FORMAT_PE64, 2, 8, 1, 0, 3);
+                guard test != null else return false;
+                put32(data(test), 0, 0x00004550);
+                finish(test);
+                ok >> bool <- bytes(test) == 8 && format(test) == FORMAT_PE64 &&
+                    target(test) == 2 && entry(test) == 1 && providers(test) == 0 &&
+                    flags(test) == 3 && hash(test) != 0;
+                release(test);
+                return ok;
+            }
+
+    fa:
+        return true;
+}

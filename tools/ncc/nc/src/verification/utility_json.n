@@ -1,0 +1,28 @@
+use <data:json>;
+use <project:release_io, cert_json>;
+
+utilityJson {
+    fn:
+        public:
+            // The parent owns the view; the short-lived borrowed handle owns no node.
+            field(parent >> int, key >> str) -> str {
+                child >> int <- jsonObjectBorrow(parent,key);
+                view >> str <- jsonStringView(child,"");
+                jsonRelease(child); return view;
+            }
+            // JSON setters clone. These consuming adapters release the caller's handle.
+            put(parent >> int, key >> str, owned >> int) -> void {
+                jsonObjectSet(parent,key,owned); jsonRelease(owned);
+            }
+            push(parent >> int, owned >> int) -> void {
+                jsonArrayPush(parent,owned); jsonRelease(owned);
+            }
+            stringify(model >> int) -> str { return cert_json.certJson.stringify(model); }
+            save(path >> str, model >> int) -> bool {
+                encoded >> str <- stringify(model);
+                content >> str <- encoded+"\n";
+                saved >> bool <- release_io.releaseIo.atomicWrite(path,content);
+                strRelease(content); strRelease(encoded); return saved;
+            }
+    fa: return true;
+}

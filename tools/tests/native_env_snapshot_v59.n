@@ -1,0 +1,37 @@
+use <process:env>;
+use <io:output>;
+
+nativeEnvSnapshotV59 {
+    find(handle >> addr, wanted >> str) -> str {
+        at >> int <- 0; while (at < envCount(handle)) { text >> str <- envAt(handle,at); if (text == wanted) return text; at += 1; } return "";
+    }
+    run() -> int {
+        guard envCount(null) == 0 && envError(null) == 12 && envRelease(null) else return 1;
+        rounds >> int <- 0;
+        while (rounds < 128) {
+            guard envSet("NC_ENV_GATE59_SNAPSHOT","first") else return 2;
+            first >> addr <- envOpen(); second >> addr <- envOpen();
+            guard first != null && second != null && first != second && envError(first) == 0 && envError(second) == 0 else return 3;
+            count >> int <- envCount(first); vector >> p<addr> <- from<addr>(envData(first));
+            guard count > 0 && count == envCount(second) && envData(first) != envData(second) else return 4;
+            at >> int <- 0; bytes >> int <- 0;
+            while (at < count) {
+                text >> str <- envAt(first,at); other >> str <- envAt(second,at);
+                guard text == other && adr(text) != adr(other) && rd(off(vector,at)) == adr(text) else return 5;
+                bytes += strByteLen(text)+1; at += 1;
+            }
+            guard envBytes(first) == bytes && envBytes(second) == bytes && rd(off(vector,count)) == null else return 6;
+            guard envSet("NC_ENV_GATE59_SNAPSHOT","second") else return 7;
+            saved >> str <- find(first,"NC_ENV_GATE59_SNAPSHOT=first"); independent >> str <- find(second,"NC_ENV_GATE59_SNAPSHOT=first");
+            guard saved != "" && independent != "" else return 8;
+            pointer >> p<byte> <- cast<byte>(saved); code >> byte <- rd(pointer); wr(pointer,65);
+            guard rd<byte>(cast<byte>(independent)) == code else return 9;
+            wr(pointer,code); guard envRelease(first) && independent == "NC_ENV_GATE59_SNAPSHOT=first" && envRelease(second) else return 10;
+            rounds += 1;
+        }
+        guard envRemove("NC_ENV_GATE59_SNAPSHOT") else return 11;
+        println("env snapshots ok"); return 148;
+    }
+    ref main ->> run;
+    fa: return true;
+}

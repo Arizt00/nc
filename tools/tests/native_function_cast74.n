@@ -1,0 +1,32 @@
+use <io:output>;
+
+nativeFunctionCast74 {
+    entryFrom(bytes >> p<byte>) -> fn() -> int {
+        return cast(bytes);
+    }
+    plusSeven(value >> int) -> int { return value+7; }
+    apply(operation >> fn(int) -> int, value >> int) -> int {
+        return operation(value);
+    }
+    run() -> int {
+        page >> int <- vmPageSize();
+        bytes >> p<byte> <- vmReserve(null,page,0);
+        if (bytes == null || !vmCommit(bytes,page,vmReadWriteProtection())) return 1;
+        wr(bytes,0xB8);
+        wr(off(bytes,1),42);
+        wr(off(bytes,2),0);
+        wr(off(bytes,3),0);
+        wr(off(bytes,4),0);
+        wr(off(bytes,5),0xC3);
+        if (!vmExecutable(bytes,page)) return 2;
+        entry >> fn() -> int <- entryFrom(bytes);
+        answer >> int <- entry();
+        if (!vmRelease(bytes,page) || answer != 42) return 3;
+        operation >> fn(int) -> int <- cast(&plusSeven);
+        if (operation(35) != 42 || apply(operation,35) != 42) return 4;
+        println("native-function-cast-ok");
+        return 244;
+    }
+    ref main ->> run;
+    fa: return true;
+}

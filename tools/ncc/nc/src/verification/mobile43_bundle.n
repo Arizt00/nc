@@ -1,0 +1,89 @@
+use <data:json>;
+use <io:output>;
+use <process:args, env>;
+use <project:tool_cli, release_io, cert_json, sha256>;
+
+mobile43Bundle {
+    fn:
+        private:
+            copyFile(source >> str, destination >> str) -> bool {
+                size >> int <- fsSize(source);
+                if (size < 0 || size > 67108864) return false;
+                data >> p<byte> <- cast(alloc(size+1));
+                if (data == null) return false;
+                good >> bool <- fsReadInto(source,data,size) == size;
+                if (good) good <- fsWriteFrom(destination,data,size,false) == size;
+                free(data); return good;
+            }
+            invoke(words >> int) -> bool {
+                result >> int <- tool_cli.toolCli.execute(words,".",600000);
+                stdout >> str <- cert_json.certJson.field(result,"stdout");
+                stderr >> str <- cert_json.certJson.field(result,"stderr");
+                print(stdout); print(stderr); strRelease(stdout); strRelease(stderr);
+                good >> bool <- tool_cli.toolCli.hasFlag(result,"ok");
+                jsonRelease(words); jsonRelease(result); return good;
+            }
+            compile(ncc >> str, project >> str, target >> str, output >> str, linker >> str) -> bool {
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,ncc); tool_cli.toolCli.append(words,"project");
+                tool_cli.toolCli.append(words,"sync"); tool_cli.toolCli.append(words,project);
+                tool_cli.toolCli.append(words,"--main"); tool_cli.toolCli.append(words,"main.n");
+                tool_cli.toolCli.append(words,"--target"); tool_cli.toolCli.append(words,target);
+                if (!invoke(words)) return false;
+                words <- jsonNewArray();
+                tool_cli.toolCli.append(words,ncc); tool_cli.toolCli.append(words,"project");
+                tool_cli.toolCli.append(words,"link"); tool_cli.toolCli.append(words,project);
+                tool_cli.toolCli.append(words,"--main"); tool_cli.toolCli.append(words,"main.n");
+                tool_cli.toolCli.append(words,"--target"); tool_cli.toolCli.append(words,target);
+                tool_cli.toolCli.append(words,"--out"); tool_cli.toolCli.append(words,output);
+                tool_cli.toolCli.append(words,"--linker"); tool_cli.toolCli.append(words,linker);
+                return invoke(words);
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                root >> str <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--source","."));
+                ncc >> str <- release_io.releaseIo.option(arguments,"--ncc","ncc");
+                windows >> bool <- envHas("WINDIR");
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                cc >> str <- release_io.releaseIo.option(arguments,"--cc",windows ? "C:/msys64/mingw64/bin/gcc.exe" : "/usr/bin/gcc");
+                if (release_io.releaseIo.option(arguments,"--help","") != "" || argsCount(arguments) == 2 && argsAt(arguments,1) == "--help") {
+                    println("build-mobile-tools --source PC_TOOLS [--ncc NCC] [--cc GCC]"); return 0;
+                }
+                if (!envSet("NC_MOBILE_CC",cc)) return 1;
+                linker >> str <- root+"/linker/bin/"+(windows ? "gcc.exe" : "gcc");
+                if (!compile(ncc,root+"/linker",target,"bin/"+(windows ? "gcc.exe" : "gcc"),cc)) return 1;
+                if (!compile(ncc,root+"/controller",target,"bin/"+(windows ? "blockmaster.exe" : "blockmaster"),linker)) return 1;
+                if (!compile(ncc,root+"/protocol",target,"bin/"+(windows ? "protocol.exe" : "protocol"),linker)) return 1;
+                if (windows) {
+                    provider >> str <- release_io.releaseIo.option(arguments,"--provider",release_io.releaseIo.directory(cc));
+                    dlls >> int <- jsonParse("[\"libssl-3-x64.dll\",\"libcrypto-3-x64.dll\"]");
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(dlls)) {
+                        item >> int <- jsonArrayBorrow(dlls,at);
+                        name >> str <- jsonStringView(item,"");
+                        good >> bool <- copyFile(provider+"/"+name,root+"/controller/bin/"+name) &&
+                            copyFile(provider+"/"+name,root+"/protocol/bin/"+name);
+                        jsonRelease(item);
+                        if (!good) { jsonRelease(dlls); println("missing native TLS provider: "+name); return 1; }
+                        at += 1;
+                    }
+                    jsonRelease(dlls);
+                }
+                outputs >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < 3) {
+                    file >> str <- index == 0 ? linker : root+(index == 1 ? "/controller/bin/blockmaster" : "/protocol/bin/protocol")+(windows ? ".exe" : "");
+                    row >> int <- jsonNewObject();
+                    cert_json.certJson.put(row,"path",jsonNewString(file));
+                    cert_json.certJson.put(row,"sha256",jsonNewString(sha256.nccSha256.file(file)));
+                    cert_json.certJson.push(outputs,row); index += 1;
+                }
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.mobile.native.bundle.v43"));
+                cert_json.certJson.put(report,"target",jsonNewString(target));
+                cert_json.certJson.put(report,"artifacts",outputs);
+                saved >> bool <- cert_json.certJson.save(root+"/native-tools.json",report);
+                jsonRelease(report); return saved ? 0 : 1;
+            }
+    fa: return true;
+}

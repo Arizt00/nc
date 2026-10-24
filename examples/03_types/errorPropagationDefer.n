@@ -1,0 +1,43 @@
+use <collections:result>;
+
+errorPropagationDefer :: runtime {
+    stc:
+        cleaned >> int <- 0;
+        trace   >> int <- 0;
+
+    fn:
+        source(enabled >> bool) -> Result<int, str> {
+            if (enabled) {
+                return ok(41);
+            } else {
+                return err("disabled");
+            }
+        }
+
+        relay(enabled >> bool) -> Result<int, str> {
+            defer {
+                cleaned += 1;
+                trace <- trace * 10 + 1;
+            }
+            defer {
+                trace <- trace * 10 + 2;
+            }
+            value >> int <- source(enabled)?;
+            return ok(value + 1);
+        }
+
+        run() -> bool {
+            good >> Result<int, str> <- relay(true);
+            bad >> Result<int, str> <- relay(false);
+            return cleaned == 2
+                && trace == 2121
+                && unwrap(good) == 42
+                && isErr(bad);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

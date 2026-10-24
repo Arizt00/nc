@@ -1,0 +1,82 @@
+nccStage0Policy {
+    const:
+        UNSIGNED >> int <- 256;
+    fn:
+        private:
+            equal(data >> p<byte>, count >> int, literal >> p<byte>, bytes >> int) -> bool {
+                if (count != bytes) return false;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value >> int <- rd(off(data,at)) & 255;
+                    if (value >= 65 && value <= 90) value += 32;
+                    if (value != (rd(off(literal,at)) & 255)) return false;
+                    at += 1;
+                }
+                return true;
+            }
+        public:
+            rawDeclaration(token >> int) -> int {
+                return token == 21 ? 1 : 0;
+            }
+            callTarget(shape >> int) -> int {
+                if (shape == 1) return 1;
+                if (shape == 2) return 2;
+                return 3;
+            }
+            guardCondition(tokens >> p<int>, count >> int) -> int {
+                if (count < 1 || rd(tokens) != 7) return 0;
+                depth >> int <- 0;
+                at >> int <- 0;
+                while (at < count) {
+                    token >> int <- rd(off(tokens,at));
+                    if (token == 7) depth += 1;
+                    if (token == 8) {
+                        depth -= 1;
+                        if (depth == 0) return at+1 < count && rd(off(tokens,at+1)) == 71 ? 1 : 0;
+                    }
+                    at += 1;
+                }
+                return 0;
+            }
+            functionName(role >> int) -> int {
+                return role == 1 || role == 2 ? 1 : 0;
+            }
+            prefixNext(token >> int) -> int {
+                if (token == 101 || token == 14 || token == 15 || token == 8 ||
+                    token == 10 || token == 6 || token == 7 || token == 9 ||
+                    token == 16 || token == 13 || token == 45 || token == 33 ||
+                    token == 30 || token == 24 || token == 36 || token == 37 ||
+                    token == 39 || token == 40 || token == 47) return 0;
+                if (token == 49 || token == 48 || token == 25 || token == 44 ||
+                    token == 43 || token == 31 || token == 32 || token == 26 ||
+                    token == 27 || token == 28 || token == 29 || token == 21 ||
+                    token == 22 || token == 46 || token == 35 || token == 38 ||
+                    token == 18 || token == 41 || token == 42) return 0;
+                return 1;
+            }
+            integerClass(data >> p<byte>, count >> int, pointerBits >> int) -> int {
+                if (equal(data,count,cast<byte>("bool"),4)) return UNSIGNED+1;
+                if (equal(data,count,cast<byte>("byte"),4) || equal(data,count,cast<byte>("char"),4) ||
+                    equal(data,count,cast<byte>("u8"),2) || equal(data,count,cast<byte>("uint8"),5)) return UNSIGNED+8;
+                if (equal(data,count,cast<byte>("i8"),2) || equal(data,count,cast<byte>("int8"),4)) return 8;
+                if (equal(data,count,cast<byte>("u16"),3) || equal(data,count,cast<byte>("uint16"),6)) return UNSIGNED+16;
+                if (equal(data,count,cast<byte>("i16"),3) || equal(data,count,cast<byte>("int16"),5)) return 16;
+                if (equal(data,count,cast<byte>("u32"),3) || equal(data,count,cast<byte>("uint32"),6) ||
+                    equal(data,count,cast<byte>("uint"),4)) return UNSIGNED+32;
+                if (equal(data,count,cast<byte>("int"),3) || equal(data,count,cast<byte>("i32"),3) ||
+                    equal(data,count,cast<byte>("int32"),5)) return 32;
+                if (equal(data,count,cast<byte>("u64"),3) || equal(data,count,cast<byte>("uint64"),6)) return UNSIGNED+64;
+                if (equal(data,count,cast<byte>("i64"),3) || equal(data,count,cast<byte>("int64"),5)) return 64;
+                if (equal(data,count,cast<byte>("u128"),4) || equal(data,count,cast<byte>("uint128"),7)) return UNSIGNED+128;
+                if (equal(data,count,cast<byte>("i128"),4) || equal(data,count,cast<byte>("int128"),6)) return 128;
+                if (equal(data,count,cast<byte>("usize"),5)) return UNSIGNED+pointerBits;
+                if (equal(data,count,cast<byte>("isize"),5)) return pointerBits;
+                return 0;
+            }
+            extension(class >> int, sourceBits >> int, targetBits >> int) -> int {
+                if (sourceBits <= 0 || targetBits <= 0) return -1;
+                if (sourceBits == targetBits) return 0;
+                if (sourceBits > targetBits) return 3;
+                return sourceBits == 1 || (class & UNSIGNED) != 0 ? 2 : 1;
+            }
+}

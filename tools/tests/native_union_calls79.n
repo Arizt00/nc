@@ -1,0 +1,57 @@
+use <io:output>;
+use <project:unions>;
+
+nativeUnionCalls79 {
+    type:
+        Buffer {
+            public: guard >> byte; cells >> array<i64,5>; choice >> unions.nativeUnionAbi79.Choice;
+            layout: align(16);
+        }
+        Packed { public: guard >> byte; value >> u64; layout: packed; }
+        NestedArray { public: slots >> array<unions.nativeUnionAbi79.Choice,2>; }
+    stc:
+        storage >> Buffer;
+        words >> array<i64,7>;
+        choice >> unions.nativeUnionAbi79.Choice;
+        packed >> Packed;
+        arrayStorage >> NestedArray;
+    run() -> int {
+        if (storage.guard != 0 || storage.cells[4] != 0 || storage.choice.mixed.tag != 0 || words[6] != 0 || choice.mixed.value != 0.0 || packed.value != 0) return 1;
+        if (adr(&storage) % alignOf(Buffer) != 0 || adr(&words) % 8 != 0) return 2;
+        if (sizeOf(Buffer) != 64 || alignOf(Buffer) != 16 || offsetOf(Buffer,choice) != 48) return 11;
+        if (sizeOf(unions.nativeUnionAbi79.Choice) != 16 || alignOf(unions.nativeUnionAbi79.Choice) != 8 ||
+            offsetOf(unions.nativeUnionAbi79.Mixed,value) != 8) return 12;
+        if (sizeOf(NestedArray) != 32 || arrayStorage.slots[1].mixed.tag != 0) return 13;
+        storage.guard = 73; storage.cells[4] = 99; words[6] = 1234567;
+        packed.guard = 29; packed.value = 0x1234567890ABCDEF;
+        bits >> unions.nativeUnionAbi79.Bits <- unions.nativeUnionAbi79.Bits(value: 2.5);
+        bits <- unions.nativeUnionAbi79.bits(bits);
+        if (bits.value != 3.0 || bits.bits != 0x4008000000000000) return 3;
+        floating >> unions.nativeUnionAbi79.Float <- unions.nativeUnionAbi79.Float(value: 4.5);
+        floating <- unions.nativeUnionAbi79.floating(floating);
+        if (floating.value != 5.5) return 4;
+        pair >> unions.nativeUnionAbi79.Pair <- unions.nativeUnionAbi79.Pair(first: 1.25,second: 2.5);
+        twin >> unions.nativeUnionAbi79.Twin <- unions.nativeUnionAbi79.Twin(pair: pair);
+        twin <- unions.nativeUnionAbi79.twin(twin);
+        if (twin.values[0] != 1.25 || twin.values[1] != 3.75) return 5;
+        mixed >> unions.nativeUnionAbi79.Mixed <- unions.nativeUnionAbi79.Mixed(tag: 7,value: 3.5);
+        choice <- unions.nativeUnionAbi79.Choice(mixed: mixed);
+        indirect >> fn(unions.nativeUnionAbi79.Choice) -> unions.nativeUnionAbi79.Choice <- &unions.nativeUnionAbi79.choice;
+        choice <- indirect(choice);
+        storage.choice = choice;
+        arrayStorage.slots[1] = choice;
+        if (choice.mixed.tag != 8 || choice.mixed.value != 4.0 || storage.choice.mixed.tag != 8) return 6;
+        if (unions.nativeUnionAbi79.exhausted(1,2,3,4,5,6,choice,0.5) != 33.5) return 7;
+        large >> unions.nativeUnionAbi79.Large <- unions.nativeUnionAbi79.Large(values: [1.5,2.5,3.5]);
+        large <- unions.nativeUnionAbi79.large(large);
+        if (large.values[2] != 5.0 || sizeOf(unions.nativeUnionAbi79.Large) != 24) return 8;
+        nested >> unions.nativeUnionAbi79.Nested <- unions.nativeUnionAbi79.Nested(prefix: 2,payload: bits);
+        nested <- unions.nativeUnionAbi79.nested(nested);
+        if (nested.payload.value != 5.0 || nested.prefix != 2) return 9;
+        if (storage.guard != 73 || storage.cells[4] != 99 || words[6] != 1234567 || packed.guard != 29 || packed.value != 0x1234567890ABCDEF ||
+            arrayStorage.slots[1].mixed.tag != 8 || arrayStorage.slots[0].mixed.tag != 0) return 10;
+        println("native-union-calls-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

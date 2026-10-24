@@ -1,0 +1,110 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:parser_ast, type_shapes>;
+
+nativeTransitiveTargets80 {
+    stc: checks >> int <- 0; failures >> int <- 0;
+    integer(object >> int, key >> str) -> int {
+        value >> int <- jsonObjectBorrow(object,key);
+        result >> int <- jsonGetIntOr(value,-1); jsonRelease(value); return result;
+    }
+    text(object >> int, key >> str) -> str {
+        value >> int <- jsonObjectBorrow(object,key);
+        result >> str <- jsonStringView(value,""); jsonRelease(value); return result;
+    }
+    setInt(object >> int, key >> str, number >> int) -> void {
+        value >> int <- jsonNewInt(number); jsonObjectSet(object,key,value); jsonRelease(value);
+    }
+    setText(object >> int, key >> str, value >> str) -> void {
+        item >> int <- jsonNewString(value); jsonObjectSet(object,key,item); jsonRelease(item);
+    }
+    expect(valid >> bool) -> void { checks += 1; if (!valid) failures += 1; }
+    nodeName(material >> p<byte>, node >> int) -> str {
+        token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,node);
+        count >> int <- parser_ast.nccParserAst.materialIdentityBytes(material,token);
+        data >> p<byte> <- alloc(count+1);
+        if (data == null) return null;
+        cp(data,parser_ast.nccParserAst.materialIdentityData(material,token),count); wr(off(data,count),0); return cast<str>(data);
+    }
+    collect(material >> p<byte>, unit >> str, owner >> str, target >> int, symbols >> int) -> void {
+        at >> int <- 0;
+        while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+            kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,at);
+            if (kind == 13 || kind == 15) {
+                item >> int <- jsonNewObject(); name >> str <- nodeName(material,at); full >> str <- owner+"."+name;
+                setText(item,"unit",unit); setText(item,"name",full); setText(item,"kind",kind == 13 ? "type" : "function");
+                setInt(item,"source_node",at);
+                shape >> int <- type_shapes.nccTypeShapes.signature(material,at,target);
+                jsonObjectSet(item,"type_signature",shape); jsonRelease(shape); jsonArrayPush(symbols,item); jsonRelease(item);
+                strRelease(full); strRelease(name);
+            }
+            at += 1;
+        }
+    }
+    refresh(material >> p<byte>, unit >> str, target >> int, symbols >> int) -> void {
+        layout >> p<byte> <- type_shapes.nccTypeShapes.openBoundLayout(material,target,symbols); at >> int <- 0;
+        while (at < jsonArrayLen(symbols)) {
+            symbol >> int <- jsonArrayBorrow(symbols,at);
+            if (text(symbol,"unit") == unit) {
+                shape >> int <- type_shapes.nccTypeShapes.signatureInLayout(material,integer(symbol,"source_node"),target,layout);
+                jsonObjectSet(symbol,"type_signature",shape); jsonRelease(shape);
+            }
+            jsonRelease(symbol); at += 1;
+        }
+        type_shapes.nccTypeShapes.closeBoundLayout(layout);
+    }
+    inspect(symbols >> int, target >> int) -> void {
+        at >> int <- 0; seen >> int <- 0;
+        while (at < jsonArrayLen(symbols)) {
+            symbol >> int <- jsonArrayBorrow(symbols,at);
+            if (text(symbol,"name") == "nativeTransitiveApi80.Box" || text(symbol,"name") == "nativeTransitiveApi80.SseBox") {
+                original >> int <- jsonObjectBorrow(symbol,"type_signature");
+                shape >> int <- type_shapes.nccTypeShapes.resolveImported(original,symbols); jsonRelease(original);
+                types >> int <- jsonObjectBorrow(shape,"types"); root >> int <- jsonArrayBorrow(types,integer(shape,"result"));
+                small >> bool <- text(symbol,"name") == "nativeTransitiveApi80.SseBox";
+                expect(integer(root,"layout_valid") == 1);
+                expect(integer(root,"bytes") == (small ? 16 : (target == 4 ? 96 : 112)));
+                expect(integer(root,"align") == (small ? (target == 4 ? 4 : 8) : 16));
+                index >> int <- 0;
+                while (index < jsonArrayLen(types)) {
+                    node >> int <- jsonArrayBorrow(types,index);
+                    if (integer(node,"kind") == 14 && text(node,"name") == "cells") expect(integer(node,"offset") == (target == 4 ? 4 : 8));
+                    if (integer(node,"kind") == 14 && text(node,"name") == "word") expect(integer(node,"offset") == (target == 4 ? 40 : 56));
+                    jsonRelease(node); index += 1;
+                }
+                seen += 1; jsonRelease(root); jsonRelease(types); jsonRelease(shape);
+            }
+            jsonRelease(symbol); at += 1;
+        }
+        expect(seen == 2);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 64;
+        repo >> str <- argsAt(arguments,1);
+        leaf >> p<byte> <- parser_ast.nccParserAst.openMaterial(repo+"/tools/tests/native_transitive_leaf80.n");
+        mid >> p<byte> <- parser_ast.nccParserAst.openMaterial(repo+"/tools/tests/native_transitive_mid80.n");
+        api >> p<byte> <- parser_ast.nccParserAst.openMaterial(repo+"/tools/tests/native_transitive_api80.n");
+        if (!parser_ast.nccParserAst.materialReady(leaf) || !parser_ast.nccParserAst.materialReady(mid) || !parser_ast.nccParserAst.materialReady(api)) return 65;
+        target >> int <- 1;
+        while (target <= 10) {
+            symbols >> int <- jsonNewArray();
+            collect(api,"api","nativeTransitiveApi80",target,symbols);
+            collect(mid,"mid","nativeTransitiveMid80",target,symbols);
+            collect(leaf,"leaf","nativeTransitiveLeaf80",target,symbols);
+            pass >> int <- 0;
+            while (pass < 4) {
+                refresh(api,"api",target,symbols); refresh(mid,"mid",target,symbols); refresh(leaf,"leaf",target,symbols); pass += 1;
+            }
+            inspect(symbols,target); jsonRelease(symbols); target += 1;
+        }
+        result >> int <- jsonNewObject(); setInt(result,"checks",checks); setInt(result,"failures",failures);
+        value >> int <- jsonNewBool(failures == 0); jsonObjectSet(result,"passed",value); jsonRelease(value);
+        saved >> bool <- jsonSaveFile(result,argsAt(arguments,2),2); jsonRelease(result); argsRelease(arguments);
+        parser_ast.nccParserAst.closeMaterial(api); parser_ast.nccParserAst.closeMaterial(mid); parser_ast.nccParserAst.closeMaterial(leaf);
+        if (!saved || failures != 0) return 1;
+        println("native-transitive-targets-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

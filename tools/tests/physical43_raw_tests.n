@@ -1,0 +1,56 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_common, physical43_json, physical43_numeric, physical43_deep_json>;
+
+physical43RawTests {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+    fn:
+        private:
+            expect(valid >> bool, name >> str) -> void { checks += 1; if (!valid) { failures += 1; println("FAIL "+name); } }
+            unhex(text >> str) -> p<byte> { data >> p<byte> <- cast(alloc(strByteLen(text)/2+1)); if (data == null) return null; at >> int <- 0; while (at < strByteLen(text)/2) { wr(off(data,at),physical43_common.physical43Common.hexValue(strSubstring(text,at*2,2))); at += 1; } return data; }
+            hex(data >> p<byte>, length >> int) -> str {
+                output >> p<byte> <- cast(alloc(length*2+1)); if (output == null) return ""; digits >> p<byte> <- cast("0123456789abcdef"); at >> int <- 0;
+                while (at < length) { value >> int <- rd(off(data,at)) & 255; wr(off(output,at*2),rd(off(digits,value/16))); wr(off(output,at*2+1),rd(off(digits,value%16))); at += 1; } wr(off(output,length*2),0); return physical43_json.physical43Json.asText(output);
+            }
+            wideInt(text >> str) -> i64 {
+                data >> p<byte> <- cast(text); at >> int <- strStartsWith(text,"-") ? 1 : 0; value >> u64 <- 0;
+                while (at < strByteLen(text)) { value <- value*10+(rd(off(data,at))-48); at += 1; }
+                result >> i64 <- strStartsWith(text,"-") ? 0-value : value; return result;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 2;
+                gold >> int <- physical43_common.physical43Common.read(argsAt(arguments,1),false); signed >> int <- jsonObjectBorrow(gold,"signed"); input >> str <- physical43_common.physical43Common.field(signed,"input");
+                model >> int <- physical43_json.physical43Json.parseCertification(input); expect(model != 0,"NUL parse");
+                actual >> str <- physical43_common.physical43Common.canonical(model,true,0); expect(actual == physical43_common.physical43Common.field(signed,"canonical"),"NUL keys/sort/duplicate/reserved token canonical");
+                expect(physical43_common.physical43Common.digest("ncc.ci.exact_head_capture.v1",model,true,false) == physical43_common.physical43Common.field(signed,"digest"),"exact-head NUL digest");
+                expect(physical43_common.physical43Common.hmac("ncc.ci.exact_head_capture.v1",model,"physical43-native-key") == physical43_common.physical43Common.field(signed,"hmac"),"exact-head NUL HMAC");
+                roundtrip >> int <- physical43_json.physical43Json.parseCertification(actual); expect(physical43_common.physical43Common.equal(model,roundtrip),"NUL roundtrip"); jsonRelease(roundtrip);
+                strict >> int <- physical43_json.physical43Json.parse(input); expect(strict == 0,"strict legacy parser still rejects NUL"); if (strict != 0) jsonRelease(strict);
+                surrogate >> int <- jsonObjectBorrow(gold,"surrogate_signed"); surrogateInput >> str <- physical43_common.physical43Common.field(surrogate,"input"); surrogateModel >> int <- physical43_json.physical43Json.parseCertification(surrogateInput); expect(surrogateModel != 0,"exact-head escaped unpaired surrogate metadata");
+                surrogateText >> str <- physical43_common.physical43Common.canonical(surrogateModel,true,0); expect(surrogateText == physical43_common.physical43Common.field(surrogate,"canonical"),"Python ASCII surrogate canonicalization"); expect(physical43_common.physical43Common.digest("ncc.ci.exact_head_capture.v1",surrogateModel,true,false) == physical43_common.physical43Common.field(surrogate,"digest"),"surrogate digest"); expect(physical43_common.physical43Common.hmac("ncc.ci.exact_head_capture.v1",surrogateModel,"physical43-native-key") == physical43_common.physical43Common.field(surrogate,"hmac"),"surrogate HMAC"); jsonRelease(surrogateModel); jsonRelease(surrogate); strRelease(surrogateInput); strRelease(surrogateText);
+                invalid >> p<byte> <- cast(alloc(8)); cp(invalid,cast<byte>("{}"),2); wr(off(invalid,2),0); cp(off(invalid,3),cast<byte>("false"),5); strict <- physical43_json.physical43Json.parseBytes(invalid,8); expect(strict == 0,"raw JSON NUL cannot hide trailing bytes"); if (strict != 0) jsonRelease(strict); free(invalid);
+                reserved >> str <- "\x01physical43-number-1"; registered >> int <- physical43_json.physical43Json.newStringRegistered(cast<byte>(reserved),strByteLen(reserved),false); registeredText >> str <- jsonStringView(registered,"");
+                expect(!physical43_json.physical43Json.rawSurrogates(registeredText),"registry storage does not invent surrogates");
+                quoted >> str <- physical43_common.physical43Common.quote(registeredText,false); expect(quoted == "\"\\u0001physical43-number-1\"","reserved ASCII is UTF8 encodable");
+                expect(!physical43_deep_json.physical43DeepJson.isNumber(registered),"reserved literal cannot impersonate numeric metadata"); strRelease(quoted); jsonRelease(registered);
+                rows >> int <- jsonObjectBorrow(gold,"decode"); at >> int <- 0; decodedResults >> int <- jsonNewArray();
+                while (at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,at); source >> str <- physical43_common.physical43Common.field(row,"hex"); bytes >> p<byte> <- unhex(source);
+                    blob >> p<byte> <- physical43_json.physical43Json.decodeReplace(bytes,strByteLen(source)/2,true); output >> str <- hex(physical43_json.physical43Json.decodedData(blob),physical43_json.physical43Json.decodedLength(blob)); matched >> bool <- output == physical43_common.physical43Common.field(row,"decoded_hex"); expect(matched,"serial UTF8 replace "+source);
+                    physical43_common.physical43Common.put(row,"actual_hex",jsonNewString(output)); physical43_common.physical43Common.put(row,"matched",jsonNewBool(matched)); physical43_common.physical43Common.push(decodedResults,row); free(bytes); free(blob); strRelease(output); strRelease(source); at += 1;
+                }
+                jsonRelease(rows); rows <- jsonObjectBorrow(gold,"integers"); at <- 0; integerResults >> int <- jsonNewArray();
+                while (at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,at); source >> str <- physical43_common.physical43Common.field(row,"input"); expected >> str <- physical43_common.physical43Common.field(row,"expected"); node >> int <- jsonParse(source); wanted >> int <- jsonObjectBorrow(row,"equal"); result >> bool <- physical43_numeric.physical43Numeric.integerEqual(node,wideInt(expected)); matched >> bool <- result == jsonGetBoolOr(wanted,false); expect(matched,"semantic byte equality "+source+" / "+expected);
+                    physical43_common.physical43Common.put(row,"matched",jsonNewBool(matched)); physical43_common.physical43Common.push(integerResults,row); jsonRelease(node); jsonRelease(wanted); strRelease(source); strRelease(expected); at += 1;
+                }
+                report >> int <- jsonNewObject(); physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.physical43.raw-tests.v1")); physical43_common.physical43Common.put(report,"canonical",jsonNewString(actual)); physical43_common.physical43Common.put(report,"decode",decodedResults); physical43_common.physical43Common.put(report,"integers",integerResults); physical43_common.physical43Common.put(report,"checks",jsonNewInt(checks)); physical43_common.physical43Common.put(report,"failures",jsonNewInt(failures)); physical43_common.physical43Common.put(report,"passed",jsonNewBool(failures == 0));
+                saved >> bool <- physical43_common.physical43Common.save(argsAt(arguments,2),report); println("raw checks="+renderInt(checks)+" failures="+renderInt(failures)); return failures == 0 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

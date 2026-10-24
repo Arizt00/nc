@@ -1,0 +1,34 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonNestedV54 {
+    run() -> int {
+        root >> int <- jsonNewObject();
+        child >> int <- jsonNewObject();
+        array >> int <- jsonNewArray();
+        text >> int <- jsonNewString("manual");
+        number >> int <- jsonNewInt(-42);
+        empty >> int <- jsonNewNull();
+        guard root > 0 && child > 0 && array > 0 && text > 0 && number > 0 && empty > 0 else return 1;
+        guard jsonObjectSet(child,"name",text) && jsonObjectSet(child,"answer",number) else return 2;
+        guard jsonArrayPush(array,child) && jsonArrayPush(array,empty) else return 3;
+        guard jsonObjectSet(root,"items",array) else return 4;
+        jsonRelease(text); jsonRelease(number); jsonRelease(empty);
+        jsonRelease(child); jsonRelease(array);
+        view >> int <- jsonObjectBorrow(root,"items");
+        guard jsonArrayLen(view) == 2 else return 5;
+        nested >> int <- jsonArrayBorrow(view,0);
+        name >> int <- jsonObjectBorrow(nested,"name");
+        answer >> int <- jsonObjectBorrow(nested,"answer");
+        guard jsonStringView(name,"") == "manual" && jsonGetInt(answer) == -42 else return 6;
+        jsonRelease(name); jsonRelease(answer); jsonRelease(nested); jsonRelease(view);
+        encoded >> str <- jsonStringify(root);
+        guard encoded == "{\"items\":[{\"name\":\"manual\",\"answer\":-42},null]}" else return 7;
+        println(encoded);
+        free(cast<byte>(encoded));
+        jsonRelease(root);
+        return 128;
+    }
+    ref main ->> run;
+    fa: return true;
+}

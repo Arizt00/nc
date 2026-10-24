@@ -1,0 +1,993 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:text, manifest>;
+
+ghorPackageGraph[@runtime] {
+    const:
+        PATH_BYTES >> int <- 32768;
+        LIST_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            asText(value >> p<byte>) -> str {
+                result >> str <- cast(value);
+                return result;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            folded(value >> byte) -> byte {
+                if (value >= 65 && value <= 90) return value + 32;
+                return value;
+            }
+
+            pathByteEqual(left >> byte, right >> byte) -> bool {
+                if (separator(left) && separator(right)) return true;
+                return folded(left) == folded(right);
+            }
+
+            copyText(out >> p<byte>, capacity >> int, value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (at + 1 < capacity && rd(off(source, at)) != 0) {
+                    wr(off(out, at), rd(off(source, at)));
+                    at += 1;
+                }
+                if (capacity > 0) wr(off(out, at), 0);
+                return at;
+            }
+
+            appendText(out >> p<byte>, capacity >> int, at >> int, value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                readAt >> int <- 0;
+                while (at + 1 < capacity && rd(off(source, readAt)) != 0) {
+                    wr(off(out, at), rd(off(source, readAt)));
+                    at += 1;
+                    readAt += 1;
+                }
+                if (capacity > 0) wr(off(out, at), 0);
+                return at;
+            }
+
+            appendPath(out >> p<byte>, capacity >> int, at >> int, value >> str, slash >> byte) -> int {
+                source >> p<byte> <- cast(value);
+                readAt >> int <- 0;
+                while (at + 1 < capacity && rd(off(source, readAt)) != 0) {
+                    current >> byte <- rd(off(source, readAt));
+                    wr(off(out, at), separator(current) ? slash : current);
+                    at += 1;
+                    readAt += 1;
+                }
+                if (capacity > 0) wr(off(out, at), 0);
+                return at;
+            }
+
+            joinInto(out >> p<byte>, left >> str, right >> str) -> bool {
+                at >> int <- copyText(out, PATH_BYTES, left);
+                slash >> byte <- at >= 2 && rd(off(out, 1)) == 58 ? 92 : 47;
+                if (at > 0 && !separator(rd(off(out, at - 1)))) {
+                    guard at + 1 < PATH_BYTES else return false;
+                    wr(off(out, at), slash);
+                    at += 1;
+                    wr(off(out, at), 0);
+                }
+                appendPath(out, PATH_BYTES, at, right, slash);
+                return true;
+            }
+
+            absoluteInto(source >> str, out >> p<byte>) -> bool {
+                written >> int <- absolutePathInto(source, out, PATH_BYTES);
+                if (written >= 0 && written < PATH_BYTES) {
+                    wr(off(out, written), 0);
+                    return true;
+                }
+                return copyText(out, PATH_BYTES, source) > 0;
+            }
+
+            directoryInPlace(path >> p<byte>) -> bool {
+                width >> int <- length(path);
+                guard width > 0 else return false;
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(path, at)))) { at -= 1; }
+                guard at >= 0 else { wr(path, 46); wr(off(path, 1), 0); return true; }
+                if (at == 2 && rd(off(path, 1)) == 58) at += 1;
+                wr(off(path, at), 0);
+                return true;
+            }
+
+            parentInPlace(path >> p<byte>) -> bool {
+                width >> int <- length(path);
+                while (width > 1 && separator(rd(off(path, width - 1)))) {
+                    width -= 1;
+                    wr(off(path, width), 0);
+                }
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(path, at)))) { at -= 1; }
+                if (at < 0) return false;
+                if (at == 2 && rd(off(path, 1)) == 58) at += 1;
+                if (at == 0) at <- 1;
+                wr(off(path, at), 0);
+                return true;
+            }
+
+            samePath(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast(left);
+                b >> p<byte> <- cast(right);
+                at >> int <- 0;
+                while (true) {
+                    av >> byte <- rd(off(a, at));
+                    bv >> byte <- rd(off(b, at));
+                    if (!pathByteEqual(av, bv)) return false;
+                    if (av == 0) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            relativeInto(root >> str, path >> str, out >> p<byte>) -> bool {
+                rootBytes >> p<byte> <- cast(root);
+                pathBytes >> p<byte> <- cast(path);
+                rootLength >> int <- length(rootBytes);
+                at >> int <- 0;
+                while (at < rootLength) {
+                    if (!pathByteEqual(rd(off(rootBytes, at)), rd(off(pathBytes, at)))) return false;
+                    at += 1;
+                }
+                if (rd(off(pathBytes, at)) == 0) {
+                    copyText(out, PATH_BYTES, ".");
+                    return true;
+                }
+                guard separator(rd(off(pathBytes, at))) else return false;
+                at += 1;
+                writeAt >> int <- 0;
+                while (writeAt + 1 < PATH_BYTES && rd(off(pathBytes, at)) != 0) {
+                    current >> byte <- rd(off(pathBytes, at));
+                    wr(off(out, writeAt), separator(current) ? 47 : current);
+                    writeAt += 1;
+                    at += 1;
+                }
+                wr(off(out, writeAt), 0);
+                return true;
+            }
+
+            wildcard(pattern >> str, value >> str) -> bool {
+                p >> p<byte> <- cast(pattern);
+                v >> p<byte> <- cast(value);
+                pi >> int <- 0;
+                vi >> int <- 0;
+                star >> int <- -1;
+                retry >> int <- -1;
+                while (rd(off(v, vi)) != 0) {
+                    pc >> byte <- rd(off(p, pi));
+                    vc >> byte <- rd(off(v, vi));
+                    if (pc == 63 || pathByteEqual(pc, vc)) {
+                        pi += 1;
+                        vi += 1;
+                    }
+                    else if (pc == 42) {
+                        star <- pi;
+                        retry <- vi;
+                        pi += 1;
+                    }
+                    else if (star >= 0) {
+                        pi <- star + 1;
+                        retry += 1;
+                        vi <- retry;
+                    }
+                    else return false;
+                }
+                while (rd(off(p, pi)) == 42) { pi += 1; }
+                return rd(off(p, pi)) == 0;
+            }
+
+            containsWildcard(value >> str) -> bool {
+                bytes >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (rd(off(bytes, at)) != 0) {
+                    if (rd(off(bytes, at)) == 42 || rd(off(bytes, at)) == 63) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            patternBase(pattern >> str, out >> p<byte>) -> bool {
+                source >> p<byte> <- cast(pattern);
+                wildcardAt >> int <- 0;
+                while (rd(off(source, wildcardAt)) != 0 &&
+                    rd(off(source, wildcardAt)) != 42 && rd(off(source, wildcardAt)) != 63) {
+                    wildcardAt += 1;
+                }
+                boundary >> int <- wildcardAt;
+                while (boundary > 0 && !separator(rd(off(source, boundary - 1)))) { boundary -= 1; }
+                if (boundary == 0) return copyText(out, PATH_BYTES, ".") > 0;
+                at >> int <- 0;
+                while (at < boundary - 1 && at + 1 < PATH_BYTES) {
+                    wr(off(out, at), rd(off(source, at)));
+                    at += 1;
+                }
+                wr(off(out, at), 0);
+                return true;
+            }
+
+            manifestInDirectory(directory >> str, out >> p<byte>) -> bool {
+                joinInto(out, directory, "ghor.toml");
+                if (exists(asText(out))) return true;
+                joinInto(out, directory, "nc.toml");
+                if (exists(asText(out))) return true;
+                joinInto(out, directory, "Cargo.toml");
+                return exists(asText(out));
+            }
+
+            workspaceManifestInDirectory(directory >> str, out >> p<byte>) -> bool {
+                parsed >> int <- 0;
+                selected >> bool <- false;
+                joinInto(out, directory, "ghor.toml");
+                if (exists(asText(out))) {
+                    parsed <- manifest.manifest.load(asText(out));
+                    selected <- hasWorkspace(parsed);
+                    if (parsed != 0) jsonRelease(parsed);
+                    if (selected) return true;
+                }
+                joinInto(out, directory, "nc.toml");
+                if (exists(asText(out))) {
+                    parsed <- manifest.manifest.load(asText(out));
+                    selected <- hasWorkspace(parsed);
+                    if (parsed != 0) jsonRelease(parsed);
+                    if (selected) return true;
+                }
+                joinInto(out, directory, "Cargo.toml");
+                if (exists(asText(out))) {
+                    parsed <- manifest.manifest.load(asText(out));
+                    selected <- hasWorkspace(parsed);
+                    if (parsed != 0) jsonRelease(parsed);
+                    return selected;
+                }
+                return false;
+            }
+
+            hasWorkspace(root >> int) -> bool {
+                return root != 0 && jsonObjectLen(jsonObjectGet(root, "workspace")) > 0;
+            }
+
+            locateWorkspace(
+                selected >> str,
+                manifestOut >> p<byte>,
+                rootOut >> p<byte>
+            ) -> bool {
+                selectedAbsolute >> p<byte> <- cast(alloc(PATH_BYTES));
+                selectedDirectory >> p<byte> <- cast(alloc(PATH_BYTES));
+                directory >> p<byte> <- cast(alloc(PATH_BYTES));
+                candidate >> p<byte> <- cast(alloc(PATH_BYTES));
+                relative >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard selectedAbsolute != null && selectedDirectory != null && directory != null &&
+                    candidate != null && relative != null else {
+                    if (selectedAbsolute != null) free(selectedAbsolute);
+                    if (selectedDirectory != null) free(selectedDirectory);
+                    if (directory != null) free(directory);
+                    if (candidate != null) free(candidate);
+                    if (relative != null) free(relative);
+                    return false;
+                }
+                absoluteInto(selected, selectedAbsolute);
+                copyText(directory, PATH_BYTES, asText(selectedAbsolute));
+                directoryInPlace(directory);
+                copyText(selectedDirectory, PATH_BYTES, asText(directory));
+
+                selectedRoot >> int <- manifest.manifest.load(asText(selectedAbsolute));
+                if (hasWorkspace(selectedRoot)) {
+                    copyText(manifestOut, PATH_BYTES, asText(selectedAbsolute));
+                    copyText(rootOut, PATH_BYTES, asText(directory));
+                    jsonRelease(selectedRoot);
+                    free(selectedAbsolute); free(selectedDirectory); free(directory); free(candidate); free(relative);
+                    return true;
+                }
+                if (selectedRoot != 0) jsonRelease(selectedRoot);
+
+                searching >> bool <- true;
+                while (searching) {
+                    if (workspaceManifestInDirectory(asText(directory), candidate)) {
+                        candidateRoot >> int <- manifest.manifest.load(asText(candidate));
+                        included >> bool <- relativeInto(asText(directory), asText(selectedDirectory), relative) &&
+                            workspaceIncludes(candidateRoot, asText(relative));
+                        if (included) {
+                            copyText(manifestOut, PATH_BYTES, asText(candidate));
+                            copyText(rootOut, PATH_BYTES, asText(directory));
+                            jsonRelease(candidateRoot);
+                            free(selectedAbsolute); free(selectedDirectory); free(directory); free(candidate); free(relative);
+                            return true;
+                        }
+                        if (candidateRoot != 0) jsonRelease(candidateRoot);
+                    }
+                    before >> int <- length(directory);
+                    searching <- parentInPlace(directory) && length(directory) < before;
+                }
+
+                copyText(manifestOut, PATH_BYTES, asText(selectedAbsolute));
+                copyText(rootOut, PATH_BYTES, asText(selectedAbsolute));
+                directoryInPlace(rootOut);
+                free(selectedAbsolute); free(selectedDirectory); free(directory); free(candidate); free(relative);
+                return false;
+            }
+
+            arrayContainsPattern(values >> int, candidate >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    pattern >> str <- jsonGetStringOr(jsonArrayGet(values, at), "");
+                    if (wildcard(pattern, candidate)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            workspaceIncludes(root >> int, relative >> str) -> bool {
+                guard root != 0 else return false;
+                excludes >> int <- jsonObjectGet(root, "workspace_exclude");
+                if (arrayContainsPattern(excludes, relative)) return false;
+                members >> int <- jsonObjectGet(root, "workspace_members");
+                return arrayContainsPattern(members, relative);
+            }
+
+            defaultMember(defaults >> int, declared >> str, relative >> str) -> bool {
+                if (jsonArrayLen(defaults) == 0) return true;
+                return arrayContainsPattern(defaults, declared) || arrayContainsPattern(defaults, relative);
+            }
+
+            memberExists(members >> int, root >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(members)) {
+                    entry >> int <- jsonArrayGet(members, at);
+                    if (samePath(jsonGetStringOr(jsonObjectGet(entry, "root"), ""), root)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            packageValue(package >> int, workspacePackage >> int, key >> str, fallback >> str) -> str {
+                direct >> int <- jsonObjectGet(package, key);
+                if (direct != 0) return jsonGetStringOr(direct, fallback);
+                inheritedKey >> p<byte> <- cast(alloc(256));
+                guard inheritedKey != null else return fallback;
+                at >> int <- copyText(inheritedKey, 256, key);
+                appendText(inheritedKey, 256, at, ".workspace");
+                inherited >> bool <- jsonGetBoolOr(jsonObjectGet(package, asText(inheritedKey)), false);
+                free(inheritedKey);
+                if (inherited) return jsonGetStringOr(jsonObjectGet(workspacePackage, key), fallback);
+                return fallback;
+            }
+
+            addMember(
+                workspaceRoot >> str,
+                declared >> str,
+                relative >> str,
+                members >> int,
+                defaultsOut >> int,
+                excludes >> int,
+                defaultPatterns >> int,
+                workspacePackage >> int
+            ) -> bool {
+                if (arrayContainsPattern(excludes, relative)) return false;
+                directory >> p<byte> <- cast(alloc(PATH_BYTES));
+                manifestPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard directory != null && manifestPath != null else {
+                    if (directory != null) free(directory);
+                    if (manifestPath != null) free(manifestPath);
+                    return false;
+                }
+                joinInto(directory, workspaceRoot, relative);
+                guard manifestInDirectory(asText(directory), manifestPath) else {
+                    free(directory); free(manifestPath); return false;
+                }
+                if (memberExists(members, asText(directory))) {
+                    free(directory); free(manifestPath); return false;
+                }
+                memberManifest >> int <- manifest.manifest.load(asText(manifestPath));
+                guard memberManifest != 0 else { free(directory); free(manifestPath); return false; }
+                package >> int <- jsonObjectGet(memberManifest, "package");
+                name >> str <- packageValue(package, workspacePackage, "name", relative);
+                version >> str <- packageValue(package, workspacePackage, "version", "0.0.0");
+                isDefault >> bool <- defaultMember(defaultPatterns, declared, relative);
+
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "declared", jsonNewString(declared));
+                jsonObjectSet(entry, "root", jsonNewString(asText(directory)));
+                jsonObjectSet(entry, "manifest", jsonNewString(asText(manifestPath)));
+                jsonObjectSet(entry, "package", jsonNewString(name));
+                jsonObjectSet(entry, "version", jsonNewString(version));
+                jsonObjectSet(entry, "default_member", jsonNewBool(isDefault));
+                jsonArrayPush(members, entry);
+                if (isDefault) jsonArrayPush(defaultsOut, jsonClone(entry));
+
+                jsonRelease(memberManifest);
+                free(directory); free(manifestPath);
+                return true;
+            }
+
+            addPatternMembers(
+                workspaceRoot >> str,
+                pattern >> str,
+                members >> int,
+                defaultsOut >> int,
+                excludes >> int,
+                defaultPatterns >> int,
+                workspacePackage >> int
+            ) -> int {
+                if (!containsWildcard(pattern)) {
+                    return addMember(workspaceRoot, pattern, pattern, members, defaultsOut,
+                        excludes, defaultPatterns, workspacePackage) ? 1 : 0;
+                }
+                baseRelative >> p<byte> <- cast(alloc(PATH_BYTES));
+                baseAbsolute >> p<byte> <- cast(alloc(PATH_BYTES));
+                names >> p<byte> <- cast(alloc(LIST_BYTES));
+                relative >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard baseRelative != null && baseAbsolute != null && names != null && relative != null else {
+                    if (baseRelative != null) free(baseRelative);
+                    if (baseAbsolute != null) free(baseAbsolute);
+                    if (names != null) free(names);
+                    if (relative != null) free(relative);
+                    return 0;
+                }
+                patternBase(pattern, baseRelative);
+                joinInto(baseAbsolute, workspaceRoot, asText(baseRelative));
+                listed >> int <- listDirInto(asText(baseAbsolute), names, LIST_BYTES);
+                if (listed < 0) {
+                    free(baseRelative); free(baseAbsolute); free(names); free(relative);
+                    return 0;
+                }
+                if (listed >= LIST_BYTES) listed <- LIST_BYTES - 1;
+                wr(off(names, listed), 0);
+                added >> int <- 0;
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            copyText(relative, PATH_BYTES, asText(baseRelative));
+                            relAt >> int <- length(relative);
+                            if (relAt > 0 && asText(baseRelative) != ".") {
+                                wr(off(relative, relAt), 47);
+                                relAt += 1;
+                                wr(off(relative, relAt), 0);
+                            }
+                            else if (asText(baseRelative) == ".") { relAt <- 0; wr(relative, 0); }
+                            appendText(relative, PATH_BYTES, relAt, asText(off(names, start)));
+                            if (wildcard(pattern, asText(relative)) &&
+                                addMember(workspaceRoot, pattern, asText(relative), members, defaultsOut,
+                                    excludes, defaultPatterns, workspacePackage)) added += 1;
+                        }
+                        while (at < listed && (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(baseRelative); free(baseAbsolute); free(names); free(relative);
+                return added;
+            }
+
+            workspaceModel(handle >> addr) -> int {
+                selected >> str <- manifest.manifest.select(handle);
+                guard selected != "" else return 0;
+                workspaceManifestPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                workspaceRootPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                selectedAbsolute >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard workspaceManifestPath != null && workspaceRootPath != null && selectedAbsolute != null else {
+                    if (workspaceManifestPath != null) free(workspaceManifestPath);
+                    if (workspaceRootPath != null) free(workspaceRootPath);
+                    if (selectedAbsolute != null) free(selectedAbsolute);
+                    return 0;
+                }
+                located >> bool <- locateWorkspace(selected, workspaceManifestPath, workspaceRootPath);
+                absoluteInto(selected, selectedAbsolute);
+                rootManifest >> int <- manifest.manifest.load(asText(workspaceManifestPath));
+                guard rootManifest != 0 else {
+                    free(workspaceManifestPath); free(workspaceRootPath); free(selectedAbsolute);
+                    return 0;
+                }
+                workspaceData >> int <- jsonObjectGet(rootManifest, "workspace");
+                package >> int <- jsonObjectGet(rootManifest, "package");
+                workspacePackage >> int <- jsonObjectGet(rootManifest, "workspace_package");
+                patterns >> int <- jsonObjectGet(rootManifest, "workspace_members");
+                excludes >> int <- jsonObjectGet(rootManifest, "workspace_exclude");
+                defaultPatterns >> int <- jsonObjectGet(rootManifest, "workspace_default_members");
+                members >> int <- jsonNewArray();
+                defaultsOut >> int <- jsonNewArray();
+
+                if (jsonArrayLen(patterns) == 0 && jsonObjectLen(package) > 0) {
+                    addMember(asText(workspaceRootPath), ".", ".", members, defaultsOut,
+                        excludes, defaultPatterns, workspacePackage);
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(patterns)) {
+                    pattern >> str <- jsonGetStringOr(jsonArrayGet(patterns, at), "");
+                    addPatternMembers(asText(workspaceRootPath), pattern, members, defaultsOut,
+                        excludes, defaultPatterns, workspacePackage);
+                    at += 1;
+                }
+
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.workspace.metadata.v2"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "workspace_root", jsonNewString(asText(workspaceRootPath)));
+                jsonObjectSet(report, "workspace_manifest", jsonNewString(asText(workspaceManifestPath)));
+                jsonObjectSet(report, "workspace_is_root", jsonNewBool(samePath(asText(selectedAbsolute), asText(workspaceManifestPath))));
+                jsonObjectSet(report, "virtual_manifest", jsonNewBool(jsonObjectLen(package) == 0 && jsonObjectLen(workspaceData) > 0));
+                jsonObjectSet(report, "members_declared", jsonClone(patterns));
+                jsonObjectSet(report, "exclude", jsonClone(excludes));
+                jsonObjectSet(report, "default_members_declared", jsonClone(defaultPatterns));
+                jsonObjectSet(report, "members", members);
+                jsonObjectSet(report, "default_members", defaultsOut);
+                jsonObjectSet(report, "workspace_package", jsonClone(workspacePackage));
+                jsonObjectSet(report, "package_metadata", jsonClone(jsonObjectGet(rootManifest, "package_metadata")));
+                jsonObjectSet(report, "workspace_dependencies", jsonClone(jsonObjectGet(rootManifest, "workspace_dependencies")));
+                jsonObjectSet(report, "workspace_lints", jsonClone(jsonObjectGet(rootManifest, "workspace_lints")));
+
+                lockPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                targetPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                if (lockPath != null) {
+                    joinInto(lockPath, asText(workspaceRootPath), "ghor.lock");
+                    jsonObjectSet(report, "shared_lockfile", jsonNewString(asText(lockPath)));
+                    free(lockPath);
+                }
+                if (targetPath != null) {
+                    joinInto(targetPath, asText(workspaceRootPath), "target/ghor");
+                    jsonObjectSet(report, "shared_target", jsonNewString(asText(targetPath)));
+                    free(targetPath);
+                }
+                jsonObjectSet(report, "workspace_discovered", jsonNewBool(located));
+
+                jsonRelease(rootManifest);
+                free(workspaceManifestPath); free(workspaceRootPath); free(selectedAbsolute);
+                return report;
+            }
+
+            packageId(name >> str, version >> str) -> int {
+                bytes >> int <- strByteLen(name) + strByteLen(version) + 2;
+                out >> p<byte> <- cast(alloc(bytes));
+                guard out != null else return jsonNewString("");
+                at >> int <- copyText(out, bytes, name);
+                wr(off(out, at), 32);
+                at += 1;
+                wr(off(out, at), 0);
+                appendText(out, bytes, at, version);
+                result >> int <- jsonNewString(asText(out));
+                free(out);
+                return result;
+            }
+
+            metadataPackage(member >> int) -> int {
+                package >> int <- jsonNewObject();
+                name >> str <- jsonGetStringOr(jsonObjectGet(member, "package"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(member, "version"), "0.0.0");
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(member, "manifest"), "");
+                parsed >> int <- manifest.manifest.load(manifestPath);
+                jsonObjectSet(package, "name", jsonNewString(name));
+                jsonObjectSet(package, "version", jsonNewString(version));
+                jsonObjectSet(package, "id", packageId(name, version));
+                jsonObjectSet(package, "manifest_path", jsonNewString(manifestPath));
+                jsonObjectSet(package, "source", jsonNewNull());
+                if (parsed != 0) {
+                    workspaceManifestPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                    workspaceRootPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                    if (workspaceManifestPath != null && workspaceRootPath != null &&
+                        locateWorkspace(manifestPath, workspaceManifestPath, workspaceRootPath) &&
+                        !samePath(manifestPath, asText(workspaceManifestPath))) {
+                        workspaceRoot >> int <- manifest.manifest.load(asText(workspaceManifestPath));
+                        if (workspaceRoot != 0) {
+                            inheritManifest(parsed, workspaceRoot, asText(workspaceManifestPath), asText(workspaceRootPath));
+                            jsonRelease(workspaceRoot);
+                        }
+                    }
+                    if (workspaceManifestPath != null) free(workspaceManifestPath);
+                    if (workspaceRootPath != null) free(workspaceRootPath);
+                    sourcePackage >> int <- jsonObjectGet(parsed, "package");
+                    jsonObjectSet(package, "edition", jsonClone(jsonObjectGet(sourcePackage, "edition")));
+                    jsonObjectSet(package, "license", jsonClone(jsonObjectGet(sourcePackage, "license")));
+                    jsonObjectSet(package, "authors", jsonClone(jsonObjectGet(sourcePackage, "authors")));
+                    jsonObjectSet(package, "description", jsonClone(jsonObjectGet(sourcePackage, "description")));
+                    jsonObjectSet(package, "features", jsonClone(jsonObjectGet(parsed, "features")));
+                    jsonObjectSet(package, "dependencies", jsonClone(jsonObjectGet(parsed, "dependencies")));
+                    jsonObjectSet(package, "metadata", jsonClone(jsonObjectGet(parsed, "package_metadata")));
+                    jsonRelease(parsed);
+                }
+                else {
+                    jsonObjectSet(package, "features", jsonNewObject());
+                    jsonObjectSet(package, "dependencies", jsonNewArray());
+                    jsonObjectSet(package, "metadata", jsonNewObject());
+                }
+                return package;
+            }
+
+            commandCatalog() -> int {
+                result >> int <- jsonNewArray();
+                jsonArrayPush(result, jsonNewString("bootstrap"));
+                jsonArrayPush(result, jsonNewString("new")); jsonArrayPush(result, jsonNewString("init"));
+                jsonArrayPush(result, jsonNewString("lang")); jsonArrayPush(result, jsonNewString("check"));
+                jsonArrayPush(result, jsonNewString("build")); jsonArrayPush(result, jsonNewString("run"));
+                jsonArrayPush(result, jsonNewString("test")); jsonArrayPush(result, jsonNewString("bench"));
+                jsonArrayPush(result, jsonNewString("clean")); jsonArrayPush(result, jsonNewString("fmt"));
+                jsonArrayPush(result, jsonNewString("fix"));
+                jsonArrayPush(result, jsonNewString("lint")); jsonArrayPush(result, jsonNewString("doc"));
+                jsonArrayPush(result, jsonNewString("package")); jsonArrayPush(result, jsonNewString("publish"));
+                jsonArrayPush(result, jsonNewString("registry")); jsonArrayPush(result, jsonNewString("cdn"));
+                jsonArrayPush(result, jsonNewString("governance")); jsonArrayPush(result, jsonNewString("moderation"));
+                jsonArrayPush(result, jsonNewString("cargo-exec")); jsonArrayPush(result, jsonNewString("build-script"));
+                jsonArrayPush(result, jsonNewString("proc-macro")); jsonArrayPush(result, jsonNewString("interop"));
+                jsonArrayPush(result, jsonNewString("install")); jsonArrayPush(result, jsonNewString("uninstall"));
+                jsonArrayPush(result, jsonNewString("bin")); jsonArrayPush(result, jsonNewString("update"));
+                jsonArrayPush(result, jsonNewString("tree")); jsonArrayPush(result, jsonNewString("metadata"));
+                jsonArrayPush(result, jsonNewString("manifest"));
+                jsonArrayPush(result, jsonNewString("locate-project"));
+                jsonArrayPush(result, jsonNewString("read-manifest"));
+                jsonArrayPush(result, jsonNewString("pkgid"));
+                jsonArrayPush(result, jsonNewString("unit-graph"));
+                jsonArrayPush(result, jsonNewString("timings"));
+                jsonArrayPush(result, jsonNewString("target"));
+                jsonArrayPush(result, jsonNewString("profile")); jsonArrayPush(result, jsonNewString("features"));
+                jsonArrayPush(result, jsonNewString("cross")); jsonArrayPush(result, jsonNewString("link"));
+                jsonArrayPush(result, jsonNewString("native-deps")); jsonArrayPush(result, jsonNewString("ffi-manifest"));
+                jsonArrayPush(result, jsonNewString("artifact")); jsonArrayPush(result, jsonNewString("fetch"));
+                jsonArrayPush(result, jsonNewString("report")); jsonArrayPush(result, jsonNewString("toolchain"));
+                jsonArrayPush(result, jsonNewString("verify-toolchain")); jsonArrayPush(result, jsonNewString("sync-toolchain"));
+                jsonArrayPush(result, jsonNewString("graph")); jsonArrayPush(result, jsonNewString("search"));
+                jsonArrayPush(result, jsonNewString("info")); jsonArrayPush(result, jsonNewString("login"));
+                jsonArrayPush(result, jsonNewString("logout")); jsonArrayPush(result, jsonNewString("owner"));
+                jsonArrayPush(result, jsonNewString("yank")); jsonArrayPush(result, jsonNewString("vendor"));
+                jsonArrayPush(result, jsonNewString("workspace")); jsonArrayPush(result, jsonNewString("add"));
+                jsonArrayPush(result, jsonNewString("remove")); jsonArrayPush(result, jsonNewString("resolve"));
+                jsonArrayPush(result, jsonNewString("lock"));
+                jsonArrayPush(result, jsonNewString("generate-lockfile"));
+                jsonArrayPush(result, jsonNewString("verify-lock"));
+                jsonArrayPush(result, jsonNewString("audit")); jsonArrayPush(result, jsonNewString("sbom"));
+                jsonArrayPush(result, jsonNewString("license")); jsonArrayPush(result, jsonNewString("supply-chain"));
+                jsonArrayPush(result, jsonNewString("capability-audit")); jsonArrayPush(result, jsonNewString("doctor"));
+                jsonArrayPush(result, jsonNewString("verify")); jsonArrayPush(result, jsonNewString("evidence"));
+                jsonArrayPush(result, jsonNewString("seal")); jsonArrayPush(result, jsonNewString("conformance"));
+                jsonArrayPush(result, jsonNewString("public-beta")); jsonArrayPush(result, jsonNewString("release-check"));
+                jsonArrayPush(result, jsonNewString("release-hardening")); jsonArrayPush(result, jsonNewString("install-smoke"));
+                jsonArrayPush(result, jsonNewString("external-compat")); jsonArrayPush(result, jsonNewString("machine"));
+                jsonArrayPush(result, jsonNewString("basal")); jsonArrayPush(result, jsonNewString("runtime"));
+                jsonArrayPush(result, jsonNewString("compiler")); jsonArrayPush(result, jsonNewString("primitive"));
+                return result;
+            }
+
+            metadataModel(handle >> addr) -> int {
+                workspaceReport >> int <- workspaceModel(handle);
+                guard workspaceReport != 0 else return 0;
+                members >> int <- jsonObjectGet(workspaceReport, "members");
+                defaults >> int <- jsonObjectGet(workspaceReport, "default_members");
+                packages >> int <- jsonNewArray();
+                workspaceMembers >> int <- jsonNewArray();
+                workspaceDefaults >> int <- jsonNewArray();
+                nodes >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(members)) {
+                    member >> int <- jsonArrayGet(members, at);
+                    package >> int <- metadataPackage(member);
+                    jsonArrayPush(workspaceMembers, jsonClone(jsonObjectGet(package, "id")));
+                    node >> int <- jsonNewObject();
+                    jsonObjectSet(node, "id", jsonClone(jsonObjectGet(package, "id")));
+                    jsonObjectSet(node, "dependencies", jsonNewArray());
+                    jsonObjectSet(node, "deps", jsonClone(jsonObjectGet(package, "dependencies")));
+                    jsonObjectSet(node, "features", jsonClone(jsonObjectGet(package, "features")));
+                    jsonArrayPush(nodes, node);
+                    jsonArrayPush(packages, package);
+                    at += 1;
+                }
+                at <- 0;
+                while (at < jsonArrayLen(defaults)) {
+                    member >> int <- jsonArrayGet(defaults, at);
+                    jsonArrayPush(workspaceDefaults, packageId(
+                        jsonGetStringOr(jsonObjectGet(member, "package"), ""),
+                        jsonGetStringOr(jsonObjectGet(member, "version"), "0.0.0")));
+                    at += 1;
+                }
+                resolve >> int <- jsonNewObject();
+                jsonObjectSet(resolve, "nodes", nodes);
+                if (jsonArrayLen(workspaceMembers) > 0) {
+                    jsonObjectSet(resolve, "root", jsonClone(jsonArrayGet(workspaceMembers, 0)));
+                }
+                else jsonObjectSet(resolve, "root", jsonNewNull());
+
+                cargo >> int <- jsonNewObject();
+                jsonObjectSet(cargo, "packages", jsonClone(packages));
+                jsonObjectSet(cargo, "workspace_members", jsonClone(workspaceMembers));
+                jsonObjectSet(cargo, "workspace_default_members", jsonClone(workspaceDefaults));
+                jsonObjectSet(cargo, "workspace_root", jsonClone(jsonObjectGet(workspaceReport, "workspace_root")));
+                jsonObjectSet(cargo, "target_directory", jsonClone(jsonObjectGet(workspaceReport, "shared_target")));
+                jsonObjectSet(cargo, "version", jsonNewInt(1));
+                jsonObjectSet(cargo, "resolve", jsonClone(resolve));
+
+                selectedManifest >> int <- manifestModel(handle);
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload, "schema", jsonNewString("ghor.metadata.v1"));
+                jsonObjectSet(payload, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(payload, "version", jsonNewString("0.1.0"));
+                jsonObjectSet(payload, "cargo_metadata_format_version", jsonNewInt(1));
+                jsonObjectSet(payload, "official_manifest", jsonNewString("ghor.toml"));
+                jsonObjectSet(payload, "compat_manifest", jsonNewString("nc.toml"));
+                jsonObjectSet(payload, "official_lockfile", jsonNewString("ghor.lock"));
+                jsonObjectSet(payload, "machine_origin", jsonNewBool(true));
+                jsonObjectSet(payload, "native_language", jsonNewString("nC"));
+                adapters >> int <- jsonNewArray();
+                jsonArrayPush(adapters, jsonNewString("C")); jsonArrayPush(adapters, jsonNewString("C++"));
+                jsonArrayPush(adapters, jsonNewString("Rust")); jsonArrayPush(adapters, jsonNewString("ASM"));
+                jsonObjectSet(payload, "foreign_adapters", adapters);
+                jsonObjectSet(payload, "commands", commandCatalog());
+                jsonObjectSet(payload, "target_matrix", jsonNewArray());
+                jsonObjectSet(payload, "foreign_toolchain_matrix", jsonNewArray());
+                if (selectedManifest != 0) {
+                    jsonObjectSet(payload, "native_dependencies", jsonClone(jsonObjectGet(selectedManifest, "native_dependencies")));
+                    jsonObjectSet(payload, "manifest", selectedManifest);
+                }
+                else {
+                    jsonObjectSet(payload, "native_dependencies", jsonNewArray());
+                    jsonObjectSet(payload, "manifest", jsonNewNull());
+                }
+                jsonObjectSet(payload, "ffi_link_manifest", jsonNewNull());
+                jsonObjectSet(payload, "packages", packages);
+                jsonObjectSet(payload, "workspace_members", workspaceMembers);
+                jsonObjectSet(payload, "workspace_default_members", workspaceDefaults);
+                jsonObjectSet(payload, "resolve", resolve);
+                jsonObjectSet(payload, "target_directory", jsonClone(jsonObjectGet(workspaceReport, "shared_target")));
+                jsonObjectSet(payload, "workspace_root", jsonClone(jsonObjectGet(workspaceReport, "workspace_root")));
+                jsonObjectSet(payload, "cargo_compatible", cargo);
+                jsonObjectSet(payload, "workspace", workspaceReport);
+                return payload;
+            }
+
+            withoutWorkspaceSuffix(value >> str, out >> p<byte>) -> bool {
+                source >> p<byte> <- cast(value);
+                width >> int <- length(source);
+                guard width > 10 && strEndsWith(value, ".workspace") else return false;
+                at >> int <- 0;
+                while (at < width - 10 && at + 1 < PATH_BYTES) {
+                    wr(off(out, at), rd(off(source, at)));
+                    at += 1;
+                }
+                wr(off(out, at), 0);
+                return true;
+            }
+
+            dependencyNamed(entries >> int, name >> str) -> int {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (text.ghorText.same(jsonGetStringOr(jsonObjectGet(entry, "name"), ""), name)) {
+                        return entry;
+                    }
+                    at += 1;
+                }
+                return 0;
+            }
+
+            inheritManifest(
+                member >> int,
+                workspaceRoot >> int,
+                workspaceManifestPath >> str,
+                workspaceRootPath >> str
+            ) -> bool {
+                package >> int <- jsonObjectGet(member, "package");
+                workspacePackage >> int <- jsonObjectGet(workspaceRoot, "workspace_package");
+                at >> int <- 0;
+                while (at < jsonObjectLen(workspacePackage)) {
+                    key >> str <- jsonObjectKeyAt(workspacePackage, at);
+                    inheritedKey >> p<byte> <- cast(alloc(strByteLen(key) + 11));
+                    if (inheritedKey != null) {
+                        writeAt >> int <- copyText(inheritedKey, strByteLen(key) + 11, key);
+                        appendText(inheritedKey, strByteLen(key) + 11, writeAt, ".workspace");
+                        if (jsonGetBoolOr(jsonObjectGet(package, asText(inheritedKey)), false)) {
+                            jsonObjectSet(package, key, jsonClone(jsonObjectGet(workspacePackage, key)));
+                        }
+                        free(inheritedKey);
+                    }
+                    at += 1;
+                }
+                jsonObjectSet(member, "package", package);
+
+                dependencies >> int <- jsonObjectGet(member, "dependencies");
+                workspaceDependencies >> int <- jsonObjectGet(workspaceRoot, "workspace_dependencies");
+                merged >> int <- jsonNewArray();
+                baseName >> p<byte> <- cast(alloc(PATH_BYTES));
+                at <- 0;
+                while (at < jsonArrayLen(dependencies)) {
+                    dependency >> int <- jsonArrayGet(dependencies, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(dependency, "name"), "");
+                    if (baseName != null && withoutWorkspaceSuffix(name, baseName)) {
+                        source >> int <- dependencyNamed(workspaceDependencies, asText(baseName));
+                        if (source != 0) {
+                            inherited >> int <- jsonClone(source);
+                            jsonObjectSet(inherited, "workspace_inherited", jsonNewBool(true));
+                            jsonArrayPush(merged, inherited);
+                        }
+                        else jsonArrayPush(merged, jsonClone(dependency));
+                    }
+                    else jsonArrayPush(merged, jsonClone(dependency));
+                    at += 1;
+                }
+                if (baseName != null) free(baseName);
+                jsonObjectSet(member, "dependencies", merged);
+
+                lints >> int <- jsonObjectGet(member, "lints");
+                if (jsonGetBoolOr(jsonObjectGet(lints, "workspace"), false)) {
+                    jsonObjectSet(member, "lints", jsonClone(jsonObjectGet(workspaceRoot, "workspace_lints")));
+                }
+                jsonObjectSet(member, "workspace_root", jsonNewString(workspaceRootPath));
+                jsonObjectSet(member, "workspace_manifest", jsonNewString(workspaceManifestPath));
+                jsonObjectSet(member, "workspace_is_root", jsonNewBool(false));
+                jsonObjectSet(member, "virtual_manifest", jsonNewBool(false));
+                jsonObjectSet(member, "workspace", jsonClone(jsonObjectGet(workspaceRoot, "workspace")));
+                jsonObjectSet(member, "workspace_members", jsonClone(jsonObjectGet(workspaceRoot, "workspace_members")));
+                jsonObjectSet(member, "workspace_exclude", jsonClone(jsonObjectGet(workspaceRoot, "workspace_exclude")));
+                jsonObjectSet(member, "workspace_default_members", jsonClone(jsonObjectGet(workspaceRoot, "workspace_default_members")));
+                jsonObjectSet(member, "workspace_package", jsonClone(workspacePackage));
+                jsonObjectSet(member, "workspace_dependencies", jsonClone(workspaceDependencies));
+                jsonObjectSet(member, "workspace_lints", jsonClone(jsonObjectGet(workspaceRoot, "workspace_lints")));
+                lockPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                targetPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                if (lockPath != null) {
+                    joinInto(lockPath, workspaceRootPath, "ghor.lock");
+                    jsonObjectSet(member, "shared_lockfile", jsonNewString(asText(lockPath)));
+                    free(lockPath);
+                }
+                if (targetPath != null) {
+                    joinInto(targetPath, workspaceRootPath, "target/ghor");
+                    jsonObjectSet(member, "shared_target", jsonNewString(asText(targetPath)));
+                    free(targetPath);
+                }
+                return true;
+            }
+
+            manifestModel(handle >> addr) -> int {
+                selected >> str <- manifest.manifest.select(handle);
+                guard selected != "" else return 0;
+                selectedAbsolute >> p<byte> <- cast(alloc(PATH_BYTES));
+                workspaceManifestPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                workspaceRootPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard selectedAbsolute != null && workspaceManifestPath != null && workspaceRootPath != null else {
+                    if (selectedAbsolute != null) free(selectedAbsolute);
+                    if (workspaceManifestPath != null) free(workspaceManifestPath);
+                    if (workspaceRootPath != null) free(workspaceRootPath);
+                    return 0;
+                }
+                absoluteInto(selected, selectedAbsolute);
+                result >> int <- manifest.manifest.load(asText(selectedAbsolute));
+                guard result != 0 else {
+                    free(selectedAbsolute); free(workspaceManifestPath); free(workspaceRootPath);
+                    return 0;
+                }
+                located >> bool <- locateWorkspace(selected, workspaceManifestPath, workspaceRootPath);
+                if (located && !samePath(asText(selectedAbsolute), asText(workspaceManifestPath))) {
+                    workspaceRoot >> int <- manifest.manifest.load(asText(workspaceManifestPath));
+                    if (workspaceRoot != 0) {
+                        inheritManifest(result, workspaceRoot, asText(workspaceManifestPath), asText(workspaceRootPath));
+                        jsonRelease(workspaceRoot);
+                    }
+                }
+                else {
+                    jsonObjectSet(result, "workspace_root", jsonNewString(asText(workspaceRootPath)));
+                    jsonObjectSet(result, "workspace_manifest", jsonNewString(asText(workspaceManifestPath)));
+                    jsonObjectSet(result, "workspace_is_root", jsonNewBool(located));
+                    virtualManifest >> bool <- false;
+                    if (jsonObjectLen(jsonObjectGet(result, "package")) == 0) {
+                        if (jsonObjectLen(jsonObjectGet(result, "workspace")) > 0) virtualManifest <- true;
+                    }
+                    jsonObjectSet(result, "virtual_manifest", jsonNewBool(virtualManifest));
+                }
+                free(selectedAbsolute); free(workspaceManifestPath); free(workspaceRootPath);
+                return result;
+            }
+
+            printModel(model >> int) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_WORKSPACE_001]: workspace cannot be materialized");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+        public:
+            commands() -> int {
+                return commandCatalog();
+            }
+
+            effectiveManifest(handle >> addr) -> int {
+                return manifestModel(handle);
+            }
+
+            loadEffective(path >> str) -> int {
+                selectedAbsolute >> p<byte> <- cast(alloc(PATH_BYTES));
+                workspaceManifestPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                workspaceRootPath >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard selectedAbsolute != null && workspaceManifestPath != null && workspaceRootPath != null else {
+                    if (selectedAbsolute != null) free(selectedAbsolute);
+                    if (workspaceManifestPath != null) free(workspaceManifestPath);
+                    if (workspaceRootPath != null) free(workspaceRootPath);
+                    return 0;
+                }
+                absoluteInto(path, selectedAbsolute);
+                result >> int <- manifest.manifest.load(asText(selectedAbsolute));
+                guard result != 0 else {
+                    free(selectedAbsolute); free(workspaceManifestPath); free(workspaceRootPath);
+                    return 0;
+                }
+                located >> bool <- locateWorkspace(path, workspaceManifestPath, workspaceRootPath);
+                if (located && !samePath(asText(selectedAbsolute), asText(workspaceManifestPath))) {
+                    workspaceRoot >> int <- manifest.manifest.load(asText(workspaceManifestPath));
+                    if (workspaceRoot != 0) {
+                        inheritManifest(result, workspaceRoot, asText(workspaceManifestPath), asText(workspaceRootPath));
+                        jsonRelease(workspaceRoot);
+                    }
+                }
+                else {
+                    jsonObjectSet(result, "workspace_root", jsonNewString(asText(workspaceRootPath)));
+                    jsonObjectSet(result, "workspace_manifest", jsonNewString(asText(workspaceManifestPath)));
+                    jsonObjectSet(result, "workspace_is_root", jsonNewBool(located));
+                }
+                free(selectedAbsolute); free(workspaceManifestPath); free(workspaceRootPath);
+                return result;
+            }
+
+            effectiveWorkspace(handle >> addr) -> int {
+                return workspaceModel(handle);
+            }
+
+            memberSelected(memberId >> int, excludedId >> int, defaultId >> int, all >> bool) -> bool {
+                guard memberId >= 0 else return false;
+                guard memberId != excludedId else return false;
+                return all || memberId == defaultId;
+            }
+
+            supports(handle >> addr) -> bool {
+                count >> int <- argsCount(handle);
+                guard count > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                if (text.ghorText.same(command, "metadata")) return true;
+                guard text.ghorText.same(command, "workspace") else return false;
+                at >> int <- 2;
+                while (at < count) {
+                    action >> str <- argsAt(handle, at);
+                    if (text.ghorText.same(action, "--manifest") ||
+                        text.ghorText.same(action, "--manifest-path")) {
+                        at += 2;
+                    }
+                    else if (rd(cast(action)) == 45) { at += 1; }
+                    else return text.ghorText.same(action, "metadata");
+                }
+                return true;
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (text.ghorText.same(command, "metadata")) return printModel(metadataModel(handle));
+                return printModel(workspaceModel(handle));
+            }
+
+            executeManifest(handle >> addr) -> int {
+                return printModel(manifestModel(handle));
+            }
+
+            selfTest() -> bool {
+                return memberSelected(4, 9, 4, false) &&
+                    memberSelected(5, 9, 4, true) &&
+                    !memberSelected(9, 9, 9, true);
+            }
+
+    fa:
+        return true;
+}

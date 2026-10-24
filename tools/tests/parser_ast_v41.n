@@ -1,0 +1,57 @@
+use <io:output>;
+use <project:parser_tests, parser_ast, ast_arena>;
+
+parserAstV41 {
+    fn:
+        private:
+            rejectedField(arena >> p<byte>, index >> int, field >> int, value >> int) -> bool {
+                record >> p<byte> <- ast_arena.nccAstArena.node(arena,index);
+                slot >> p<byte> <- off(record,field);
+                old >> int <- rd<int>(slot);
+                wr<int>(slot,value);
+                rejected >> bool <- !ast_arena.nccAstArena.validate(arena);
+                wr<int>(slot,old);
+                return rejected && ast_arena.nccAstArena.validate(arena);
+            }
+            rejectedCount(arena >> p<byte>, value >> int) -> bool {
+                old >> int <- ast_arena.nccAstArena.count(arena);
+                wr<int>(off(arena,8),value);
+                rejected >> bool <- !ast_arena.nccAstArena.validate(arena);
+                wr<int>(off(arena,8),old);
+                return rejected && ast_arena.nccAstArena.validate(arena);
+            }
+        public:
+        run() -> int {
+            guard parser_tests.nccParserTests.selfTest() else { println("FAIL: parser/AST self-test"); return 1; }
+            arena >> p<byte> <- ast_arena.nccAstArena.open(4);
+            guard arena != null else return 1;
+            root >> int <- ast_arena.nccAstArena.append(arena,1,-1,1,1,0,0,0);
+            child >> int <- ast_arena.nccAstArena.append(arena,26,root,1,1,0,0,0);
+            leaf >> int <- ast_arena.nccAstArena.append(arena,26,child,1,1,0,0,0);
+            ok >> bool <- !ast_arena.nccAstArena.attach(arena,leaf,root);
+            ok <- !ast_arena.nccAstArena.attach(arena,leaf,child) && ok;
+            ok <- !ast_arena.nccAstArena.attach(arena,3,child) && ok;
+            ok <- ast_arena.nccAstArena.append(arena,26,4,1,1,0,0,0) == -1 && ok;
+            ok <- ast_arena.nccAstArena.append(arena,26,-2,1,1,0,0,0) == -1 && ok;
+            ok <- ast_arena.nccAstArena.count(arena) == 3 && ok;
+            ok <- ast_arena.nccAstArena.validate(arena) && ok;
+            rootNode >> p<byte> <- ast_arena.nccAstArena.node(arena,root);
+            childNode >> p<byte> <- ast_arena.nccAstArena.node(arena,child);
+            ok <- rd<int>(off(rootNode,32)) == child && rd<int>(off(childNode,4)) == root && ok;
+            ok <- rejectedField(arena,root,4,-2) && ok;
+            ok <- rejectedField(arena,leaf,32,-2) && ok;
+            ok <- rejectedField(arena,leaf,36,-2) && ok;
+            ok <- rejectedField(arena,leaf,48,-2) && ok;
+            ok <- rejectedField(arena,leaf,52,-2) && ok;
+            ok <- rejectedField(arena,root,36,child) && ok;
+            ok <- rejectedField(arena,root,52,child) && ok;
+            ok <- rejectedField(arena,leaf,32,3) && ok;
+            ok <- rejectedCount(arena,-1) && ok;
+            ok <- rejectedCount(arena,5) && ok;
+            ast_arena.nccAstArena.close(arena);
+            println(ok ? "PASS: parser/AST, raw corruption and transactional reparent" : "FAIL: reparent");
+            return ok ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

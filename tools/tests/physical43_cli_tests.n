@@ -1,0 +1,60 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output>;
+use <project:physical43_common, physical43_stages, release_io, tool_cli>;
+
+physical43CliTests {
+    stc:
+        repo >> str <- "";
+        work >> str <- "";
+        tool >> str <- "";
+        stage0 >> str <- "";
+        routeId >> str <- "";
+        checks >> int <- 0;
+        commands >> int <- 0;
+        passed >> bool <- true;
+    fn:
+        private:
+            record(name >> str, valid >> bool) -> void { physical43_common.physical43Common.put(checks,name,jsonNewBool(valid)); passed <- passed && valid; if (!valid) println("FAIL "+name); }
+            invoke(name >> str, words >> int, expected >> int) -> int {
+                println("RUN "+name);
+                jsonArrayInsert(words,0,jsonNewString(tool)); row >> int <- physical43_common.physical43Common.command(words,repo,1800000);
+                code >> int <- release_io.releaseIo.number(row,"code",-999);
+                record(name+"-exit",tool_cli.toolCli.clean(row) && !physical43_common.physical43Common.boolAt(row,"/timed_out") && code == expected);
+                summary >> int <- jsonNewObject(); physical43_common.physical43Common.put(summary,"name",jsonNewString(name)); physical43_common.physical43Common.put(summary,"expected",jsonNewInt(expected)); physical43_common.physical43Common.put(summary,"actual",jsonNewInt(code)); jsonObjectSet(summary,"argv",words); physical43_common.physical43Common.put(summary,"capture_ok",jsonNewBool(tool_cli.toolCli.clean(row))); physical43_common.physical43Common.put(summary,"stdout",jsonObjectBorrow(row,"stdout")); physical43_common.physical43Common.put(summary,"stderr",jsonObjectBorrow(row,"stderr")); physical43_common.physical43Common.push(commands,summary); jsonRelease(words); return row;
+            }
+            pipeline(name >> str, expected >> int, extra >> str) -> void {
+                output >> str <- work+"/"+name; words >> int <- jsonNewArray(); physical43_common.physical43Common.push(words,jsonNewString(name == "alias-positive" ? "certify-raw-optimizer" : "certify-final-pipeline")); physical43_common.physical43Common.push(words,jsonNewString("--repo")); physical43_common.physical43Common.push(words,jsonNewString(repo)); physical43_common.physical43Common.push(words,jsonNewString(name == "positive" ? "--nc" : "--ncc")); physical43_common.physical43Common.push(words,jsonNewString(stage0)); physical43_common.physical43Common.push(words,jsonNewString(name == "positive" ? "--ou" : "--out")); physical43_common.physical43Common.push(words,jsonNewString(output)); physical43_common.physical43Common.push(words,jsonNewString("--route")); physical43_common.physical43Common.push(words,jsonNewString(routeId)); physical43_common.physical43Common.push(words,jsonNewString("--skip-cargo")); tail >> int <- jsonParse(extra); at >> int <- 0;
+                while (at < jsonArrayLen(tail)) { item >> int <- jsonArrayBorrow(tail,at); jsonArrayPush(words,item); jsonRelease(item); at += 1; } jsonRelease(tail);
+                if (name == "software-negative") { physical43_common.physical43Common.push(words,jsonNewString("--matrix")); physical43_common.physical43Common.push(words,jsonNewString(work+"/negative-matrix.json")); }
+                row >> int <- invoke(name,words,expected); jsonRelease(row); report >> int <- physical43_common.physical43Common.read(output+"/report.json",false);
+                record(name+"-report-schema",physical43_common.physical43Common.field(report,"schema") == "ncc.final_pipeline.certification.v2"); record(name+"-not-physical",physical43_common.physical43Common.field(report,"physical_status") == "not_executed_no_hardware_manifest");
+                if (expected == 0) record(name+"-execution",physical43_common.physical43Common.field(report,"software_status") == "passed" && physical43_common.physical43Common.field(report,"execution_status") == "passed");
+                if (expected == 1) record(name+"-real-compiler-failure",physical43_common.physical43Common.field(report,"software_status") == "failed");
+                if (expected == 3) record(name+"-runner-mismatch",physical43_common.physical43Common.field(report,"software_status") == "passed" && physical43_common.physical43Common.field(report,"execution_status") == "partial_not_all_runners_executed");
+                if (expected == 4) record(name+"-hardware-required-rejected",physical43_common.physical43Common.field(report,"software_status") == "passed" && physical43_common.physical43Common.field(report,"execution_status") == "passed"); jsonRelease(report);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- physical43_common.physical43Common.parse(arguments,2,"|--repo|--work|--tool|--stage0|","",""); if (options == 0 || !jsonObjectHas(options,"--work") || !jsonObjectHas(options,"--tool") || !jsonObjectHas(options,"--stage0")) return 2;
+                repo <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--repo",".")); work <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--work","")); tool <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--tool","")); stage0 <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--stage0","")); routeId <- envHas("WINDIR") ? "standard-x86_64-windows" : "standard-x86_64-linux"; if (physical43_common.physical43Common.fileType(work) != 0) return 2; physical43_common.physical43Common.directories(work); checks <- jsonNewObject(); commands <- jsonNewArray();
+                row >> int <- invoke("unknown-command",jsonParse("[\"physical43-unknown-command\"]"),2); jsonRelease(row);
+                row <- invoke("final-required-options",jsonParse("[\"certify-final-pipeline\"]"),2); jsonRelease(row);
+                row <- invoke("final-abbreviated-help",jsonParse("[\"certify-final-pipeline\",\"--hel\"]"),0); jsonRelease(row);
+                row <- invoke("final-ambiguous-option",jsonParse("[\"certify-final-pipeline\",\"--re\",\"value\"]"),2); jsonRelease(row);
+                row <- invoke("final-unknown-short-value",jsonParse("[\"certify-final-pipeline\",\"--ncc\",\"-unrecognized\",\"--out\",\"not-used\"]"),2); jsonRelease(row);
+                row <- invoke("alias-required-options",jsonParse("[\"certify-raw-optimizer\"]"),2); jsonRelease(row);
+                row <- invoke("legacy-alias-required-options",jsonParse("[\"certify_raw_optimizer.py\"]"),2); jsonRelease(row);
+                row <- invoke("exact-required-options",jsonParse("[\"exact-head-evidence\",\"verify\"]"),2); jsonRelease(row);
+                row <- invoke("portable-required-options",jsonParse("[\"portable-hypervisor-iommu\"]"),2); jsonRelease(row);
+                words >> int <- jsonParse("[\"primitive-release-evidence\",\"--repo\"]"); physical43_common.physical43Common.push(words,jsonNewString(work+"/absent-repo")); row <- invoke("primitive-missing-artifacts",words,1); jsonRelease(row);
+                words <- jsonParse("[\"exact-head-evidence\",\"verify\",\"--expected-sha\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"--root\"]"); physical43_common.physical43Common.push(words,jsonNewString(work+"/absent-evidence")); row <- invoke("exact-missing-evidence",words,1); jsonRelease(row);
+                matrix >> int <- physical43_common.physical43Common.read(repo+"/tools/certification/final-target-matrix.v1.json",false); allRoutes >> int <- jsonObjectBorrow(matrix,"routes"); selected >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(allRoutes)) { spec >> int <- jsonArrayGet(allRoutes,at); if (physical43_common.physical43Common.field(spec,"id") == routeId) { physical43_common.physical43Common.put(spec,"source",jsonNewString(work+"/invalid-source.n")); jsonArrayPush(selected,spec); } jsonRelease(spec); at += 1; }
+                record("negative-route-present",jsonArrayLen(selected) == 1); jsonObjectSet(matrix,"routes",selected); physical43_common.physical43Common.save(work+"/negative-matrix.json",matrix); physical43_common.physical43Common.write(work+"/invalid-source.n","physical43Invalid { fn: public: run() -> int { return missingPhysical43Symbol; } ref main ->> run; fa: return true; }\n"); jsonRelease(selected); jsonRelease(allRoutes); jsonRelease(matrix);
+                pipeline("positive",0,"[\"--require-execution\"]"); pipeline("alias-positive",0,"[\"--require-execution\"]"); pipeline("runner-negative",3,"[\"--require-execution\",\"--runner\",\"physical43-unavailable-host\"]"); pipeline("physical-negative",4,"[\"--require-physical\"]"); pipeline("software-negative",1,"[]");
+                report >> int <- jsonParse("{\"schema\":\"nc.physical43.cli-tests.v1\",\"scope\":\"native CLI exit/validation tests with real retained compiler; no fabricated physical or CI evidence\"}"); physical43_common.physical43Common.put(report,"passed",jsonNewBool(passed)); jsonObjectSet(report,"checks",checks); physical43_common.physical43Common.put(report,"commands",commands); physical43_common.physical43Common.save(work+"/tests.json",report); physical43_common.physical43Common.print(report); jsonRelease(report); jsonRelease(checks); jsonRelease(options); argsRelease(arguments); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

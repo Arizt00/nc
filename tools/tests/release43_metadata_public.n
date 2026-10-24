@@ -1,0 +1,36 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:release43_common, release43_public, cert_json>;
+
+release43MetadataPublic {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void { println((good ? "PASS " : "FAIL ")+name); release43_common.release43Common.record(name,good); if (!good) failures += 1; }
+            set(object >> int, key >> str, value >> str) -> void { release43_common.release43Common.put(object,key,jsonNewString(value)); }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- jsonNewObject(); set(options,"--root",argsCount(args) > 1 ? argsAt(args,1) : ".");
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options);
+                work >> str <- release43_common.release43Common.workPath(); root >> str <- work+"/repo";
+                text >> str <- "{\"schema\":\"ncc.public_beta.manifest.v1\",\"public_name\":\"ncc\",\"dist_root\":\"dist/public-beta/ncc\",\"public_files\":[\"LICENSE\"],\"public_doc_files\":[],\"public_tool_files\":[\"tools/release/public_beta_manifest.json\"],\"public_trees\":[],\"public_test_groups\":[],\"public_examples\":[{\"source\":\"example.n\",\"dest\":\"examples/test.n\",\"metadata\":[\"\\u0000\",\"\\ud800\",NaN]}],\"forbidden_public_roots\":[],\"public_example_name_policy\":{\"forbid_path_tokens\":[],\"description\":\"\\u0000\\ud800\"},\"public_package_prune\":{\"crate_integration_tests\":false,\"description\":Infinity},\"ignored\":\"\\u0000\\ud800\"}";
+                expect("manifest-fixture",release43_common.release43Common.writeText(root+"/tools/release/public_beta_manifest.json",text));
+                expect("license-fixture",release43_common.release43Common.writeText(root+"/LICENSE","license\n")); expect("example-fixture",release43_common.release43Common.writeText(root+"/example.n","metadata fixture\n"));
+                options <- jsonNewObject(); set(options,"--root",root); expect("metadata-layout",release43_public.release43Public.layout(options) == 0);
+                output >> str <- release43_common.release43Common.text(root+"/dist/public-beta/ncc/tools/release/public_beta_manifest.json");
+                expect("published-metadata-preserved",strContains(output,"\"metadata\":[\"\\u0000\",\"\\ud800\",NaN]"));
+                expect("description-sanitized",strContains(output,"Public examples use topic names.") && !strContains(output,"description\":\"\\u0000"));
+                expect("example-copied",release43_common.release43Common.text(root+"/dist/public-beta/ncc/examples/test.n") == "metadata fixture\n"); strRelease(output);
+                binary >> p<byte> <- cast(alloc(strByteLen(text)+3)); source >> p<byte> <- cast(text); index >> int <- 0;
+                while (index < strByteLen(text)) { wr<byte>(off<byte>(binary,index),rd<byte>(off<byte>(source,index))); index += 1; }
+                wr<byte>(off<byte>(binary,index),0); wr<byte>(off<byte>(binary,index+1),123); wr<byte>(off<byte>(binary,index+2),125);
+                expect("binary-nul-fixture",release43_common.release43Common.writeBytes(root+"/nul-tail.json",binary,index+3,false) == index+3); free(binary); set(options,"--manifest",root+"/nul-tail.json");
+                expect("hidden-trailing-binary-rejected",release43_public.release43Public.layout(options) == 1); jsonRelease(options);
+                report >> int <- jsonNewObject(); set(report,"schema","nc.release43.metadata.public.regression.v1"); set(report,"root",root);
+                release43_common.release43Common.put(report,"checks",release43_common.release43Common.checkRows()); release43_common.release43Common.put(report,"failures",jsonNewInt(failures)); release43_common.release43Common.put(report,"passed",jsonNewBool(failures == 0)); release43_common.release43Common.put(report,"python_required",jsonNewBool(false));
+                release43_common.release43Common.save(work+"/metadata-public-regression.json",report); println("sealed="+work+"/metadata-public-regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

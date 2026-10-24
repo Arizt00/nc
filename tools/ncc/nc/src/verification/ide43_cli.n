@@ -1,0 +1,113 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_session, ide43_runtime>;
+use <project:ide43_jetbrains, ide43_vscode, ide43_ghidra, ide43_association, ide43_fullstack>;
+
+ide43Cli {
+    fn:
+        public:
+            family(command >> str) -> str {
+                if (command == "ide43-jetbrains" || command == "verify_phase10_jetbrains_integration_v2_0_0.py") return "jetbrains";
+                if (command == "ide43-vscode" || command == "verify_phase10_vscode_integration_v2_0_0.py") return "vscode";
+                if (command == "ide43-ghidra" || command == "verify_phase10_ghidra_integration_v2_0_0.py") return "ghidra";
+                if (command == "ide43-association" || command == "verify_phase10_file_association_global_exec_v2_0_0.py") return "association";
+                if (command == "ide43-fullstack" || command == "verify_phase10_ide_fullstack_v2_0_0.py") return "fullstack";
+                return "";
+            }
+            reportPath(root >> str, selected >> str) -> str {
+                if (selected == "jetbrains") return root+"/docs/status/F10_P10_jetbrains_integration_report.json";
+                if (selected == "vscode") return root+"/docs/status/F10_P11_vscode_integration_report.json";
+                if (selected == "ghidra") return root+"/docs/status/F10_P20_ghidra_integration_report.json";
+                if (selected == "association") return root+"/docs/status/F10_P12_file_association_global_exec_report.json";
+                return root+"/docs/status/F10_P20_ide_fullstack_report.json";
+            }
+            schema(selected >> str) -> str {
+                if (selected == "association") return "nc.phase10.file-association-global-exec.report.v1";
+                if (selected == "fullstack") return "nc.phase10.ide.fullstack.report.v1";
+                return "nc.phase10."+selected+".integration.report.v1";
+            }
+            evaluate(root >> str, selected >> str) -> int {
+                if (selected == "jetbrains") return ide43_jetbrains.ide43Jetbrains.evaluate(root);
+                if (selected == "vscode") return ide43_vscode.ide43Vscode.evaluate(root);
+                if (selected == "ghidra") return ide43_ghidra.ide43Ghidra.evaluate(root);
+                if (selected == "association") return ide43_association.ide43Association.evaluate(root);
+                return ide43_fullstack.ide43Fullstack.evaluate(root);
+            }
+            fullstack(options >> int, self >> str, root >> str) -> void {
+                families >> int <- ide43_core.ide43Core.list("jetbrains|vscode|ghidra"); index >> int <- 0;
+                while (index < 3) {
+                    selected >> int <- jsonArrayGet(families,index); name >> str <- jsonStringView(selected,"");
+                    words >> int <- ide43_core.ide43Core.list("ide43-"+name);
+                    at >> int <- 0;
+                    while (at < jsonObjectLen(options)) {
+                        key >> str <- jsonObjectKeyAt(options,at);
+                        if (key != "--report" && key != "--work" && key != "--native-self") {
+                            cert_json.certJson.push(words,jsonNewString(key)); cert_json.certJson.push(words,jsonObjectGet(options,key));
+                        }
+                        free(cast<byte>(key)); at += 1;
+                    }
+                    cert_json.certJson.push(words,jsonNewString("--report")); cert_json.certJson.push(words,jsonNewString(reportPath(root,name)));
+                    row >> int <- ide43_session.ide43Session.invoke(self,words,root);
+                    jsonRelease(row); jsonRelease(selected); index += 1;
+                    if (!ide43_core.ide43Core.valid()) break;
+                }
+                jsonRelease(families);
+                if (ide43_core.ide43Core.valid()) {
+                    row >> int <- ide43_session.ide43Session.bundle(true);
+                    jsonRelease(row);
+                }
+            }
+            execute(arguments >> addr, command >> str) -> int {
+                selected >> str <- family(command);
+                if (selected == "") { println("ide43: unknown command"); return 2; }
+                options >> int <- tool_cli.toolCli.parse(arguments,
+                    "|--root|--work|--report|--candidate|--ncup|--cargo|--router|--jetbrains-router|--node|--go|--bash|--global-ncc|--bundle|--distribution|--zip|--gradle|--npx|","|--help|-h|");
+                if (options == 0) { println("ide43: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ide43-jetbrains|ide43-vscode|ide43-ghidra|ide43-association|ide43-fullstack [--root REPO] [--report JSON] [--work NEW_DIRECTORY]");
+                    println("[--candidate NCC] [--ncup NCUP] [--cargo CARGO] [--router TOOLS] [--jetbrains-router TOOLS] [--node NODE] [--go GO] [--bash BASH] [--global-ncc NCC]");
+                    jsonRelease(options); return 0;
+                }
+                self >> str <- tool_cli.toolCli.absolute(argsAt(arguments,0));
+                cert_json.certJson.put(options,"--native-self",jsonNewString(self));
+                if (!jsonObjectHas(options,"--jetbrains-router")) cert_json.certJson.put(options,"--jetbrains-router",jsonNewString(self));
+                ide43_core.ide43Core.reset();
+                if (!ide43_session.ide43Session.open(options)) { println("ide43: work directory must be new"); jsonRelease(options); return 2; }
+                root >> str <- ide43_session.ide43Session.rootPath();
+                if (selected == "fullstack") fullstack(options,self,root);
+                checks >> int <- evaluate(root,selected);
+                if (ide43_core.ide43Core.valid() && selected != "fullstack") {
+                    if (selected == "association") ide43_runtime.ide43Runtime.association(checks);
+                    else ide43_runtime.ide43Runtime.integration(checks,selected);
+                }
+                if (ide43_core.ide43Core.valid()) {
+                    if (selected == "association") ide43_association.ide43Association.finalize(root,checks);
+                    if (selected == "jetbrains") ide43_jetbrains.ide43Jetbrains.finalize(root,checks);
+                    if (selected == "vscode") ide43_vscode.ide43Vscode.finalize(root,checks);
+                    if (selected == "ghidra") ide43_ghidra.ide43Ghidra.finalize(root,checks);
+                }
+                code >> int <- 1;
+                if (ide43_core.ide43Core.valid()) {
+                    passed >> bool <- release_io.releaseIo.allTrue(checks);
+                    report >> int <- jsonNewObject();
+                    cert_json.certJson.put(report,"schema",jsonNewString(schema(selected)));
+                    cert_json.certJson.put(report,"version",jsonNewString("2.0.0"));
+                    if (selected == "jetbrains" || selected == "vscode") cert_json.certJson.put(report,"plugin_product_version",jsonNewString("1.0.0.21v"));
+                    cert_json.certJson.put(report,"state",jsonNewString("frozen"));
+                    cert_json.certJson.put(report,"generated_at",jsonNewString(release_io.releaseIo.utc(timestamp())));
+                    cert_json.certJson.put(report,"status",jsonNewString(passed ? "ok" : "error"));
+                    cert_json.certJson.put(report,"checks",jsonClone(checks));
+                    cert_json.certJson.put(report,"commands",ide43_session.ide43Session.commandRows());
+                    output >> str <- ide43_session.ide43Session.hostPath(tool_cli.toolCli.value(options,"--report",reportPath(root,selected)));
+                    if (cert_json.certJson.save(output,report)) {
+                        println("OK: phase10 "+(selected == "association" ? "file association/global exec" : (selected == "fullstack" ? "ide fullstack" : selected+" integration"))+" report "+output);
+                        code <- passed ? 0 : 1;
+                    } else println("ide43: unable to save report");
+                    jsonRelease(report);
+                }
+                ide43_session.ide43Session.close(); jsonRelease(checks); jsonRelease(options); return code;
+            }
+    fa: return true;
+}
+

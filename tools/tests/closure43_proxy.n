@@ -1,0 +1,48 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output, errorOutput>;
+use <project:closure43_core, release_io, tool_cli, editor_json>;
+
+closure43Proxy {
+    fn:
+        run() -> int {
+            args >> addr <- argsOpen(); words >> int <- jsonNewArray(); keys >> int <- jsonNewArray(); index >> int <- 1;
+            binary >> str <- closure43_core.closure43Core.environment("CLOSURE43_PROXY_BINARY","");
+            cache >> str <- closure43_core.closure43Core.environment("CLOSURE43_PROXY_CACHE","");
+            if (binary == "" || cache == "" || argsCount(args) < 2) return 64;
+            cwd >> str <- "";
+            if (envHas("CLOSURE43_PROXY_CARGO_BINARY")) {
+                first >> str <- argsAt(args,1);
+                if (first == "build" || first == "test" || first == "fmt" || first == "check" || first == "clippy") {
+                    binary <- closure43_core.closure43Core.environment("CLOSURE43_PROXY_CARGO_BINARY","");
+                    cwd <- closure43_core.closure43Core.environment("CLOSURE43_PROXY_CARGO_CWD","");
+                }
+            }
+            closure43_core.closure43Core.push(words,jsonNewString(binary));
+            primitive >> bool <- envHas("CLOSURE43_PROXY_PRIMITIVE");
+            if (primitive) {
+                if (argsCount(args) < 8 || argsAt(args,1) != "run" || argsAt(args,2) != "-q" || argsAt(args,3) != "-p" || argsAt(args,4) != "ncc-cli" || argsAt(args,5) != "--" || argsAt(args,6) != "primitive") return 64;
+            }
+            while (index < argsCount(args)) {
+                value >> str <- argsAt(args,index); if (!primitive || index >= 6) closure43_core.closure43Core.push(words,jsonNewString(value));
+                closure43_core.closure43Core.push(keys,jsonNewString(value)); index += 1;
+            }
+            file >> str <- release_io.releaseIo.path(cache,closure43_core.closure43Core.hash(closure43_core.closure43Core.dumps(keys))+".json");
+            result >> int <- 0;
+            if (release_io.releaseIo.fileType(file) == 1) {
+                text >> str <- release_io.releaseIo.text(file); result <- editor_json.editorJson.parse(text); strRelease(text);
+                if (jsonKind(result) != 6) { println("proxy: corrupt captured command"); return 65; }
+            } else {
+                result <- tool_cli.toolCli.execute(words,cwd,3600000);
+                if (!tool_cli.toolCli.clean(result)) { println("proxy: process capture failed"); return 66; }
+                if (!release_io.releaseIo.write(file,closure43_core.closure43Core.pretty(result)+"\n")) return 67;
+            }
+            output >> str <- closure43_core.closure43Core.field(result,"stdout");
+            errors >> str <- closure43_core.closure43Core.field(result,"stderr");
+            code >> int <- release_io.releaseIo.number(result,"code",-1);
+            print(output); eprint(errors);
+            jsonRelease(result); jsonRelease(words); jsonRelease(keys); argsRelease(args); return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

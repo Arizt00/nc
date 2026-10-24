@@ -1,0 +1,75 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:process_capture>;
+
+nativeCaptureContract78 {
+    number(row >> int, key >> str) -> int {
+        field >> int <- jsonObjectBorrow(row,key);
+        value >> int <- jsonGetIntOr(field,-1); jsonRelease(field); return value;
+    }
+    flag(row >> int, key >> str) -> bool {
+        field >> int <- jsonObjectBorrow(row,key);
+        value >> bool <- jsonGetBoolOr(field,false); jsonRelease(field); return value;
+    }
+    pattern(row >> int, key >> str, bytes >> int) -> bool {
+        field >> int <- jsonObjectBorrow(row,key+"_file");
+        path >> str <- jsonStringView(field,"");
+        data >> p<byte> <- alloc(bytes);
+        valid >> bool <- data != null && fsSize(path) == bytes && fsReadInto(path,data,bytes) == bytes;
+        at >> int <- 0;
+        while (at < bytes && valid) { valid <- rd(off(data,at)) == ((at*37+11) & 255); at += 1; }
+        free(data); jsonRelease(field); return valid;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 5) return 64;
+        child >> str <- argsAt(arguments,1);
+        cwd >> str <- argsAt(arguments,2);
+        directory >> str <- argsAt(arguments,3);
+        if (!process_capture.processCapture.configured(directory)) return 65;
+        prefix >> str <- process_capture.processCapture.quoted(child);
+        rows >> int <- jsonNewArray();
+        row >> int <- process_capture.processCapture.capture(prefix+" bulk",cwd,30000,1048576);
+        valid >> bool <- flag(row,"capture_ok") && !flag(row,"ok") && number(row,"code") == 23 &&
+            number(row,"stdout_bytes") == 262144 && number(row,"stderr_bytes") == 257 &&
+            pattern(row,"stdout",262144) && pattern(row,"stderr",257);
+        hex >> int <- jsonObjectBorrow(row,"stdout_hex");
+        valid <- valid && strByteLen(jsonStringView(hex,"")) == 524288;
+        jsonRelease(hex); jsonArrayPush(rows,row); jsonRelease(row);
+        row <- process_capture.processCapture.capture(prefix+" bulk",cwd,30000,128);
+        valid <- valid && !flag(row,"capture_ok") && flag(row,"truncated") && number(row,"code") == 23 &&
+            number(row,"stdout_bytes") == 128 && number(row,"stdout_total") == 262144 &&
+            number(row,"stderr_bytes") == 128 && number(row,"stderr_total") == 257;
+        jsonArrayPush(rows,row); jsonRelease(row);
+        row <- process_capture.processCapture.capture(prefix+" slow",cwd,50,1024);
+        valid <- valid && flag(row,"started") && flag(row,"timed_out") && !flag(row,"capture_ok") && number(row,"code") != 0;
+        jsonArrayPush(rows,row); jsonRelease(row);
+        row <- process_capture.processCapture.capture(prefix+" exit",cwd,30000,1024);
+        valid <- valid && flag(row,"capture_ok") && !flag(row,"ok") && number(row,"code") == 37;
+        jsonArrayPush(rows,row); jsonRelease(row);
+        line >> str <- prefix+" argv "+process_capture.processCapture.quoted("")+" "+
+            process_capture.processCapture.quoted("trail\\")+" "+process_capture.processCapture.quoted("quote\"mark")+" "+
+            process_capture.processCapture.quoted("two words");
+        row <- process_capture.processCapture.capture(line,cwd,30000,1024);
+        valid <- valid && flag(row,"ok");
+        jsonArrayPush(rows,row); jsonRelease(row);
+        row <- process_capture.processCapture.capture(prefix+" invalid",cwd,30000,1024);
+        encoded >> int <- jsonObjectBorrow(row,"stdout_hex");
+        plain >> int <- jsonObjectBorrow(row,"stdout");
+        valid <- valid && flag(row,"ok") && number(row,"stdout_bytes") == 2 &&
+            jsonStringView(encoded,"") == "c0af" && jsonStringView(plain,"") == "";
+        jsonRelease(encoded); jsonRelease(plain); jsonArrayPush(rows,row); jsonRelease(row);
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.native.capture.v78"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"cases",rows);
+        valid <- jsonSaveFile(report,argsAt(arguments,4),2) && valid;
+        jsonRelease(report); jsonRelease(rows); argsRelease(arguments);
+        strRelease(prefix); strRelease(line);
+        println(valid ? "native-capture-contract-ok" : "native-capture-contract-failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

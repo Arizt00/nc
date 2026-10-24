@@ -1,0 +1,197 @@
+use <project:docs43_pdf, cert_json, release_io>;
+
+docs43Books {
+    stc:
+        valid >> bool <- true;
+    fn:
+        public:
+            cleanOk() -> bool { return valid; }
+            part(value >> str, index >> int) -> str {
+                data >> p<byte> <- cast(value); at >> int <- 0; start >> int <- 0; item >> int <- 0;
+                while (at <= strByteLen(value)) {
+                    if (at == strByteLen(value) || rd(off(data,at)) == 124) {
+                        if (item == index) return strSubstring(value,start,at-start);
+                        start <- at+1; item += 1;
+                    }
+                    at += 1;
+                }
+                return "";
+            }
+            replace(value >> str, old >> str, replacement >> str) -> str {
+                output >> str <- ""; at >> int <- 0; start >> int <- 0;
+                while (at < strByteLen(value)) {
+                    tail >> str <- strSubstring(value,at,strByteLen(old));
+                    equal >> bool <- tail == old; strRelease(tail);
+                    if (equal) {
+                        prefix >> str <- strSubstring(value,start,at-start);
+                        output <- cert_json.certJson.append(output,prefix); strRelease(prefix);
+                        output <- cert_json.certJson.append(output,replacement);
+                        at += strByteLen(old); start <- at;
+                    } else at += 1;
+                }
+                tail >> str <- strSubstring(value,start,at-start);
+                output <- cert_json.certJson.append(output,tail); strRelease(tail); return output;
+            }
+            clean(value >> str) -> str {
+                a >> str <- replace(value,"baseico","principal");
+                b >> str <- replace(a,"baseica","principal"); strRelease(a);
+                a <- replace(b,"canónico","principal"); strRelease(b);
+                b <- replace(a,"canónica","principal"); strRelease(a);
+                a <- replace(b,"Baseical","Official"); strRelease(b);
+                lower >> str <- strToLower(a);
+                if (strContains(lower,"ca"+"non")) valid <- false;
+                strRelease(lower); return a;
+            }
+            title(book >> int) -> str {
+                return part("De lo alto al sotano|Finalidad e historia de nC|El compilador ncc por dentro|Aprende conmigo, nC|ghor por dentro|lowering y ncc en profundidad",book);
+            }
+            filename(book >> int) -> str {
+                return part("01_de_lo_alto_al_sotano.pdf|02_finalidad_e_historia_de_nc.pdf|03_compilador_ncc_por_dentro.pdf|04_aprende_conmigo_nc.pdf|05_ghor_por_dentro.pdf|06_lowering_y_ncc_en_profundidad.pdf",book);
+            }
+            subtitle(book >> int) -> str {
+                return part("Guia base de nC, ncc y la sintaxis diaria|Por que existe, que intenta resolver y hacia donde camina|Del backend al compilador y cierre en el interprete|Curso guiado de escritura practica en nC|Gestor, orquestador y ruta de publicacion de nC|Contratos de bajada, bytes, rutas de ejecucion y superficies internas",book);
+            }
+            audience(book >> int) -> str {
+                return part("persona que empieza y necesita una base firme|lector que quiere entender la razon del proyecto|desarrollador que quiere entender la maquinaria|estudiante que quiere escribir programas pequenos y medianos|mantenedor que prepara paquetes, builds y verificaciones|implementador que trabaja con rutas internas del compilador",book);
+            }
+            count(book >> int) -> int {
+                sizes >> array<int,6> <- [40,35,80,58,70,120]; return sizes[book];
+            }
+            theme(book >> int) -> str { return part("lenguaje|historia|compilador|curso|ghor|lowering",book); }
+            sectionCount(book >> int) -> int {
+                sizes >> array<int,6> <- [20,10,16,17,15,24]; return sizes[book];
+            }
+            section(book >> int, index >> int) -> str {
+                if (book == 0) return part("modelo mental de nC|archivo .n y contenedor|imports use::|secciones stc local type fn fa|to main y ref main|proyeccion y asignacion|condiciones|bucles|funciones|arrays|listas|colas|punteros|runtime de salida|errores|proyectos|bridge|MCT|machine|basal",index);
+                if (book == 1) return part("origen del problema|necesidad de continuidad|de programa normal a maquina|memoria como parte del lenguaje|runtime visible|herramientas propias|paquetes y distribucion|relacion con sistemas|aprendizaje gradual|trabajo futuro",index);
+                if (book == 2) return part("entrada de archivo|lexer|parser|AST|sema|tipos|resolucion de imports|IR|MCT|backend|objetos|link|runtime symbols|diagnosticos|interprete|tests",index);
+                if (book == 3) return part("primer programa|variables|salida por pantalla|entrada|render|condiciones|bucles|funciones|arrays|listas|colas|punteros basicos|memoria|menus|validacion|archivos|proyecto final",index);
+                if (book == 4) return part("papel de ghor|manifest|workspace|build|test|run|lock|metadata|registry|vendor|public-beta|doctor|release|checksums|CI",index);
+                return part("contrato de bajada|MCT como forma de bytes|perfiles|objetos|ELF|COFF|Mach-O|strings|listas|arrays|punteros|heap|runtime helpers|control flow|match|guard|defer|machine|basal|primitive|diagnosticos|paridad|tests|release",index);
+            }
+            angle(index >> int) -> str {
+                return part("modelo mental|sintaxis visible|flujo de datos|ciclo de validacion|decision de diseno|fallo comun|lectura de diagnosticos|organizacion en archivos|coste de ejecucion|ruta hacia bytes|relacion con runtime|relacion con memoria|separacion de responsabilidades|prueba pequena|uso en proyecto|mantenimiento|criterio de cierre|observabilidad|compatibilidad|preparacion para release|impacto en usuarios|impacto en herramientas|caso limite|patron de refactor|nomenclatura|estilo compacto|contrato de entrada|contrato de salida|evidencia minima|lectura por capas",index%30);
+            }
+            pageTitle(book >> int, n >> int) -> str {
+                topic >> str <- section(book,(n-1)%sectionCount(book));
+                return n > sectionCount(book) ? topic+": "+angle((n-1)/sectionCount(book)) : topic;
+            }
+            paragraph(book >> int, n >> int, index >> int) -> str {
+                topic >> str <- section(book,(n-1)%sectionCount(book));
+                a >> str <- angle((n-1)/sectionCount(book));
+                if (index == 0) {
+                    route >> str <- part("desde el archivo .n hasta la ejecucion de un ejemplo pequeno|desde la necesidad inicial hasta una herramienta publicable|desde texto de entrada hasta diagnostico, IR, bytes o interprete|desde una practica guiada hasta un programa que puedas mantener|desde manifest y workspace hasta build, test, paquete y publicacion|desde superficie de lenguaje hasta contratos de bytes y objetos",book);
+                    return "Esta pagina trabaja "+pageTitle(book,n)+". En nC conviene mirar primero la intencion del programa y despues "+route+". Esa costumbre evita escribir por acumulacion y ayuda a elegir entre stc, local, type, fn o una entrada directa con to main.";
+                }
+                if (index == 1) return "El punto practico es sencillo: "+topic+" debe dejar visible que datos entran, que estado cambia y que parte pertenece al runtime. En este enfoque de "+a+", la lectura importa tanto como la ejecucion porque permite revisar el programa sin reconstruirlo desde cero.";
+                if (index == 2) {
+                    ai >> int <- (n-1)/sectionCount(book)%30;
+                    focus >> str <- ai < 12 ? part("El objetivo es que el lector pueda explicar la pieza sin mirar el codigo.|La prioridad es que cada simbolo aporte informacion y no solo decoracion.|Interesa seguir un valor desde que nace hasta que se imprime, se guarda o cruza una frontera.|La pagina insiste en comprobar pronto para no acumular errores silenciosos.|La decision importante es elegir el sitio correcto para cada responsabilidad.|El fallo habitual aparece cuando se mezcla estado persistente, scratch temporal y salida.|Un diagnostico util debe leerse como una pista de arquitectura, no como castigo.|Cuando el programa crece, separar archivos evita una masa dificil de revisar.|Toda comodidad debe entender que trabajo pide al compilador y al runtime.|El lenguaje no termina en la sintaxis: debe poder acercarse a representacion material.|El runtime es una frontera explicita con el sistema y debe importarse con intencion.|La memoria se trata como un hecho del programa, no como un detalle invisible.",ai) : "La pagina fija un criterio concreto para escribir, revisar y probar.";
+                    return focus+" Una forma compacta no significa una forma oscura. La sintaxis compacta debe ahorrar ruido, no esconder decisiones; si una asignacion, un puntero o una llamada toca memoria, el lector debe poder seguir el valor desde su origen hasta el uso final.";
+                }
+                if (index == 3) return "Relacion con "+section(book,(n-2+sectionCount(book))%sectionCount(book))+": antes de llegar aqui ya hay contexto suficiente para entender nombres, importaciones y cierre del contenedor. Relacion con "+section(book,n%sectionCount(book))+": el siguiente paso consiste en conectar esta pieza con otra parte del lenguaje sin cambiar el modelo mental.";
+                return "Patron de trabajo recomendado para "+a+": escribir una version pequena, pasar `ncc check`, ejecutar si procede, leer el diagnostico y solo entonces compactar. La compactacion final debe ser consecuencia de entender el programa, no una carrera por borrar lineas.";
+            }
+            code(book >> int, n >> int) -> str {
+                safe >> str <- replace(section(book,(n-1)%sectionCount(book))+"_"+angle((n-1)/sectionCount(book))," ","_");
+                normalized >> str <- replace(safe,"-","_"); strRelease(safe);
+                short >> str <- strSubstring(normalized,0,18); strRelease(normalized);
+                return "use::stoud::io::<output, render>;\n\n"+theme(book)+"_"+short+"_"+renderInt(n)+"[@runtime] {\n    stc:\n        paso >> int = "+renderInt(n)+";\n        ok >> bool = false;\n\n    fn:\n        public:\n            run() -> bool {\n                ok = paso > 0;\n                println(renderInt(paso));\n                return ok;\n            }\n\n    ref main ->> @fn(run);\n\n    fa:\n        return true;\n}";
+            }
+            draw(value >> str, x >> int, y >> int, font >> int, size >> int) -> void {
+                cleaned >> str <- clean(value); docs43_pdf.docs43Pdf.text(cleaned,x,y,font,size); strRelease(cleaned);
+            }
+            wrapped(value >> str, x >> int, y >> int, w >> int, font >> int, size >> int, leading >> int) -> int {
+                cleaned >> str <- clean(value);
+                result >> int <- docs43_pdf.docs43Pdf.wrapped(cleaned,x,y,w,font,size,leading); strRelease(cleaned); return result;
+            }
+            frame(book >> int, page >> int, content >> int) -> void {
+                docs43_pdf.docs43Pdf.stroke("0.843137 0.870588 0.886275");
+                docs43_pdf.docs43Pdf.line(44000,797890,551276,797890);
+                docs43_pdf.docs43Pdf.line(44000,42000,551276,42000);
+                docs43_pdf.docs43Pdf.color("0.301961 0.356863 0.388235");
+                draw(title(book),44000,806890,1,8000);
+                docs43_pdf.docs43Pdf.right((content > 0 ? "cuerpo " : "pagina ")+renderInt(content > 0 ? content : page),551276,806890,1,8000);
+                draw("nC public beta - documentacion tecnica",44000,28000,1,7500);
+                docs43_pdf.docs43Pdf.right("sin prometer superficies no cerradas",551276,28000,1,7500);
+            }
+            cover(book >> int) -> void {
+                docs43_pdf.docs43Pdf.color("0.933333 0.960784 0.968627"); docs43_pdf.docs43Pdf.rect(0,0,595276,841890,true,false);
+                docs43_pdf.docs43Pdf.color("0.239216 0.494118 0.650980"); docs43_pdf.docs43Pdf.rect(0,0,26000,841890,true,false);
+                docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706");
+                y >> int <- wrapped(title(book),64000,671890,475276,2,28000,34000);
+                docs43_pdf.docs43Pdf.color("0.301961 0.356863 0.388235");
+                wrapped(subtitle(book),64000,y-12000,467276,1,14000,20000);
+                docs43_pdf.docs43Pdf.color("0.043137 0.431373 0.309804");
+                draw(renderInt(count(book))+" paginas de cuerpo, mas indice, glosario y cierre",64000,110000,2,11000);
+                docs43_pdf.docs43Pdf.color("0.301961 0.356863 0.388235");
+                draw("Serie de documentacion publica de nC / ncc",64000,88000,1,9000); docs43_pdf.docs43Pdf.page();
+            }
+            front(book >> int) -> int {
+                frame(book,2,0); docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706");
+                draw("Como leer este documento",44000,751890,2,18000);
+                y >> int <- wrapped("Este documento esta escrito para una "+audience(book)+". Su objetivo es separar lo que se puede usar hoy de lo que sigue en evolucion.",44000,717890,507276,1,10500,15000)-10000;
+                y <- wrapped("La serie evita lenguaje grandilocuente y se centra en uso, estructura, errores frecuentes y rutas de validacion.",44000,y,507276,1,10500,15000)-10000;
+                wrapped("Cada pagina del cuerpo trata un punto distinto. Los ejemplos son cortos para que puedas copiarlos, cambiarlos y entender por que funcionan.",44000,y,507276,1,10500,15000);
+                docs43_pdf.docs43Pdf.page(); frame(book,3,0);
+                docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706"); draw("Indice",44000,753890,2,18000);
+                y <- 721890; size >> int <- (count(book)+9)/10; chapter >> int <- 1; start >> int <- 1; page >> int <- 3;
+                while (start <= count(book)) {
+                    end >> int <- start+size-1; if (end > count(book)) end <- count(book);
+                    y <- wrapped(renderInt(chapter)+". "+section(book,(chapter-1)%sectionCount(book))+" - paginas de cuerpo "+renderInt(start)+"-"+renderInt(end),54000,y,487276,1,10000,14000);
+                    start += size; chapter += 1;
+                    if (y < 86000) { docs43_pdf.docs43Pdf.page(); page += 1; frame(book,page,0); y <- 761890; }
+                }
+                docs43_pdf.docs43Pdf.page(); return page+1;
+            }
+            content(book >> int, page >> int, n >> int) -> void {
+                frame(book,page,n); docs43_pdf.docs43Pdf.color("0.239216 0.494118 0.650980");
+                draw(renderInt(n)+". "+pageTitle(book,n),44000,767890,2,15000);
+                docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706"); y >> int <- 743890; i >> int <- 0;
+                while (i < 3) { y <- wrapped(paragraph(book,n,i),44000,y,507276,1,9400,12800)-6000; i += 1; }
+                if (y > 315000) {
+                    docs43_pdf.docs43Pdf.color("0.960784 0.968627 0.972549"); docs43_pdf.docs43Pdf.roundRect(44000,y-204000,507276,212000,6000);
+                    docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706");
+                    sample >> str <- code(book,n); bytes >> p<byte> <- cast(sample); at >> int <- 0; start >> int <- 0; yy >> int <- y-6000;
+                    while (at <= strByteLen(sample)) {
+                        if (at == strByteLen(sample) || rd(off(bytes,at)) == 10) {
+                            line >> str <- strSubstring(sample,start,at-start); draw(line,54000,yy,3,7600); strRelease(line); yy -= 9800; start <- at+1;
+                        }
+                        at += 1;
+                    }
+                    strRelease(sample); y -= 216000;
+                }
+                while (i < 5) { y <- wrapped(paragraph(book,n,i),44000,y,507276,1,9250,12400)-5000; i += 1; }
+                docs43_pdf.docs43Pdf.color("0.933333 0.960784 0.968627"); docs43_pdf.docs43Pdf.roundRect(44000,62000,507276,34000,5000);
+                docs43_pdf.docs43Pdf.color("0.301961 0.356863 0.388235"); draw("Comprobacion breve",54000,82000,2,8500);
+                draw("Localiza una decision sobre "+section(book,(n-1)%sectionCount(book))+" desde "+angle((n-1)/sectionCount(book))+" y verifica si puede probarse con ncc check.",54000,68000,1,8200);
+                docs43_pdf.docs43Pdf.page();
+            }
+            glossary(book >> int, page >> int) -> int {
+                frame(book,page,0); docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706"); draw("Glosario",44000,753890,2,18000);
+                terms >> str <- "contenedor|stc|local|type|fn|fa|MCT|runtime|lowering|diagnostico";
+                descs >> str <- "Bloque principal que agrupa estado, tipos, funciones y cierre.|Zona de declaraciones persistentes o compartidas dentro del contenedor.|Zona de trabajo temporal cuando el programa necesita separar datos de apoyo.|Zona para declarar formas de datos con nombre y campos propios.|Zona de funciones, normalmente organizada por visibilidad.|Cierre final del contenedor; conserva compatibilidad con la forma habitual de ejemplos.|Contrato de bytes que permite razonar sobre representacion antes del backend final.|Servicios que conectan el programa con salida, memoria, archivos, red o sistema.|Paso que transforma una superficie de lenguaje en una forma mas cercana a bytes.|Mensaje que explica un fallo con posicion y causa tecnica.";
+                y >> int <- 723890; i >> int <- 0;
+                while (i < 10) {
+                    docs43_pdf.docs43Pdf.color("0.043137 0.431373 0.309804"); draw(part(terms,i),54000,y,2,10000); y -= 14000;
+                    docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706"); y <- wrapped(part(descs,i),70000,y,475276,1,9000,12000)-8000;
+                    if (y < 80000) { docs43_pdf.docs43Pdf.page(); page += 1; frame(book,page,0); y <- 761890; }
+                    i += 1;
+                }
+                docs43_pdf.docs43Pdf.page(); return page+1;
+            }
+            buildBook(out >> str, book >> int) -> bool {
+                guard book >= 0 && book < 6 else return false;
+                valid <- true; path >> str <- release_io.releaseIo.path(out,filename(book));
+                guard docs43_pdf.docs43Pdf.begin(path,title(book),"nC public beta",595276,841890) else return false;
+                cover(book); page >> int <- front(book); n >> int <- 1;
+                while (n <= count(book)) { content(book,page,n); n += 1; page += 1; }
+                page <- glossary(book,page); frame(book,page,0);
+                docs43_pdf.docs43Pdf.color("0.090196 0.125490 0.164706"); draw("Cierre",44000,721890,2,20000);
+                wrapped("Este documento forma parte de la serie publica de nC. Su objetivo es servir como base de trabajo, no como promesa de que todas las rutas internas ya esten terminadas. Si una superficie se marca como parcial, debe probarse antes de depender de ella en un proyecto grande.",44000,687890,507276,1,11000,16000);
+                docs43_pdf.docs43Pdf.page(); guard docs43_pdf.docs43Pdf.finish() && valid else return false;
+                data >> str <- release_io.releaseIo.text(path); lower >> str <- strToLower(data);
+                valid <- !strContains(lower,"ca"+"non"); strRelease(lower); strRelease(data); return valid;
+            }
+    fa: return true;
+}

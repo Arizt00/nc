@@ -1,0 +1,22 @@
+use <io:output>;
+
+nativeFunctionRawView80 {
+    type: Callback { public: invoke >> fn(int) -> int; }
+    stc:
+        callback >> Callback <- Callback(invoke: &twice);
+        rawCallback >> Callback <- Callback(invoke: cast<fn(int) -> int>(&twice));
+        nullCallback >> Callback <- Callback(invoke: null);
+        conditional >> Callback <- Callback(invoke: true ? &twice : null);
+    twice(value >> int) -> int { return value*2; }
+    uncheckedRelease() -> bool { return free(&twice); }
+    run() -> int {
+        bytes >> p<byte> <- cast<byte>(&twice);
+        if (rd<byte>(&twice) != rd(bytes) || adr(off<byte>(&twice,0)) != adr(bytes) || adr(&twice) != adr(bytes)) return 1;
+        if (callback.invoke(11) != 22 || rawCallback.invoke(13) != 26) return 2;
+        if (nullCallback.invoke != null) return 3;
+        if (conditional.invoke(17) != 34) return 4;
+        println("native-function-raw-view-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

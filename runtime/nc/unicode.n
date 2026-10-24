@@ -1,0 +1,879 @@
+/*
+ * Unicode 17.0.0 runtime provider.
+ *
+ * UTF-8 validation, repair, UAX #15 normalization and UAX #29 extended
+ * grapheme segmentation are implemented in nC. Returned strings own a raw
+ * virtual-memory allocation and must be released with unicodeRelease.
+ */
+nccUnicodeRuntime :: runtime {
+    const:
+        HEADER_BYTES >> int <- 16;
+        HEADER_MAGIC >> u64 <- 0x4E43554E49313731;
+        S_BASE >> u32 <- 0xAC00;
+        L_BASE >> u32 <- 0x1100;
+        V_BASE >> u32 <- 0x1161;
+        T_BASE >> u32 <- 0x11A7;
+        L_COUNT >> u32 <- 19;
+        V_COUNT >> u32 <- 21;
+        T_COUNT >> u32 <- 28;
+        N_COUNT >> u32 <- 588;
+        S_COUNT >> u32 <- 11172;
+
+    fn:
+        private:
+            unicodeLenBytes(bytes >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(bytes, count)) != 0) {
+                    count += 1;
+                }
+                return count;
+            }
+
+            unicodeLen(value >> str) -> int {
+                return unicodeLenBytes(cast(value));
+            }
+
+            unicodeAlloc(bytes >> int) -> p<byte> {
+                total >> int <- bytes + HEADER_BYTES;
+                base >> p<byte> <- vmReserve(null, total, 0);
+                guard base != null else return null;
+                guard vmCommit(base, total, 4) else {
+                    vmRelease(base, total);
+                    return null;
+                }
+                wr<u64>(base, HEADER_MAGIC);
+                wr<int>(off(base, 8), total);
+                return off(base, HEADER_BYTES);
+            }
+
+            unicodeFree(value >> p<byte>) -> bool {
+                guard value != null else return true;
+                base >> p<byte> <- off(value, 0 - HEADER_BYTES);
+                guard rd<u64>(base) == HEADER_MAGIC else return false;
+                total >> int <- rd<int>(off(base, 8));
+                return vmRelease(base, total);
+            }
+
+            continuation(value >> byte) -> bool {
+                return value >= -128 && value <= -65;
+            }
+
+            decodeAt(bytes >> p<byte>, at >> int, length >> int, output >> p<u32>) -> int {
+                guard at < length else return 0;
+                first >> byte <- rd(off(bytes, at));
+                if (first >= 0 && first <= 0x7F) {
+                    wr(output, cast(first));
+                    return 1;
+                }
+                if (first >= -62 && first <= -33) {
+                    guard at + 1 < length else return 0;
+                    second >> byte <- rd(off(bytes, at + 1));
+                    guard continuation(second) else return 0;
+                    wr(output, cast<u32>(((first & 0x1F) << 6) | (second & 0x3F)));
+                    return 2;
+                }
+                if (first >= -32 && first <= -17) {
+                    guard at + 2 < length else return 0;
+                    second >> byte <- rd(off(bytes, at + 1));
+                    third >> byte <- rd(off(bytes, at + 2));
+                    guard continuation(second) else return 0;
+                    guard continuation(third) else return 0;
+                    if (first == -32) { guard second >= -96 else return 0; }
+                    if (first == -19) { guard second <= -97 else return 0; }
+                    wr(
+                        output,
+                        cast<u32>(
+                            ((first & 0x0F) << 12) |
+                            ((second & 0x3F) << 6) |
+                            (third & 0x3F)
+                        )
+                    );
+                    return 3;
+                }
+                if (first >= -16 && first <= -12) {
+                    guard at + 3 < length else return 0;
+                    second >> byte <- rd(off(bytes, at + 1));
+                    third >> byte <- rd(off(bytes, at + 2));
+                    fourth >> byte <- rd(off(bytes, at + 3));
+                    guard continuation(second) else return 0;
+                    guard continuation(third) else return 0;
+                    guard continuation(fourth) else return 0;
+                    if (first == -16) { guard second >= -112 else return 0; }
+                    if (first == -12) { guard second <= -113 else return 0; }
+                    wr(
+                        output,
+                        cast<u32>(
+                            ((first & 0x07) << 18) |
+                            ((second & 0x3F) << 12) |
+                            ((third & 0x3F) << 6) |
+                            (fourth & 0x3F)
+                        )
+                    );
+                    return 4;
+                }
+                return 0;
+            }
+
+            encodeOne(output >> p<byte>, at >> int, code >> u32) -> int {
+                if (code <= 0x7F) {
+                    wr(off(output, at), cast(code));
+                    return at + 1;
+                }
+                if (code <= 0x7FF) {
+                    wr(off(output, at), cast(0xC0 | (code >> 6)));
+                    wr(off(output, at + 1), cast(0x80 | (code & 0x3F)));
+                    return at + 2;
+                }
+                if (code <= 0xFFFF) {
+                    wr(off(output, at), cast(0xE0 | (code >> 12)));
+                    wr(off(output, at + 1), cast(0x80 | ((code >> 6) & 0x3F)));
+                    wr(off(output, at + 2), cast(0x80 | (code & 0x3F)));
+                    return at + 3;
+                }
+                wr(off(output, at), cast(0xF0 | (code >> 18)));
+                wr(off(output, at + 1), cast(0x80 | ((code >> 12) & 0x3F)));
+                wr(off(output, at + 2), cast(0x80 | ((code >> 6) & 0x3F)));
+                wr(off(output, at + 3), cast(0x80 | (code & 0x3F)));
+                return at + 4;
+            }
+
+            composeHangul(starter >> u32, next >> u32) -> u32 {
+                if (starter >= L_BASE && starter < L_BASE + L_COUNT) {
+                    lIndex >> u32 <- starter - L_BASE;
+                    if (next >= V_BASE && next < V_BASE + V_COUNT) {
+                        vIndex >> u32 <- next - V_BASE;
+                        return S_BASE + (lIndex * V_COUNT + vIndex) * T_COUNT;
+                    }
+                }
+                if (starter >= S_BASE && starter < S_BASE + S_COUNT) {
+                    sIndex >> u32 <- starter - S_BASE;
+                    if (sIndex % T_COUNT == 0 && next > T_BASE && next < T_BASE + T_COUNT) {
+                        tIndex >> u32 <- next - T_BASE;
+                        return starter + tIndex;
+                    }
+                }
+                return 0;
+            }
+
+            normalizeForm(value >> str, compatibility >> bool, compose >> bool) -> str {
+                bytes >> p<byte> <- cast(value);
+                length >> int <- unicodeLen(value);
+                capacity >> int <- length * 20 + 8;
+                points >> p<u32> <- cast(unicodeAlloc(capacity * 4));
+                work >> p<u32> <- cast(unicodeAlloc(64 * 4));
+                decoded >> p<u32> <- cast(unicodeAlloc(4));
+                guard points != null && work != null && decoded != null else {
+                    unicodeFree(cast(decoded));
+                    unicodeFree(cast(work));
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+
+                input >> int <- 0;
+                pointCount >> int <- 0;
+                while (input < length) {
+                    width >> int <- decodeAt(bytes, input, length, decoded);
+                    guard width > 0 else {
+                        unicodeFree(cast(decoded));
+                        unicodeFree(cast(work));
+                        unicodeFree(cast(points));
+                        return cast(null);
+                    }
+                    input += width;
+                    workCount >> int <- 1;
+                    wr(work, rd(decoded));
+                    while (workCount > 0) {
+                        workCount -= 1;
+                        code >> u32 <- rd(off(work, workCount));
+                        mapped >> int <- 0;
+                        if (code >= S_BASE && code < S_BASE + S_COUNT) {
+                            sIndex >> u32 <- code - S_BASE;
+                            l >> u32 <- L_BASE + sIndex / N_COUNT;
+                            v >> u32 <- V_BASE + (sIndex % N_COUNT) / T_COUNT;
+                            t >> u32 <- T_BASE + sIndex % T_COUNT;
+                            if (t == T_BASE) {
+                                wr(off(work, workCount), v);
+                                wr(off(work, workCount + 1), l);
+                                workCount += 2;
+                            } else {
+                                wr(off(work, workCount), t);
+                                wr(off(work, workCount + 1), v);
+                                wr(off(work, workCount + 2), l);
+                                workCount += 3;
+                            }
+                            mapped <- 1;
+                        } else if (compatibility) {
+                            mapped <- unicodeCompatibilityDecomposition(code, off(work, workCount));
+                            reverse >> int <- 0;
+                            while (reverse < mapped / 2) {
+                                left >> u32 <- rd(off(work, workCount + reverse));
+                                rightAt >> int <- workCount + mapped - reverse - 1;
+                                wr(off(work, workCount + reverse), rd(off(work, rightAt)));
+                                wr(off(work, rightAt), left);
+                                reverse += 1;
+                            }
+                            workCount += mapped;
+                        } else {
+                            mapped <- unicodeCanonicalDecomposition(code, off(work, workCount));
+                            reverse >> int <- 0;
+                            while (reverse < mapped / 2) {
+                                left >> u32 <- rd(off(work, workCount + reverse));
+                                rightAt >> int <- workCount + mapped - reverse - 1;
+                                wr(off(work, workCount + reverse), rd(off(work, rightAt)));
+                                wr(off(work, rightAt), left);
+                                reverse += 1;
+                            }
+                            workCount += mapped;
+                        }
+                        if (mapped == 0) {
+                            wr(off(points, pointCount), code);
+                            currentClass >> int <- unicodeCombiningClass(code);
+                            position >> int <- pointCount;
+                            while (currentClass != 0 && position > 0) {
+                                previous >> u32 <- rd(off(points, position - 1));
+                                previousClass >> int <- unicodeCombiningClass(previous);
+                                guard previousClass != 0 && previousClass > currentClass else break;
+                                wr(off(points, position), previous);
+                                position -= 1;
+                            }
+                            wr(off(points, position), code);
+                            pointCount += 1;
+                        }
+                    }
+                }
+
+                if (compose && pointCount > 1) {
+                    outputCount >> int <- 1;
+                    starterAt >> int <- 0;
+                    starter >> u32 <- rd(points);
+                    lastClass >> int <- 0;
+                    index >> int <- 1;
+                    while (index < pointCount) {
+                        code >> u32 <- rd(off(points, index));
+                        currentClass >> int <- unicodeCombiningClass(code);
+                        composite >> u32 <- composeHangul(starter, code);
+                        if (composite == 0) {
+                            composite <- unicodeComposePair(starter, code);
+                        }
+                        if (composite != 0 && (lastClass == 0 || lastClass < currentClass)) {
+                            wr(off(points, starterAt), composite);
+                            starter <- composite;
+                        } else {
+                            if (currentClass == 0) {
+                                starterAt <- outputCount;
+                                starter <- code;
+                            }
+                            lastClass <- currentClass;
+                            wr(off(points, outputCount), code);
+                            outputCount += 1;
+                        }
+                        index += 1;
+                    }
+                    pointCount <- outputCount;
+                }
+
+                output >> p<byte> <- unicodeAlloc(pointCount * 4 + 1);
+                guard output != null else {
+                    unicodeFree(cast(decoded));
+                    unicodeFree(cast(work));
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+                outputAt >> int <- 0;
+                index >> int <- 0;
+                while (index < pointCount) {
+                    outputAt <- encodeOne(output, outputAt, rd(off(points, index)));
+                    index += 1;
+                }
+                wr(off(output, outputAt), 0);
+                unicodeFree(cast(decoded));
+                unicodeFree(cast(work));
+                unicodeFree(cast(points));
+                return cast(output);
+            }
+
+            decodeAllBytes(bytes >> p<byte>, points >> p<u32>) -> int {
+                length >> int <- unicodeLenBytes(bytes);
+                decoded >> p<u32> <- cast(unicodeAlloc(4));
+                guard decoded != null else return -1;
+                input >> int <- 0;
+                count >> int <- 0;
+                while (input < length) {
+                    width >> int <- decodeAt(bytes, input, length, decoded);
+                    guard width > 0 else {
+                        unicodeFree(cast(decoded));
+                        return -1;
+                    }
+                    wr(off(points, count), rd(decoded));
+                    count += 1;
+                    input += width;
+                }
+                unicodeFree(cast(decoded));
+                return count;
+            }
+
+            decodeAll(value >> str, points >> p<u32>) -> int {
+                return decodeAllBytes(cast(value), points);
+            }
+
+            graphemeBreak(points >> p<u32>, at >> int) -> bool {
+                previous >> u32 <- rd(off(points, at - 1));
+                current >> u32 <- rd(off(points, at));
+                left >> int <- unicodeGraphemeProperty(previous);
+                right >> int <- unicodeGraphemeProperty(current);
+
+                if (left == 1 && right == 2) { return false; }
+                if (left == 1 || left == 2 || left == 3) { return true; }
+                if (right == 1 || right == 2 || right == 3) { return true; }
+                if (left == 9 && (right == 9 || right == 10 || right == 12 || right == 13)) {
+                    return false;
+                }
+                if ((left == 12 || left == 10) && (right == 10 || right == 11)) {
+                    return false;
+                }
+                if ((left == 13 || left == 11) && right == 11) { return false; }
+                if (right == 4 || right == 5 || right == 8) { return false; }
+                if (left == 7) { return false; }
+
+                if (unicodeIndicConjunctProperty(current) == 1) {
+                    cursor >> int <- at - 1;
+                    sawLinker >> bool <- false;
+                    while (cursor >= 0) {
+                        property >> int <- unicodeIndicConjunctProperty(rd(off(points, cursor)));
+                        if (property == 2) {
+                            sawLinker <- true;
+                            cursor -= 1;
+                            continue;
+                        }
+                        if (property == 3) {
+                            cursor -= 1;
+                            continue;
+                        }
+                        if (sawLinker && property == 1) { return false; }
+                        break;
+                    }
+                }
+
+                if (unicodeIsExtendedPictographic(current) && left == 5) {
+                    cursor >> int <- at - 2;
+                    while (cursor >= 0) {
+                        guard unicodeGraphemeProperty(rd(off(points, cursor))) == 4 else break;
+                        cursor -= 1;
+                    }
+                    if (cursor >= 0) {
+                        if (unicodeIsExtendedPictographic(rd(off(points, cursor)))) {
+                            return false;
+                        }
+                    }
+                }
+
+                if (left == 6 && right == 6) {
+                    count >> int <- 0;
+                    cursor >> int <- at - 1;
+                    while (cursor >= 0) {
+                        guard unicodeGraphemeProperty(rd(off(points, cursor))) == 6 else break;
+                        count += 1;
+                        cursor -= 1;
+                    }
+                    return count % 2 == 0;
+                }
+                return true;
+            }
+
+            clusterWidth(points >> p<u32>, first >> int, last >> int) -> int {
+                width >> int <- 0;
+                emoji >> bool <- false;
+                visible >> bool <- false;
+                index >> int <- first;
+                while (index < last) {
+                    code >> u32 <- rd(off(points, index));
+                    property >> int <- unicodeGraphemeProperty(code);
+                    if (
+                        unicodeIsEmojiPresentation(code) ||
+                        unicodeIsExtendedPictographic(code) ||
+                        property == 6 ||
+                        code == 0xFE0F ||
+                        code == 0x20E3
+                    ) {
+                        emoji <- true;
+                    }
+                    if (!unicodeIsZeroWidth(code)) {
+                        visible <- true;
+                        if (unicodeIsWide(code)) { width += 2; }
+                        else { width += 1; }
+                    }
+                    index += 1;
+                }
+                if (emoji && visible) { return 2; }
+                return width;
+            }
+
+            displayWidthPoints(points >> p<u32>, pointCount >> int) -> int {
+                guard pointCount > 0 else return 0;
+                width >> int <- 0;
+                first >> int <- 0;
+                index >> int <- 1;
+                while (index <= pointCount) {
+                    boundary >> bool <- false;
+                    if (index == pointCount) { boundary <- true; }
+                    else { boundary <- graphemeBreak(points, index); }
+                    if (boundary) {
+                        width += clusterWidth(points, first, index);
+                        first <- index;
+                    }
+                    index += 1;
+                }
+                return width;
+            }
+
+            displayWidthBytes(value >> p<byte>) -> int {
+                length >> int <- unicodeLenBytes(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return -1;
+                count >> int <- decodeAllBytes(value, points);
+                guard count >= 0 else {
+                    unicodeFree(cast(points));
+                    return -1;
+                }
+                width >> int <- displayWidthPoints(points, count);
+                unicodeFree(cast(points));
+                return width;
+            }
+
+            nextGrapheme(points >> p<u32>, first >> int, pointCount >> int) -> int {
+                next >> int <- first + 1;
+                while (next < pointCount && !graphemeBreak(points, next)) {
+                    next += 1;
+                }
+                return next;
+            }
+
+            wrapHardBreak(code >> u32) -> bool {
+                return code == 0x0A || code == 0x0B || code == 0x0C ||
+                    code == 0x0D || code == 0x85 || code == 0x2028 ||
+                    code == 0x2029;
+            }
+
+            wrapBreakSpace(code >> u32) -> bool {
+                return code == 0x09 || code == 0x20 || code == 0x1680 ||
+                    (code >= 0x2000 && code <= 0x2006) ||
+                    (code >= 0x2008 && code <= 0x200A) ||
+                    code == 0x200B || code == 0x205F || code == 0x3000;
+            }
+
+            encodePointsInto(
+                output >> p<byte>,
+                outputAt >> int,
+                points >> p<u32>,
+                first >> int,
+                last >> int
+            ) -> int {
+                index >> int <- first;
+                at >> int <- outputAt;
+                while (index < last) {
+                    at <- encodeOne(output, at, rd(off(points, index)));
+                    index += 1;
+                }
+                return at;
+            }
+
+            writeSpaces(output >> p<byte>, outputAt >> int, count >> int) -> int {
+                index >> int <- 0;
+                at >> int <- outputAt;
+                while (index < count) {
+                    wr(off(output, at), 32);
+                    at += 1;
+                    index += 1;
+                }
+                return at;
+            }
+
+            wrapHardPoints(points >> p<u32>, pointCount >> int, columns >> int) -> str {
+                guard columns > 0 else return cast(null);
+                output >> p<byte> <- unicodeAlloc(pointCount * 5 + 2);
+                guard output != null else return cast(null);
+                outputAt >> int <- 0;
+                column >> int <- 0;
+                first >> int <- 0;
+                while (first < pointCount) {
+                    last >> int <- nextGrapheme(points, first, pointCount);
+                    code >> u32 <- rd(off(points, first));
+                    if (wrapHardBreak(code)) {
+                        outputAt <- encodePointsInto(output, outputAt, points, first, last);
+                        column <- 0;
+                    } else {
+                        width >> int <- clusterWidth(points, first, last);
+                        if (column > 0 && column + width > columns) {
+                            wr(off(output, outputAt), 10);
+                            outputAt += 1;
+                            column <- 0;
+                        }
+                        outputAt <- encodePointsInto(output, outputAt, points, first, last);
+                        column += width;
+                    }
+                    first <- last;
+                }
+                wr(off(output, outputAt), 0);
+                return cast(output);
+            }
+
+            wrapWordPoints(points >> p<u32>, pointCount >> int, columns >> int) -> str {
+                guard columns > 0 else return cast(null);
+                output >> p<byte> <- unicodeAlloc(pointCount * 5 + 2);
+                guard output != null else return cast(null);
+                outputAt >> int <- 0;
+                column >> int <- 0;
+                cursor >> int <- 0;
+                while (cursor < pointCount) {
+                    next >> int <- nextGrapheme(points, cursor, pointCount);
+                    code >> u32 <- rd(off(points, cursor));
+                    if (wrapHardBreak(code)) {
+                        outputAt <- encodePointsInto(output, outputAt, points, cursor, next);
+                        column <- 0;
+                        cursor <- next;
+                    } else if (wrapBreakSpace(code)) {
+                        cursor <- next;
+                    } else {
+                        wordEnd >> int <- cursor;
+                        wordWidth >> int <- 0;
+                        while (wordEnd < pointCount) {
+                            clusterEnd >> int <- nextGrapheme(points, wordEnd, pointCount);
+                            wordCode >> u32 <- rd(off(points, wordEnd));
+                            if (wrapHardBreak(wordCode) || wrapBreakSpace(wordCode)) {
+                                break;
+                            } else {
+                                wordWidth += clusterWidth(points, wordEnd, clusterEnd);
+                                wordEnd <- clusterEnd;
+                            }
+                        }
+                        if (column > 0) {
+                            if (column + 1 + wordWidth > columns) {
+                                wr(off(output, outputAt), 10);
+                                outputAt += 1;
+                                column <- 0;
+                            } else {
+                                wr(off(output, outputAt), 32);
+                                outputAt += 1;
+                                column += 1;
+                            }
+                        }
+                        if (wordWidth <= columns) {
+                            outputAt <- encodePointsInto(output, outputAt, points, cursor, wordEnd);
+                            column += wordWidth;
+                        } else {
+                            part >> int <- cursor;
+                            while (part < wordEnd) {
+                                partEnd >> int <- nextGrapheme(points, part, pointCount);
+                                width >> int <- clusterWidth(points, part, partEnd);
+                                if (column > 0 && column + width > columns) {
+                                    wr(off(output, outputAt), 10);
+                                    outputAt += 1;
+                                    column <- 0;
+                                }
+                                outputAt <- encodePointsInto(output, outputAt, points, part, partEnd);
+                                column += width;
+                                part <- partEnd;
+                            }
+                        }
+                        cursor <- wordEnd;
+                    }
+                }
+                wr(off(output, outputAt), 0);
+                return cast(output);
+            }
+
+            indentPoints(points >> p<u32>, pointCount >> int, spaces >> int) -> str {
+                guard spaces >= 0 else return cast(null);
+                output >> p<byte> <- unicodeAlloc(
+                    pointCount * 4 + (pointCount + 1) * spaces + 1
+                );
+                guard output != null else return cast(null);
+                outputAt >> int <- 0;
+                if (pointCount > 0) { outputAt <- writeSpaces(output, outputAt, spaces); }
+                first >> int <- 0;
+                while (first < pointCount) {
+                    last >> int <- nextGrapheme(points, first, pointCount);
+                    code >> u32 <- rd(off(points, first));
+                    outputAt <- encodePointsInto(output, outputAt, points, first, last);
+                    if (wrapHardBreak(code) && last < pointCount) {
+                        outputAt <- writeSpaces(output, outputAt, spaces);
+                    }
+                    first <- last;
+                }
+                wr(off(output, outputAt), 0);
+                return cast(output);
+            }
+
+            encodeRange(points >> p<u32>, first >> int, last >> int) -> str {
+                output >> p<byte> <- unicodeAlloc((last - first) * 4 + 1);
+                guard output != null else return cast(null);
+                outputAt >> int <- 0;
+                index >> int <- first;
+                while (index < last) {
+                    outputAt <- encodeOne(output, outputAt, rd(off(points, index)));
+                    index += 1;
+                }
+                wr(off(output, outputAt), 0);
+                return cast(output);
+            }
+
+        public:
+            byteLengthRaw(value >> str) -> int {
+                return unicodeLen(value);
+            }
+
+            charCountRaw(value >> str) -> int {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return -1;
+                count >> int <- decodeAll(value, points);
+                unicodeFree(cast(points));
+                return count;
+            }
+
+            displayWidthRaw(value >> str) -> int {
+                return displayWidthBytes(cast(value));
+            }
+
+            ansiVisibleWidthRaw(value >> str) -> int {
+                bytes >> p<byte> <- cast(value);
+                length >> int <- unicodeLen(value);
+                filtered >> p<byte> <- unicodeAlloc(length + 1);
+                guard filtered != null else return -1;
+                state >> int <- 0;
+                resume >> int <- 0;
+                input >> int <- 0;
+                output >> int <- 0;
+                while (input < length) {
+                    current >> byte <- rd(off(bytes, input));
+                    if (state == 0) {
+                        if (current == 27) { state <- 1; }
+                        else if (current == -101) { state <- 2; }
+                        else if (current == -99) { state <- 3; }
+                        else if (current != -100) {
+                            wr(off(filtered, output), current);
+                            output += 1;
+                        }
+                    } else if (state == 1) {
+                        if (current == 91) { state <- 2; }
+                        else if (current == 93) { state <- 3; }
+                        else if (current == 80 || current == 88 || current == 94 || current == 95) {
+                            state <- 4;
+                        } else { state <- 0; }
+                    } else if (state == 2) {
+                        if (current >= 64 && current <= 126) { state <- 0; }
+                    } else if (state == 3) {
+                        if (current == 7 || current == -100) { state <- 0; }
+                        else if (current == 27) {
+                            resume <- 3;
+                            state <- 5;
+                        }
+                    } else if (state == 4) {
+                        if (current == -100) { state <- 0; }
+                        else if (current == 27) {
+                            resume <- 4;
+                            state <- 5;
+                        }
+                    } else {
+                        if (current == 92) { state <- 0; }
+                        else { state <- resume; }
+                    }
+                    input += 1;
+                }
+                wr(off(filtered, output), 0);
+                width >> int <- displayWidthBytes(filtered);
+                unicodeFree(filtered);
+                return width;
+            }
+
+            wrapRaw(value >> str, columns >> int) -> str {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return cast(null);
+                pointCount >> int <- decodeAll(value, points);
+                guard pointCount >= 0 else {
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+                result >> str <- wrapHardPoints(points, pointCount, columns);
+                unicodeFree(cast(points));
+                return result;
+            }
+
+            wrapWordsRaw(value >> str, columns >> int) -> str {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return cast(null);
+                pointCount >> int <- decodeAll(value, points);
+                guard pointCount >= 0 else {
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+                result >> str <- wrapWordPoints(points, pointCount, columns);
+                unicodeFree(cast(points));
+                return result;
+            }
+
+            indentRaw(value >> str, spaces >> int) -> str {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return cast(null);
+                pointCount >> int <- decodeAll(value, points);
+                guard pointCount >= 0 else {
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+                result >> str <- indentPoints(points, pointCount, spaces);
+                unicodeFree(cast(points));
+                return result;
+            }
+
+            wrapReleaseRaw(value >> str) -> bool {
+                return unicodeFree(cast(value));
+            }
+
+            isValidUtf8Raw(value >> str) -> bool {
+                bytes >> p<byte> <- cast(value);
+                length >> int <- unicodeLen(value);
+                decoded >> p<u32> <- cast(unicodeAlloc(4));
+                guard decoded != null else return false;
+                input >> int <- 0;
+                while (input < length) {
+                    width >> int <- decodeAt(bytes, input, length, decoded);
+                    guard width > 0 else {
+                        unicodeFree(cast(decoded));
+                        return false;
+                    }
+                    input += width;
+                }
+                unicodeFree(cast(decoded));
+                return true;
+            }
+
+            stripInvalidUnicodeRaw(value >> str) -> str {
+                bytes >> p<byte> <- cast(value);
+                length >> int <- unicodeLen(value);
+                output >> p<byte> <- unicodeAlloc(length + 1);
+                decoded >> p<u32> <- cast(unicodeAlloc(4));
+                guard output != null && decoded != null else {
+                    unicodeFree(cast(decoded));
+                    unicodeFree(output);
+                    return cast(null);
+                }
+                input >> int <- 0;
+                outputAt >> int <- 0;
+                while (input < length) {
+                    width >> int <- decodeAt(bytes, input, length, decoded);
+                    if (width == 0) {
+                        input += 1;
+                    } else {
+                        copied >> int <- 0;
+                        while (copied < width) {
+                            wr(off(output, outputAt), rd(off(bytes, input + copied)));
+                            outputAt += 1;
+                            copied += 1;
+                        }
+                        input += width;
+                    }
+                }
+                wr(off(output, outputAt), 0);
+                unicodeFree(cast(decoded));
+                return cast(output);
+            }
+
+            normalizeUnicodeRaw(value >> str) -> str {
+                return normalizeForm(value, false, true);
+            }
+
+            normalizeNfcRaw(value >> str) -> str {
+                return normalizeForm(value, false, true);
+            }
+
+            normalizeNfdRaw(value >> str) -> str {
+                return normalizeForm(value, false, false);
+            }
+
+            normalizeNfkcRaw(value >> str) -> str {
+                return normalizeForm(value, true, true);
+            }
+
+            normalizeNfkdRaw(value >> str) -> str {
+                return normalizeForm(value, true, false);
+            }
+
+            unicodeModeRaw() -> str {
+                return "Unicode-17.0.0/NFC/UAX15+UAX29/manual-nC";
+            }
+
+            supportsGraphemeRaw() -> bool {
+                return true;
+            }
+
+            graphemeCountRaw(value >> str) -> int {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return -1;
+                pointCount >> int <- decodeAll(value, points);
+                guard pointCount >= 0 else {
+                    unicodeFree(cast(points));
+                    return -1;
+                }
+                guard pointCount > 0 else {
+                    unicodeFree(cast(points));
+                    return 0;
+                }
+                count >> int <- 1;
+                index >> int <- 1;
+                while (index < pointCount) {
+                    if (graphemeBreak(points, index)) { count += 1; }
+                    index += 1;
+                }
+                unicodeFree(cast(points));
+                return count;
+            }
+
+            graphemeSliceRaw(value >> str, first >> int, count >> int) -> str {
+                length >> int <- unicodeLen(value);
+                points >> p<u32> <- cast(unicodeAlloc((length + 1) * 4));
+                guard points != null else return cast(null);
+                pointCount >> int <- decodeAll(value, points);
+                guard pointCount >= 0 else {
+                    unicodeFree(cast(points));
+                    return cast(null);
+                }
+                wantedFirst >> int <- first < 0 ? 0 : first;
+                wantedLast >> int <- wantedFirst + (count < 0 ? 0 : count);
+                cluster >> int <- 0;
+                begin >> int <- pointCount;
+                end >> int <- pointCount;
+                index >> int <- 0;
+                while (index <= pointCount) {
+                    boundary >> bool <- false;
+                    if (index == 0 || index == pointCount) {
+                        boundary <- true;
+                    } else {
+                        boundary <- graphemeBreak(points, index);
+                    }
+                    if (boundary) {
+                        if (cluster == wantedFirst) { begin <- index; }
+                        if (cluster == wantedLast) {
+                            end <- index;
+                            break;
+                        }
+                        cluster += 1;
+                    }
+                    index += 1;
+                }
+                guard begin <= end else begin <- end;
+                result >> str <- encodeRange(points, begin, end);
+                unicodeFree(cast(points));
+                return result;
+            }
+
+            unicodeReleaseRaw(value >> str) -> bool {
+                return unicodeFree(cast(value));
+            }
+
+    fa:
+        return true;
+}

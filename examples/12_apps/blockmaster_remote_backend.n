@@ -1,0 +1,321 @@
+// --- MODULOS DE COMUNICACION Y TELEFONIA ---
+use <io:output, render, input>;
+
+// --- CONFIGURACION DEL SISTEMA ---
+SERVICE_NAME :: const <- "BlockMaster_Remote";
+PC_PORT :: const <- 8080;
+ADB_PORT :: const <- 5555;
+BLOCKLIST_FILE :: const <- "/sdcard/blocklist.txt";
+
+// --- ESTRUCTURA DE DATOS DE BLOQUEO ---
+Bloqueo :: type {
+    numero >> str;
+    patron >> str;
+    origen >> str;
+}
+
+// --- CLASE PRINCIPAL DEL SERVIDOR MOVIL ---
+abrirControladorBloqueos :: runtime {
+    stc:
+        listaBloqueo >> Array<Bloqueo>;
+        servidorRed >> Object;
+        conectadoPC        >> bool <- false;
+        llamadasRecibidas  >> int  <- 0;
+        bloqueadasExitosas >> int  <- 0;
+
+    fn:
+        cargarPermisos() -> bool {
+            println("[BlockMaster]: Solicitando permisos de sistema...");
+
+            var listaPermisos <- [
+                "READ_PHONE_STATE",
+                "RECORD_AUDIO",
+                "INTERNET",
+                "ACCESS_NETWORK_STATE"
+            ];
+
+            if (!permissions::request(listaPermisos)) {
+                println(colorBold("Faltan permisos criticos.", "yellow"));
+                return false;
+            }
+
+            println(colorBold("Permisos otorgados.", "green"));
+            return true;
+        }
+
+        cargarListaBloqueo() -> bool {
+            println("[BlockMaster]: Cargando lista de bloqueo...");
+            var lineas <- fread_lines(BLOCKLIST_FILE);
+
+            if (lineas.len > 0) {
+                for linea in lineas {
+                    var partes <- linea.split("|");
+
+                    var nuevoBloqueo <- Bloqueo(
+                        numero: partes[0],
+                        patron: partes[1] != "" ? partes[1] : "",
+                        origen: partes.len > 2 ? partes[2] : "Manual"
+                    );
+
+                    listaBloqueo.push(nuevoBloqueo);
+                }
+
+                println(colorBold("Lista cargada: " + renderInt(listaBloqueo.len) + " elementos.", "cyan"));
+                return true;
+            } else {
+                println("[BlockMaster]: Lista vacia. Esperando comandos del PC.");
+                fswrite(BLOCKLIST_FILE, "");
+                return true;
+            }
+        }
+
+        guardarListaBloqueo() -> bool {
+            println("[BlockMaster]: Guardando cambios en dispositivo...");
+            var contenido <- "";
+
+            for bloqueo in listaBloqueo {
+                contenido += bloqueo.numero + "|" + bloqueo.patron + "|" + bloqueo.origen + "\n";
+            }
+
+            if (fswrite(BLOCKLIST_FILE, contenido)) {
+                println(colorBold("Lista guardada correctamente.", "green"));
+                return true;
+            }
+
+            return false;
+        }
+
+        conectarServidor() -> bool {
+            println("[BlockMaster]: Inicializando servidor WiFi...");
+
+            if (network::isWiFiConnected()) {
+                servidorRed <- network::server_open(PC_PORT);
+
+                if (servidorRed != null) {
+                    conectadoPC <- true;
+                    println(colorBold("Servidor activo en puerto " + renderInt(PC_PORT), "green"));
+
+                    var comando <- servidorRed::receive();
+                    while (comando != "") {
+                        procesarComandoPC(comando);
+                        comando <- servidorRed::receive();
+                    }
+                } else {
+                    println(colorBold("Fallo apertura de puerto WiFi.", "red"));
+                    conectadoPC <- false;
+                }
+            } else {
+                println("[BlockMaster]: Intentando conexion por cable USB...");
+                var resultado <- telephony::adb_connect(ADB_PORT);
+
+                if (resultado == 0) {
+                    conectadoPC <- true;
+                    println(colorBold("Conectado via ADB.", "green"));
+                } else {
+                    println(colorBold("Modo cable fallido, usando WiFi.", "yellow"));
+                }
+            }
+
+            return conectadoPC;
+        }
+
+        procesarComandoPC(comando >> str) -> bool {
+            println("[BlockMaster]: Recibiendo comando: " + renderStr(comando));
+
+            var partes <- comando.split(" ");
+            var accion <- partes[0].trim();
+
+            match (accion) {
+                case "AGREGAR":
+                    var nuevoNum <- partes.len > 1 ? partes[1] : "";
+                    agregarNumerosBloqueo(nuevoNum);
+                    return true;
+
+                case "ELIMINAR":
+                    var eliminarNum <- partes.len > 1 ? partes[1] : "";
+                    eliminarNumerosBloqueo(eliminarNum);
+                    return true;
+
+                case "LISTAR":
+                    mostrarListaLocal();
+                    return true;
+
+                case "BLOQUEAR_POR_PATRON":
+                    var patron <- partes.len > 1 ? partes[1] : "";
+                    bloquearPorPatron(patron);
+                    return true;
+
+                case "ESTADO":
+                    enviarEstadoSistema();
+                    return true;
+
+                case "APAGAR_SERVIDOR":
+                    conectadoPC <- false;
+                    servidorRed::close();
+                    println("[BlockMaster]: Servidor cerrado.");
+                    return true;
+
+                default:
+                    println(colorBold("Comando desconocido.", "yellow"));
+            }
+
+            return false;
+        }
+
+        agregarNumerosBloqueo(num >> str) -> bool {
+            if (num == "") return false;
+
+            var existe <- false;
+            for bloqueo in listaBloqueo {
+                if (bloqueo.numero == num || bloqueo.patron == num) {
+                    existe <- true;
+                    break;
+                }
+            }
+
+            if (!existe) {
+                var nuevoBloqueo <- Bloqueo(
+                    numero: num,
+                    patron: "",
+                    origen: "Manual_PC"
+                );
+                listaBloqueo.push(nuevoBloqueo);
+
+                guardarListaBloqueo();
+                println(colorBold("Numero agregado a la lista.", "green"));
+                tts_engine::speak("Numero anadido a la lista de bloqueo.");
+                return true;
+            }
+
+            println("[BlockMaster]: El numero ya esta en la lista.");
+            return false;
+        }
+
+        eliminarNumerosBloqueo(num >> str) -> bool {
+            var indice <- 0;
+
+            for i in range(listaBloqueo.len) {
+                if (listaBloqueo[i].numero == num || listaBloqueo[i].patron == num) {
+                    indice <- i;
+                    break;
+                }
+            }
+
+            if (indice < listaBloqueo.len) {
+                var numEliminado <- listaBloqueo[indice].numero;
+                listaBloqueo.remove(indice);
+
+                guardarListaBloqueo();
+                println(colorBold("Numero eliminado de la lista.", "red"));
+                tts_engine::speak("Numero eliminado del bloqueo.");
+                return true;
+            }
+
+            println("[BlockMaster]: Numero no encontrado en la lista.");
+            return false;
+        }
+
+        bloquearPorPatron(patron >> str) -> bool {
+            if (patron == "") return false;
+
+            var nuevoBloqueo <- Bloqueo(
+                numero: "",
+                patron: patron,
+                origen: "Patron_PC"
+            );
+
+            listaBloqueo.push(nuevoBloqueo);
+            guardarListaBloqueo();
+
+            println(colorBold("Patron bloqueado: " + renderStr(patron), "cyan"));
+            return true;
+        }
+
+        mostrarListaLocal() -> bool {
+            println("\n--- LISTA ACTUAL DE BLOQUEO ---");
+
+            if (listaBloqueo.len == 0) {
+                println("List vacia.");
+            } else {
+                for bloqueo in listaBloqueo {
+                    print(
+                        "Numero: " + renderStr(bloqueo.numero) +
+                        " | Patron: " + renderStr(bloqueo.patron) +
+                        " | Origen: " + renderStr(bloqueo.origen)
+                    );
+                }
+            }
+
+            println("--- FIN DE LISTA ---");
+            return true;
+        }
+
+        enviarEstadoSistema() -> bool {
+            var estado <- "SERVIDOR|";
+            estado += conectadoPC ? "1" : "0";
+            estado += "|NUM_BLOQUEADOS|" + renderInt(listaBloqueo.len);
+            estado += "|LLAMADAS|" + renderInt(llamadasRecibidas) + "|" +
+                      "BLOCKED|" + renderInt(bloqueadasExitosas);
+
+            send_bytes(estado);
+            return true;
+        }
+
+        monitorearLlamada() -> bool {
+            println("[BlockMaster]: Iniciando monitorizacion de llamadas...");
+
+            while (conectadoPC || !conectadoPC) {
+                var estado <- telephony::getState();
+
+                if (estado == "INCOMING") {
+                    llamadasRecibidas++;
+                    var numeroEntrante <- telephony::getIncomingNumber();
+
+                    println(colorBold("[ALERTA] Llamada detectada: " + renderStr(numeroEntrante), "red"));
+                    var bloqueado <- false;
+
+                    for bloqueo in listaBloqueo {
+                        if (bloqueo.numero == numeroEntrante) {
+                            bloqueado <- true;
+                            break;
+                        }
+
+                        if (bloqueado || (numeroEntrante.contains(bloqueo.patron))) {
+                            bloqueado <- true;
+                            bloqueadasExitosas++;
+                            tts_engine::speak("Llamada bloqueada por lista.");
+                            telephony::rejectCall();
+                        }
+                    }
+
+                    if (bloqueado) {
+                        println(colorBold("[BLOCKED] Llamada rechazada.", "yellow"));
+                    }
+                }
+
+                sleep(1);
+            }
+
+            return true;
+        }
+
+        inicializar() -> bool {
+            if (!cargarPermisos()) return false;
+            if (!cargarListaBloqueo()) return false;
+            if (!conectarServidor()) return false;
+            return true;
+        }
+
+        run() -> bool {
+            println(colorBold("=== INICIANDO BLOCKMASTER REMOTO ===", "magenta"));
+            inicializar();
+            monitorearLlamada();
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

@@ -1,0 +1,32 @@
+use <data:json>;
+use <project:release_io, ide43_core>;
+
+ide43Fullstack {
+    fn:
+        public:
+            evaluate(root >> str) -> int {
+                checks >> int <- ide43_core.ide43Core.initialize("jetbrains_report_ok|vscode_report_ok|ghidra_report_ok|ide_distribution_report_present|ide_distribution_report_status_valid|plugin_marketplace_spec_present|plugin_marketplace_contract_present|plugin_marketplace_status_present");
+                paths >> int <- ide43_core.ide43Core.list("docs/status/F10_P10_jetbrains_integration_report.json|docs/status/F10_P11_vscode_integration_report.json|docs/status/F10_P20_ghidra_integration_report.json|docs/status/F10_P20_ide_distribution_report.json");
+                keys >> int <- ide43_core.ide43Core.list("jetbrains_report_ok|vscode_report_ok|ghidra_report_ok|ide_distribution_report_status_valid");
+                index >> int <- 0;
+                while (index < 4) {
+                    path >> int <- jsonArrayGet(paths,index); key >> int <- jsonArrayGet(keys,index);
+                    rel >> str <- jsonStringView(path,"");
+                    if (release_io.releaseIo.fileType(root+"/"+rel) != 0) {
+                        payload >> int <- ide43_core.ide43Core.read(root,rel);
+                        ide43_core.ide43Core.record(checks,jsonStringView(key,""),ide43_core.ide43Core.is(payload,"status","ok") ||
+                            (index == 3 && ide43_core.ide43Core.is(payload,"status","partial")));
+                        if (index == 3) ide43_core.ide43Core.record(checks,"ide_distribution_report_present",true);
+                        jsonRelease(payload);
+                    }
+                    jsonRelease(path); jsonRelease(key); index += 1;
+                }
+                ide43_core.ide43Core.record(checks,"plugin_marketplace_spec_present",ide43_core.ide43Core.files(root,"docs/spec/release/v2_0_0_phase10_plugin_marketplaces_spec.md",true));
+                ide43_core.ide43Core.record(checks,"plugin_marketplace_contract_present",ide43_core.ide43Core.files(root,"docs/spec/release/v2_0_0_phase10_plugin_marketplaces_contract.json",true));
+                ide43_core.ide43Core.record(checks,"plugin_marketplace_status_present",ide43_core.ide43Core.files(root,"docs/status/STATUS_PHASE10_plugin_marketplaces_v2_0_0.md",true));
+                jsonRelease(paths); jsonRelease(keys);
+                return checks;
+            }
+    fa: return true;
+}
+

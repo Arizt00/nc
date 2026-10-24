@@ -1,0 +1,62 @@
+use <auth.security:audit>;
+use <io:output>;
+use <memory:stack>;
+
+authSecurityAuditManual :: runtime {
+    fn:
+        strideCheck() -> bool {
+            stride >> int <- securityAuditStride();
+            return stride == 56;
+        }
+
+        writeCopy(table >> addr) -> bool {
+            written >> bool <- securityAuditWrite(
+                table, 0, 5, 1001, 2002, 7, 1, 9000, 44
+            );
+            copied >> bool <- securityAuditCopy(table, 1, table, 0);
+            return written && copied;
+        }
+
+        identityFields(table >> addr) -> bool {
+            event >> int <- securityAuditEvent(table, 1);
+            subject >> int <- securityAuditSubject(table, 1);
+            resource >> int <- securityAuditResource(table, 1);
+            rights >> int <- securityAuditRights(table, 1);
+            return event == 5 && subject == 1001 && resource == 2002 && rights == 7;
+        }
+
+        decisionFields(table >> addr) -> bool {
+            decision >> int <- securityAuditDecision(table, 1);
+            tick >> int <- securityAuditTick(table, 1);
+            detail >> int <- securityAuditDetail(table, 1);
+            allowed >> bool <- securityAuditAllows(table, 1, 3);
+            return decision == 1 && tick == 9000 && detail == 44 && allowed;
+        }
+
+        clearAudit(table >> addr) -> bool {
+            cleared >> bool <- securityAuditClear(table, 1);
+            clearedEvent >> int <- securityAuditEvent(table, 1);
+            return cleared && clearedEvent == 0;
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            stride >> int <- securityAuditStride();
+            table >> p<byte> <- stackAlloc(stride * 2, 8);
+            written >> bool <- writeCopy(adr(table));
+            identity >> bool <- identityFields(adr(table));
+            decision >> bool <- decisionFields(adr(table));
+            cleared >> bool <- clearAudit(adr(table));
+            strideOk >> bool <- strideCheck();
+            ok >> bool <- written && identity && decision && cleared && strideOk;
+            print("manual nC auth security audit backend: ");
+            if (ok) { println("true"); } else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

@@ -1,0 +1,27 @@
+use <io:output>;
+
+nativeOsBridgeWindows74 {
+    run() -> int {
+        info >> array<byte,48>;
+        osGetSystemInfo(adr(&info));
+        page >> u32 <- rd<u32>(off(cast<byte>(&info),4));
+        granularity >> u32 <- rd<u32>(off(cast<byte>(&info),40));
+        if (page == 0 || granularity < page) return 1;
+        block >> p<byte> <- cast<byte>(osVirtualAlloc(null,page,0x3000,4));
+        if (block == null) return 2;
+        wr<u64>(block,0xFEDCBA9876543210);
+        old >> u32;
+        if (osVirtualProtect(block,page,2,adr(&old)) == 0 || old != 4) return 3;
+        if (rd<u64>(block) != 0xFEDCBA9876543210) return 4;
+        osSetLastError(1234);
+        if (osGetLastError() != 1234) return 5;
+        if (osVirtualFree(block,0,0x8000) == 0) return 6;
+        osSetLastError(0);
+        if (osMapViewOfFileEx(null,4,0x12345678,0xABCDEF00,page,null) != null ||
+            osGetLastError() == 0) return 7;
+        println("native-windows-os-bridge-ok");
+        return 245;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,90 @@
+use <io:output>;
+
+nativeFloatMachineAbi77 {
+    put(code >> p<byte>, at >> int, value >> byte) -> int {
+        wr(off(code,at),value); return at+1;
+    }
+    word(code >> p<byte>, at >> int, value >> u32) -> int {
+        wr<u32>(off(code,at),value); return at+4;
+    }
+    immediate(code >> p<byte>, at >> int, value >> u64) -> int {
+        at <- put(code,at,0x48); at <- put(code,at,0xB8);
+        wr<u64>(off(code,at),value); return at+8;
+    }
+    xmm(code >> p<byte>, at >> int, reg >> int, load >> bool) -> int {
+        at <- put(code,at,0x66); at <- put(code,at,0x48);
+        at <- put(code,at,0x0F); at <- put(code,at,load ? 0x7E : 0x6E);
+        return put(code,at,0xC0+reg*8);
+    }
+    verifyCallback(a >> int, b >> ft64, c >> int, d >> ft64) -> ft64 {
+        return a == 1 && b == 2.0 && c == 3 && d == 4.0 ? 42.25 : 0.0;
+    }
+    run() -> int {
+        page >> int <- vmPageSize(); protection >> int <- vmReadWriteProtection();
+        windows >> bool <- protection == 4;
+        code >> p<byte> <- vmReserve(null,page,0);
+        if (code == null || !vmCommit(code,page,protection)) return 1;
+        expected >> array<u64,16> <- [1,0x4000000000000000,3,0x4010000000000000,
+            0x4014000000000000,6,0x401C000000000000,0x4020000000000000,
+            0x4022000000000000,0x4024000000000000,0x4026000000000000,
+            0x4028000000000000,13,14,15,16];
+        floats >> array<int,16> <- [0,1,0,1,1,0,1,1,1,1,1,1,0,0,0,0];
+        gpRegisters >> array<int,6> <- [7,6,2,1,8,9];
+        winRegisters >> array<int,4> <- [1,2,8,9];
+        patches >> array<int,16>; fixups >> p<int> <- cast<int>(&patches);
+        at >> int <- 0; argument >> int <- 0; gp >> int <- 0; fp >> int <- 0; spill >> int <- 0;
+        while (argument < 16) {
+            floating >> bool <- rd(off(cast<int>(&floats),argument)) != 0;
+            position >> int <- windows ? argument : (floating ? fp : gp);
+            limit >> int <- windows ? 4 : (floating ? 8 : 6);
+            if (position >= limit) {
+                at <- put(code,at,0x48); at <- put(code,at,0x8B);
+                at <- put(code,at,0x84); at <- put(code,at,0x24);
+                at <- word(code,at,(windows ? 40 : 8)+spill*8); spill += 1;
+            } else if (floating) at <- xmm(code,at,position,true);
+            else {
+                reg >> int <- rd(off(windows ? cast<int>(&winRegisters) : cast<int>(&gpRegisters),position));
+                at <- put(code,at,reg >= 8 ? 0x4C : 0x48);
+                at <- put(code,at,0x89); at <- put(code,at,0xC0+(reg & 7)*8);
+            }
+            at <- put(code,at,0x49); at <- put(code,at,0xBA);
+            wr<u64>(off(code,at),rd(off(cast<u64>(&expected),argument))); at += 8;
+            at <- put(code,at,0x4C); at <- put(code,at,0x39); at <- put(code,at,0xD0);
+            at <- put(code,at,0x0F); at <- put(code,at,0x85);
+            wr(off(fixups,argument),at); at <- word(code,at,0);
+            if (floating) fp += 1; else gp += 1;
+            argument += 1;
+        }
+        at <- immediate(code,at,0x4045200000000000); at <- xmm(code,at,0,false);
+        at <- put(code,at,0xC3); failure >> int <- at;
+        at <- put(code,at,0x66); at <- put(code,at,0x0F);
+        at <- put(code,at,0xEF); at <- put(code,at,0xC0); at <- put(code,at,0xC3);
+        argument <- 0;
+        while (argument < 16) {
+            patch >> int <- rd(off(fixups,argument)); wr<i32>(off(code,patch),failure-patch-4); argument += 1;
+        }
+        callbackOffset >> int <- at;
+        // These bytes use only volatile registers and the published OS ABI.
+        at <- put(code,at,0x49); at <- put(code,at,0x89); at <- put(code,at,windows ? 0xCB : 0xFB);
+        at <- put(code,at,0x48); at <- put(code,at,0x83);
+        at <- put(code,at,0xEC); at <- put(code,at,windows ? 40 : 8);
+        at <- put(code,at,windows ? 0xB9 : 0xBF); at <- word(code,at,1);
+        at <- immediate(code,at,0x4000000000000000); at <- xmm(code,at,windows ? 1 : 0,false);
+        if (windows) at <- put(code,at,0x41);
+        at <- put(code,at,windows ? 0xB8 : 0xBE); at <- word(code,at,3);
+        at <- immediate(code,at,0x4010000000000000); at <- xmm(code,at,windows ? 3 : 1,false);
+        at <- put(code,at,0x41); at <- put(code,at,0xFF); at <- put(code,at,0xD3);
+        at <- put(code,at,0x48); at <- put(code,at,0x83);
+        at <- put(code,at,0xC4); at <- put(code,at,windows ? 40 : 8); at <- put(code,at,0xC3);
+        if (at >= page || fsWriteFrom("float-machine-abi.bin",code,at,false) != at) return 6;
+        if (!vmExecutable(code,page)) return 2;
+        entry >> fn(int,ft64,int,ft64,ft64,int,ft64,ft64,ft64,ft64,ft64,ft64,int,int,int,int) -> ft64 <- cast(code);
+        if (entry(1,2.0,3,4.0,5.0,6,7.0,8.0,9.0,10.0,11.0,12.0,13,14,15,16) != 42.25) return 3;
+        callback >> fn(p<byte>) -> ft64 <- cast(off(code,callbackOffset));
+        if (callback(cast<byte>(&verifyCallback)) != 42.25) return 4;
+        if (!vmRelease(code,page)) return 5;
+        println("native-float-machine-abi-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

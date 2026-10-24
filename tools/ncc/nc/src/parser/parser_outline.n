@@ -1,0 +1,165 @@
+use <io:output, render>;
+use <project:lexer, diagnostics>;
+
+nccParserOutline {
+    const:
+        T_IDENTIFIER >> int <- 1;
+        T_LBRACE >> int <- 5;
+        T_RBRACE >> int <- 6;
+        T_LPAREN >> int <- 7;
+        T_RPAREN >> int <- 8;
+        T_LBRACKET >> int <- 9;
+        T_RBRACKET >> int <- 10;
+        T_COLON >> int <- 13;
+        T_SEMICOLON >> int <- 14;
+        T_KEYWORD_USE >> int <- 50;
+        T_KEYWORD_IMPORT >> int <- 51;
+        T_EOF >> int <- 101;
+
+    fn:
+        private:
+            kind(state >> p<byte>, index >> int) -> int {
+                if (index < 0 || index >= lexer.nccLexer.tokenCount(state)) return T_EOF;
+                return lexer.nccLexer.tokenKindAt(state, index);
+            }
+
+            opens(token >> int) -> bool {
+                return token == T_LBRACE || token == T_LPAREN || token == T_LBRACKET;
+            }
+
+            closes(token >> int) -> bool {
+                return token == T_RBRACE || token == T_RPAREN || token == T_RBRACKET;
+            }
+
+            expected(open >> int) -> int {
+                if (open == T_LBRACE) return T_RBRACE;
+                if (open == T_LPAREN) return T_RPAREN;
+                return T_RBRACKET;
+            }
+
+            emitOutline(
+                tokenCount >> int,
+                importCount >> int,
+                containerHashes >> p<int>,
+                containerCount >> int,
+                json >> bool
+            ) -> bool {
+                if (json) {
+                    print("{\"schema\":\"nc.bootstrap.parser.outline.v1\",\"token_count\":");
+                    print(renderInt(tokenCount));
+                    print(",\"import_count\":"); print(renderInt(importCount));
+                    print(",\"container_count\":"); print(renderInt(containerCount));
+                    print(",\"container_name_hashes\":[");
+                    at >> int <- 0;
+                    while (at < containerCount) {
+                        if (at > 0) print(",");
+                        print(renderInt(rd(off(containerHashes, at))));
+                        at += 1;
+                    }
+                    println("]}");
+                } else {
+                    print("tokens="); print(renderInt(tokenCount));
+                    print(" imports="); print(renderInt(importCount));
+                    print(" containers="); println(renderInt(containerCount));
+                }
+                return true;
+            }
+
+        public:
+            parseFile(path >> str, json >> bool, quiet >> bool) -> int {
+                state >> p<byte> <- lexer.nccLexer.openFile(path);
+                guard state != null else {
+                    println("error[E_NCC_BOOTSTRAP_SOURCE_001]: source cannot be read");
+                    return 66;
+                }
+                if (!lexer.nccLexer.valid(state)) {
+                    code >> int <- diagnostics.nccDiagnostics.emitDiagnostic(
+                        lexer.nccLexer.errorKind(state), lexer.nccLexer.errorLine(state),
+                        lexer.nccLexer.errorColumn(state), path);
+                    lexer.nccLexer.close(state);
+                    return code;
+                }
+
+                count >> int <- lexer.nccLexer.tokenCount(state);
+                stack >> p<int> <- cast<int>(alloc(count * sizeOf(int)));
+                hashes >> p<int> <- cast<int>(alloc(count * sizeOf(int)));
+                guard stack != null && hashes != null else {
+                    if (stack != null) free(stack);
+                    if (hashes != null) free(hashes);
+                    lexer.nccLexer.close(state);
+                    return 70;
+                }
+
+                depth >> int <- 0;
+                braceDepth >> int <- 0;
+                imports >> int <- 0;
+                containers >> int <- 0;
+                pendingImport >> bool <- false;
+                at >> int <- 0;
+                error >> int <- 0;
+                errorLine >> int <- 1;
+                errorColumn >> int <- 1;
+
+                while (at < count && kind(state, at) != T_EOF && error == 0) {
+                    token >> int <- kind(state, at);
+                    topLevel >> bool <- braceDepth == 0;
+
+                    if (topLevel && (token == T_KEYWORD_USE || token == T_KEYWORD_IMPORT)) {
+                        imports += 1;
+                        pendingImport <- true;
+                    }
+
+                    if (topLevel && !pendingImport && token == T_IDENTIFIER) {
+                        shortHeader >> bool <- kind(state, at + 1) == T_LBRACE;
+                        roleHeader >> bool <- kind(state, at + 1) == T_COLON &&
+                            kind(state, at + 2) == T_COLON && kind(state, at + 4) == T_LBRACE;
+                        if (shortHeader || roleHeader) {
+                            wr(off(hashes, containers), lexer.nccLexer.tokenHashAt(state, at));
+                            containers += 1;
+                        }
+                    }
+
+                    if (opens(token)) {
+                        wr(off(stack, depth), token);
+                        depth += 1;
+                        if (token == T_LBRACE) braceDepth += 1;
+                    } else if (closes(token)) {
+                        if (depth == 0 || expected(rd(off(stack, depth - 1))) != token) {
+                            error <- 1;
+                            errorLine <- lexer.nccLexer.tokenLineAt(state, at);
+                            errorColumn <- lexer.nccLexer.tokenColumnAt(state, at);
+                        } else {
+                            depth -= 1;
+                            if (token == T_RBRACE) braceDepth -= 1;
+                        }
+                    } else if (topLevel && token == T_SEMICOLON) {
+                        pendingImport <- false;
+                    }
+                    at += 1;
+                }
+
+                if (error == 0 && depth != 0) {
+                    error <- 2;
+                    errorLine <- lexer.nccLexer.tokenLineAt(state, count - 1);
+                    errorColumn <- lexer.nccLexer.tokenColumnAt(state, count - 1);
+                }
+                if (error == 0 && pendingImport) {
+                    error <- 3;
+                    errorLine <- lexer.nccLexer.tokenLineAt(state, count - 1);
+                    errorColumn <- lexer.nccLexer.tokenColumnAt(state, count - 1);
+                }
+
+                code >> int <- 0;
+                if (error != 0) code <- diagnostics.nccDiagnostics.emitParser(
+                    error, errorLine, errorColumn, path);
+                else if (!quiet) emitOutline(count, imports, hashes, containers, json);
+
+                free(hashes);
+                free(stack);
+                lexer.nccLexer.close(state);
+                return code;
+            }
+
+    fa:
+        return true;
+}

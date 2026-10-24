@@ -1,0 +1,23 @@
+use foreign { c };
+
+closure43Host {
+    foreign:
+        c symbol "gethostname" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u64) -> i32; }
+        c symbol "clock_gettime" { abi: C; header: "time.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr) -> i32; }
+    fn:
+        public:
+            name() -> str {
+                data >> p<byte> <- cast(alloc(65536)); if (data == null) return "";
+                wr(data,0); wr(off(data,65535),0); status >> i32 <- gethostname(adr(data),65535);
+                result >> str <- "";
+                if (status == 0) { view >> str <- cast(data); result <- strSubstring(view,0,strByteLen(view)); }
+                free(data); return result;
+            }
+            micros() -> i64 {
+                // The verified host family uses the 64-bit POSIX timespec ABI.
+                data >> p<i64> <- cast(alloc(16)); if (data == null) return 0;
+                if (clock_gettime(0,adr(data)) != 0) { free(data); return 0; }
+                result >> i64 <- rd<i64>(data)*1000000+rd<i64>(off(data,1))/1000; free(data); return result;
+            }
+    fa: return true;
+}

@@ -1,0 +1,15 @@
+# Machine Roundtrip Diagnostics
+
+Phase 7 diagnostics:
+
+- `E_MACHINE_ROUNDTRIP_OBJECT_001`
+- `E_MACHINE_ROUNDTRIP_INSTRUCTION_001`
+- `E_MACHINE_ROUNDTRIP_OPERAND_001`
+- `E_MACHINE_ROUNDTRIP_SYMBOL_001`
+- `E_MACHINE_ROUNDTRIP_RELOCATION_001`
+- `E_MACHINE_ROUNDTRIP_DEBUG_001`
+- `E_MACHINE_ROUNDTRIP_UNWIND_001`
+- `E_MACHINE_ROUNDTRIP_BYTE_001`
+- `E_MACHINE_ROUNDTRIP_UNKNOWN_BYTES_001`
+
+These diagnostics are emitted for unaccepted differences. Accepted normalizations are reported separately.

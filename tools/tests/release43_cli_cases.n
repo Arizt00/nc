@@ -1,0 +1,80 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:release43_common, release43_cli, release_io, sha256, physical43_json>;
+
+release43CliCases {
+    stc: failures >> int <- 0; cases >> int; tool >> str; source >> str; work >> str;
+    fn:
+        private:
+            scalarBytes(data >> p<byte>, code >> int) -> int {
+                if (code < 128) { wr<byte>(data,code); return 1; }
+                first >> int <- 0; second >> int <- 0; third >> int <- 0; fourth >> int <- 0;
+                if (code < 2048) { first <- 192 | (code >>> 6); second <- 128 | (code & 63); wr<byte>(data,first); wr<byte>(off<byte>(data,1),second); return 2; }
+                if (code < 65536) { first <- 224 | (code >>> 12); second <- 128 | ((code >>> 6) & 63); third <- 128 | (code & 63); wr<byte>(data,first); wr<byte>(off<byte>(data,1),second); wr<byte>(off<byte>(data,2),third); return 3; }
+                first <- 240 | (code >>> 18); second <- 128 | ((code >>> 12) & 63); third <- 128 | ((code >>> 6) & 63); fourth <- 128 | (code & 63);
+                wr<byte>(data,first); wr<byte>(off<byte>(data,1),second); wr<byte>(off<byte>(data,2),third); wr<byte>(off<byte>(data,3),fourth); return 4;
+            }
+            numberBitmap() -> void {
+                bitmap >> p<byte> <- cast(alloc(139264)); value >> p<byte> <- cast(alloc(7));
+                if (bitmap == null || value == null) { failures += 1; return; }
+                index >> int <- 0; while (index < 139264) { wr<byte>(off<byte>(bitmap,index),0); index += 1; }
+                wr<byte>(value,45); code >> int <- 0; digits >> int <- 0;
+                while (code < 1114112) {
+                    count >> int <- scalarBytes(off<byte>(value,1),code); wr<byte>(off<byte>(value,count+1),0);
+                    word >> str <- cast(value);
+                    if (release43_cli.release43Cli.negativeNumber(word)) {
+                        at >> p<byte> <- off<byte>(bitmap,code/8); bits >> int <- (rd<byte>(at) & 255) | (1 << (code%8)); wr<byte>(at,bits); digits += 1;
+                    }
+                    code += 1;
+                }
+                hash >> str <- sha256.nccSha256.bytes(bitmap,139264); free(bitmap); free(value);
+                passed >> bool <- digits == 680 && hash == "8ecf314005be7d1195a5bc6a7f37a442b562200d132a08e7c5d42bcd81380a98";
+                row >> int <- jsonNewObject(); release43_common.release43Common.put(row,"name",jsonNewString("all-unicode-negative-number-scalars")); release43_common.release43Common.put(row,"passed",jsonNewBool(passed));
+                release43_common.release43Common.put(row,"scalar_cases",jsonNewInt(1114112)); release43_common.release43Common.put(row,"decimal_scalars",jsonNewInt(digits)); release43_common.release43Common.put(row,"bitmap_sha256",jsonNewString(hash)); release43_common.release43Common.push(cases,row);
+                println((passed ? "PASS " : "FAIL ")+"all-unicode-negative-number-scalars"); if (!passed) failures += 1;
+            }
+            grammar() -> void {
+                samples >> int <- physical43_json.physical43Json.parse("[[\"-1\",true],[\"-.5\",true],[\"-1.5\",true],[\"-1\\n\",true],[\"-1.5\\n\",true],[\"-1\\n\\n\",false],[\"-1.\",false],[\"-.\",false],[\"-0..5\",false],[\"-1e3\",false],[\"--1\",false],[\"-\",false],[\"-1\\r\\n\",false],[\"-\\u00b2\",false],[\"-\\u2160\",false],[\"-\\u0661.\\uff11\",true],[\"-\\ud835\\udfce\",true]]"); index >> int <- 0;
+                if (samples == 0 || jsonArrayLen(samples) != 17) { failures += 1; if (samples != 0) jsonRelease(samples); return; }
+                while (index < jsonArrayLen(samples)) {
+                    sample >> int <- jsonArrayGet(samples,index); input >> str <- release43_common.release43Common.stringAt(sample,0); expected >> int <- jsonArrayGet(sample,1);
+                    passed >> bool <- release43_cli.release43Cli.negativeNumber(input) == jsonGetBoolOr(expected,false); row >> int <- jsonNewObject(); release43_common.release43Common.put(row,"name",jsonNewString("negative-number-grammar-"+renderInt(index))); release43_common.release43Common.put(row,"passed",jsonNewBool(passed)); release43_common.release43Common.push(cases,row);
+                    if (!passed) failures += 1; jsonRelease(expected); jsonRelease(sample); index += 1;
+                }
+                jsonRelease(samples);
+            }
+            add(words >> int, value >> str) -> void { release43_common.release43Common.arg(words,value); }
+            check(name >> str, words >> int, expected >> int) -> void {
+                command >> int <- release43_common.release43Common.invoke(tool,words); code >> int <- release_io.releaseIo.number(command,"code",-1); passed >> bool <- code == expected;
+                case >> int <- jsonNewObject(); release43_common.release43Common.put(case,"name",jsonNewString(name)); release43_common.release43Common.put(case,"expected_exit",jsonNewInt(expected)); release43_common.release43Common.put(case,"actual_exit",jsonNewInt(code)); release43_common.release43Common.put(case,"passed",jsonNewBool(passed)); release43_common.release43Common.push(cases,case);
+                println((passed ? "PASS " : "FAIL ")+name); if (!passed) { failures += 1; println(release43_common.release43Common.field(command,"stderr")); } release43_common.release43Common.release(command);
+            }
+            package(name >> str, extra >> int, expected >> int) -> void {
+                if (extra == 0) { failures += 1; println("FAIL invalid-case-input "+name); return; }
+                words >> int <- jsonNewArray(); add(words,"package-public-beta"); add(words,"--source"); add(words,source); add(words,"--out"); add(words,work+"/"+name); index >> int <- 0;
+                while (index < jsonArrayLen(extra)) { add(words,release43_common.release43Common.stringAt(extra,index)); index += 1; } release43_common.release43Common.release(extra); check(name,words,expected);
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) != 4) return 2; tool <- release43_common.release43Common.absolute(argsAt(args,2)); options >> int <- jsonNewObject(); release43_common.release43Common.put(options,"--root",jsonNewString(argsAt(args,1)));
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options); work <- release43_common.release43Common.workPath(); source <- work+"/source"; cases <- jsonNewArray();
+                if (!release43_common.release43Common.writeText(source+"/example.n","CLI fixture\n")) return 1;
+                numberBitmap(); grammar();
+                package("default",jsonParse("[]"),0); package("equals",jsonParse("[\"--stem=sample\"]"),0); package("empty-stem",jsonParse("[\"--stem=\"]"),0);
+                package("abbreviated",jsonParse("[\"--st\",\"sample\"]"),0); package("repeated-last-wins",jsonParse("[\"--stem\",\"first\",\"--stem\",\"second\"]"),0);
+                package("help",jsonParse("[\"--help\"]"),0); package("short-help",jsonParse("[\"-h\"]"),0); package("unknown-option",jsonParse("[\"--bogus\"]"),2);
+                package("ambiguous-option",jsonParse("[\"--s\",\"sample\"]"),2); package("missing-value",jsonParse("[\"--stem\"]"),2); package("extra-positional",jsonParse("[\"extra\"]"),2);
+                package("missing-source",jsonParse("[\"--source\",\"release43-no-such-input\"]"),1); package("missing-stem-parent",jsonParse("[\"--stem\",\"nested/sample\"]"),1);
+                package("negative-multiple-dots",jsonParse("[\"--stem\",\"-0..5\"]"),2); package("negative-only-dot",jsonParse("[\"--stem\",\"-.\"]"),2); package("negative-trailing-dot",jsonParse("[\"--stem\",\"-1.\"]"),2);
+                package("negative-fraction",jsonParse("[\"--stem\",\"-.5\"]"),0); package("negative-decimal",jsonParse("[\"--stem\",\"-1.5\"]"),0); package("negative-integer",jsonParse("[\"--stem\",\"-1\"]"),0);
+                package("negative-arabic-digit",physical43_json.physical43Json.parse("[\"--stem\",\"-\\u0661\"]"),0); package("negative-fullwidth-digit",physical43_json.physical43Json.parse("[\"--stem\",\"-\\uff11\"]"),0); package("negative-supplementary-digit",physical43_json.physical43Json.parse("[\"--stem\",\"-\\ud835\\udfce\"]"),0);
+                package("equals-literal-invalid-number",jsonParse("[\"--stem=-0..5\"]"),0);
+                check("unknown-command",jsonParse("[\"no-such-release-command\"]"),2); check("missing-command",jsonParse("[]"),2);
+                report >> int <- jsonNewObject(); release43_common.release43Common.put(report,"schema",jsonNewString("nc.release43.cli.regression.v1")); release43_common.release43Common.put(report,"cases",cases); release43_common.release43Common.put(report,"passed",jsonNewBool(failures == 0)); release43_common.release43Common.put(report,"failures",jsonNewInt(failures)); release43_common.release43Common.put(report,"python_required",jsonNewBool(false));
+                release43_common.release43Common.put(report,"native_path",jsonNewString(tool)); release43_common.release43Common.put(report,"native_sha256",jsonNewString(release43_common.release43Common.hashFile(tool))); candidate >> str <- release43_common.release43Common.absolute(argsAt(args,3)); release43_common.release43Common.put(report,"candidate_path",jsonNewString(candidate)); release43_common.release43Common.put(report,"candidate_sha256",jsonNewString(release43_common.release43Common.hashFile(candidate)));
+                release43_common.release43Common.save(work+"/cli-regression.json",report); println("sealed="+work+"/cli-regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

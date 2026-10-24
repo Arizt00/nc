@@ -1,0 +1,125 @@
+use <io:output, render, std>;
+use <net:net>;
+use <process:args, command>;
+use <data:json>;
+use <project:mobile43_client, mobile43_transport>;
+
+mobile43Cli {
+    fn:
+        private:
+            number(value >> str, milliseconds >> bool) -> int {
+                input >> p<byte> <- cast(value); index >> int <- 0;
+                whole >> int <- 0; fraction >> int <- 0; scale >> int <- 1;
+                count >> int <- strByteLen(value); decimal >> bool <- false;
+                guard count > 0 else return -1;
+                while (index < count) {
+                    code >> int <- rd(off(input,index));
+                    if (code == 46 && milliseconds && !decimal) { decimal <- true; index += 1; continue; }
+                    guard code >= 48 && code <= 57 else return -1;
+                    if (decimal) {
+                        if (scale < 1000) { fraction <- fraction*10+code-48; scale *= 10; }
+                    } else {
+                        guard whole <= 2147483 else return -1;
+                        whole <- whole*10+code-48;
+                    }
+                    index += 1;
+                }
+                return milliseconds ? whole*1000+fraction*1000/scale : whole;
+            }
+            executeOne(value >> str) -> int {
+                result >> str <- mobile43_client.mobile43Client.reconnecting(value,5);
+                if (mobile43_client.mobile43Client.status() != 0) {
+                    println("blockmaster: "+mobile43_client.mobile43Client.error());
+                    strRelease(result); return 1;
+                }
+                println(result); strRelease(result); return 0;
+            }
+            interactive() -> int {
+                // Borrow stdin; never close it. Stage0's raw pipe descriptor is 3x8 bytes.
+                pipe >> p<addr> <- cast(alloc(24));
+                data >> p<byte> <- cast(alloc(1048577));
+                if (pipe == null || data == null) { free(pipe); free(data); return 1; }
+                wr(pipe,stdIn()); wr(off(pipe,1),null); wr(off(pipe,2),null);
+                result >> int <- 0; finished >> bool <- false;
+                while (!finished) {
+                    print("blockmaster> "); flush();
+                    count >> int <- 0;
+                    while (count < 1048576) {
+                        received >> int <- commandPipeRead(adr(pipe),adr(off(data,count)),1);
+                        if (received <= 0) { finished <- true; result <- 1; break; }
+                        if (rd(off(data,count)) == 10) break;
+                        count += 1;
+                    }
+                    if (finished) break;
+                    if (count == 1048576) { result <- 1; break; }
+                    wr(off(data,count),0);
+                    text >> str <- cast(data);
+                    commandText >> str <- strTrim(text);
+                    if (commandText == "quit" || commandText == "exit") finished <- true;
+                    else if (commandText != "") result <- executeOne(commandText);
+                    strRelease(commandText);
+                    if (result != 0) break;
+                }
+                free(pipe); free(data); return result;
+            }
+        public:
+            execute(arguments >> addr, start >> int) -> int {
+                mobile43_transport.mobile43Transport.ignoreBrokenPipe();
+                commands >> int <- jsonNewArray();
+                host >> str <- ""; port >> int <- 0; timeout >> int <- 10000;
+                framing >> str <- "LINE"; token >> str <- "";
+                certificate >> str <- ""; pin >> str <- ""; insecure >> bool <- false;
+                index >> int <- start; valid >> bool <- true;
+                while (index < argsCount(arguments)) {
+                    word >> str <- argsAt(arguments,index);
+                    if (word == "--help" || word == "-h") {
+                        println("blockmaster HOST [COMMAND ...] [--raw] [--port N] [--framing LINE|FRAME]");
+                        println("  [--token SECRET] [--cert PEM] [--fingerprint SHA256] [--timeout SECONDS]");
+                        println("TLS requires a certificate authority or certificate pin; raw is never implicit.");
+                        jsonRelease(commands); return 0;
+                    }
+                    if (word == "--raw") insecure <- true;
+                    else if (word == "--port" || word == "--framing" || word == "--token" ||
+                        word == "--cert" || word == "--fingerprint" || word == "--timeout") {
+                        index += 1;
+                        if (index >= argsCount(arguments)) { valid <- false; break; }
+                        value >> str <- argsAt(arguments,index);
+                        if (word == "--port") port <- number(value,false);
+                        else if (word == "--timeout") timeout <- number(value,true);
+                        else if (word == "--framing") framing <- value;
+                        else if (word == "--token") token <- value;
+                        else if (word == "--cert") certificate <- value;
+                        else pin <- value;
+                    } else if (strStartsWith(word,"-")) { valid <- false; break; }
+                    else if (host == "") host <- word;
+                    else {
+                        child >> int <- jsonNewString(word);
+                        jsonArrayPush(commands,child); jsonRelease(child);
+                    }
+                    index += 1;
+                }
+                if (!valid || host == "" || port < 0 || timeout <= 0) {
+                    println("blockmaster: invalid or incomplete arguments"); jsonRelease(commands); return 2;
+                }
+                if (port == 0) port <- insecure ? 8081 : 8443;
+                if (!mobile43_client.mobile43Client.configure(host,port,framing,insecure,token,certificate,pin,timeout)) {
+                    println("blockmaster: "+mobile43_client.mobile43Client.error()); jsonRelease(commands); return 2;
+                }
+                if (netStartup() != 0) {
+                    println("blockmaster: socket initialization failed"); jsonRelease(commands); return 1;
+                }
+                result >> int <- 0;
+                if (jsonArrayLen(commands) == 0) result <- interactive();
+                else {
+                    index <- 0;
+                    while (index < jsonArrayLen(commands)) {
+                        child >> int <- jsonArrayBorrow(commands,index);
+                        result <- executeOne(jsonStringView(child,"")); jsonRelease(child);
+                        if (result != 0) break;
+                        index += 1;
+                    }
+                }
+                mobile43_client.mobile43Client.close(); netShutdown(); jsonRelease(commands); return result;
+            }
+    fa: return true;
+}

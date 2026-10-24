@@ -1,0 +1,617 @@
+/*
+ * Reto: WAL + replicacion sincronica por mayoria.
+ *
+ * Objetivo del simulador:
+ * - El lider escribe primero en su WAL local como PENDING.
+ * - Solo despues intenta replicar a dos seguidores.
+ * - Si obtiene al menos un OK, hay mayoria: lider + 1 seguidor.
+ * - Entonces el registro pasa a COMMITTED y se aplica a memoria.
+ * - Si un seguidor cae, puede despertar y sincronizarse desde el WAL del lider.
+ *
+ * Comparacion:
+ * - En C se modelaria con structs, arrays y mucho control manual de indices.
+ * - En C++ se usarian vector, enum class y colas de mensajes.
+ * - En nC usamos type para documentar el registro, memRegion<int> para el
+ *   WAL material y queue<int> para simular respuestas de red.
+ */
+use <collections:queue>;
+use <io:output, render, input>;
+use <memory:region, heap>;
+
+walReplicacionSincronica :: runtime {
+    /*
+     * Registro conceptual del WAL.
+     * El almacenamiento real se compacta en memRegion<int> para que cada
+     * campo tenga posicion fija y sea facil comparar lider vs seguidores.
+     */
+    WalRecord :: type {
+            txId >> int;
+            op >> int;
+            key >> int;
+            value >> int;
+            status >> int;
+        constructure:
+            static(txId >> int, op >> int, key >> int, value >> int, status >> int) -> WalRecord;
+    }
+
+    /*
+         * Constantes documentales:
+         * nodos: 0 lider, 1 seguidor A, 2 seguidor B.
+         * campos WAL: txId, op, key, value, status.
+         * estados: 0 PENDING, 1 COMMITTED.
+         *
+         * Igual que en un motor real, no se modifica data hasta que el WAL
+         * alcanza COMMITTED. Los literales se mantienen en los offsets para
+         * que el ejecutor runtime actual materialice regiones sin sorpresas.
+     */
+    const:
+        MAX_TX >> int <- 16;
+        WAL_FIELDS >> int <- 5;
+        NODE_COUNT >> int <- 3;
+        KEY_COUNT >> int <- 10;
+
+    stc:
+        wal >> memRegion<int>;
+        data >> memRegion<int>;
+        counts >> memRegion<int>;
+        up >> memRegion<int>;
+        acks >> queue<int>;
+        ackStorage >> p<int>;
+
+        nextTx >> int;
+        running >> bool;
+
+    fn:
+        boot() -> bool {
+            /*
+             * WAL: 3 nodos * 16 registros * 5 campos <- 240 enteros.
+             * data: 3 nodos * 10 llaves <- 30 enteros.
+             * counts/up: estado pequeno del cluster.
+             */
+            wal <- regionCreate<int>(240);
+            data <- regionCreate<int>(30);
+            counts <- regionCreate<int>(3);
+            up <- regionCreate<int>(3);
+            ackStorage <- cast(alloc(NODE_COUNT * sizeOf(int)));
+            acks <- queueAt(ackStorage, NODE_COUNT);
+
+            regionWrite(up, 0, 1);
+            regionWrite(up, 1, 1);
+            regionWrite(up, 2, 1);
+
+            nextTx <- 1;
+            running <- true;
+            return true;
+        }
+
+        promptInt(label >> str) -> int {
+            print(label);
+            flush();
+            v <- readInt();
+            return v;
+        }
+
+        nodo(node >> int) -> str {
+            if (node == 0) { return "LIDER"; }
+            if (node == 1) { return "SEGUIDOR_A"; }
+            if (node == 2) { return "SEGUIDOR_B"; }
+            return "NODO?";
+        }
+
+        opName(op >> int) -> str {
+            if (op == 1) { return "CREATE"; }
+            if (op == 2) { return "UPDATE"; }
+            if (op == 3) { return "DELETE"; }
+            return "OP?";
+        }
+
+        statusName(status >> int) -> str {
+            if (status == 1) { return "COMMITTED"; }
+            return "PENDING";
+        }
+
+        aliveName(value >> int) -> str {
+            if (value == 1) { return "UP"; }
+            return "DOWN";
+        }
+
+        walIndex(node >> int, pos >> int, campo >> int) -> int {
+            /*
+             * WAL lineal:
+             * indice <- ((nodo * 16) + pos) * 5 + campo.
+             * En C seria wal[node][pos].field.
+             */
+            return (((node * 16) + pos) * 5) + campo;
+        }
+
+        dataIndex(node >> int, key >> int) -> int {
+            /*
+             * Tabla de memoria por nodo.
+             * key 1..9 representa una cuenta o llave bancaria simplificada.
+             */
+            return (node * 10) + key;
+        }
+
+        readWal(node >> int, pos >> int, campo >> int) -> int {
+            return regionRead(wal, walIndex(node, pos, campo));
+        }
+
+        writeWal(node >> int, pos >> int, txId >> int, op >> int, key >> int, value >> int, status >> int) -> bool {
+            regionWrite(wal, walIndex(node, pos, 0), txId);
+            regionWrite(wal, walIndex(node, pos, 1), op);
+            regionWrite(wal, walIndex(node, pos, 2), key);
+            regionWrite(wal, walIndex(node, pos, 3), value);
+            regionWrite(wal, walIndex(node, pos, 4), status);
+            return true;
+        }
+
+        findSlot(node >> int, txId >> int) -> int {
+            i <- 0;
+            count <- regionRead(counts, node);
+
+            while (i < count) {
+                if (readWal(node, i, 0) == txId) {
+                    return i;
+                }
+
+                i <- i + 1;
+            }
+
+            return -1;
+        }
+
+        appendOrUpdate(node >> int, txId >> int, op >> int, key >> int, value >> int, status >> int) -> int {
+            /*
+             * Si el registro ya existe, se actualiza. Si no, se anade al
+             * final. Asi la sincronizacion puede reparar seguidores atrasados.
+             */
+            posLog <- findSlot(node, txId);
+
+            if (posLog >= 0) {
+                writeWal(node, posLog, txId, op, key, value, status);
+                return posLog;
+            }
+
+            count <- regionRead(counts, node);
+
+            if (count >= 16) {
+                println("WAL lleno en " + nodo(node));
+                return -1;
+            }
+
+            writeWal(node, count, txId, op, key, value, status);
+            regionWrite(counts, node, count + 1);
+            return count;
+        }
+
+        applyData(node >> int, op >> int, key >> int, value >> int) -> bool {
+            /*
+             * Esta funcion representa la modificacion en memoria.
+             * Solo se llama despues de marcar COMMITTED.
+             */
+            if (op == 3) {
+                regionWrite(data, dataIndex(node, key), 0);
+            } else {
+                regionWrite(data, dataIndex(node, key), value);
+            }
+
+            return true;
+        }
+
+        commitOn(node >> int, txId >> int) -> bool {
+            posLog <- findSlot(node, txId);
+
+            if (posLog < 0) {
+                return false;
+            }
+
+            op <- readWal(node, posLog, 1);
+            key <- readWal(node, posLog, 2);
+            value <- readWal(node, posLog, 3);
+
+            regionWrite(wal, walIndex(node, posLog, 4), 1);
+            applyData(node, op, key, value);
+            return true;
+        }
+
+        replicatePending(follower >> int, txId >> int, op >> int, key >> int, value >> int) -> int {
+            /*
+             * Fase 2: el seguidor debe escribir su WAL antes de responder OK.
+             */
+            if (regionRead(up, follower) == 0) {
+                println("  " + nodo(follower) + " no responde");
+                return 0;
+            }
+
+            appendOrUpdate(follower, txId, op, key, value, 0);
+            acks.enqueue(follower);
+            println("  " + nodo(follower) + " WAL=PENDING -> OK");
+            return 1;
+        }
+
+        drainAcks() -> bool {
+            while (!acks.isEmpty()) {
+                node <- acks.dequeue();
+                println("  ack recibido de " + nodo(node));
+            }
+
+            return true;
+        }
+
+        normalizeKey(key >> int) -> int {
+            if (key < 1) { return 1; }
+            if (key > 9) { return 9; }
+            return key;
+        }
+
+        submitTx(op >> int, key >> int, value >> int) -> bool {
+            k <- normalizeKey(key);
+            tx <- nextTx;
+            nextTx <- nextTx + 1;
+
+            println("");
+            println("===== TX " + renderInt(tx) + " " + opName(op) + " =====");
+            println("Fase 1: lider escribe WAL=PENDING antes de modificar datos");
+            appendOrUpdate(0, tx, op, k, value, 0);
+
+            println("Fase 2: propagacion a seguidores");
+            okA <- replicatePending(1, tx, op, k, value);
+            okB <- replicatePending(2, tx, op, k, value);
+            drainAcks();
+
+            oks <- okA + okB;
+
+            println("Fase 3: validacion de mayoria");
+            if (oks >= 1) {
+                println("  mayoria alcanzada: lider + " + renderInt(oks) + " seguidor(es)");
+                commitOn(0, tx);
+
+                if (okA == 1) {
+                    commitOn(1, tx);
+                }
+
+                if (okB == 1) {
+                    commitOn(2, tx);
+                }
+
+                println("  resultado: COMMITTED");
+                return true;
+            }
+
+            println("  sin mayoria: queda PENDING en el WAL del lider");
+            println("  resultado: NO COMMITTED");
+            return false;
+        }
+
+        disconnect(follower >> int) -> bool {
+            if (follower < 1) { return false; }
+            if (follower > 2) { return false; }
+
+            regionWrite(up, follower, 0);
+            println(nodo(follower) + " desconectado");
+            return true;
+        }
+
+        syncFollower(follower >> int) -> bool {
+            /*
+             * Al despertar, el seguidor compara su WAL con el lider.
+             * Copia registros faltantes o estados atrasados antes de operar.
+             */
+            leaderCount <- regionRead(counts, 0);
+            i <- 0;
+            synced <- 0;
+
+            println("sincronizando " + nodo(follower) + " desde LIDER");
+
+            while (i < leaderCount) {
+                tx <- readWal(0, i, 0);
+                op <- readWal(0, i, 1);
+                key <- readWal(0, i, 2);
+                value <- readWal(0, i, 3);
+                status <- readWal(0, i, 4);
+                oldSlot <- findSlot(follower, tx);
+                oldStatus <- -1;
+
+                if (oldSlot >= 0) {
+                    oldStatus <- readWal(follower, oldSlot, 4);
+                }
+
+                if (oldSlot < 0 || oldStatus != status) {
+                    appendOrUpdate(follower, tx, op, key, value, status);
+
+                    if (status == 1) {
+                        applyData(follower, op, key, value);
+                    }
+
+                    synced <- synced + 1;
+                }
+
+                i <- i + 1;
+            }
+
+            println("registros sincronizados: " + renderInt(synced));
+            return true;
+        }
+
+        wake(follower >> int) -> bool {
+            if (follower < 1) { return false; }
+            if (follower > 2) { return false; }
+
+            regionWrite(up, follower, 1);
+            println(nodo(follower) + " despierta");
+            syncFollower(follower);
+            return true;
+        }
+
+        printRecord(node >> int, pos >> int) -> bool {
+            tx <- readWal(node, pos, 0);
+            op <- readWal(node, pos, 1);
+            key <- readWal(node, pos, 2);
+            value <- readWal(node, pos, 3);
+            status <- readWal(node, pos, 4);
+
+            println("  [" + renderInt(pos) + "] tx=" + renderInt(tx) + " op=" + opName(op) + " key=" + renderInt(key) + " value=" + renderInt(value) + " status=" + statusName(status));
+            return true;
+        }
+
+        printWal(node >> int) -> bool {
+            println("");
+            println("===== WAL " + nodo(node) + " =====");
+
+            count <- regionRead(counts, node);
+            if (count == 0) {
+                println("  vacio");
+                return true;
+            }
+
+            i <- 0;
+            while (i < count) {
+                printRecord(node, i);
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        printAllWal() -> bool {
+            printWal(0);
+            printWal(1);
+            printWal(2);
+            return true;
+        }
+
+        printData(node >> int) -> bool {
+            println("");
+            println("===== DATA " + nodo(node) + " =====");
+
+            key <- 1;
+            while (key < 10) {
+                value <- regionRead(data, dataIndex(node, key));
+                println("  key " + renderInt(key) + " -> " + renderInt(value));
+                key <- key + 1;
+            }
+
+            return true;
+        }
+
+        printAllData() -> bool {
+            printData(0);
+            printData(1);
+            printData(2);
+            return true;
+        }
+
+        clusterStatus() -> bool {
+            println("");
+            println("===== Cluster =====");
+            println("  LIDER      " + aliveName(regionRead(up, 0)) + " wal=" + renderInt(regionRead(counts, 0)));
+            println("  SEGUIDOR_A " + aliveName(regionRead(up, 1)) + " wal=" + renderInt(regionRead(counts, 1)));
+            println("  SEGUIDOR_B " + aliveName(regionRead(up, 2)) + " wal=" + renderInt(regionRead(counts, 2)));
+            return true;
+        }
+
+        txFromMenu(op >> int) -> bool {
+            key <- promptInt("key [1..9]> ");
+            value <- 0;
+
+            if (op != 3) {
+                value <- promptInt("value> ");
+            }
+
+            submitTx(op, key, value);
+            return true;
+        }
+
+        menuTransacciones() -> bool {
+            active <- true;
+
+            while (active) {
+                println("");
+                println("===== Transacciones =====");
+                println("  1. CREATE");
+                println("  2. UPDATE");
+                println("  3. DELETE");
+                println("  4. Demo rapida");
+                println("  0. Volver");
+
+                op <- promptInt("tx> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { txFromMenu(1); }
+                if (op == 2) { txFromMenu(2); }
+                if (op == 3) { txFromMenu(3); }
+                if (op == 4) {
+                    submitTx(1, 1, 100);
+                    submitTx(2, 1, 150);
+                    submitTx(1, 2, 900);
+                }
+            }
+
+            return true;
+        }
+
+        menuRed() -> bool {
+            active <- true;
+
+            while (active) {
+                println("");
+                println("===== Red y fallos =====");
+                println("  1. Desconectar SEGUIDOR_A");
+                println("  2. Desconectar SEGUIDOR_B");
+                println("  3. Despertar + sync SEGUIDOR_A");
+                println("  4. Despertar + sync SEGUIDOR_B");
+                println("  5. Estado del cluster");
+                println("  0. Volver");
+
+                op <- promptInt("red> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { disconnect(1); }
+                if (op == 2) { disconnect(2); }
+                if (op == 3) { wake(1); }
+                if (op == 4) { wake(2); }
+                if (op == 5) { clusterStatus(); }
+            }
+
+            return true;
+        }
+
+        menuWal() -> bool {
+            active <- true;
+
+            while (active) {
+                println("");
+                println("===== Ver WAL =====");
+                println("  1. Lider");
+                println("  2. Seguidor A");
+                println("  3. Seguidor B");
+                println("  4. Todos");
+                println("  0. Volver");
+
+                op <- promptInt("wal> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { printWal(0); }
+                if (op == 2) { printWal(1); }
+                if (op == 3) { printWal(2); }
+                if (op == 4) { printAllWal(); }
+            }
+
+            return true;
+        }
+
+        menuData() -> bool {
+            active <- true;
+
+            while (active) {
+                println("");
+                println("===== Ver memoria =====");
+                println("  1. Lider");
+                println("  2. Seguidor A");
+                println("  3. Seguidor B");
+                println("  4. Todos");
+                println("  0. Volver");
+
+                op <- promptInt("data> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { printData(0); }
+                if (op == 2) { printData(1); }
+                if (op == 3) { printData(2); }
+                if (op == 4) { printAllData(); }
+            }
+
+            return true;
+        }
+
+        demoFalloYRecuperacion() -> bool {
+            println("");
+            println("===== Demo: fallo, mayoria y recuperacion =====");
+            submitTx(1, 1, 100);
+            disconnect(1);
+            submitTx(2, 1, 250);
+            submitTx(1, 2, 500);
+            printAllWal();
+            wake(1);
+            printAllWal();
+            printAllData();
+            return true;
+        }
+
+        demoSinMayoria() -> bool {
+            println("");
+            println("===== Demo: sin mayoria =====");
+            disconnect(1);
+            disconnect(2);
+            submitTx(1, 3, 700);
+            clusterStatus();
+            printAllWal();
+            wake(1);
+            wake(2);
+            return true;
+        }
+
+        menuDemos() -> bool {
+            active <- true;
+
+            while (active) {
+                println("");
+                println("===== Demos =====");
+                println("  1. Fallo de un seguidor y recuperacion");
+                println("  2. Sin mayoria");
+                println("  0. Volver");
+
+                op <- promptInt("demo> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { demoFalloYRecuperacion(); }
+                if (op == 2) { demoSinMayoria(); }
+            }
+
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+
+            while (running) {
+                println("");
+                println("==============================================");
+                println(" WAL + Replicacion sincronica por mayoria");
+                println("==============================================");
+                println("  1. Transacciones");
+                println("  2. Red y fallos");
+                println("  3. Ver WAL");
+                println("  4. Ver memoria");
+                println("  5. Estado del cluster");
+                println("  6. Demos");
+                println("  7. Salir");
+
+                op <- promptInt("menu> ");
+
+                if (op == 1) { menuTransacciones(); }
+                if (op == 2) { menuRed(); }
+                if (op == 3) { menuWal(); }
+                if (op == 4) { menuData(); }
+                if (op == 5) { clusterStatus(); }
+                if (op == 6) { menuDemos(); }
+                if (op == 7) { running <- false; }
+            }
+
+            println("simulador cerrado");
+            return true;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+            regionInvalidate(wal);
+            regionInvalidate(data);
+            regionInvalidate(counts);
+            regionInvalidate(up);
+            free(ackStorage);
+            return true;
+        }
+
+}

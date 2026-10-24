@@ -1,0 +1,235 @@
+use <io:render>;
+use <net:socket>;
+use <process:env>;
+use <project:mobile43_codec, mobile43_transport>;
+
+mobile43Client {
+    const:
+        MAX_FRAME >> int <- 1048576;
+    stc:
+        stream >> addr;
+        secureStream >> addr;
+        context >> addr;
+        host >> str;
+        port >> int;
+        framing >> str;
+        insecureMode >> bool;
+        token >> str;
+        certificate >> str;
+        pin >> str <- "";
+        timeout >> int;
+        session >> str <- "";
+        sequence >> int <- 1;
+        errorCode >> int <- 0;
+        errorMessage >> str <- "";
+    fn:
+        private:
+            fail(code >> int, message >> str) -> bool {
+                errorCode <- code; errorMessage <- message; return false;
+            }
+            signature(value >> str) -> str { return mobile43_codec.mobile43Codec.sign(token,value); }
+            same(a >> str, b >> str) -> bool { return mobile43_codec.mobile43Codec.equal(a,b); }
+            part(text >> str, index >> int) -> str { return mobile43_codec.mobile43Codec.field(text,index); }
+            normalizedPin(value >> str) -> str {
+                data >> p<byte> <- cast(alloc(strByteLen(value)+1));
+                guard data != null else return "";
+                input >> p<byte> <- cast(value); index >> int <- 0; written >> int <- 0;
+                while (index < strByteLen(value)) {
+                    code >> int <- rd(off(input,index));
+                    if (code != 58) {
+                        if (code >= 65 && code <= 90) code += 32;
+                        wr(off(data,written),code); written += 1;
+                    }
+                    index += 1;
+                }
+                wr(off(data,written),0); return mobile43_codec.mobile43Codec.owned(data,written);
+            }
+            hello() -> bool {
+                greeting >> str <- receiveFrame(false);
+                if (errorCode != 0) { strRelease(greeting); return false; }
+                valid >> bool <- mobile43_codec.mobile43Codec.fields(greeting) >= 5 &&
+                    mobile43_codec.mobile43Codec.fieldIs(greeting,0,"HELLO") && mobile43_codec.mobile43Codec.fieldIs(greeting,1,"NCBM1");
+                if (!valid) { strRelease(greeting); return fail(1,"invalid server hello"); }
+                serverNonce >> str <- part(greeting,2);
+                if (insecureMode) {
+                    strRelease(greeting); strRelease(serverNonce);
+                    selection >> str <- "SELECT|"+framing+"|RAW";
+                    selected >> bool <- sendFrame(false,selection); strRelease(selection);
+                    if (!selected) return false;
+                    ready >> str <- receiveFrame(false);
+                    valid <- errorCode == 0 && ready == "READY|RAW|"+framing;
+                    strRelease(ready);
+                    return valid ? true : fail(1,"insecureMode negotiation rejected");
+                }
+                clientNonce >> str <- mobile43_transport.mobile43Transport.nonce();
+                if (strByteLen(clientNonce) != 48) {
+                    strRelease(greeting); strRelease(serverNonce); strRelease(clientNonce);
+                    return fail(1,"cryptographic nonce unavailable");
+                }
+                signed >> str <- "AUTH|"+framing+"|"+serverNonce+"|"+clientNonce;
+                mac >> str <- signature(signed);
+                request >> str <- "AUTH|"+framing+"|"+clientNonce+"|"+mac;
+                valid <- sendFrame(false,request);
+                strRelease(greeting); strRelease(serverNonce); strRelease(clientNonce);
+                strRelease(signed); strRelease(mac); strRelease(request);
+                if (!valid) return false;
+                response >> str <- receiveFrame(false);
+                if (errorCode != 0) { strRelease(response); return false; }
+                valid <- mobile43_codec.mobile43Codec.fields(response) == 3 && mobile43_codec.mobile43Codec.fieldIs(response,0,"AUTH_OK");
+                if (!valid) { strRelease(response); return fail(1,"authentication rejected"); }
+                newSession >> str <- part(response,1);
+                signed <- "AUTH_OK|"+newSession;
+                mac <- signature(signed);
+                receivedMac >> str <- part(response,2);
+                valid <- same(mac,receivedMac) && newSession != "";
+                strRelease(signed); strRelease(mac); strRelease(receivedMac); strRelease(response);
+                if (!valid) { strRelease(newSession); return fail(1,"server AUTH_OK signature mismatch"); }
+                strRelease(session); session <- newSession; sequence <- 1;
+                return true;
+            }
+            receiveBytes(data >> p<byte>, count >> int) -> bool {
+                done >> int <- 0;
+                while (done < count) {
+                    read >> int <- mobile43_transport.mobile43Transport.read(stream,secureStream,off(data,done),count-done);
+                    if (read <= 0 || read > count-done) return fail(1,"peer closed inside frame or receive timeout");
+                    done += read;
+                }
+                return true;
+            }
+            sendBytes(data >> p<byte>, count >> int) -> bool {
+                done >> int <- 0;
+                while (done < count) {
+                    sent >> int <- mobile43_transport.mobile43Transport.write(stream,secureStream,off(data,done),count-done);
+                    if (sent <= 0 || sent > count-done) return fail(1,"send failed or send timeout");
+                    done += sent;
+                }
+                return true;
+            }
+        public:
+            configure(address >> str, number >> int, frame >> str, insecure >> bool,
+                secret >> str, cert >> str, fingerprint >> str, timeoutMs >> int) -> bool {
+                close();
+                host <- address; port <- number; framing <- frame; insecureMode <- insecure;
+                token <- secret; certificate <- cert; timeout <- timeoutMs;
+                strRelease(pin); pin <- normalizedPin(fingerprint);
+                guard framing == "LINE" || framing == "FRAME" else return fail(2,"framing must be LINE or FRAME");
+                guard number > 0 && number <= 65535 && timeoutMs > 0 else return fail(2,"invalid port or timeout");
+                if (!insecureMode && token == "") return fail(2,"secure mode requires --token");
+                if (!insecureMode && certificate == "" && strByteLen(pin) != 64) return fail(2,"secure mode requires --cert or --fingerprint");
+                errorCode <- 0; return true;
+            }
+            close() -> void {
+                mobile43_transport.mobile43Transport.close(stream,secureStream,context);
+                stream <- null; secureStream <- null; context <- null;
+                strRelease(session); session <- "";
+            }
+            connect() -> bool {
+                close(); errorCode <- 0; errorMessage <- "";
+                family >> int <- strContains(host,":") ? (envHas("WINDIR") ? 23 : 10) : 2;
+                stream <- socketCreate(family,1,6);
+                if (stream == null) return fail(1,"socket creation failed");
+                if (socketConnect(stream,host,port,timeout) != 0 || socketSetTimeout(stream,timeout,timeout) != 0) {
+                    close(); return fail(1,"connection failed or timed out");
+                }
+                if (!insecureMode) {
+                    context <- mobile43_transport.mobile43Transport.context(false,certificate,"");
+                    if (context == null) { close(); return fail(1,"TLS context or certificate failed"); }
+                    secureStream <- mobile43_transport.mobile43Transport.wrap(context,stream,false);
+                    if (secureStream == null) { close(); return fail(1,"TLS handshake rejected"); }
+                    if (pin != "") {
+                        actual >> str <- mobile43_transport.mobile43Transport.fingerprint(secureStream);
+                        valid >> bool <- same(pin,actual); strRelease(actual);
+                        if (!valid) { close(); return fail(1,"certificate pin mismatch"); }
+                    }
+                }
+                if (!hello()) { close(); return false; }
+                return true;
+            }
+            sendFrame(binary >> bool, value >> str) -> bool {
+                count >> int <- strByteLen(value);
+                if (count > MAX_FRAME) return fail(2,"request exceeds frame limit");
+                if (!binary) {
+                    line >> str <- value+"\n";
+                    valid >> bool <- sendBytes(cast(line),count+1); strRelease(line); return valid;
+                }
+                header >> p<byte> <- cast(alloc(4));
+                guard header != null else return fail(2,"frame header allocation failed");
+                mobile43_codec.mobile43Codec.writeLength(header,count);
+                valid >> bool <- sendBytes(header,4) && sendBytes(cast(value),count);
+                free(header); return valid;
+            }
+            receiveFrame(binary >> bool) -> str {
+                data >> p<byte> <- cast(alloc(MAX_FRAME+1));
+                if (data == null) { fail(2,"receive allocation failed"); return ""; }
+                count >> int <- 0; valid >> bool <- true;
+                if (binary) {
+                    valid <- receiveBytes(data,4);
+                    if (valid) {
+                        count <- mobile43_codec.mobile43Codec.readLength(data);
+                        if (count < 0 || count > MAX_FRAME) { free(data); fail(2,"frame length exceeds limit"); return ""; }
+                        valid <- receiveBytes(data,count);
+                    }
+                } else {
+                    while (count <= MAX_FRAME) {
+                        valid <- receiveBytes(off(data,count),1);
+                        if (!valid || rd(off(data,count)) == 10) break;
+                        count += 1;
+                    }
+                    if (count > MAX_FRAME) { free(data); fail(2,"line exceeds frame limit"); return ""; }
+                    while (count > 0) {
+                        if (rd(off(data,count-1)) != 13) break;
+                        count -= 1;
+                    }
+                }
+                if (!valid) { free(data); return ""; }
+                if (!mobile43_codec.mobile43Codec.utf8(data,count)) { free(data); fail(2,"invalid UTF-8 or NUL in protocol text"); return ""; }
+                wr(off(data,count),0); return mobile43_codec.mobile43Codec.owned(data,count);
+            }
+            command(value >> str) -> str {
+                errorCode <- 0;
+                if (stream == null && !connect()) return "";
+                binary >> bool <- framing == "FRAME";
+                if (insecureMode) {
+                    if (!sendFrame(binary,value)) return "";
+                    return receiveFrame(binary);
+                }
+                payload >> str <- mobile43_codec.mobile43Codec.encode(value);
+                envelope >> str <- "REQ|"+session+"|"+renderInt(sequence)+"|"+payload;
+                mac >> str <- signature(envelope);
+                request >> str <- envelope+"|"+mac;
+                valid >> bool <- sendFrame(binary,request);
+                strRelease(payload); strRelease(envelope); strRelease(mac); strRelease(request);
+                if (!valid) return "";
+                response >> str <- receiveFrame(binary);
+                if (errorCode != 0) { strRelease(response); return ""; }
+                number >> str <- renderInt(sequence);
+                valid <- mobile43_codec.mobile43Codec.fields(response) == 5 && mobile43_codec.mobile43Codec.fieldIs(response,0,"RES") &&
+                    mobile43_codec.mobile43Codec.fieldIs(response,1,session) && mobile43_codec.mobile43Codec.fieldIs(response,2,number);
+                strRelease(number);
+                if (!valid) { strRelease(response); fail(1,"invalid response envelope"); return ""; }
+                encoded >> str <- part(response,3);
+                envelope <- "RES|"+session+"|"+renderInt(sequence)+"|"+encoded;
+                mac <- signature(envelope);
+                valid <- mobile43_codec.mobile43Codec.fieldIs(response,4,mac);
+                strRelease(envelope); strRelease(mac); strRelease(response);
+                if (!valid) { strRelease(encoded); fail(1,"response HMAC mismatch"); return ""; }
+                result >> str <- mobile43_codec.mobile43Codec.decode(encoded);
+                if (result == "" && encoded != "") fail(2,"invalid Base64 or UTF-8 response");
+                strRelease(encoded); sequence += 1; return result;
+            }
+            reconnecting(value >> str, retries >> int) -> str {
+                attempt >> int <- 0; delay >> int <- 250;
+                while (attempt <= retries) {
+                    result >> str <- command(value);
+                    if (errorCode == 0) return result;
+                    strRelease(result); close();
+                    if (errorCode != 1 || attempt == retries) return "";
+                    sleepMs(delay); delay <- delay < 4000 ? delay*2 : 4000;
+                    attempt += 1;
+                }
+                return "";
+            }
+            status() -> int { return errorCode; }
+            error() -> str { return errorMessage; }
+    fa: return true;
+}

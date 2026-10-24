@@ -1,0 +1,215 @@
+use <data:json>;
+use <io:render>;
+use <project:cert_json>;
+
+physical43Numeric {
+    const:
+        SIGN_BIT >> i64 <- -9223372036854775807-1;
+        EXPONENT_MASK >> u64 <- 9218868437227405312;
+        FRACTION_MASK >> u64 <- 4503599627370495;
+        HIDDEN_BIT >> u64 <- 4503599627370496;
+        CARRY_BIT >> u64 <- 9007199254740992;
+    fn:
+        private:
+            word(value >> p<byte>, index >> int) -> p<u32> { return cast<u32>(off(value,8+index*4)); }
+            length(value >> p<byte>) -> int { return rd<int>(cast<int>(value)); }
+            setLength(value >> p<byte>, count >> int) -> void { wr<int>(cast<int>(value),count); }
+            big(capacity >> int) -> p<byte> { value >> p<byte> <- cast(calloc(capacity*4+8,1)); if (value != null) { setLength(value,1); wr<u32>(word(value,0),1); } return value; }
+            multiply(value >> p<byte>, factor >> int) -> void {
+                carry >> u64 <- 0; at >> int <- 0; count >> int <- length(value);
+                while (at < count) { product >> u64 <- rd<u32>(word(value,at))*factor+carry; wr<u32>(word(value,at),product & 65535); carry <- product >>> 16; at += 1; }
+                while (carry != 0) { wr<u32>(word(value,count),carry & 65535); carry <- carry >>> 16; count += 1; }
+                setLength(value,count);
+            }
+            addDigit(value >> p<byte>, digit >> int) -> void {
+                carry >> int <- digit; at >> int <- 0; count >> int <- length(value);
+                while (carry != 0 && at < count) { sum >> int <- rd<u32>(word(value,at))+carry; wr<u32>(word(value,at),sum & 65535); carry <- sum >>> 16; at += 1; }
+                if (carry != 0) { wr<u32>(word(value,count),carry); setLength(value,count+1); }
+            }
+            shifted(value >> p<byte>, amount >> int, capacity >> int) -> p<byte> {
+                result >> p<byte> <- cast(calloc(capacity*4+8,1)); if (result == null) return null;
+                words >> int <- amount/16; remainder >> int <- amount%16; carry >> u64 <- 0; at >> int <- 0; count >> int <- length(value);
+                while (at < count) { combined >> u64 <- rd<u32>(word(value,at)); combined <- (combined << remainder)+carry; wr<u32>(word(result,at+words),combined & 65535); carry <- combined >>> 16; at += 1; }
+                count += words;
+                if (carry != 0) { wr<u32>(word(result,count),carry); count += 1; }
+                setLength(result,count); return result;
+            }
+            compare(left >> p<byte>, right >> p<byte>) -> int {
+                a >> int <- length(left); b >> int <- length(right); if (a != b) return a > b ? 1 : -1;
+                at >> int <- a-1; while (at >= 0) { x >> u32 <- rd<u32>(word(left,at)); y >> u32 <- rd<u32>(word(right,at)); if (x != y) return x > y ? 1 : -1; at -= 1; } return 0;
+            }
+            subtract(left >> p<byte>, right >> p<byte>) -> void {
+                at >> int <- 0; borrow >> int <- 0; count >> int <- length(left); other >> int <- length(right);
+                while (at < count) { digit >> int <- rd<u32>(word(left,at)); digit <- digit-borrow; if (at < other) digit <- digit-rd<u32>(word(right,at)); borrow <- digit < 0 ? 1 : 0; wr<u32>(word(left,at),digit & 65535); at += 1; }
+                while (count > 1 && rd<u32>(word(left,count-1)) == 0) { count -= 1; } setLength(left,count);
+            }
+            bitLength(value >> p<byte>) -> int {
+                count >> int <- length(value); last >> u32 <- rd<u32>(word(value,count-1)); result >> int <- (count-1)*16;
+                while (last != 0) { last <- last >>> 1; result += 1; } return result;
+            }
+            parseBits(text >> str) -> u64 {
+                source >> p<byte> <- cast(text); size >> int <- strByteLen(text); at >> int <- 0; sign >> u64 <- 0;
+                if (size > 0 && rd(source) == 45) { sign <- SIGN_BIT; at <- 1; }
+                capacity >> int <- size/4+256; numerator >> p<byte> <- big(capacity); denominator >> p<byte> <- big(capacity);
+                if (numerator == null || denominator == null) { free(numerator); free(denominator); return sign; }
+                wr<u32>(word(numerator,0),0); fractions >> int <- 0; afterPoint >> bool <- false; significant >> int <- 0; nonzero >> bool <- false;
+                while (at < size) {
+                    code >> int <- rd(off(source,at)); if (code == 101 || code == 69) { at += 1; break; }
+                    if (code == 46) afterPoint <- true;
+                    else if (code >= 48 && code <= 57) { multiply(numerator,10); addDigit(numerator,code-48); if (afterPoint) fractions += 1; if (code != 48) nonzero <- true; if (nonzero) significant += 1; }
+                    at += 1;
+                }
+                decimalExponent >> int <- 0; exponentNegative >> bool <- false;
+                if (at < size && (rd(off(source,at)) == 43 || rd(off(source,at)) == 45)) { exponentNegative <- rd(off(source,at)) == 45; at += 1; }
+                while (at < size) { if (decimalExponent < 1000000) decimalExponent <- decimalExponent*10+rd(off(source,at))-48; at += 1; }
+                if (exponentNegative) decimalExponent <- 0-decimalExponent;
+                decimalExponent <- decimalExponent-fractions; decimalOrder >> int <- significant+decimalExponent-1;
+                if (!nonzero || decimalOrder < -324) { free(numerator); free(denominator); return sign; }
+                if (decimalOrder > 308) { free(numerator); free(denominator); return sign | EXPONENT_MASK; }
+                times >> int <- decimalExponent < 0 ? 0-decimalExponent : decimalExponent;
+                while (times > 0) { multiply(decimalExponent < 0 ? denominator : numerator,10); times -= 1; }
+                binaryExponent >> int <- bitLength(numerator)-bitLength(denominator);
+                exponentCheck >> p<byte> <- binaryExponent < 0 ? shifted(numerator,0-binaryExponent,capacity) : shifted(denominator,binaryExponent,capacity);
+                relation >> int <- binaryExponent < 0 ? compare(exponentCheck,denominator) : compare(numerator,exponentCheck); free(exponentCheck);
+                if (relation < 0) binaryExponent -= 1;
+                scale >> int <- binaryExponent < -1022 ? 1074 : 52-binaryExponent;
+                scaled >> p<byte> <- scale >= 0 ? shifted(numerator,scale,capacity) : shifted(denominator,0-scale,capacity);
+                if (scale >= 0) { free(numerator); numerator <- scaled; } else { free(denominator); denominator <- scaled; }
+                significand >> u64 <- 0; bit >> int <- 53; unit >> u64 <- CARRY_BIT;
+                while (bit >= 0) {
+                    divisor >> p<byte> <- shifted(denominator,bit,capacity);
+                    if (compare(numerator,divisor) >= 0) { subtract(numerator,divisor); significand <- significand+unit; }
+                    free(divisor); bit -= 1; unit <- unit/2;
+                }
+                doubled >> p<byte> <- shifted(numerator,1,capacity); halfway >> int <- compare(doubled,denominator); free(doubled);
+                if (halfway > 0 || (halfway == 0 && (significand & 1) != 0)) significand += 1;
+                free(numerator); free(denominator);
+                if (binaryExponent < -1022) return sign | significand;
+                if (significand >= CARRY_BIT) { significand <- significand >>> 1; binaryExponent += 1; }
+                if (binaryExponent > 1023) return sign | EXPONENT_MASK;
+                biased >> u64 <- binaryExponent+1023; return sign | (biased*HIDDEN_BIT) | (significand & FRACTION_MASK);
+            }
+            exponentText(value >> int) -> str {
+                magnitude >> int <- value < 0 ? 0-value : value;
+                return (value < 0 ? "-" : "+")+(magnitude < 10 ? "0" : "")+renderInt(magnitude);
+            }
+            decimal(digits >> str, order >> int, negative >> bool) -> str {
+                body >> str <- ""; size >> int <- strByteLen(digits);
+                if (order < -4 || order >= 16) {
+                    body <- strSubstring(digits,0,1);
+                    if (size > 1) body <- body+"."+strSubstring(digits,1,size-1);
+                    body <- body+"e"+exponentText(order);
+                } else if (order < 0) {
+                    body <- "0."; index >> int <- -1;
+                    while (index > order) { body <- body+"0"; index -= 1; }
+                    body <- body+digits;
+                } else {
+                    point >> int <- order+1;
+                    if (size > point) body <- strSubstring(digits,0,point)+"."+strSubstring(digits,point,size-point);
+                    else { body <- digits; while (size < point) { body <- body+"0"; size += 1; } body <- body+".0"; }
+                }
+                return negative ? "-"+body : body;
+            }
+            candidate(exact >> p<byte>, length >> int, precision >> int, scale >> int, negative >> bool, adjustment >> int) -> str {
+                count >> int <- precision < length ? precision : length;
+                rounded >> p<byte> <- cast(alloc(32)); if (rounded == null) return "";
+                at >> int <- 0;
+                while (at < count) { wr(off(rounded,at),rd(off(exact,length-count+at))); at += 1; }
+                up >> bool <- false;
+                if (length > count) {
+                    first >> int <- rd(off(exact,length-count-1));
+                    rest >> bool <- false; at <- 0;
+                    while (at < length-count-1) { if (rd(off(exact,at)) != 0) rest <- true; at += 1; }
+                    up <- first > 5 || (first == 5 && (rest || (rd(rounded) & 1) != 0));
+                }
+                delta >> int <- adjustment+(up ? 1 : 0); at <- 0;
+                while (delta != 0 && at < count) {
+                    value >> int <- rd(off(rounded,at))+delta;
+                    if (value > 9) { wr(off(rounded,at),0); delta <- 1; }
+                    else if (value < 0) { wr(off(rounded,at),9); delta <- -1; }
+                    else { wr(off(rounded,at),value); delta <- 0; }
+                    at += 1;
+                }
+                order >> int <- length-scale-1;
+                if (delta == 1) { wr(off(rounded,count),1); count += 1; order += 1; }
+                if (delta < 0) { free(rounded); return ""; }
+                if (count > 1 && rd(off(rounded,count-1)) == 0) { count -= 1; order -= 1; }
+                finish >> int <- 0; while (finish+1 < count && rd(off(rounded,finish)) == 0) { finish += 1; }
+                text >> p<byte> <- cast(alloc(count-finish+1)); if (text == null) { free(rounded); return ""; }
+                at <- 0; while (at < count-finish) { wr(off(text,at),48+rd(off(rounded,count-at-1))); at += 1; }
+                wr(off(text,at),0); digits >> str <- cast(text); result >> str <- decimal(digits,order,negative);
+                free(text); free(rounded); return result;
+            }
+        public:
+            integerEqual(model >> int, expected >> i64) -> bool {
+                if (jsonKind(model) == 2) return expected == (jsonGetBoolOr(model,false) ? 1 : 0);
+                if (jsonKind(model) != 3) return false;
+                lexical >> str <- jsonGetNumberText(model);
+                result >> bool <- integerTextEqual(lexical,expected); strRelease(lexical); return result;
+            }
+            integerTextEqual(text >> str, expected >> i64) -> bool {
+                lexical >> str <- strSubstring(text,0,strByteLen(text));
+                floating >> bool <- strContains(lexical,".") || strContains(lexical,"e") || strContains(lexical,"E");
+                if (!floating) { result >> bool <- lexical == renderInt(expected) || (lexical == "-0" && expected == 0); strRelease(lexical); return result; }
+                bits >> u64 <- parseBits(lexical); strRelease(lexical);
+                magnitude >> u64 <- bits & 9223372036854775807;
+                if (magnitude == 0) return expected == 0;
+                negative >> bool <- (bits & SIGN_BIT) != 0;
+                if (negative != (expected < 0)) return false;
+                exponentWide >> u64 <- (bits & EXPONENT_MASK)/HIDDEN_BIT;
+                exponent >> int <- exponentWide;
+                if (exponent == 0 || exponent == 2047) return false;
+                power >> int <- exponent-1023;
+                if (power < 0 || power > 63) return false;
+                significand >> u64 <- (bits & FRACTION_MASK)+HIDDEN_BIT;
+                integer >> u64 <- 0;
+                if (power >= 52) integer <- significand << (power-52);
+                else { shift >> int <- 52-power; mask >> u64 <- (1 << shift)-1; if ((significand & mask) != 0) return false; integer <- significand >>> shift; }
+                expectedMagnitude >> u64 <- expected < 0 ? 0-expected : expected;
+                return integer == expectedMagnitude;
+            }
+            canonical(model >> int) -> str {
+                lexical >> str <- jsonGetNumberText(model);
+                result >> str <- canonicalText(lexical); strRelease(lexical); return result;
+            }
+            canonicalText(text >> str) -> str {
+                lexical >> str <- strSubstring(text,0,strByteLen(text));
+                floating >> bool <- strContains(lexical,".") || strContains(lexical,"e") || strContains(lexical,"E");
+                if (!floating) { if (lexical == "-0") { strRelease(lexical); return "0"; } return lexical; }
+                encoding >> u64 <- parseBits(lexical);
+                negative >> bool <- strStartsWith(lexical,"-");
+                fraction >> u64 <- encoding & FRACTION_MASK;
+                orderWide >> u64 <- (encoding & EXPONENT_MASK)/HIDDEN_BIT; binaryOrder >> int <- orderWide;
+                if (binaryOrder == 2047) { strRelease(lexical); return fraction == 0 ? (negative ? "-Infinity" : "Infinity") : "NaN"; }
+                if (binaryOrder == 0 && fraction == 0) { zeroNegative >> bool <- strStartsWith(lexical,"-"); strRelease(lexical); return zeroNegative ? "-0.0" : "0.0"; }
+                strRelease(lexical);
+                significand >> u64 <- binaryOrder == 0 ? fraction : fraction+HIDDEN_BIT;
+                shift >> int <- binaryOrder == 0 ? -1074 : binaryOrder-1075;
+                scale >> int <- shift < 0 ? 0-shift : 0;
+                exact >> p<byte> <- cast(alloc(1100)); if (exact == null) return "";
+                length >> int <- 0;
+                while (significand > 0) { digitWide >> u64 <- significand%10; wr(off(exact,length),digitWide); significand <- significand/10; length += 1; }
+                // Exact decimal expansion of the binary significand, before shortest-roundtrip selection.
+                repetitions >> int <- shift < 0 ? 0-shift : shift; multiplier >> int <- shift < 0 ? 5 : 2;
+                while (repetitions > 0) {
+                    carry >> int <- 0; at >> int <- 0;
+                    while (at < length) { product >> int <- rd(off(exact,at))*multiplier+carry; wr(off(exact,at),product%10); carry <- product/10; at += 1; }
+                    while (carry > 0) { wr(off(exact,length),carry%10); carry <- carry/10; length += 1; }
+                    repetitions -= 1;
+                }
+                precision >> int <- 1; result >> str <- "";
+                while (precision <= 17 && result == "") {
+                    attempt >> int <- 0;
+                    while (attempt < 3 && result == "") {
+                        adjustment >> int <- attempt == 0 ? 0 : (attempt == 1 ? -1 : 1);
+                        text >> str <- candidate(exact,length,precision,scale,negative,adjustment);
+                        if (text != "" && parseBits(text) == encoding) result <- text;
+                        else strRelease(text);
+                        attempt += 1;
+                    }
+                    precision += 1;
+                }
+                free(exact); return result;
+            }
+    fa: return true;
+}

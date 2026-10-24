@@ -1,0 +1,233 @@
+use <io:output, std>;
+use <process:args, command, env>;
+use <memory:ptr, heap>;
+
+nvidia_control :: runtime {
+    const:
+        COMMAND_BYTES >> int <- 4096;
+        TIMEOUT_MS >> int <- 15000;
+    type:
+        Plan {
+            data >> p<byte>;
+            length >> int;
+            mutates >> bool;
+        }
+    stc:
+        plan >> Plan;
+    fn:
+        private:
+            append(value >> str) -> bool {
+                bytes >> p<byte> <- cast(value);
+                destination >> p<byte> <- plan.data;
+                length >> int <- strByteLen(value);
+                guard length <= COMMAND_BYTES - plan.length - 1 else return false;
+                cp(off(destination, plan.length), bytes, length);
+                plan.length <- plan.length + length;
+                wr(off(destination, plan.length), 0);
+                return true;
+            }
+            unsignedNumber(value >> str) -> int {
+                length >> int <- strByteLen(value);
+                guard length > 0 && length <= 9 else return -1;
+                bytes >> p<byte> <- cast(value);
+                total >> int <- 0;
+                index >> int <- 0;
+                while (index < length) {
+                    digit >> int <- rd(off(bytes, index));
+                    guard digit >= 48 && digit <= 57 else return -1;
+                    total <- total * 10 + digit - 48;
+                    index += 1;
+                }
+                return total;
+            }
+            uuid(value >> str) -> bool {
+                guard strByteLen(value) == 40 else return false;
+                bytes >> p<byte> <- cast(value);
+                guard rd(bytes) == 71 && rd(off(bytes, 1)) == 80 &&
+                    rd(off(bytes, 2)) == 85 && rd(off(bytes, 3)) == 45 else return false;
+                index >> int <- 4;
+                while (index < 40) {
+                    code >> int <- rd(off(bytes, index));
+                    if (index == 12 || index == 17 || index == 22 || index == 27) {
+                        guard code == 45 else return false;
+                    } else {
+                        guard ((code >= 48 && code <= 57) ||
+                            (code >= 65 && code <= 70) ||
+                            (code >= 97 && code <= 102)) else return false;
+                    }
+                    index += 1;
+                }
+                return true;
+            }
+            help() -> void {
+                println("nvidia_control: nC, proveedor NVIDIA por proceso nativo.");
+                println("  probe");
+                println("  capabilities UUID");
+                println("  supported UUID");
+                println("  lock UUID graphics|memory MIN_MHz MAX_MHz [--apply]");
+                println("  defaults UUID graphics|memory [--apply]");
+                println("  self-test");
+                println("Sin --apply, lock/defaults solo muestran el comando.");
+                println("No hay control de voltaje, offsets OC ni CPU en este proveedor.");
+            }
+            prepare(args >> addr) -> bool {
+                count >> int <- argsCount(args);
+                action >> str <- argsAt(args, 1);
+                if (action == "probe") {
+                    guard count == 2 else return false;
+                    return append(" --query-gpu=index,uuid,name,driver_version,clocks.current.graphics,clocks.current.memory,temperature.gpu,power.draw --format=csv");
+                }
+                guard count >= 3 && uuid(argsAt(args, 2)) else return false;
+                guard append(" --id=") && append(argsAt(args, 2)) else return false;
+                if (action == "capabilities") {
+                    guard count == 3 else return false;
+                    return append(" -q -d CLOCK,POWER,TEMPERATURE");
+                }
+                if (action == "supported") {
+                    guard count == 3 else return false;
+                    return append(" -q -d SUPPORTED_CLOCKS");
+                }
+                guard count >= 4 else return false;
+                kind >> str <- argsAt(args, 3);
+                guard kind == "graphics" || kind == "memory" else return false;
+                if (action == "lock") {
+                    guard count == 6 || count == 7 else return false;
+                    low >> int <- unsignedNumber(argsAt(args, 4));
+                    high >> int <- unsignedNumber(argsAt(args, 5));
+                    guard low > 0 && high >= low else return false;
+                    if (count == 7) {
+                        guard argsAt(args, 6) == "--apply" else return false;
+                        plan.mutates <- true;
+                    }
+                    option >> str <- kind == "graphics" ? " --lock-gpu-clocks=" : " --lock-memory-clocks=";
+                    return append(option) && append(argsAt(args, 4)) &&
+                        append(",") && append(argsAt(args, 5));
+                }
+                if (action == "defaults") {
+                    guard count == 4 || count == 5 else return false;
+                    if (count == 5) {
+                        guard argsAt(args, 4) == "--apply" else return false;
+                        plan.mutates <- true;
+                    }
+                    return append(kind == "graphics" ? " --reset-gpu-clocks" : " --reset-memory-clocks");
+                }
+                return false;
+            }
+            execute(line >> str, mutation >> bool) -> int {
+                // Explicit standard handles also preserve redirected terminal output.
+                child >> addr <- commandOpen(line, "", stdIn(), stdOut(), stdErr(), 134217728);
+                if (child == null) { println("error=process-allocation"); return 70; }
+                if (!commandStarted(child)) {
+                    commandRelease(child);
+                    println("error=nvidia-smi-start-failed");
+                    return 70;
+                }
+                waited >> int <- commandWait(child, TIMEOUT_MS);
+                if (waited != 0) {
+                    stopped >> bool <- commandTerminate(child, 124);
+                    reaped >> int <- commandWait(child, 3000);
+                    commandRelease(child);
+                    if (!stopped || reaped != 0) { println("error=termination-unconfirmed"); }
+                    if (mutation) { println("hardware.state=unknown-after-timeout"); }
+                    println("error=process-timeout-or-wait-failure");
+                    return 124;
+                }
+                code >> int <- commandExitCode(child);
+                commandRelease(child);
+                if (mutation) {
+                    println("hardware.frequency_verified=false");
+                    println("La salida y el codigo anterior pertenecen al controlador NVIDIA.");
+                }
+                return code;
+            }
+            selfTest() -> int {
+                good >> bool <- unsignedNumber("0") == 0 &&
+                    unsignedNumber("999999999") == 999999999 &&
+                    unsignedNumber("") == -1 && unsignedNumber("-1") == -1 &&
+                    unsignedNumber("1x") == -1 && unsignedNumber("1000000000") == -1;
+                good <- good && uuid("GPU-01234567-89ab-cdef-0123-456789abcdef") &&
+                    !uuid("GPU-01234567-89ab-cdef-0123-456789abcdeg") &&
+                    !uuid("GPU-01234567-89ab-cdef-0123-456789abcdef --apply") &&
+                    !uuid("0");
+                storage >> p<byte> <- cast(alloc(COMMAND_BYTES));
+                guard storage != null else return 70;
+                plan.data <- storage;
+                plan.length <- 0;
+                plan.mutates <- false;
+                wr(storage, 0);
+                good <- good && append("A") && append("BC");
+                content >> str <- cast(storage);
+                good <- good && plan.length == 3 && content == "ABC";
+                plan.length <- COMMAND_BYTES - 1;
+                wr(off(storage, COMMAND_BYTES - 1), 126);
+                good <- good && !append("x") && rd(off(storage, COMMAND_BYTES - 1)) == 126;
+                good <- good && append("") && rd(off(storage, COMMAND_BYTES - 1)) == 0;
+                free(storage);
+                plan.data <- null;
+                plan.length <- 0;
+                if (good) { println("self-test=passed; hardware.writes=0"); return 0; }
+                println("self-test=failed");
+                return 1;
+            }
+            launch(args >> addr) -> int {
+                if (argsCount(args) == 1 || (argsCount(args) == 2 && argsAt(args, 1) == "--help")) {
+                    help();
+                    return 0;
+                }
+                if (argsCount(args) == 2 && argsAt(args, 1) == "self-test") { return selfTest(); }
+                if (argsAt(args, 1) == "offset" || argsAt(args, 1) == "voltage" || argsAt(args, 1) == "cpu") {
+                    println("error=unsupported-provider; hardware.writes=0");
+                    return 69;
+                }
+                guard envHas("WINDIR") else return 69;
+                storage >> p<byte> <- cast(alloc(COMMAND_BYTES));
+                plan.data <- storage;
+                plan.length <- 0;
+                plan.mutates <- false;
+                guard plan.data != null else return 70;
+                wr(storage, 0);
+                path >> p<byte> <- cast(alloc(1024));
+                if (path == null) { free(plan.data); return 70; }
+                size >> int <- envExpand("%SystemRoot%\\System32\\nvidia-smi.exe", adr(path), 1024);
+                if (size <= 0 || size >= 1024) { free(path); free(plan.data); return 70; }
+                location >> str <- cast(path);
+                if (strContains(location, "\"")) { free(path); free(plan.data); return 70; }
+                built >> bool <- append("\"") && append(location) && append("\"") && prepare(args);
+                free(path);
+                if (!built) {
+                    free(plan.data);
+                    println("error=invalid-command; hardware.writes=0");
+                    help();
+                    return 64;
+                }
+                line >> str <- cast(plan.data);
+                action >> str <- argsAt(args, 1);
+                modifying >> bool <- action == "lock" || action == "defaults";
+                code >> int <- 0;
+                if (modifying && !plan.mutates) {
+                    println("mode=dry-run; hardware.writes=0");
+                    println(line);
+                    println("No se ha consultado si el dispositivo admite estos valores.");
+                } else {
+                    if (plan.mutates) {
+                        println("mode=apply; hardware.write_requested=true");
+                        if (action == "defaults") { println("Defaults no restaura un perfil personalizado anterior."); }
+                    }
+                    code <- execute(line, plan.mutates);
+                }
+                free(plan.data);
+                return code;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                guard args != null else return 70;
+                if (argsError(args) != 0) { argsRelease(args); return 70; }
+                code >> int <- launch(args);
+                argsRelease(args);
+                return code;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

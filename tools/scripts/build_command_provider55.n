@@ -1,0 +1,135 @@
+use <io:output, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildCommandProvider55 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                at >> int <- 1;
+                while (at+1 < argsCount(arguments)) { if (argsAt(arguments,at) == name) return argsAt(arguments,at+1); at += 1; }
+                return fallback;
+            }
+            parent(path >> str) -> str {
+                at >> int <- strByteLen(path)-1;
+                while (at >= 0) { code >> byte <- rd<byte>(off(cast<byte>(path),at)); if (code == 47 || code == 92) return at == 0 ? "/" : strSubstring(path,0,at); at -= 1; }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                above >> str <- parent(path); if (above == path || !mkdir(above)) return false;
+                createDir(path); return exists(path);
+            }
+            quoted(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            copied(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source); if (bytes <= 0 || bytes > 4194304) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes)); if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes && fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child); waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child); commandRelease(child);
+                if (!started || waited != 0 || code != 0) { println("command provider build failed: "+line); return false; }
+                return true;
+            }
+            name(id >> int) -> str {
+                if (id == 1) return "commandOpen";
+                if (id == 2) return "commandStarted";
+                if (id == 3) return "commandWait";
+                if (id == 4) return "commandExitCode";
+                if (id == 5) return "commandTerminate";
+                if (id == 6) return "commandProcessHandle";
+                if (id == 7) return "commandThreadHandle";
+                if (id == 8) return "commandId";
+                if (id == 9) return "commandThreadId";
+                if (id == 10) return "commandError";
+                if (id == 11) return "commandRelease";
+                if (id == 12) return "commandPipeOpen";
+                if (id == 13) return "commandPipeReadHandle";
+                if (id == 14) return "commandPipeWriteHandle";
+                if (id == 15) return "commandPipeRead";
+                if (id == 16) return "commandPipeWrite";
+                if (id == 17) return "commandPipeCloseRead";
+                if (id == 18) return "commandPipeCloseWrite";
+                if (id == 19) return "commandPipeError";
+                return "commandPipeRelease";
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                root >> str <- option(arguments,"--root",".");
+                out >> str <- option(arguments,"--out","target/frontend55/providers");
+                base >> str <- option(arguments,"--base",root+"/target/tmp/frontend54-providers-r2/"+(windows ? "windows" : "linux"));
+                ncc >> str <- option(arguments,"--ncc",windows ? root+"/target/debug/ncc.exe" : "ncc");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                heap >> str <- option(arguments,"--heap",root+"/docs/evidence/frontend48/providers/"+(windows ? "windows/heap.exports.obj" : "linux/heap.exports.o"));
+                support >> str <- option(arguments,"--compiler-support","C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+                kernel >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                if (quoted(root) == "" || quoted(out) == "" || quoted(base) == "" || quoted(ncc) == "" || quoted(linker) == "" || quoted(objcopy) == "" || quoted(heap) == "" || quoted(support) == "" || quoted(kernel) == "") return 64;
+                project >> str <- out+"/project";
+                if (!mkdir(project+"/src")) return 73;
+                if (!copied(root+"/tools/tests/command_provider_probe55.n",project+"/main.n") ||
+                    !copied(root+"/runtime/nc/command_provider.n",project+"/src/command_provider.n") ||
+                    !copied(root+"/runtime/nc/command_host_"+(windows ? "windows.n" : "linux.n"),project+"/src/command_host.n")) return 74;
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                if (!invoke(quoted(ncc)+" project sync "+quoted(project)+" --main main.n --target "+target,windows) ||
+                    !invoke(quoted(ncc)+" project graph "+quoted(project)+" --main main.n --target "+target,windows)) return 1;
+                suffix >> str <- windows ? ".obj" : ".o";
+                objects >> str <- project+"/.ncc/obj/"+(windows ? "x86_64_pc_windows_msvc" : "x86_64_unknown_linux_gnu");
+                rename >> str <- ""; exports >> str <- ""; version >> str <- "NC_RUNTIME_55 { global: ";
+                id >> int <- 1;
+                while (id <= 20) {
+                    symbol >> str <- "nC.runtime.command."+name(id);
+                    rename += " --redefine-sym commandProvider_provider_command_"+name(id)+"="+symbol;
+                    exports += " /export:"+symbol; version += "\""+symbol+"\"; "; id += 1;
+                }
+                rename += " --redefine-sym commandProvider_provider_std_stdIn=nC.runtime.std.stdIn"+
+                    " --redefine-sym commandProvider_provider_std_stdOut=nC.runtime.std.stdOut"+
+                    " --redefine-sym commandProvider_provider_std_stdErr=nC.runtime.std.stdErr"+
+                    " --redefine-sym malloc=nC.runtime.heap.alloc --redefine-sym calloc=nC.runtime.heap.calloc --redefine-sym free=nC.runtime.heap.free ";
+                exports += " /export:nC.runtime.std.stdIn /export:nC.runtime.std.stdOut /export:nC.runtime.std.stdErr";
+                version += "\"nC.runtime.std.stdIn\"; \"nC.runtime.std.stdOut\"; \"nC.runtime.std.stdErr\"; ";
+                exported >> str <- out+"/command.exports"+suffix;
+                if (!invoke(quoted(objcopy)+rename+quoted(objects+"/command_provider"+suffix)+" "+quoted(exported),windows)) return 1;
+                host >> str <- out+"/command_host.exports"+suffix;
+                if (!invoke(quoted(objcopy)+" --redefine-sym malloc=nC.runtime.heap.alloc --redefine-sym calloc=nC.runtime.heap.calloc --redefine-sym free=nC.runtime.heap.free "+quoted(objects+"/command_host"+suffix)+" "+quoted(host),windows)) return 1;
+                baseObjects >> str <- base+"/project/.ncc/obj/"+(windows ? "x86_64_pc_windows_msvc" : "x86_64_unknown_linux_gnu");
+                inputs >> str <- " "+quoted(base+"/output.exports"+suffix)+" "+quoted(base+"/render.exports"+suffix)+
+                    " "+quoted(base+"/string_length.exports"+suffix)+" "+quoted(base+"/json.exports"+suffix)+
+                    " "+quoted(baseObjects+"/output_host"+suffix)+" "+quoted(heap)+" "+quoted(exported)+" "+quoted(host);
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                mapBytes >> int <- fsSize(base+"/runtime.exports.map");
+                if (windows) {
+                    oldExports >> str <- " /export:nC.runtime.heap.alloc /export:nC.runtime.heap.calloc /export:nC.runtime.heap.realloc /export:nC.runtime.heap.free"+
+                        " /export:nC.runtime.output.print /export:nC.runtime.output.println /export:nC.runtime.output.flush /export:nC.runtime.output.writeBytes"+
+                        " /export:nC.runtime.render.renderInt /export:nC.runtime.render.renderBool /export:nC.runtime.render.renderChar /export:nC.runtime.render.renderStr"+
+                        " /export:nC.runtime.string.strByteLen /export:nC.runtime.string.strLen /export:nC.runtime.string.len";
+                    jsonNames >> str <- "jsonNewBool jsonObjectSet jsonNewObject jsonRelease jsonGetBool jsonKind jsonObjectBorrow jsonObjectLen jsonObjectHas jsonObjectGet jsonClone jsonNewNull jsonNewInt jsonNewString jsonNewArray jsonArrayPush jsonArrayBorrow jsonArrayLen jsonGetInt jsonStringView jsonObjectRemove jsonEquals jsonObjectKeyAt jsonStringify";
+                    at >> int <- 0; start >> int <- 0; bytes >> int <- strByteLen(jsonNames);
+                    while (at <= bytes) {
+                        if (at == bytes || rd<byte>(off(cast<byte>(jsonNames),at)) == 32) { oldExports += " /export:nC.runtime.json."+strSubstring(jsonNames,start,at-start); start <- at+1; }
+                        at += 1;
+                    }
+                    if (!invoke(quoted(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:"+quoted(artifact)+oldExports+exports+inputs+" "+quoted(kernel)+" "+quoted(support),windows)) return 1;
+                } else {
+                    if (mapBytes <= 0 || !copied(base+"/runtime.exports.map",out+"/runtime.exports.map")) return 74;
+                    version += "} NC_RUNTIME_54;\n";
+                    if (fsWriteFrom(out+"/runtime.exports.map",cast<byte>(version),strByteLen(version),true) != strByteLen(version)) return 74;
+                    if (!invoke(quoted(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+quoted(out+"/runtime.exports.map")+" -o "+quoted(artifact)+inputs+" -lc",windows)) return 1;
+                }
+                println("command provider built from nC: "+artifact); return fsSize(artifact) > 0 ? 0 : 74;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

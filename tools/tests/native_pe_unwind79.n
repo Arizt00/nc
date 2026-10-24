@@ -1,0 +1,91 @@
+use <io:output>;
+
+nativePeUnwind79 {
+    const:
+        PAGE >> int <- 4096;
+        CONTEXT_RSP >> int <- 152;
+        CONTEXT_RIP >> int <- 248;
+    same(data >> p<byte>, text >> str, bytes >> int) -> bool {
+        at >> int <- 0;
+        while (at < bytes) { if (rd(off(data,at)) != rd(off(cast<byte>(text),at))) return false; at += 1; }
+        return rd(off(data,bytes)) == 0;
+    }
+    exportAt(base >> p<byte>, name >> str) -> addr {
+        if (base == null || rd<u16>(base) != 0x5A4D) return null;
+        pe >> int <- rd<u32>(off(base,60));
+        if (pe < 64 || pe > 1048576 || rd<u32>(off(base,pe)) != 0x4550) return null;
+        optional >> int <- pe+24;
+        if (rd<u16>(off(base,optional)) != 0x20B) return null;
+        bytes >> int <- rd<u32>(off(base,optional+56));
+        table >> int <- rd<u32>(off(base,optional+112));
+        span >> int <- rd<u32>(off(base,optional+116));
+        if (bytes <= optional+120 || table < 1 || table > bytes-40 || span < 40 || span > bytes-table) return null;
+        functions >> int <- rd<u32>(off(base,table+20)); names >> int <- rd<u32>(off(base,table+24));
+        eat >> int <- rd<u32>(off(base,table+28)); ent >> int <- rd<u32>(off(base,table+32));
+        eot >> int <- rd<u32>(off(base,table+36));
+        if (functions < 1 || functions > 65536 || names < 1 || names > 65536 || eat < 1 ||
+            ent < 1 || eot < 1 || eat > bytes-functions*4 || ent > bytes-names*4 || eot > bytes-names*2) return null;
+        at >> int <- 0; width >> int <- strByteLen(name);
+        while (at < names) {
+            spelling >> int <- rd<u32>(off(base,ent+at*4));
+            if (spelling > 0 && spelling < bytes-width && same(off(base,spelling),name,width)) {
+                ordinal >> int <- rd<u16>(off(base,eot+at*2));
+                if (ordinal >= functions) return null;
+                target >> int <- rd<u32>(off(base,eat+ordinal*4));
+                if (target <= 0 || target >= bytes || (target >= table && target < table+span)) return null;
+                return adr(off(base,target));
+            }
+            at += 1;
+        }
+        return null;
+    }
+    moduleSymbol(peb >> p<byte>, name >> str) -> addr {
+        // Test-only Windows AMD64 loader offsets, not a portable runtime API.
+        loader >> p<byte> <- rd<p<byte>>(off(peb,24));
+        if (loader == null) return null;
+        head >> p<byte> <- off(loader,32); link >> p<byte> <- rd<p<byte>>(head); at >> int <- 0;
+        while (link != null && link != head && at < 512) {
+            base >> p<byte> <- rd<p<byte>>(off(link,32)); target >> addr <- exportAt(base,name);
+            if (target != null) return target;
+            link <- rd<p<byte>>(link); at += 1;
+        }
+        return null;
+    }
+    run() -> int {
+        code >> p<byte> <- vmReserve(null,PAGE,0);
+        if (code == null || !vmCommit(code,PAGE,vmReadWriteProtection())) return 1;
+        reader >> array<byte,10> <- [101,72,139,4,37,96,0,0,0,195];
+        cp(code,cast<byte>(&reader),10);
+        if (!vmExecutable(code,PAGE)) return 2;
+        getPeb >> fn() -> p<byte> <- cast(code); peb >> p<byte> <- getPeb();
+        if (!vmRelease(code,PAGE) || peb == null) return 3;
+        base >> p<byte> <- rd<p<byte>>(off(peb,16));
+        lookupAddress >> addr <- moduleSymbol(peb,"RtlLookupFunctionEntry");
+        unwindAddress >> addr <- moduleSymbol(peb,"RtlVirtualUnwind");
+        if (base == null || lookupAddress == null || unwindAddress == null) return 4;
+        pe >> int <- rd<u32>(off(base,60)); entry >> int <- rd<u32>(off(base,pe+40));
+        lookup >> fn(addr,p<addr>,addr) -> addr <- cast(lookupAddress);
+        imageBase >> addr <- null; pc >> addr <- adr(off(base,entry+4));
+        descriptor >> addr <- lookup(pc,&imageBase,null);
+        if (descriptor == null || imageBase != adr(base)) return 5;
+        record >> p<byte> <- cast(descriptor);
+        if (rd<u32>(record) != entry || rd<u32>(off(record,4)) != entry+19) return 6;
+        metadata >> p<byte> <- off(base,rd<u32>(off(record,8)));
+        if (rd<u32>(metadata) != 0x00010401 || rd<u32>(off(metadata,4)) != 0x00004204) return 7;
+        context >> p<byte> <- vmReserve(null,PAGE,0); stack >> p<byte> <- vmReserve(null,PAGE,0);
+        if (context == null || stack == null || !vmCommit(context,PAGE,vmReadWriteProtection()) ||
+            !vmCommit(stack,PAGE,vmReadWriteProtection())) return 8;
+        at >> int <- 0; while (at < PAGE) { wr(off(context,at),0); at += 1; }
+        rsp >> addr <- adr(off(stack,128)); sentinel >> u64 <- 0x1122334455667788;
+        wr<u32>(off(context,48),0x100001); wr<addr>(off(context,CONTEXT_RSP),rsp);
+        wr<addr>(off(context,CONTEXT_RIP),pc); wr<u64>(off(stack,168),sentinel);
+        handler >> addr <- null; frame >> addr <- null;
+        unwind >> fn(u32,addr,addr,addr,addr,addr,addr,addr) -> addr <- cast(unwindAddress);
+        unwind(0,imageBase,pc,descriptor,adr(context),adr(&handler),adr(&frame),null);
+        valid >> bool <- rd<u64>(off(context,CONTEXT_RIP)) == sentinel && rd<addr>(off(context,CONTEXT_RSP)) == rsp+48;
+        if (!vmRelease(context,PAGE) || !vmRelease(stack,PAGE) || !valid) return 9;
+        println("native-pe-unwind-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

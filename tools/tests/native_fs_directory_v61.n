@@ -1,0 +1,38 @@
+use <io:output>;
+use <process:args>;
+
+nativeFsDirectoryV61 {
+    fn:
+        private:
+            make(path >> str) -> Result<bool, FsError> { return createDir(path); }
+            runAt(root >> str, file >> str) -> int {
+                guard !exists(root) && exists(file) && exists(".") else return 1;
+                created >> Result<bool, FsError> <- make(root);
+                guard isOk(created) && !isErr(created) && rd<u64>(cast<u64>(&created)) == 3 && exists(root) else return 2;
+                repeated >> Result<bool, FsError> <- createDir(root);
+                guard isErr(repeated) && !isOk(repeated) && rd<u64>(cast<u64>(&repeated)) == 2 else return 3;
+                onFile >> Result<bool, FsError> <- createDir(file);
+                missing >> str <- root+"/missing/child";
+                onMissing >> Result<bool, FsError> <- createDir(missing);
+                guard isErr(onFile) && isErr(onMissing) && !exists(missing) else return 4;
+                empty >> Result<bool, FsError> <- createDir("");
+                absent >> Result<bool, FsError> <- createDir(null);
+                guard isErr(empty) && isErr(absent) && !exists("") && !exists(null) else return 5;
+                child >> str <- root+"/child";
+                guard isOk(createDir(child)) && exists(child) else return 6;
+                // Existence is a query, not a reservation or a directory-only predicate.
+                at >> int <- 0;
+                while (at < 2048) { guard exists(root) && exists(file) else return 7; at += 1; }
+                guard strRelease(missing) && strRelease(child) else return 8;
+                println("fs directory ok");
+                return 161;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                code >> int <- argsCount(arguments) == 3 ? runAt(argsAt(arguments,1),argsAt(arguments,2)) : 64;
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

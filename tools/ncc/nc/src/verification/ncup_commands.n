@@ -1,0 +1,39 @@
+use <data:json>;
+use <project:ncup_session, release_io>;
+
+ncupCommands {
+    fn:
+        private:
+            step(name >> str, arguments >> str) -> void {
+                row >> int <- ncup_session.ncupSession.run(arguments);
+                ncup_session.ncupSession.record(name+"_ok",ncup_session.ncupSession.ok(row));
+            }
+        public:
+            inspect() -> void {
+                step("ncup_init","[\"ncup\",\"init\",\"--home\",\"$home\",\"--profile\",\"default\",\"--force\"]");
+                step("install_stable","[\"ncup\",\"install\",\"stable\",\"--home\",\"$home\"]");
+                step("default_stable","[\"ncup\",\"default\",\"stable\",\"--home\",\"$home\"]");
+                step("toolchain_list","[\"ncup\",\"toolchain\",\"list\",\"--home\",\"$home\"]");
+                step("toolchain_install_windows","[\"ncup\",\"toolchain\",\"install\",\"stable-x86_64-pc-windows-msvc\",\"--home\",\"$home\"]");
+                step("target_add_wasi","[\"ncup\",\"target\",\"add\",\"wasm32-wasi\",\"--home\",\"$home\"]");
+                step("component_add_nclsp","[\"ncup\",\"component\",\"add\",\"nclsp\",\"--home\",\"$home\"]");
+                step("override_set_stable","[\"ncup\",\"override\",\"set\",\"stable\",\"--cwd\",\"$project\"]");
+                step("update","[\"ncup\",\"update\",\"--home\",\"$home\"]");
+                step("self_update","[\"ncup\",\"self\",\"update\",\"--home\",\"$home\"]");
+                step("doctor","[\"ncup\",\"doctor\",\"--home\",\"$home\"]");
+                step("uninstall","[\"ncup\",\"uninstall\",\"--home\",\"$home\"]");
+                home >> str <- ncup_session.ncupSession.homePath();
+                override >> str <- ncup_session.ncupSession.projectPath()+"/nc-toolchain.toml";
+                ncup_session.ncupSession.record("override_file_created",release_io.releaseIo.fileType(override) == 1);
+                ncup_session.ncupSession.record("override_contains_toolchain_id",strContains(release_io.releaseIo.text(override),"id = \""));
+                statePath >> str <- home+"/manifests/toolchains.v1.json";
+                state >> int <- jsonParseFile(statePath);
+                installed >> int <- jsonObjectGet(state,"installed_toolchains");
+                count >> int <- jsonArrayLen(installed);
+                ncup_session.ncupSession.record("state_manifest_present",release_io.releaseIo.fileType(statePath) == 1);
+                ncup_session.ncupSession.record("remaining_toolchains_after_uninstall",jsonKind(installed) == 5 && count >= 1);
+                ncup_session.ncupSession.record("self_update_manifest_present",release_io.releaseIo.fileType(home+"/manifests/self-update.v1.json") == 1);
+                jsonRelease(installed); jsonRelease(state);
+            }
+    fa: return true;
+}

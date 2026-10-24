@@ -1,0 +1,50 @@
+use <collections:result>;
+use <memory:ptr, map>;
+
+memoryMapVariants :: runtime {
+    stc:
+        p >> p<byte>;
+        q >> p<byte>;
+        target >> addr;
+        ok >> bool <- true;
+
+    fn:
+        run() -> bool {
+            p <- unwrap(mapShared(4096, 3));
+            ok <- ok && wr(p, 11) && rd(p) == 11;
+            ok <- ok && unwrap(mapSync(p, 0));
+            ok <- ok && unwrap(unmap(p));
+
+            p <- unwrap(mapPrivate(4096, 3));
+            ok <- ok && unwrap(mapAdvise(p, 1));
+            ok <- ok && unwrap(mapAdvise(p, 2));
+            ok <- ok && unwrap(mapAdvise(p, 3));
+            ok <- ok && unwrap(mapAdvise(p, 4));
+            ok <- ok && unwrap(unmap(p));
+
+            q <- unwrap(mapAnonymous(8192, 3, 2));
+            target <- adr(q);
+            ok <- ok && unwrap(unmap(q));
+            p <- unwrap(mapAt(target, 8192, 3, 2));
+            ok <- ok && mapAddress(off(p, 128)) == p;
+            ok <- ok && mapLen(off(p, 128)) == 8192;
+            ok <- ok && unwrap(unmap(p));
+
+            q <- unwrap(map(8192));
+            target <- adr(q);
+            p <- unwrap(map(4096));
+            ok <- ok && wr(p, 91);
+            ok <- ok && unwrap(unmap(q));
+            p <- unwrap(remapAt(p, 8192, target));
+            ok <- ok && rd(p) == 91;
+            ok <- ok && mapLen(p) == 8192;
+            ok <- ok && unwrap(unmap(p));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

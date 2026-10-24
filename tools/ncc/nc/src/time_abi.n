@@ -1,0 +1,33 @@
+nccTimeAbi {
+    fn:
+        internal:
+            same(data >> p<byte>, bytes >> int, text >> str, count >> int) -> bool {
+                if (data == null || bytes != count) return false;
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(data,at)) != rd<byte>(off(cast<byte>(text),at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            resolve(name >> p<byte>, bytes >> int) -> int {
+                if (same(name,bytes,"sleepMs",7)) return 1;
+                if (same(name,bytes,"monotonicMs",11)) return 2;
+                if (same(name,bytes,"timestamp",9)) return 3;
+                if (same(name,bytes,"nowMs",5)) return 4;
+                if (same(name,bytes,"now",3)) return 5;
+                return 0;
+            }
+            owned(name >> p<byte>, bytes >> int, owner >> p<byte>, ownerBytes >> int) -> int {
+                id >> int <- resolve(name,bytes);
+                if (id == 1 && same(owner,ownerBytes,"sleep",5)) return id;
+                if (id >= 2 && id <= 5 && same(owner,ownerBytes,"time",4)) return id;
+                return 0;
+            }
+            arity(id >> int) -> int { return id == 1 ? 1 : (id >= 2 && id <= 5 ? 0 : -1); }
+            argumentCode(id >> int, index >> int) -> int { return id == 1 && index == 0 ? 20 : -1; }
+            resultCode(id >> int) -> int { return id == 1 ? 0 : (id >= 2 && id <= 5 ? 20 : -1); }
+            ownerData(id >> int) -> p<byte> { return cast<byte>(id == 1 ? "sleep" : "time"); }
+            ownerBytes(id >> int) -> int { return id == 1 ? 5 : 4; }
+    fa: return true;
+}

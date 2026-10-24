@@ -1,0 +1,74 @@
+use <project:api>;
+use <io:output>;
+
+signatureMain70 {
+    const:
+        EXPECTED >> int <- 228;
+    type:
+        Packet { public: value >> int; flags >> byte; }
+        WidePacket { public: left >> i64; right >> i64; layout: repr(C); align(16); }
+        Node { public: value >> int; next >> p<Node>; }
+    stc:
+        runs >> int <- 0;
+    local:
+        failures >> int <- 0;
+    run() -> int {
+        tiny >> byte <- 200;
+        word >> u16 <- 65000;
+        value >> int <- -123;
+        big >> i64 <- -4294967296;
+        if (rd(api.signatureApi70.bytes(&tiny)) != 200) return 1;
+        if (rd(api.signatureApi70.words(&word)) != 65000) return 2;
+        wr(api.signatureApi70.integers(&value),41);
+        if (rd(api.signatureApi70.integers(&value)) != 41) return 3;
+        if (rd(api.signatureApi70.wide(&big)) != -4294967296) return 4;
+        pointer >> p<byte> <- &tiny;
+        indirect >> p<byte> <- rd(api.signatureApi70.nested(&pointer));
+        if (rd(indirect) != 200) return 5;
+        wr(rd(api.signatureApi70.nested(&pointer)),201);
+        if (tiny != 201) return 6;
+        values >> array<int,3> <- [7,11,13];
+        arrayPointer >> p<array<int,3>> <- api.signatureApi70.cells(&values);
+        if (rd<int>(cast<int>(arrayPointer)) != 7) return 7;
+        record >> Packet <- Packet(value:42,flags:9);
+        if (api.signatureApi70.packet(&record).value != 42 || api.signatureApi70.packet(&record).flags != 9) return 8;
+        if (api.signatureApi70.signed(big) != -2147483648 || api.signatureApi70.text("types") != "types") return 9;
+        made >> Packet <- api.signatureApi70.make(31);
+        if (made.value != 31 || made.flags != 7) return 11;
+        pair >> WidePacket <- WidePacket(left:4294967296,right:77);
+        changed >> WidePacket <- api.signatureApi70.transform(pair);
+        if (changed.left != 4294967297 || changed.right != 76) return 12;
+        count >> int <- 0;
+        while (count < 10000) {
+            if (rd(api.signatureApi70.integers(&value)) != 41) return 13;
+            count += 1;
+        }
+        if (api.signatureApi70.recurse(&value,15) != 56) return 14;
+        doubled >> fn(int) -> int <- api.signatureApi70.callback();
+        if (doubled(21) != 42 || api.signatureApi70.invoke(doubled,9) != 18) return 15;
+        if (api.signatureApi70.invoke(&api.signatureApi70.twice,11) != 22) return 16;
+        seven >> fn(i64,i64,i64,i64,i64,i64,i64) -> i64 <- api.signatureApi70.wideCallback();
+        if (seven(4294967296,2,3,4,5,6,7) != 4294967323) return 17;
+        transform >> fn(WidePacket) -> WidePacket <- api.signatureApi70.recordCallback();
+        indirectPair >> WidePacket <- api.signatureApi70.applyRecord(transform,pair);
+        if (indirectPair.left != 4294967297 || indirectPair.right != 76) return 18;
+        api.signatureApi70.writePacket(&record,made);
+        loaded >> Packet <- api.signatureApi70.readPacket(&record);
+        if (loaded.value != 31 || loaded.flags != 7 || rd(api.signatureApi70.packet(&record)).value != 31) {
+            println(loaded.value); println(loaded.flags); println(record.value); println(record.flags); return 19;
+        }
+        if (rd(api.signatureApi70.identity<byte>(&tiny)) != 201 || rd(api.signatureApi70.identity<int>(&value)) != 56) return 20;
+        if (rd(rd(api.signatureApi70.identity<p<byte>>(&pointer))) != 201) return 21;
+        genericCells >> p<array<int,3>> <- api.signatureApi70.identity<array<int,3>>(&values);
+        if (rd<int>(cast<int>(genericCells)) != 7 || api.signatureApi70.identity<Packet>(&record).flags != 7) return 22;
+        link >> Node <- Node(value:73,next:null);
+        if (rd(api.signatureApi70.node(&link)).value != 73 || rd(api.signatureApi70.node(&link)).next != null) return 23;
+        if (rd(api.signatureApi70.bytes(from<byte>(adr(&tiny)))) != 201) return 24;
+        runs += 1;
+        if (runs != 1 || failures != 0) return 10;
+        println("type-signatures-ok");
+        return EXPECTED;
+    }
+    ref main ->> run;
+    fa: return true;
+}

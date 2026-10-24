@@ -1,0 +1,257 @@
+/* Gestor academico: 30 alumnos, 10 asignaturas y 300 matriculas sin arrays. */
+use <collections:result>;
+use <io:output, render, input>;
+use <memory:ptr, region, map>;
+
+gestorAcademicoMemoria :: runtime {
+    stc:
+        pagina >> p<byte>;
+        base >> p<int>;
+        estado >> memRegion<int>;
+        alumnos >> memRegion<str>;
+        matriculas >> memRegion<bool>;
+        evaluaciones >> memRegion<bool>;
+        notas >> memRegion<ft64>;
+
+    fn:
+        indice(alumno >> int, asignatura >> int) -> int {
+            return alumno * 10 + asignatura;
+        }
+
+        titulo(texto >> str) -> bool {
+            println("");
+            println(colorBold("============================================================", "cyan"));
+            println(colorBold(texto, "cyan"));
+            println(colorBold("============================================================", "cyan"));
+            return true;
+        }
+
+        asignatura(id >> int) -> str {
+            match (id) {
+                0 => return "Programacion";
+                1 => return "Matematicas";
+                2 => return "Sistemas";
+                3 => return "Bases de datos";
+                4 => return "Redes";
+                5 => return "Algoritmos";
+                6 => return "Arquitectura";
+                7 => return "Seguridad";
+                8 => return "Ingenieria del software";
+                9 => return "Inteligencia artificial";
+                _ => return "Asignatura invalida";
+            }
+        }
+
+        limite(minimo >> int, maximo >> int) -> int {
+            valor >> int <- readInt();
+            while (valor < minimo || valor > maximo) {
+                println("Opcion fuera de rango.");
+                print("> ");
+                valor <- readInt();
+            }
+            return valor;
+        }
+
+        totalAlumnos() -> int {
+            return regionRead(estado, 0);
+        }
+
+        incrementar(celda >> int) -> bool {
+            actual >> int <- regionRead(estado, celda);
+            return regionWrite(estado, celda, actual + 1);
+        }
+
+        boot() -> bool {
+            pagina <- unwrap(map(4096));
+            base <- from(adr(pagina));
+            estado <- pRegion(base, 4);
+            wr(base, 0);
+            wr(off(base, 1), 0);
+            wr(off(base, 2), 0);
+            wr(off(base, 3), 0);
+            alumnos <- regionCreate<str>(30);
+            matriculas <- regionCreate<bool>(300);
+            evaluaciones <- regionCreate<bool>(300);
+            notas <- regionCreate<ft64>(300);
+            return true;
+        }
+
+        buscar(nombre >> str) -> int {
+            for i in 0..totalAlumnos() {
+                if (regionRead(alumnos, i) == nombre) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        listarAlumnos() -> bool {
+            titulo("ALUMNOS");
+            if (totalAlumnos() == 0) {
+                println("No hay alumnos registrados.");
+                return false;
+            }
+            for i in 0..totalAlumnos() {
+                println(renderInt(i + 1) + ". " + regionRead(alumnos, i));
+            }
+            return true;
+        }
+
+        elegirAlumno() -> int {
+            if (!listarAlumnos()) {
+                return -1;
+            }
+            print("Nombre: ");
+            nombre >> str <- readLine();
+            alumno >> int <- buscar(nombre);
+            if (alumno == -1) {
+                println("Alumno no encontrado.");
+            }
+            return alumno;
+        }
+
+        elegirAsignatura() -> int {
+            titulo("ASIGNATURAS");
+            for i in 0..10 {
+                println(renderInt(i + 1) + ". " + asignatura(i));
+            }
+            print("Asignatura [1..10]: ");
+            return limite(1, 10) - 1;
+        }
+
+        registrarAlumno() -> bool {
+            if (totalAlumnos() == 30) {
+                println("Capacidad maxima alcanzada.");
+                return false;
+            }
+            print("Nombre del alumno: ");
+            nombre >> str <- readLine();
+            if (nombre == "" || buscar(nombre) != -1) {
+                println("Nombre vacio o ya registrado.");
+                return false;
+            }
+            regionWrite(alumnos, totalAlumnos(), nombre);
+            incrementar(0);
+            println("Alumno registrado.");
+            return true;
+        }
+
+        matricular() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) { return false; }
+            materia >> int <- elegirAsignatura();
+            celda >> int <- indice(alumno, materia);
+            if (regionRead(matriculas, celda)) {
+                println("El alumno ya esta matriculado.");
+                return false;
+            }
+            regionWrite(matriculas, celda, true);
+            incrementar(1);
+            println("Matricula guardada.");
+            return true;
+        }
+
+        guardarNota() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) { return false; }
+            materia >> int <- elegirAsignatura();
+            celda >> int <- indice(alumno, materia);
+            if (!regionRead(matriculas, celda)) {
+                println("Primero matricula al alumno.");
+                return false;
+            }
+            print("Nota [0..10]: ");
+            nota >> ft64 <- readFloat();
+            if (nota < 0.0 || nota > 10.0) {
+                println("La nota debe estar entre 0.0 y 10.0.");
+                return false;
+            }
+            if (!regionRead(evaluaciones, celda)) {
+                regionWrite(evaluaciones, celda, true);
+                incrementar(2);
+            }
+            regionWrite(notas, celda, nota);
+            println("Nota guardada.");
+            return true;
+        }
+
+        expediente() -> bool {
+            alumno >> int <- elegirAlumno();
+            if (alumno == -1) { return false; }
+            titulo("EXPEDIENTE: " + regionRead(alumnos, alumno));
+            for materia in 0..10 {
+                celda >> int <- indice(alumno, materia);
+                if (!regionRead(matriculas, celda)) { continue; }
+                if (regionRead(evaluaciones, celda)) {
+                    println(asignatura(materia) + " | " + colorBold(renderFloat(regionRead(notas, celda), 2), "green"));
+                } else {
+                    println(asignatura(materia) + " | pendiente");
+                }
+            }
+            return true;
+        }
+
+        estadisticas() -> bool {
+            titulo("ESTADISTICAS");
+            println("Alumnos: " + renderInt(totalAlumnos()));
+            println("Matriculas: " + renderInt(regionRead(estado, 1)));
+            println("Notas: " + renderInt(regionRead(estado, 2)));
+            suma >> ft64 <- 0.0;
+            for celda in 0..300 {
+                if (regionRead(evaluaciones, celda)) {
+                    suma <- suma + regionRead(notas, celda);
+                }
+            }
+            cantidad >> int <- regionRead(estado, 2);
+            if (cantidad == 0) {
+                println("Media: sin notas");
+                return true;
+            }
+            divisor >> ft64 <- 0.0;
+            for i in 0..cantidad { divisor <- divisor + 1.0; }
+            println("Media: " + colorBold(renderFloat(suma / divisor, 2), "yellow"));
+            return true;
+        }
+
+        menu() -> bool {
+            titulo("GESTOR ACADEMICO | MAP + PTR + REGION | 30 x 10");
+            println("1. Registrar alumno");
+            println("2. Listar alumnos");
+            println("3. Matricular");
+            println("4. Registrar nota");
+            println("5. Expediente");
+            println("6. Estadisticas");
+            println("0. Salir");
+            print("> ");
+            return true;
+        }
+
+        cerrar() -> bool {
+            return unwrap(unmap(pagina));
+        }
+
+        run() -> bool {
+            boot();
+            activo >> bool <- true;
+            while (activo) {
+                menu();
+                opcion >> int <- limite(0, 6);
+                if (opcion == 1) { registrarAlumno(); }
+                else if (opcion == 2) { listarAlumnos(); }
+                else if (opcion == 3) { matricular(); }
+                else if (opcion == 4) { guardarNota(); }
+                else if (opcion == 5) { expediente(); }
+                else if (opcion == 6) { estadisticas(); }
+                else { activo <- false; }
+            }
+            cerrar();
+            println(colorBold("Gestor cerrado.", "cyan"));
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

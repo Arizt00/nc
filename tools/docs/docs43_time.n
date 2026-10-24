@@ -1,0 +1,32 @@
+use foreign { c };
+use <project:release_io>;
+
+docs43Time {
+    foreign:
+        c symbol "localtime" {
+            abi: C;
+            header: "time.h";
+            library: "";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            nullability: nullable;
+            threadSafety: singleThread;
+            sideEffects: none;
+            signature: fn(ptr<i64>) -> ptr<i32>;
+        }
+    fn:
+        private:
+            widen(value >> int) -> i64 { return value; }
+        public:
+            today() -> str {
+                seconds >> i64 <- widen(timestamp());
+                fields >> p<i32> <- localtime(&seconds);
+                guard fields != null else return "";
+                day >> int <- rd(off(fields,3));
+                month >> int <- rd(off(fields,4))+1;
+                year >> int <- rd(off(fields,5))+1900;
+                return renderInt(year)+"-"+release_io.releaseIo.two(month)+"-"+release_io.releaseIo.two(day);
+            }
+    fa: return true;
+}

@@ -1,0 +1,48 @@
+wasmControl {
+    const:
+        EXPECTED >> int <- 42;
+    stc:
+        calls >> int <- 0;
+    fn:
+        public:
+            bump() -> int {
+                calls += 1;
+                return calls;
+            }
+            combine(a >> int, b >> int) -> int {
+                return a * 3 + b;
+            }
+            shortCircuit(flagValue >> bool) -> int {
+                calls <- 0;
+                left >> bool <- flagValue && bump() > 0;
+                right >> bool <- flagValue || bump() > 0;
+                return calls;
+            }
+            selected(flagValue >> bool) -> int {
+                return flagValue ? 42 : 1 / 0;
+            }
+            storeValue(value >> int) -> void {
+                calls <- value;
+                return;
+            }
+            run() -> int {
+                total >> int <- 0;
+                i >> int <- 0;
+                while (i < 10) {
+                    i += 1;
+                    if (i == 2) { continue; }
+                    if (i == 7) { break; }
+                    total += i;
+                }
+                guard (total == 19) else return 101;
+                guard (!(false && bump() > 0)) else return 102;
+                guard (true || bump() > 0) else return 103;
+                guard (calls == 0) else return 104;
+                storeValue(EXPECTED);
+                guard (calls == EXPECTED) else return 106;
+                return combine(10, 12) == EXPECTED ? EXPECTED : 105;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

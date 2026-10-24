@@ -1,0 +1,71 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:parser_ast, binary_layout>;
+
+targetLayoutVerify78 {
+    number(row >> int, key >> str) -> int {
+        value >> int <- jsonObjectBorrow(row,key); result >> int <- jsonGetIntOr(value,-1); jsonRelease(value); return result;
+    }
+    text(row >> int, key >> str) -> str {
+        value >> int <- jsonObjectBorrow(row,key); result >> str <- jsonGetStringOr(value,""); jsonRelease(value); return result;
+    }
+    named(material >> p<byte>, node >> int, name >> str) -> bool {
+        token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,node);
+        return token >= 0 && parser_ast.nccParserAst.materialTokenSame(material,token,name);
+    }
+    declaration(material >> p<byte>, name >> str) -> int {
+        at >> int <- 0;
+        while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+            kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,at);
+            if ((kind == 11 || kind == 13) && named(material,at,name)) return at;
+            at += 1;
+        }
+        return -1;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 4) return 64;
+        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(argsAt(arguments,1));
+        manifest >> int <- jsonParseFile(argsAt(arguments,2));
+        if (!parser_ast.nccParserAst.materialReady(material) || manifest == 0) return 65;
+        targets >> int <- jsonObjectBorrow(manifest,"targets"); rows >> int <- jsonNewArray();
+        valid >> bool <- jsonArrayLen(targets) == 10; targetAt >> int <- 0; checks >> int <- 0;
+        while (targetAt < jsonArrayLen(targets)) {
+            target >> int <- jsonArrayBorrow(targets,targetAt); id >> int <- number(target,"id");
+            context >> p<byte> <- binary_layout.nccBinaryLayout.open(material,id);
+            if (context == null) return 66;
+            records >> int <- jsonObjectBorrow(target,"records"); recordAt >> int <- 0;
+            while (recordAt < jsonArrayLen(records)) {
+                expected >> int <- jsonArrayBorrow(records,recordAt); name >> str <- text(expected,"name");
+                node >> int <- declaration(material,name); values >> array<u64,3> <- [0,0,0];
+                described >> bool <- node >= 0 && binary_layout.nccBinaryLayout.describe(context,node,cast<byte>(&values));
+                passed >> bool <- described && values[0] == number(expected,"bytes") && values[1] == number(expected,"align");
+                row >> int <- jsonNewObject(); jsonObjectSet(row,"target",jsonNewInt(id));
+                jsonObjectSet(row,"name",jsonNewString(name)); jsonObjectSet(row,"actual_bytes",jsonNewInt(values[0]));
+                jsonObjectSet(row,"actual_align",jsonNewInt(values[1]));
+                fields >> int <- jsonObjectBorrow(expected,"fields"); fieldAt >> int <- 0;
+                while (fieldAt < jsonObjectLen(fields)) {
+                    fieldName >> str <- jsonObjectKeyAt(fields,fieldAt);
+                    child >> int <- node < 0 ? -1 : parser_ast.nccParserAst.materialNodeFirstChild(material,node);
+                    while (child >= 0 && (parser_ast.nccParserAst.materialNodeKind(material,child) != 14 || !named(material,child,fieldName)))
+                        child <- parser_ast.nccParserAst.materialNodeNextSibling(material,child);
+                    described <- child >= 0 && binary_layout.nccBinaryLayout.describe(context,child,cast<byte>(&values));
+                    passed <- passed && described && values[2] == number(fields,fieldName);
+                    strRelease(fieldName); fieldAt += 1; checks += 1;
+                }
+                jsonObjectSet(row,"passed",jsonNewBool(passed)); jsonArrayPush(rows,row);
+                valid <- valid && passed; checks += 2;
+                jsonRelease(row); jsonRelease(fields); strRelease(name); jsonRelease(expected); recordAt += 1;
+            }
+            jsonRelease(records); binary_layout.nccBinaryLayout.close(context); jsonRelease(target); targetAt += 1;
+        }
+        report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.module1.target-layout.v78"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid)); jsonObjectSet(report,"checks",jsonNewInt(checks)); jsonObjectSet(report,"rows",rows);
+        valid <- jsonSaveFile(report,argsAt(arguments,3),2) && valid;
+        jsonRelease(rows); jsonRelease(report); jsonRelease(targets); jsonRelease(manifest);
+        parser_ast.nccParserAst.closeMaterial(material); argsRelease(arguments);
+        println(valid ? "native-target-layout-ok" : "native-target-layout-failed"); return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

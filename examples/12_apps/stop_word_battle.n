@@ -1,0 +1,868 @@
+use <io:input, output, render, random>;
+use <memory:ptr, heap>;
+use <terminal:clear, showCursor>;
+
+stopWordBattle :: runtime {
+    const:
+        MAX_PLAYERS >> int <- 10;
+        MAX_CATEGORIES >> int <- 8;
+        ANSWER_SLOTS >> int <- 80;
+        MODE_COUNT >> int <- 4;
+        CUSTOM_PER_MODE >> int <- 4;
+        CUSTOM_SLOTS >> int <- 16;
+        S_PLAYERS >> int <- 0;
+        S_TEAM_SIZE >> int <- 1;
+        S_MODE >> int <- 2;
+        S_COUNT >> int <- 3;
+        F_ENGLISH >> int <- 0;
+        F_LEAVE >> int <- 1;
+        F_TIMEOUT >> int <- 2;
+        F_COUNT >> int <- 3;
+
+    type:
+        Session {
+            public:
+                settings >> p<int>;
+                flags >> p<bool>;
+        }
+
+        Participants {
+            public:
+                names >> p<str>;
+                teams >> p<int>;
+                scores >> p<int>;
+        }
+
+        Round {
+            public:
+                points >> p<int>;
+                remaining >> p<int>;
+                answers >> p<str>;
+                valid >> p<bool>;
+        }
+
+        RuleBook {
+            public:
+                unique >> p<int>;
+                duplicate >> p<int>;
+                invalid >> p<int>;
+                categories >> p<int>;
+                customCount >> p<int>;
+                customName >> p<str>;
+                customTrigger >> p<int>;
+                customPoint >> p<int>;
+        }
+
+    stc:
+        session >> Session;
+        participants >> Participants;
+        round >> Round;
+        rules >> RuleBook;
+
+    local:
+        activeMode >> int <- 1;
+        activeProfile >> int <- 0;
+
+    fn:
+        iget(base >> p<int>, index >> int) -> int {
+            return rd(off(base, index));
+        }
+
+        iset(base >> p<int>, index >> int, value >> int) -> void {
+            wr(off(base, index), value);
+        }
+
+        bget(base >> p<bool>, index >> int) -> bool {
+            return rd(off(base, index));
+        }
+
+        bset(base >> p<bool>, index >> int, value >> bool) -> void {
+            wr(off(base, index), value);
+        }
+
+        sget(base >> p<str>, index >> int) -> str {
+            return rd(off(base, index));
+        }
+
+        sset(base >> p<str>, index >> int, value >> str) -> void {
+            wr(off(base, index), value);
+        }
+
+        config(index >> int) -> int {
+            return iget(session.settings, index);
+        }
+
+        setConfig(index >> int, value >> int) -> void {
+            iset(session.settings, index, value);
+        }
+
+        optionEnabled(index >> int) -> bool {
+            return bget(session.flags, index);
+        }
+
+        setOption(index >> int, value >> bool) -> void {
+            bset(session.flags, index, value);
+        }
+
+        scoreAdd(player >> int, points >> int) -> void {
+            iset(participants.scores, player,
+                iget(participants.scores, player) + points);
+            iset(round.points, player, iget(round.points, player) + points);
+        }
+
+        answerIndex(player >> int, category >> int) -> int {
+            return player * MAX_CATEGORIES + category;
+        }
+
+        customIndex(profile >> int, index >> int) -> int {
+            return profile * CUSTOM_PER_MODE + index;
+        }
+
+        sessionOpen() -> bool {
+            session.settings <- pCast<int>(alloc(S_COUNT * sizeOf<int>()));
+            session.flags <- pCast<bool>(alloc(F_COUNT * sizeOf<bool>()));
+            return session.settings != null && session.flags != null;
+        }
+
+        sessionClose() -> void {
+            free(session.flags);
+            session.flags <- null;
+            free(session.settings);
+            session.settings <- null;
+        }
+
+        participantsOpen() -> bool {
+            participants.names <- pCast<str>(alloc(MAX_PLAYERS * sizeOf<addr>()));
+            participants.teams <- pCast<int>(alloc(MAX_PLAYERS * sizeOf<int>()));
+            participants.scores <- pCast<int>(alloc(MAX_PLAYERS * sizeOf<int>()));
+            return participants.names != null && participants.teams != null &&
+                participants.scores != null;
+        }
+
+        participantsClose() -> void {
+            free(participants.scores);
+            participants.scores <- null;
+            free(participants.teams);
+            participants.teams <- null;
+            free(participants.names);
+            participants.names <- null;
+        }
+
+        roundOpen() -> bool {
+            round.points <- pCast<int>(alloc(MAX_PLAYERS * sizeOf<int>()));
+            round.remaining <- pCast<int>(alloc(MAX_PLAYERS * sizeOf<int>()));
+            round.answers <- pCast<str>(alloc(ANSWER_SLOTS * sizeOf<addr>()));
+            round.valid <- pCast<bool>(alloc(ANSWER_SLOTS * sizeOf<bool>()));
+            return round.points != null && round.remaining != null &&
+                round.answers != null && round.valid != null;
+        }
+
+        roundClose() -> void {
+            free(round.valid);
+            round.valid <- null;
+            free(round.answers);
+            round.answers <- null;
+            free(round.remaining);
+            round.remaining <- null;
+            free(round.points);
+            round.points <- null;
+        }
+
+        rulesOpen() -> bool {
+            rules.unique <- pCast<int>(alloc(MODE_COUNT * sizeOf<int>()));
+            rules.duplicate <- pCast<int>(alloc(MODE_COUNT * sizeOf<int>()));
+            rules.invalid <- pCast<int>(alloc(MODE_COUNT * sizeOf<int>()));
+            rules.categories <- pCast<int>(alloc(MODE_COUNT * sizeOf<int>()));
+            rules.customCount <- pCast<int>(alloc(MODE_COUNT * sizeOf<int>()));
+            rules.customName <- pCast<str>(alloc(CUSTOM_SLOTS * sizeOf<addr>()));
+            rules.customTrigger <- pCast<int>(alloc(CUSTOM_SLOTS * sizeOf<int>()));
+            rules.customPoint <- pCast<int>(alloc(CUSTOM_SLOTS * sizeOf<int>()));
+            return rules.unique != null && rules.duplicate != null &&
+                rules.invalid != null && rules.categories != null &&
+                rules.customCount != null && rules.customName != null &&
+                rules.customTrigger != null && rules.customPoint != null;
+        }
+
+        rulesClose() -> void {
+            free(rules.customPoint);
+            rules.customPoint <- null;
+            free(rules.customTrigger);
+            rules.customTrigger <- null;
+            free(rules.customName);
+            rules.customName <- null;
+            free(rules.customCount);
+            rules.customCount <- null;
+            free(rules.categories);
+            rules.categories <- null;
+            free(rules.invalid);
+            rules.invalid <- null;
+            free(rules.duplicate);
+            rules.duplicate <- null;
+            free(rules.unique);
+            rules.unique <- null;
+        }
+
+        text(es >> str, en >> str) -> str {
+            return optionEnabled(F_ENGLISH) ? en : es;
+        }
+
+        rule() -> void {
+            println("  --------------------------------------------------------");
+        }
+
+        header(title >> str) -> void {
+            clear();
+            println("");
+            println(colorBold("  STOP WORD", "cyan") + "  " +
+                color(text("BATALLA", "BATTLE"), "magenta"));
+            rule();
+            println("  " + colorBold(title, "white"));
+            rule();
+            println("");
+        }
+
+        readBounded(label >> str, low >> int, high >> int) -> int {
+            print(label + ": ");
+            value >> int <- readInt();
+            while (value < low || value > high) {
+                print(color(text("Valor no valido: ", "Invalid value: "), "red"));
+                value <- readInt();
+            }
+            return value;
+        }
+
+        readNumber(label >> str) -> int {
+            print(label + ": ");
+            return readInt();
+        }
+
+        pause() -> void {
+            print(text("Pulsa Enter para continuar...", "Press Enter to continue..."));
+            readLine();
+        }
+
+        countIn() -> void {
+            println(colorBold(text("PREPARADOS", "READY"), "yellow"));
+            print("  3");
+            sleepMs(1000);
+            print("  2");
+            sleepMs(1000);
+            print("  1");
+            sleepMs(1000);
+            println("  " + colorBold("STOP!", "green"));
+        }
+
+        readTimed(label >> str, deadline >> int) -> str {
+            value >> str <- "";
+            finished >> bool <- false;
+            shown >> int <- -1;
+            dirty >> bool <- true;
+            setOption(F_TIMEOUT, false);
+            rawReady >> bool <- enterRawMode();
+            guard rawReady else {
+                value <- readLine();
+                setOption(F_TIMEOUT, monotonicMs() >= deadline);
+                return value;
+            }
+            now >> int <- monotonicMs();
+            while (!finished && now < deadline) {
+                remaining >> int <- (deadline - now + 999) / 1000;
+                if (dirty || remaining != shown) {
+                    print("\r  " + label + "  [" + renderInt(remaining) + "s] > " +
+                        value + "                    ");
+                    shown <- remaining;
+                    dirty <- false;
+                }
+                key >> int <- readKeyNonBlocking();
+                if (key <= 0) sleepMs(4);
+                else if (key == 10 || key == 13) finished <- true;
+                else if (key == 8 || key == 127) {
+                    length >> int <- strLen(value);
+                    if (length > 0) {
+                        value <- strSubstring(value, 0, length - 1);
+                        dirty <- true;
+                    }
+                } else if (key == 27) {
+                    value <- ":q";
+                    finished <- true;
+                } else if (key >= 32 && key <= 255) {
+                    symbol >> str <- charFromCode(key);
+                    value <- value + symbol;
+                    strRelease(symbol);
+                    dirty <- true;
+                }
+                now <- monotonicMs();
+            }
+            setOption(F_TIMEOUT, !finished && monotonicMs() >= deadline);
+            if (optionEnabled(F_TIMEOUT)) {
+                print("\r  " + label + "  [0s] > " + value +
+                    "                    ");
+            }
+            exitRawMode();
+            showCursor();
+            println("");
+            return value;
+        }
+
+        letterAt(index >> int) -> str {
+            match (index) {
+                0 => return "a";  1 => return "b";  2 => return "c";
+                3 => return "d";  4 => return "e";  5 => return "f";
+                6 => return "g";  7 => return "h";  8 => return "i";
+                9 => return "j"; 10 => return "l"; 11 => return "m";
+                12 => return "n"; 13 => return "o"; 14 => return "p";
+                15 => return "r"; 16 => return "s"; 17 => return "t";
+                18 => return "u"; 19 => return "v"; 20 => return "z";
+                _ => return "a";
+            }
+        }
+
+        categoryAt(index >> int) -> str {
+            match (index) {
+                0 => return text("NOMBRE", "NAME");
+                1 => return text("PAIS", "COUNTRY");
+                2 => return text("ANIMAL", "ANIMAL");
+                3 => return text("COMIDA", "FOOD");
+                4 => return text("COLOR", "COLOR");
+                5 => return text("OBJETO", "OBJECT");
+                6 => return text("PROFESION", "PROFESSION");
+                7 => return text("VERBO", "VERB");
+                _ => return text("PALABRA", "WORD");
+            }
+        }
+
+        modeSize(mode >> int) -> int {
+            match (mode) {
+                1 => return 1;
+                2 => return 2;
+                3 => return 3;
+                4 => return 5;
+                _ => return 1;
+            }
+        }
+
+        modeName(mode >> int) -> str {
+            match (mode) {
+                1 => return "1vs1";
+                2 => return "2vs2";
+                3 => return "3vs3";
+                4 => return "5vs5";
+                _ => return "1vs1";
+            }
+        }
+
+        teamBattle() -> bool {
+            return config(S_MODE) > 1;
+        }
+
+        wantsExit(value >> str) -> bool {
+            return value == ":q" || value == "salir" || value == "quit";
+        }
+
+        setDefaults(mode >> int) -> void {
+            profile >> int <- mode - 1;
+            if (mode == 1) {
+                iset(rules.unique, profile, 100);
+                iset(rules.duplicate, profile, 50);
+                iset(rules.invalid, profile, 0);
+                iset(rules.categories, profile, 8);
+            } else if (mode == 2) {
+                iset(rules.unique, profile, 50);
+                iset(rules.duplicate, profile, 25);
+                iset(rules.invalid, profile, -10);
+                iset(rules.categories, profile, 6);
+            } else if (mode == 3) {
+                iset(rules.unique, profile, 100);
+                iset(rules.duplicate, profile, 50);
+                iset(rules.invalid, profile, 0);
+                iset(rules.categories, profile, 8);
+            } else {
+                iset(rules.unique, profile, 100);
+                iset(rules.duplicate, profile, 25);
+                iset(rules.invalid, profile, -20);
+                iset(rules.categories, profile, 8);
+            }
+        }
+
+        initializeApplication() -> void {
+            at >> int <- 0;
+            while (at < CUSTOM_SLOTS) {
+                sset(rules.customName, at, "");
+                iset(rules.customTrigger, at, 0);
+                iset(rules.customPoint, at, 0);
+                at += 1;
+            }
+            at <- 0;
+            while (at < MODE_COUNT) {
+                iset(rules.customCount, at, 0);
+                setDefaults(at + 1);
+                at += 1;
+            }
+            setConfig(S_PLAYERS, 0);
+            setConfig(S_TEAM_SIZE, 1);
+            setConfig(S_MODE, 1);
+            setOption(F_ENGLISH, false);
+            setOption(F_LEAVE, false);
+            setOption(F_TIMEOUT, false);
+            activeMode <- 1;
+            activeProfile <- 0;
+        }
+
+        triggerName(trigger >> int) -> str {
+            match (trigger) {
+                1 => return text("Hoja completa", "Full sheet");
+                2 => return text("Todas unicas", "All unique");
+                3 => return text("Mitad del tiempo libre", "Half time remaining");
+                4 => return text("Cada ronda", "Every round");
+                _ => return text("Regla", "Rule");
+            }
+        }
+
+        listCustom(profile >> int) -> void {
+            count >> int <- iget(rules.customCount, profile);
+            at >> int <- 0;
+            if (count == 0) println("  " + text("Sin reglas inventadas.", "No custom rules."));
+            while (at < count) {
+                slot >> int <- customIndex(profile, at);
+                println("  " + renderInt(at + 1) + "  " +
+                    sget(rules.customName, slot) + " | " +
+                    triggerName(iget(rules.customTrigger, slot)) + " | " +
+                    renderInt(iget(rules.customPoint, slot)) + " pts");
+                at += 1;
+            }
+        }
+
+        readTrigger() -> int {
+            println("  1  " + text("Hoja completa", "Full sheet"));
+            println("  2  " + text("Todas validas y unicas", "All valid and unique"));
+            println("  3  " + text("Terminar con media cuenta", "Finish with half time"));
+            println("  4  " + text("Aplicar cada ronda", "Apply every round"));
+            return readBounded(text("Disparador", "Trigger"), 1, 4);
+        }
+
+        addCustom(profile >> int) -> void {
+            count >> int <- iget(rules.customCount, profile);
+            guard count < CUSTOM_PER_MODE else {
+                println(color(text("Limite de cuatro reglas.",
+                    "Four-rule limit reached."), "red"));
+                pause();
+                return;
+            }
+            slot >> int <- customIndex(profile, count);
+            print(text("Nombre de la regla: ", "Rule name: "));
+            sset(rules.customName, slot, readLine());
+            iset(rules.customTrigger, slot, readTrigger());
+            iset(rules.customPoint, slot, readNumber(text("Puntos", "Points")));
+            iset(rules.customCount, profile, count + 1);
+        }
+
+        editCustom(profile >> int) -> void {
+            count >> int <- iget(rules.customCount, profile);
+            guard count > 0 else { pause(); return; }
+            listCustom(profile);
+            index >> int <- readBounded(text("Regla", "Rule"), 1, count) - 1;
+            slot >> int <- customIndex(profile, index);
+            print(text("Nuevo nombre: ", "New name: "));
+            sset(rules.customName, slot, readLine());
+            iset(rules.customTrigger, slot, readTrigger());
+            iset(rules.customPoint, slot,
+                readNumber(text("Nuevos puntos", "New points")));
+        }
+
+        deleteCustom(profile >> int) -> void {
+            count >> int <- iget(rules.customCount, profile);
+            guard count > 0 else { pause(); return; }
+            listCustom(profile);
+            index >> int <- readBounded(text("Eliminar regla", "Delete rule"), 1, count) - 1;
+            while (index + 1 < count) {
+                target >> int <- customIndex(profile, index);
+                source >> int <- customIndex(profile, index + 1);
+                sset(rules.customName, target, sget(rules.customName, source));
+                iset(rules.customTrigger, target,
+                    iget(rules.customTrigger, source));
+                iset(rules.customPoint, target, iget(rules.customPoint, source));
+                index += 1;
+            }
+            last >> int <- customIndex(profile, count - 1);
+            sset(rules.customName, last, "");
+            iset(rules.customTrigger, last, 0);
+            iset(rules.customPoint, last, 0);
+            iset(rules.customCount, profile, count - 1);
+        }
+
+        rulesMenu(mode >> int) -> void {
+            activeMode <- mode;
+            activeProfile <- mode - 1;
+            profile >> int <- activeProfile;
+            editing >> bool <- true;
+            while (editing) {
+                header(text("REGLAS ", "RULES ") + modeName(mode));
+                println("  1  " + text("Unica: ", "Unique: ") +
+                    renderInt(iget(rules.unique, profile)) + " pts");
+                println("  2  " + text("Repetida: ", "Duplicate: ") +
+                    renderInt(iget(rules.duplicate, profile)) + " pts");
+                println("  3  " + text("Invalida: ", "Invalid: ") +
+                    renderInt(iget(rules.invalid, profile)) + " pts");
+                println("  4  " + text("Categorias: ", "Categories: ") +
+                    renderInt(iget(rules.categories, profile)));
+                println("  5  " + text("Agregar regla inventada", "Add custom rule"));
+                println("  6  " + text("Editar regla inventada", "Edit custom rule"));
+                println("  7  " + text("Eliminar regla inventada", "Delete custom rule"));
+                println("  8  " + text("Restaurar reglas", "Restore defaults"));
+                println("  0  " + text("Volver", "Back"));
+                println("");
+                listCustom(profile);
+                option >> int <- readBounded(text("Opcion", "Option"), 0, 8);
+                if (option == 1) iset(rules.unique, profile,
+                    readNumber(text("Puntos por unica", "Unique points")));
+                else if (option == 2) iset(rules.duplicate, profile,
+                    readNumber(text("Puntos por repetida", "Duplicate points")));
+                else if (option == 3) iset(rules.invalid, profile,
+                    readNumber(text("Puntos por invalida", "Invalid points")));
+                else if (option == 4) iset(rules.categories, profile,
+                    readBounded(text("Categorias", "Categories"), 1, MAX_CATEGORIES));
+                else if (option == 5) addCustom(profile);
+                else if (option == 6) editCustom(profile);
+                else if (option == 7) deleteCustom(profile);
+                else if (option == 8) setDefaults(mode);
+                else editing <- false;
+            }
+        }
+
+        clearPlayers() -> void {
+            at >> int <- 0;
+            while (at < MAX_PLAYERS) {
+                sset(participants.names, at, "");
+                iset(participants.teams, at, 0);
+                iset(participants.scores, at, 0);
+                iset(round.points, at, 0);
+                iset(round.remaining, at, 0);
+                at += 1;
+            }
+        }
+
+        clearRound() -> void {
+            at >> int <- 0;
+            while (at < ANSWER_SLOTS) {
+                sset(round.answers, at, "");
+                bset(round.valid, at, false);
+                at += 1;
+            }
+            at <- 0;
+            while (at < MAX_PLAYERS) {
+                iset(round.points, at, 0);
+                iset(round.remaining, at, 0);
+                at += 1;
+            }
+        }
+
+        registerPlayers(mode >> int) -> bool {
+            size >> int <- modeSize(mode);
+            setConfig(S_MODE, mode);
+            setConfig(S_TEAM_SIZE, size);
+            setConfig(S_PLAYERS, size * 2);
+            clearPlayers();
+            at >> int <- 0;
+            while (at < config(S_PLAYERS)) {
+                team >> int <- mode > 1 ? (at < size ? 1 : 2) : 0;
+                iset(participants.teams, at, team);
+                label >> str <- text("Jugador ", "Player ") + renderInt(at + 1);
+                if (mode > 1) label <- label + " - " + text("equipo ", "team ") +
+                    renderInt(team);
+                print(label + ": ");
+                sset(participants.names, at, readLine());
+                if (wantsExit(sget(participants.names, at))) return false;
+                at += 1;
+            }
+            return true;
+        }
+
+        duplicate(player >> int, category >> int) -> bool {
+            slot >> int <- answerIndex(player, category);
+            guard bget(round.valid, slot) else return false;
+            at >> int <- 0;
+            while (at < config(S_PLAYERS)) {
+                other >> int <- answerIndex(at, category);
+                if (at != player && bget(round.valid, other) &&
+                    sget(round.answers, other) ==
+                    sget(round.answers, slot)) return true;
+                at += 1;
+            }
+            return false;
+        }
+
+        allValid(player >> int, categories >> int) -> bool {
+            at >> int <- 0;
+            while (at < categories) {
+                if (!bget(round.valid, answerIndex(player, at))) return false;
+                at += 1;
+            }
+            return true;
+        }
+
+        allUnique(player >> int, categories >> int) -> bool {
+            guard allValid(player, categories) else return false;
+            at >> int <- 0;
+            while (at < categories) {
+                if (duplicate(player, at)) return false;
+                at += 1;
+            }
+            return true;
+        }
+
+        customApplies(player >> int, profile >> int, ruleIndex >> int,
+            seconds >> int, categories >> int) -> bool {
+            slot >> int <- customIndex(profile, ruleIndex);
+            trigger >> int <- iget(rules.customTrigger, slot);
+            if (trigger == 1) return allValid(player, categories);
+            if (trigger == 2) return allUnique(player, categories);
+            if (trigger == 3) return iget(round.remaining, player) >= seconds * 500;
+            return trigger == 4;
+        }
+
+        collect(roundNumber >> int, seconds >> int) -> bool {
+            clearRound();
+            profile >> int <- config(S_MODE) - 1;
+            categories >> int <- iget(rules.categories, profile);
+            letter >> str <- letterAt(randomRange(0, 20));
+            player >> int <- 0;
+            while (player < config(S_PLAYERS)) {
+                header(text("RONDA ", "ROUND ") + renderInt(roundNumber));
+                println("  " + sget(participants.names, player) + "  |  " +
+                    text("LETRA ", "LETTER ") + colorBold(strToUpper(letter), "magenta"));
+                println("  " + text("Completa la hoja antes de STOP.",
+                    "Complete the sheet before STOP."));
+                if (teamBattle()) println("  " + text("Equipo ", "Team ") +
+                    renderInt(iget(participants.teams, player)));
+                println("");
+                print(text("  Pulsa Enter para comenzar...", "  Press Enter to start..."));
+                readLine();
+                countIn();
+                deadline >> int <- monotonicMs() + seconds * 1000;
+                category >> int <- 0;
+                setOption(F_TIMEOUT, false);
+                while (category < categories && !optionEnabled(F_TIMEOUT)) {
+                    value >> str <- strToLower(readTimed(categoryAt(category), deadline));
+                    if (wantsExit(value)) { setOption(F_LEAVE, true); return false; }
+                    slot >> int <- answerIndex(player, category);
+                    sset(round.answers, slot, value);
+                    bset(round.valid, slot, value != "" && !optionEnabled(F_TIMEOUT) &&
+                        strStartsWith(value, letter));
+                    category += 1;
+                }
+                while (category < categories) {
+                    slot >> int <- answerIndex(player, category);
+                    sset(round.answers, slot, "");
+                    bset(round.valid, slot, false);
+                    category += 1;
+                }
+                left >> int <- deadline - monotonicMs();
+                iset(round.remaining, player, left > 0 ? left : 0);
+                println(optionEnabled(F_TIMEOUT) ?
+                    color(text("STOP: tiempo agotado.", "STOP: time expired."), "red") :
+                    colorBold("STOP!", "green"));
+                player += 1;
+            }
+            return true;
+        }
+
+        scoreRound(seconds >> int) -> void {
+            profile >> int <- config(S_MODE) - 1;
+            categories >> int <- iget(rules.categories, profile);
+            player >> int <- 0;
+            while (player < config(S_PLAYERS)) {
+                category >> int <- 0;
+                while (category < categories) {
+                    slot >> int <- answerIndex(player, category);
+                    points >> int <- bget(round.valid, slot) ?
+                        (duplicate(player, category) ?
+                            iget(rules.duplicate, profile) :
+                            iget(rules.unique, profile)) :
+                        iget(rules.invalid, profile);
+                    scoreAdd(player, points);
+                    category += 1;
+                }
+                custom >> int <- 0;
+                while (custom < iget(rules.customCount, profile)) {
+                    if (customApplies(player, profile, custom, seconds, categories)) {
+                        scoreAdd(player, iget(rules.customPoint,
+                            customIndex(profile, custom)));
+                    }
+                    custom += 1;
+                }
+                player += 1;
+            }
+        }
+
+        showScores() -> void {
+            header(text("CLASIFICACION", "SCOREBOARD"));
+            teamOne >> int <- 0;
+            teamTwo >> int <- 0;
+            at >> int <- 0;
+            while (at < config(S_PLAYERS)) {
+                println("  " + sget(participants.names, at) + "  " +
+                    renderInt(iget(participants.scores, at)) + "  (" +
+                    renderInt(iget(round.points, at)) + ")");
+                if (iget(participants.teams, at) == 1) {
+                    teamOne += iget(participants.scores, at);
+                }
+                if (iget(participants.teams, at) == 2) {
+                    teamTwo += iget(participants.scores, at);
+                }
+                at += 1;
+            }
+            if (teamBattle()) {
+                println("");
+                println("  " + text("Equipo 1: ", "Team 1: ") + renderInt(teamOne));
+                println("  " + text("Equipo 2: ", "Team 2: ") + renderInt(teamTwo));
+            }
+            println("");
+            pause();
+        }
+
+        showWinner() -> void {
+            if (teamBattle()) {
+                one >> int <- 0;
+                two >> int <- 0;
+                at >> int <- 0;
+                while (at < config(S_PLAYERS)) {
+                    if (iget(participants.teams, at) == 1) {
+                        one += iget(participants.scores, at);
+                    } else {
+                        two += iget(participants.scores, at);
+                    }
+                    at += 1;
+                }
+                if (one == two) println(colorBold(text("EMPATE", "DRAW"), "yellow"));
+                else println(colorBold(text("GANA EL EQUIPO ", "TEAM WINS: ") +
+                    renderInt(one > two ? 1 : 2), "green"));
+                pause();
+                return;
+            }
+            winner >> int <- iget(participants.scores, 0) >=
+                iget(participants.scores, 1) ? 0 : 1;
+            if (iget(participants.scores, 0) == iget(participants.scores, 1)) {
+                println(colorBold(text("EMPATE", "DRAW"), "yellow"));
+            } else {
+                println(colorBold(text("GANA ", "WINNER: ") +
+                    sget(participants.names, winner), "green"));
+            }
+            pause();
+        }
+
+        play(mode >> int) -> void {
+            activeMode <- mode;
+            activeProfile <- mode - 1;
+            guard participantsOpen() else {
+                println("STOP WORD: participants allocation failed");
+                return;
+            }
+            guard roundOpen() else {
+                participantsClose();
+                println("STOP WORD: round allocation failed");
+                return;
+            }
+            setOption(F_LEAVE, false);
+            header(modeName(mode) + (mode > 1 ?
+                text(" - BATALLA POR EQUIPOS", " - TEAM BATTLE") :
+                text(" - DUELO", " - DUEL")));
+            guard registerPlayers(mode) else {
+                roundClose();
+                participantsClose();
+                return;
+            }
+            rounds >> int <- readBounded(text("Rondas", "Rounds"), 1, 20);
+            seconds >> int <- readBounded(text("Segundos para la hoja",
+                "Seconds for the sheet"), 3, 300);
+            roundNumber >> int <- 1;
+            while (roundNumber <= rounds && !optionEnabled(F_LEAVE)) {
+                if (collect(roundNumber, seconds)) {
+                    scoreRound(seconds);
+                    showScores();
+                }
+                roundNumber += 1;
+            }
+            if (!optionEnabled(F_LEAVE)) showWinner();
+            roundClose();
+            participantsClose();
+        }
+
+        modeMenu(mode >> int) -> void {
+            open >> bool <- true;
+            while (open) {
+                header(modeName(mode));
+                println("  1  " + text("Jugar", "Play"));
+                println("  2  " + text("Reglas", "Rules"));
+                println("  0  " + text("Volver", "Back"));
+                option >> int <- readBounded(text("Opcion", "Option"), 0, 2);
+                if (option == 1) play(mode);
+                else if (option == 2) rulesMenu(mode);
+                else open <- false;
+            }
+        }
+
+        teamMenu() -> void {
+            open >> bool <- true;
+            while (open) {
+                header(text("BATALLA POR EQUIPOS", "TEAM BATTLE"));
+                println("  1  2vs2");
+                println("  2  3vs3");
+                println("  3  5vs5");
+                println("  0  " + text("Volver", "Back"));
+                option >> int <- readBounded(text("Equipos", "Teams"), 0, 3);
+                if (option >= 1 && option <= 3) modeMenu(option + 1);
+                else open <- false;
+            }
+        }
+
+        chooseLanguage() -> void {
+            clear();
+            println("  1  Espanol");
+            println("  2  English");
+            setOption(F_ENGLISH,
+                readBounded("  Language / Idioma", 1, 2) == 2);
+        }
+
+        mainMenu() -> int {
+            header(text("ELIGE PARTIDA", "CHOOSE MATCH"));
+            println("  1  1vs1");
+            println("  2  " + text("Batalla por equipos", "Team battle"));
+            println("  3  " + text("Cambiar a English", "Cambiar a Espanol"));
+            println("  0  " + text("Salir", "Exit"));
+            println("");
+            return readBounded(text("Opcion", "Option"), 0, 3);
+        }
+
+        run() -> bool {
+            guard sessionOpen() else {
+                println("STOP WORD: session allocation failed");
+                return false;
+            }
+            guard rulesOpen() else {
+                sessionClose();
+                println("STOP WORD: rules allocation failed");
+                return false;
+            }
+            initializeApplication();
+            chooseLanguage();
+            running >> bool <- true;
+            while (running) {
+                option >> int <- mainMenu();
+                if (option == 1) modeMenu(1);
+                else if (option == 2) teamMenu();
+                else if (option == 3) chooseLanguage();
+                else running <- false;
+            }
+            clear();
+            println(colorBold(text("Hasta la proxima.",
+                "See you next time."), "green"));
+            rulesClose();
+            sessionClose();
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

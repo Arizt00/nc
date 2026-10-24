@@ -1,0 +1,22 @@
+use <io:output>;
+
+nativeOveralignmentLarge81 {
+    type:
+        Huge { public: first >> u64; last >> u64; layout: align(65536); }
+    stc:
+        initialized >> Huge <- Huge(first: 83,last: 89);
+        zero >> Huge;
+        pointer >> p<u64> <- &initialized.last;
+    copy(value >> Huge) -> Huge {
+        if (adr(&value) % 65536 != 0) return Huge(first: 0,last: 0);
+        value.first += 1; return value;
+    }
+    run() -> int {
+        if (adr(&initialized) % 65536 != 0 || adr(&zero) % 65536 != 0 || rd(pointer) != 89 || zero.last != 0) return 1;
+        value >> Huge <- copy(initialized);
+        if (adr(&value) % 65536 != 0 || value.first != 84 || value.last != 89) return 2;
+        println("native-overalignment-large-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,66 @@
+use <project:release_io>;
+
+docs43Zip {
+    stc:
+        path >> str <- "";
+        position >> int <- 0;
+        count >> int <- 0;
+        names >> array<str,32>;
+        sizes >> array<int,32>;
+        hashes >> array<int,32>;
+        offsets >> array<int,32>;
+        good >> bool <- true;
+    fn:
+        private:
+            le(data >> p<byte>, at >> int, value >> int, bytes >> int) -> void {
+                i >> int <- 0;
+                while (i < bytes) { wr(off(data,at+i),value & 255); value <- value >>> 8; i += 1; }
+            }
+            writeData(data >> p<byte>, size >> int) -> void {
+                if (fsWriteFrom(path,data,size,true) != size) good <- false;
+                position += size;
+            }
+        public:
+            crc(data >> p<byte>, size >> int) -> int {
+                value >> int <- 4294967295; i >> int <- 0;
+                while (i < size) {
+                    value <- value ^ (rd(off(data,i)) & 255); bit >> int <- 0;
+                    while (bit < 8) { value <- (value >>> 1) ^ ((value & 1) != 0 ? 3988292384 : 0); bit += 1; }
+                    i += 1;
+                }
+                return value ^ 4294967295;
+            }
+            begin(output >> str) -> bool {
+                path <- output; position <- 0; count <- 0; good <- true;
+                return release_io.releaseIo.write(path,"");
+            }
+            add(name >> str, text >> str) -> void {
+                if (count >= 32) { good <- false; return; }
+                header >> p<byte> <- cast(alloc(46));
+                if (header == null) { good <- false; return; }
+                i >> int <- 0; while (i < 46) { wr(off(header,i),0); i += 1; }
+                size >> int <- strByteLen(text); hash >> int <- crc(cast<byte>(text),size);
+                names[count] <- name; sizes[count] <- size; hashes[count] <- hash; offsets[count] <- position;
+                le(header,0,67324752,4); le(header,4,20,2); le(header,6,2048,2);
+                le(header,12,33,2); le(header,14,hash,4); le(header,18,size,4); le(header,22,size,4); le(header,26,strByteLen(name),2);
+                writeData(header,30); writeData(cast<byte>(name),strByteLen(name)); writeData(cast<byte>(text),size);
+                free(header); count += 1;
+            }
+            finish() -> bool {
+                directory >> int <- position;
+                header >> p<byte> <- cast(alloc(46)); guard header != null else return false;
+                i >> int <- 0;
+                while (i < count) {
+                    j >> int <- 0; while (j < 46) { wr(off(header,j),0); j += 1; }
+                    le(header,0,33639248,4); le(header,4,20,2); le(header,6,20,2); le(header,8,2048,2);
+                    le(header,14,33,2); le(header,16,hashes[i],4); le(header,20,sizes[i],4); le(header,24,sizes[i],4);
+                    le(header,28,strByteLen(names[i]),2); le(header,42,offsets[i],4);
+                    writeData(header,46); writeData(cast<byte>(names[i]),strByteLen(names[i])); i += 1;
+                }
+                size >> int <- position-directory;
+                i <- 0; while (i < 46) { wr(off(header,i),0); i += 1; }
+                le(header,0,101010256,4); le(header,8,count,2); le(header,10,count,2); le(header,12,size,4); le(header,16,directory,4);
+                writeData(header,22); free(header); return good;
+            }
+    fa: return true;
+}

@@ -1,0 +1,23 @@
+use <process:args>;
+use <project:lexer, lexer_tests, lexer_report, parser_ast, ast_report, type_contract_report>;
+
+frontend44Candidate {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            code >> int <- 64;
+            if (argsCount(arguments) == 2 && argsAt(arguments, 1) == "lexer-self-test") {
+                code <- lexer_tests.nccLexerTests.selfTest() ? 0 : 1;
+            } else if (argsCount(arguments) >= 4 && argsAt(arguments, 1) == "compiler") {
+                action >> str <- argsAt(arguments, 2);
+                path >> str <- argsAt(arguments, 3);
+                material >> bool <- argsCount(arguments) >= 5 && argsAt(arguments, 4) == "--material";
+                if (action == "tokens") code <- material ? lexer_report.nccLexerReport.scanFile(path) : lexer.nccLexer.scanFile(path, true, false);
+                if (action == "ast-head") code <- material ? ast_report.nccAstReport.parseFile(path) : parser_ast.nccParserAst.parseFile(path, true, false);
+                if (action == "type-contracts") code <- type_contract_report.nccTypeContractReport.parseFile(path);
+            }
+            argsRelease(arguments); return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

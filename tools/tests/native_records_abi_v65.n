@@ -1,0 +1,58 @@
+use <io:output>;
+
+nativeRecordsAbi65 {
+    type:
+        Tiny {
+            public:
+                a >> byte;
+                b >> byte;
+                c >> byte;
+        }
+        Small {
+            public:
+                value >> u64;
+        }
+        Pair {
+            public:
+                a >> u64;
+                b >> u64;
+        }
+        Large {
+            public:
+                ready >> bool;
+                a >> u64;
+                b >> u64;
+                c >> u64;
+                d >> u64;
+        }
+    fn:
+        tiny(value >> int) -> Tiny { return Tiny(a: value, b: 202, c: 253); }
+        small(value >> u64) -> Small { return Small(value: value); }
+        pair(a >> u64, b >> u64) -> Pair { return Pair(a: a, b: b); }
+        large(value >> int) -> Large { return Large(ready: true, a: value, b: 0xFEDCBA9876543210, c: 42, d: 19); }
+        consume(a >> int, b >> int, c >> int, d >> int, e >> int, p >> Pair, tail >> int) -> int {
+            p.a <- 99;
+            return a+b+c+d+e+tail+p.b;
+        }
+        roundtrip(before >> int, value >> Large, after >> int) -> Large {
+            value.a += before+after;
+            return value;
+        }
+        run() -> int {
+            t >> Tiny <- tiny(17);
+            s >> Small <- small(0x8123456789ABCDEF);
+            p >> Pair <- pair(7,11);
+            q >> Large <- large(5);
+            r >> Large <- roundtrip(3,q,4);
+            if (t.a != 17 || t.b != 202 || t.c != 253 || s.value != 0x8123456789ABCDEF) return 1;
+            if (p.a != 7 || p.b != 11 || consume(1,2,3,4,5,p,6) != 32 || p.a != 7) return 2;
+            if (!r.ready || r.a != 12 || r.b != 0xFEDCBA9876543210 || r.c != 42 || r.d != 19 || q.a != 5) return 3;
+            iterations >> int <- 0;
+            while (iterations < 20) { q <- roundtrip(1,q,1); iterations += 1; }
+            if (q.a != 45) return 4;
+            println("records-abi-ok");
+            return 198;
+        }
+    ref main ->> run;
+    fa: return true;
+}

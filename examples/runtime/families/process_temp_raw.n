@@ -1,0 +1,47 @@
+use <io:output>;
+use <process:temp>;
+
+rawProcessTemp :: runtime {
+    fn:
+        run() -> bool {
+            directory >> addr <- tempWideBuffer(260);
+            prefix >> addr <- tempWideAlloc("ncc");
+            file >> addr <- tempWideBuffer(260);
+            finalPath >> addr <- tempWideBuffer(520);
+
+            directoryChars >> int <- tempDirectory(directory, 260);
+            unique >> int <- tempFileName(directory, prefix, 0, file);
+            attributes >> int <- tempAttributes(file);
+            handle >> addr <- tempOpen(file, 0, 7, null, 3, 128, null);
+            finalChars >> int <- tempFinalPath(handle, finalPath, 520, 0);
+            closed >> bool <- tempClose(handle);
+            deleted >> bool <- tempDeleteFile(file);
+
+            freedFinal >> bool <- tempWideFree(finalPath);
+            freedFile >> bool <- tempWideFree(file);
+            freedPrefix >> bool <- tempWideFree(prefix);
+            freedDirectory >> bool <- tempWideFree(directory);
+
+            ok >> bool <-
+                directoryChars > 0 &&
+                unique > 0 &&
+                attributes != 4294967295 &&
+                finalChars > 0 &&
+                closed &&
+                deleted &&
+                freedFinal &&
+                freedFile &&
+                freedPrefix &&
+                freedDirectory;
+
+            print("manual nC process temp backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

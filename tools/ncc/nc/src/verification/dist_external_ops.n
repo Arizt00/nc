@@ -1,0 +1,69 @@
+use <data:json>;
+use <process:env>;
+use <project:dist_session, release_io, contract_checks>;
+
+distExternalOps {
+    const:
+        REQUIRED >> str <- "[\"docs/spec/release/v2_0_0_phase10_external_ops_spec.md\",\"docs/spec/release/v2_0_0_phase10_external_ops_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_external_ops_contract.json\",\"docs/status/STATUS_PHASE10_external_ops_v2_0_0.md\",\"docs/spec/release/v2_0_0_phase10_external_publication_runbook.md\",\"docs/spec/release/v2_0_0_phase10_prod_signing_hsm_runbook.md\",\"docs/spec/release/v2_0_0_phase10_clean_machine_matrix_runbook.md\",\"tools/release/publish_phase10_external_channels_v2_0_0.sh\",\"tools/release/render_phase10_external_publish_env_v2_0_0.sh\",\"tools/release/run_phase10_external_publish_matrix_v2_0_0.sh\",\"tools/release/smoke_phase10_clean_machine_matrix_v2_0_0.sh\",\"tools/ncc/nc/src/verification/release_notes.n\",\"tools/ncc/nc/src/verification/dist_external_ops.n\",\"tools/release/qa_phase10_external_ops_v2_0_0.sh\",\".github/workflows/release-phase10-external-ops.yml\"]";
+    fn:
+        public:
+            inspect() -> int {
+                extra >> int <- jsonNewObject();
+                jsonObjectSet(extra,"external_distribution_build_requested",jsonNewBool(false));
+                dist_session.distSession.initialize("[\"artifacts_present\",\"contract_consistent\",\"publish_dry_run_ok\",\"publish_env_template_generated\",\"publish_env_template_runner_support\",\"publish_env_template_contains_real_commands\",\"clean_machine_smoke_ok\",\"release_notes_generated\",\"workflow_present\"]");
+                missing >> int <- dist_session.distSession.required(REQUIRED,true);
+                present >> bool <- jsonArrayLen(missing) == 0;
+                dist_session.distSession.record("artifacts_present",present);
+                if (!present) { jsonObjectSet(extra,"missing",missing); return extra; }
+                jsonRelease(missing);
+                root >> str <- dist_session.distSession.rootPath();
+                contract >> int <- dist_session.distSession.read(root+"/docs/spec/release/v2_0_0_phase10_external_ops_contract.json");
+                if (!dist_session.distSession.good()) { jsonRelease(contract); return extra; }
+                valid >> bool <- dist_session.distSession.isField(contract,"schema","nc.phase10.external.ops.contract.v1") && dist_session.distSession.isField(contract,"version","2.0.0") && dist_session.distSession.isField(contract,"state","frozen") && release_io.releaseIo.member(contract,"scope","external_publication") && release_io.releaseIo.member(contract,"scope","supply_chain_prod_keys_hsm") && release_io.releaseIo.member(contract,"scope","clean_machine_matrix") && release_io.releaseIo.member(contract,"scope","release_notes_announcement");
+                dist_session.distSession.record("contract_consistent",valid);
+                jsonRelease(contract);
+                dist_session.distSession.record("workflow_present",release_io.releaseIo.fileType(root+"/.github/workflows/release-phase10-external-ops.yml") != 0);
+                if (release_io.releaseIo.fileType(root+"/var/releases/v2_0_0/phase10_p3_dist") == 0) {
+                    jsonObjectSet(extra,"external_distribution_build_requested",jsonNewBool(true));
+                    had >> bool <- envHas("NCC_RELEASE_SIGNING_KEY");
+                    if (!had) envSet("NCC_RELEASE_SIGNING_KEY","phase10-external-ops-local-key");
+                    build >> int <- dist_session.distSession.bash("[\"tools/release/build_phase10_distribution_os_v2_0_0.sh\",\"--os\",\"all\",\"--allow-deferred\"]");
+                    jsonRelease(build);
+                    if (!had) envRemove("NCC_RELEASE_SIGNING_KEY");
+                }
+                row >> int <- dist_session.distSession.bash("[\"tools/release/run_phase10_external_publish_matrix_v2_0_0.sh\",\"--runner\",\"all\",\"--mode\",\"dry-run\",\"--channel\",\"stable\",\"--allow-partial\",\"--report\",\"docs/status/F10_external_publish_report.json\"]");
+                if (dist_session.distSession.ok(row)) {
+                    model >> int <- jsonParseFile(root+"/docs/status/F10_external_publish_report.json");
+                    if (jsonKind(model) == 6) {
+                        dist_session.distSession.record("publish_dry_run_ok",dist_session.distSession.isField(model,"status","ok") || dist_session.distSession.isField(model,"status","partial"));
+                    }
+                    jsonRelease(model);
+                }
+                jsonRelease(row);
+                row <- dist_session.distSession.bash("[\"tools/release/render_phase10_external_publish_env_v2_0_0.sh\",\"--channel\",\"stable\",\"--runner\",\"linux\",\"--out\",\"docs/status/F10_external_publish_env_template.sh\"]");
+                path >> str <- root+"/docs/status/F10_external_publish_env_template.sh";
+                exists >> bool <- release_io.releaseIo.fileType(path) != 0;
+                dist_session.distSession.record("publish_env_template_generated",dist_session.distSession.ok(row) && exists);
+                jsonRelease(row);
+                if (exists) {
+                    text >> str <- release_io.releaseIo.text(path);
+                    dist_session.distSession.record("publish_env_template_runner_support",strContains(text,"run_phase10_external_publish_matrix_v2_0_0.sh") && strContains(text,"--runner linux"));
+                    phrases >> int <- jsonParse("[\"wingetcreate submit\",\"reprepro -b\",\"createrepo_c\",\"git -C\",\"NC_BREW_TAP_REPO\"]");
+                    dist_session.distSession.record("publish_env_template_contains_real_commands",contract_checks.contractChecks.phrases(text,phrases));
+                    jsonRelease(phrases);
+                    if (text != "") free(cast<byte>(text));
+                }
+                row <- dist_session.distSession.bash("[\"tools/release/smoke_phase10_clean_machine_matrix_v2_0_0.sh\",\"--home\",\"$home\",\"--work\",\"$work\",\"--report\",\"docs/status/F10_external_clean_machine_report.json\"]");
+                if (dist_session.distSession.ok(row)) {
+                    model >> int <- jsonParseFile(root+"/docs/status/F10_external_clean_machine_report.json");
+                    if (jsonKind(model) == 6) dist_session.distSession.record("clean_machine_smoke_ok",dist_session.distSession.isField(model,"status","ok"));
+                    jsonRelease(model);
+                }
+                jsonRelease(row);
+                row <- dist_session.distSession.releaseNotes();
+                dist_session.distSession.record("release_notes_generated",dist_session.distSession.ok(row) && release_io.releaseIo.fileType(root+"/docs/spec/release/v2_0_0_release_notes.md") != 0 && release_io.releaseIo.fileType(root+"/docs/spec/release/v2_0_0_release_announcement.md") != 0);
+                jsonRelease(row);
+                return extra;
+            }
+    fa: return true;
+}

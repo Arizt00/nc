@@ -1,0 +1,127 @@
+use <io:output, render>;
+
+/*
+ * alpha representa un modulo proveedor.
+ * Su unica responsabilidad es exponer una operacion publica pequena.
+ *
+ * Esta separacion es intencionada:
+ * - alpha no conoce a beta;
+ * - beta puede llamar a alpha;
+ * - asi evitamos dependencias circulares y el ejemplo queda parecido a
+ *   una libreria real consumida por otro modulo.
+ */
+alpha :: runtime {
+    /*
+     * public permite que otro modulo del mismo programa pueda llamar
+     * alpha.ping().
+     *
+     * Devolvemos int porque el objetivo del ejemplo es comparar valores
+     * de forma simple. Para un primer ejercicio no hace falta crear un
+     * type propio si solo queremos demostrar enlace entre funciones.
+     */
+    fn:
+        ping() -> int {
+            return 33;
+        }
+
+}
+
+/*
+ * beta representa el modulo consumidor y punto de entrada del programa.
+ * Tiene su propio ping() para demostrar resolucion de nombres:
+ * - ping() dentro de beta llama a beta.ping();
+ * - alpha.ping() llama explicitamente al modulo alpha.
+ */
+beta :: runtime {
+    stc:
+        localPing >> int;
+        externalPing >> int;
+        total >> int;
+        ok >> bool;
+
+    /*
+     * Esta funcion tiene el mismo nombre que alpha.ping.
+     * Eso es deliberado: enseña que nC distingue entre llamada local
+     * y llamada cualificada por modulo.
+     */
+    fn:
+        ping() -> int {
+            return 44;
+        }
+
+        /*
+     * capturarValores separa la obtencion de datos de la impresion.
+     * Es mejor para enseñar porque cada funcion hace una cosa concreta.
+     */
+    fn:
+        capturarValores() -> bool {
+            localPing <- ping();
+            externalPing <- alpha.ping();
+            total <- localPing + externalPing;
+            return true;
+        }
+
+        /*
+     * validarContrato comprueba el contrato pedagogico del ejemplo.
+     * Si alguien cambia alpha.ping o beta.ping, esta funcion detecta
+     * que la demostracion ya no produce los valores esperados.
+     */
+    fn:
+        validarContrato() -> bool {
+            if (localPing != 44) {
+                return false;
+            }
+
+            if (externalPing != 33) {
+                return false;
+            }
+
+            return total == 77;
+        }
+
+        /*
+     * imprimirResumen usa renderInt/renderBool porque nC no debe depender
+     * de conversiones implicitas. Convertir de forma explicita deja claro
+     * que pasamos de dato numerico a texto imprimible.
+     */
+    fn:
+        imprimirResumen() -> bool {
+            println(colorBold("===== alpha / beta =====", "cyan"));
+            println("beta.ping local     = " + renderInt(localPing));
+            println("alpha.ping externo  = " + renderInt(externalPing));
+            println("suma de ambos       = " + renderInt(total));
+            println("contrato valido     = " + renderBool(ok));
+            return true;
+        }
+
+        /*
+     * init es el flujo principal:
+     * 1. calcula los valores;
+     * 2. valida que el contrato se cumple;
+     * 3. imprime un resumen legible.
+     */
+    fn:
+        init() -> bool {
+            capturarValores();
+            ok <- validarContrato();
+            imprimirResumen();
+            return ok;
+        }
+
+        /*
+    * ref main conecta el ejecutable con beta.init.
+    * Aqui fn(init) si es la forma correcta: se usa como referencia de
+    * entrada del programa, no como dato para println.
+    */
+    ref main ->> init;
+
+    fn:
+        shutdown() -> bool {
+            /*
+             * beta tampoco reserva heap ni abre regiones; por eso el final solo
+             * informa que el modulo puede cerrarse correctamente.
+             */
+            return true;
+        }
+
+}

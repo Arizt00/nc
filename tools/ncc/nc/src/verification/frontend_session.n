@@ -1,0 +1,128 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, tool_cli, sha256>;
+
+frontendSession {
+    stc:
+        root >> str;
+        work >> str;
+        candidate >> str;
+        baseline >> str;
+        stage0 >> str;
+        corpus >> str;
+        checks >> int;
+        commands >> int;
+        sequence >> int;
+        healthy >> bool;
+    fn:
+        public:
+            rootPath() -> str { return root; }
+            outputPath() -> str { return work; }
+            corpusPath() -> str { return corpus; }
+            compiler(name >> str) -> str {
+                if (name == "stage0") return stage0;
+                if (name == "baseline") return baseline;
+                return candidate;
+            }
+            good() -> bool { return healthy; }
+            configure(repo >> str, directory >> str, program >> str, previous >> str, oracle >> str) -> bool {
+                root <- tool_cli.toolCli.absolute(repo);
+                work <- tool_cli.toolCli.absolute(directory);
+                candidate <- tool_cli.toolCli.absolute(program);
+                baseline <- tool_cli.toolCli.absolute(previous);
+                stage0 <- tool_cli.toolCli.absolute(oracle);
+                if (release_io.releaseIo.fileType(candidate) != 1 || release_io.releaseIo.fileType(baseline) != 1 ||
+                    release_io.releaseIo.fileType(stage0) != 1) return false;
+                checks <- jsonNewObject(); commands <- jsonNewArray(); sequence <- 0; healthy <- true;
+                return release_io.releaseIo.makeDirectories(work+"/cases") && release_io.releaseIo.makeDirectories(work+"/logs");
+            }
+            check(value >> bool, label >> str) -> bool {
+                jsonObjectSet(checks,label,jsonNewBool(value));
+                if (!value) { healthy <- false; println("FAIL: "+label); }
+                return value;
+            }
+            open(arguments >> addr) -> bool {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--candidate|--baseline|--stage0|--out|--corpus|","");
+                guard options != 0 else return false;
+                root <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                candidate <- tool_cli.toolCli.value(options,"--candidate","");
+                baseline <- tool_cli.toolCli.value(options,"--baseline","");
+                stage0 <- tool_cli.toolCli.value(options,"--stage0","");
+                work <- tool_cli.toolCli.value(options,"--out",root+"/target/parser-material-v35");
+                corpus <- tool_cli.toolCli.value(options,"--corpus",root+"/bootstrap/frontend-v45-programs.json");
+                jsonRelease(options);
+                if (candidate == "" || baseline == "" || stage0 == "" || work == "") return false;
+                return configure(root,work,candidate,baseline,stage0);
+            }
+            invokeProgram(program >> str, arguments >> int, timeout >> int) -> int {
+                argv >> int <- jsonNewArray();
+                tool_cli.toolCli.append(argv,program);
+                index >> int <- 0;
+                while (index < jsonArrayLen(arguments)) { jsonArrayPush(argv,jsonArrayGet(arguments,index)); index += 1; }
+                start >> int <- monotonicMs();
+                row >> int <- tool_cli.toolCli.execute(argv,root,timeout);
+                jsonObjectSet(row,"elapsed_ms",jsonNewInt(monotonicMs()-start));
+                jsonObjectSet(row,"argv",argv);
+                sequence += 1;
+                path >> str <- work+"/logs/"+renderInt(sequence)+".json";
+                if (!release_io.releaseIo.save(path,row)) healthy <- false;
+                summary >> int <- jsonNewObject();
+                jsonObjectSet(summary,"log",jsonNewString(path));
+                jsonObjectSet(summary,"code",jsonObjectGet(row,"code"));
+                jsonArrayPush(commands,summary);
+                jsonRelease(arguments);
+                return row;
+            }
+            invoke(name >> str, arguments >> int) -> int {
+                return invokeProgram(compiler(name),arguments,30000);
+            }
+            args(action >> str, path >> str, mode >> str, target >> str) -> int {
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,"compiler"); tool_cli.toolCli.append(words,action);
+                tool_cli.toolCli.append(words,path);
+                if (mode != "") tool_cli.toolCli.append(words,mode);
+                if (target != "") { tool_cli.toolCli.append(words,"--target"); tool_cli.toolCli.append(words,target); }
+                return words;
+            }
+            document(name >> str, action >> str, path >> str, mode >> str, target >> str) -> int {
+                row >> int <- invoke(name,args(action,path,mode,target));
+                content >> str <- release_io.releaseIo.field(row,"stdout");
+                doc >> int <- jsonParse(content);
+                check(tool_cli.toolCli.hasFlag(row,"ok") && jsonKind(doc) == 6,"document-"+renderInt(sequence));
+                strRelease(content); jsonRelease(row);
+                return doc;
+            }
+            fixture(name >> str, content >> str) -> str {
+                path >> str <- work+"/cases/"+name+".n";
+                check(release_io.releaseIo.write(path,content),"write-"+name);
+                return path;
+            }
+            rejection(name >> str, action >> str, path >> str) -> bool {
+                row >> int <- invoke(name,args(action,path,"--json",""));
+                text >> str <- release_io.releaseIo.field(row,"stdout")+release_io.releaseIo.field(row,"stderr");
+                ok >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) == 1 && strContains(text,"error[");
+                strRelease(text); jsonRelease(row);
+                return ok;
+            }
+            finish(schema >> str, details >> int) -> int {
+                return finishDifferential(schema,details,true);
+            }
+            finishDifferential(schema >> str, details >> int, fullSuite >> bool) -> int {
+                jsonObjectSet(details,"schema",jsonNewString(schema));
+                jsonObjectSet(details,"passed",jsonNewBool(fullSuite && healthy && release_io.releaseIo.allTrue(checks)));
+                jsonObjectSet(details,"differential_passed",jsonNewBool(healthy && release_io.releaseIo.allTrue(checks)));
+                jsonObjectSet(details,"implementation_language",jsonNewString("nC"));
+                jsonObjectSet(details,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                jsonObjectSet(details,"baseline_sha256",jsonNewString(sha256.nccSha256.file(baseline)));
+                jsonObjectSet(details,"stage0_sha256",jsonNewString(sha256.nccSha256.file(stage0)));
+                jsonObjectSet(details,"stage3_promotable",jsonNewBool(false));
+                jsonObjectSet(details,"physical_execution",jsonNewBool(false));
+                jsonObjectSet(details,"stage0_retained",jsonNewBool(true));
+                jsonObjectSet(details,"checks",checks); jsonObjectSet(details,"commands",commands);
+                saved >> bool <- release_io.releaseIo.save(work+"/report.json",details);
+                println((healthy && saved ? "OK: " : "FAIL: ")+work+"/report.json");
+                jsonRelease(details);
+                return healthy && saved ? 0 : 1;
+            }
+    fa: return true;
+}

@@ -1,0 +1,46 @@
+coffEntry79 {
+    fn:
+        private:
+            u16At(data >> p<byte>, at >> int, value >> u16) -> void { wr<u16>(cast<u16>(off(data,at)),value); }
+            u32At(data >> p<byte>, at >> int, value >> u32) -> void { wr<u32>(cast<u32>(off(data,at)),value); }
+            section(data >> p<byte>, at >> int, name >> str, width >> int, bytes >> int,
+                raw >> int, reloc >> int, count >> int, flags >> u32) -> void {
+                cp(off(data,at),cast<byte>(name),width);
+                u32At(data,at+16,bytes); u32At(data,at+20,raw); u32At(data,at+24,reloc);
+                u16At(data,at+32,count); u32At(data,at+36,flags);
+            }
+            symbol(data >> p<byte>, index >> int, name >> str, width >> int,
+                value >> int, part >> u16, kind >> u16) -> void {
+                at >> int <- 229+index*18;
+                if (width > 8) u32At(data,at+4,4);
+                else cp(off(data,at),cast<byte>(name),width);
+                u32At(data,at+8,value); u16At(data,at+12,part);
+                u16At(data,at+14,kind); wr(off(data,at+16),2);
+            }
+            relocation(data >> p<byte>, at >> int, offset >> int, index >> int, kind >> u16) -> void {
+                u32At(data,at,offset); u32At(data,at+4,index); u16At(data,at+8,kind);
+            }
+        public:
+            write(path >> str) -> bool {
+                data >> p<byte> <- calloc(1,341);
+                if (data == null) return false;
+                u16At(data,0,0x8664); u16At(data,2,3); u32At(data,8,229); u32At(data,12,5);
+                section(data,20,".text",5,19,140,179,2,0x60500020);
+                section(data,60,".pdata",6,12,159,199,3,0x40300040);
+                section(data,100,".xdata",6,8,171,0,0,0x40300040);
+                // Preserve Win64 shadow space; process termination must not just return from main.
+                text >> array<byte,19> <- [72,131,236,40,232,0,0,0,0,137,193,255,21,0,0,0,0,15,11];
+                cp(off(data,140),cast<byte>(&text),19);
+                unwind >> array<byte,8> <- [1,4,1,0,4,66,0,0];
+                cp(off(data,171),cast<byte>(&unwind),8);
+                relocation(data,179,5,1,4); relocation(data,189,13,2,4);
+                relocation(data,199,0,0,3); relocation(data,209,4,3,3); relocation(data,219,8,4,3);
+                symbol(data,0,"nc_start",8,0,1,0x20); symbol(data,1,"main",4,0,0,0x20);
+                symbol(data,2,"__imp_ExitProcess",17,0,0,0);
+                symbol(data,3,"text_end",8,19,1,0); symbol(data,4,"unwind",6,0,3,0);
+                u32At(data,319,22); cp(off(data,323),cast<byte>("__imp_ExitProcess"),17);
+                valid >> bool <- fsWriteFrom(path,data,341,false) == 341;
+                free(data); return valid;
+            }
+    fa: return true;
+}

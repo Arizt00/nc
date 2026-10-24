@@ -1,0 +1,44 @@
+use <io:output>;
+use <data:json>;
+use <process:env>;
+use <project:ncup_session, ncup_disk, ncup_commands, ncup_resolution, ncup_first_run, tool_cli, release_io>;
+
+ncupCli {
+    fn:
+        public:
+            execute(arguments >> addr, mode >> str) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--candidate|--cargo|--report|--work|","|--help|-h|");
+                if (options == 0) { println("ncup verification: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools release-ncup-disk|release-ncup-commands|release-ncup-resolution|release-first-run [--root REPO] [--candidate NCC | --cargo CARGO] [--work NEW_DIRECTORY] [--report JSON]");
+                    jsonRelease(options); return 0;
+                }
+                if (jsonObjectHas(options,"--candidate") && jsonObjectHas(options,"--cargo")) { jsonRelease(options); return 2; }
+                if (!ncup_session.ncupSession.open(options)) { println("ncup verification: cannot reserve a new work directory"); jsonRelease(options); return 2; }
+                // The caller's active installation must never be selected by these probes.
+                hadHome >> bool <- envHas("NCUP_HOME");
+                oldHome >> str <- ncup_session.ncupSession.environment("NCUP_HOME");
+                envSet("NCUP_HOME",ncup_session.ncupSession.homePath());
+                schema >> str <- "nc.phase10.disk.layout.report.v1";
+                name >> str <- "F10_P4_disk_layout_report.json";
+                if (mode == "disk") ncup_disk.ncupDisk.inspect();
+                else if (mode == "commands") {
+                    ncup_commands.ncupCommands.inspect();
+                    schema <- "nc.phase10.ncup.commands.report.v1";
+                    name <- "F10_P5_ncup_commands_report.json";
+                } else if (mode == "resolution") {
+                    ncup_resolution.ncupResolution.inspect();
+                    schema <- "nc.phase10.toolchain.resolution.report.v1";
+                    name <- "F10_P6_toolchain_resolution_report.json";
+                } else {
+                    ncup_first_run.ncupFirstRun.inspect();
+                    schema <- "nc.phase10.first-run.report.v1";
+                    name <- "F10_P13_first_run_report.json";
+                }
+                if (hadHome) envSet("NCUP_HOME",oldHome); else envRemove("NCUP_HOME");
+                path >> str <- tool_cli.toolCli.value(options,"--report",ncup_session.ncupSession.rootPath()+"/docs/status/"+name);
+                result >> int <- ncup_session.ncupSession.finish(schema,path);
+                jsonRelease(options); return result;
+            }
+    fa: return true;
+}

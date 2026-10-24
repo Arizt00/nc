@@ -1,0 +1,35 @@
+use <io:output>;
+use <project:float_abi>;
+
+nativeFloatCalls77 {
+    const:
+        FIRST >> ft64 <- 1.5;
+    stc:
+        globalValue >> ft64 <- FIRST+0.5;
+        negativeZero >> ft64 <- -0.0;
+    run() -> int {
+        if (globalValue != 2.0 || rd<u64>(cast<byte>(&negativeZero)) != 0x8000000000000000) return 10;
+        globalValue++; globalValue -= 1.0;
+        if (globalValue != 2.0) return 11;
+        result >> ft64 <- float_abi.floatAbi77.mixed(1,2.0,3,4.0,5.0,6,7.0,8.0,9.0,10.0,11.0,12.0,13,14,15,16);
+        if (result != 136.0) return 1;
+        if (float_abi.floatAbi77.calculate(7.5) != 11.25) return 2;
+        if (float_abi.floatAbi77.widen(float_abi.floatAbi77.narrow(1.5)) != 1.5) return 3;
+        if (float_abi.floatAbi77.roundUnsigned(0xFFFFFFFFFFFFFFFF) != 18446744073709551616.0) return 4;
+        if (float_abi.floatAbi77.intValue(-17.75) != -17) return 5;
+        if (float_abi.floatAbi77.unsignedValue(10000000000000000000.0) != 0x8AC7230489E80000) return 6;
+        raw >> u64 <- 0x7FF8000000000001; nan >> ft64 <- rd<ft64>(cast<byte>(&raw));
+        if (!float_abi.floatAbi77.compare(nan)) return 7;
+        operation >> fn(ft64) -> ft64 <- &float_abi.floatAbi77.calculate;
+        if (operation(8.0) != 12.0) return 12;
+        conditional >> ft64 <- true ? 1 : 2.5;
+        if (conditional != 1.0) return 13;
+        conditional <- false ? 1.5 : 2;
+        if (conditional != 2.0) return 14;
+        x >> ft64 <- 0.1; y >> ft64 <- 0.2;
+        if (!(x+y > 0.3) || !(x < y) || !(x <= x) || !(y >= x) || !(y > x)) return 8;
+        println("native-float-calls-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

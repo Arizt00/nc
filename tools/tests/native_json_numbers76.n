@@ -1,0 +1,40 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonNumbers76 {
+    run() -> int {
+        lexical >> str <- "[-1.25e+03,0.0000000000000000001,18446744073709551616,-9223372036854775808]";
+        array >> int <- jsonParse(lexical);
+        if (array == 0 || jsonArrayLen(array) != 4) return 1;
+        encoded >> str <- jsonStringify(array);
+        if (encoded != lexical) return 2;
+        strRelease(encoded);
+        node >> int <- jsonArrayBorrow(array,0);
+        number >> str <- jsonGetNumberText(node);
+        if (number != "-1.25e+03") return 3;
+        jsonRelease(node); strRelease(number);
+        copy >> int <- jsonClone(array);
+        if (copy == 0 || !jsonEquals(copy,array)) return 4;
+        jsonRelease(array);
+        encoded <- jsonStringify(copy);
+        if (encoded != lexical) return 5;
+        strRelease(encoded); jsonRelease(copy);
+        escaped >> int <- jsonParse("\"\\ud83d\\ude00\\u0000X\"");
+        if (escaped == 0) return 6;
+        text >> str <- jsonGetString(escaped);
+        bytes >> p<byte> <- cast<byte>(text);
+        if (rd(bytes) != 240 || rd(off(bytes,1)) != 159 || rd(off(bytes,2)) != 152 ||
+            rd(off(bytes,3)) != 128 || rd(off(bytes,4)) != 0 || rd(off(bytes,5)) != 88) return 7;
+        encoded <- jsonStringify(escaped);
+        roundtrip >> int <- jsonParse(encoded);
+        if (roundtrip == 0 || !jsonEquals(roundtrip,escaped)) return 8;
+        strRelease(text); strRelease(encoded); jsonRelease(roundtrip); jsonRelease(escaped);
+        if (jsonParse("[01]") != 0 || jsonErrorCode() == 0) return 9;
+        if (jsonParse("[1e+]") != 0 || jsonErrorCode() == 0) return 10;
+        if (jsonParse("\"\\ud800\"") != 0 || jsonErrorCode() == 0) return 11;
+        println("native-json-number-spellings-ok");
+        return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

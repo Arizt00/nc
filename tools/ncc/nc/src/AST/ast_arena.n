@@ -1,0 +1,260 @@
+use <project:ast_schema>;
+
+nccAstArena {
+    const:
+        HEADER_BYTES >> int <- 48;
+        NODE_BYTES >> int <- 64;
+        LIMIT >> int <- 33554430;
+        A_STORAGE >> int <- 0;
+        A_COUNT >> int <- 8;
+        A_ERROR >> int <- 16;
+        A_CAPACITY >> int <- 40;
+        PARENT >> int <- 4;
+        FIRST >> int <- 32;
+        NEXT >> int <- 36;
+        LAST >> int <- 48;
+        PREVIOUS >> int <- 52;
+
+    type:
+        NodeRecord {
+            public:
+                kind >> int;
+                parent >> int;
+                line >> int;
+                column >> int;
+                nameHash >> int;
+                roleHash >> int;
+                firstToken >> int;
+                endToken >> int;
+                firstChild >> int;
+                nextSibling >> int;
+                typeHash >> int;
+                flags >> int;
+                lastChild >> int;
+                previousSibling >> int;
+                originToken >> int;
+                reserved >> int;
+            layout:
+                repr(C);
+                align(8);
+        }
+
+    fn:
+        private:
+            storage(arena >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(arena, A_STORAGE)));
+            }
+
+            linkLast(arena >> p<byte>, parent >> int, child >> int) -> void {
+                item >> p<byte> <- node(arena, child);
+                owner >> p<byte> <- node(arena, parent);
+                last >> int <- rd<int>(off(owner, LAST));
+                if (last >= 0) wr<int>(off(node(arena, last), NEXT), child);
+                else wr<int>(off(owner, FIRST), child);
+                wr<int>(off(owner, LAST), child);
+                wr<int>(off(item, PARENT), parent);
+                wr<int>(off(item, PREVIOUS), last);
+            }
+
+            validLink(index >> int, total >> int) -> bool {
+                return index >= -1 && index < total;
+            }
+
+        public:
+            open(capacity >> int) -> p<byte> {
+                guard capacity > 0 && capacity <= LIMIT else return null;
+                arena >> p<byte> <- cast<byte>(alloc(HEADER_BYTES));
+                guard arena != null else return null;
+                data >> p<byte> <- cast<byte>(alloc((capacity + 1) * NODE_BYTES));
+                guard data != null else { free(arena); return null; }
+                at >> int <- 0;
+                while (at < HEADER_BYTES) { wr<byte>(off(arena, at), 0); at += 1; }
+                wr<addr>(arena, adr(data));
+                wr<int>(off(arena, A_CAPACITY), capacity);
+                at <- 0;
+                while (at < NODE_BYTES) {
+                    wr<byte>(off(data, capacity * NODE_BYTES + at), 0);
+                    at += 1;
+                }
+                return arena;
+            }
+
+            count(arena >> p<byte>) -> int {
+                guard arena != null else return 0;
+                return rd<int>(off(arena, A_COUNT));
+            }
+
+            validIndex(arena >> p<byte>, index >> int) -> bool {
+                guard arena != null else return false;
+                return index >= 0 && index < count(arena);
+            }
+
+            // A missing optional node has a zero record, never an out-of-arena read.
+            node(arena >> p<byte>, index >> int) -> p<byte> {
+                guard arena != null else return null;
+                capacity >> int <- rd<int>(off(arena, A_CAPACITY));
+                if (index < 0 || index >= capacity) {
+                    return off(storage(arena), capacity * NODE_BYTES);
+                }
+                return off(storage(arena), index * NODE_BYTES);
+            }
+
+            detach(arena >> p<byte>, index >> int) -> bool {
+                guard validIndex(arena, index) else return false;
+                item >> p<byte> <- node(arena, index);
+                parent >> int <- rd<int>(off(item, PARENT));
+                if (parent >= 0) {
+                    owner >> p<byte> <- node(arena, parent);
+                    previous >> int <- rd<int>(off(item, PREVIOUS));
+                    next >> int <- rd<int>(off(item, NEXT));
+                    if (previous >= 0) wr<int>(off(node(arena, previous), NEXT), next);
+                    else wr<int>(off(owner, FIRST), next);
+                    if (next >= 0) wr<int>(off(node(arena, next), PREVIOUS), previous);
+                    else wr<int>(off(owner, LAST), previous);
+                }
+                wr<int>(off(item, PARENT), -1);
+                wr<int>(off(item, PREVIOUS), -1);
+                wr<int>(off(item, NEXT), -1);
+                return true;
+            }
+
+            // Check before detach: a rejected reparent must leave the forest unchanged.
+            attach(arena >> p<byte>, parent >> int, child >> int) -> bool {
+                guard validIndex(arena, parent) && validIndex(arena, child) else return false;
+                guard parent != child else return false;
+                cursor >> int <- parent;
+                steps >> int <- 0;
+                while (cursor >= 0) {
+                    guard validIndex(arena, cursor) else return false;
+                    if (cursor == child || steps >= count(arena)) return false;
+                    ancestor >> p<byte> <- node(arena, cursor);
+                    cursor <- rd<int>(off(ancestor, PARENT));
+                    if (cursor < -1) return false;
+                    steps += 1;
+                }
+                item >> p<byte> <- node(arena, child);
+                if (rd<int>(off(item, PARENT)) == parent) return true;
+                detach(arena, child);
+                linkLast(arena, parent, child);
+                return true;
+            }
+
+            append(arena >> p<byte>, kind >> int, parent >> int, line >> int,
+                column >> int, nameHash >> int, roleHash >> int, firstToken >> int) -> int {
+                guard arena != null else return -1;
+                index >> int <- count(arena);
+                guard parent >= -1 && parent < index else return -1;
+                if (index >= rd<int>(off(arena, A_CAPACITY))) {
+                    wr<int>(off(arena, A_ERROR), 5);
+                    return -1;
+                }
+                item >> p<byte> <- node(arena, index);
+                at >> int <- 0;
+                while (at < NODE_BYTES) { wr<byte>(off(item, at), 0); at += 1; }
+                wr<int>(item, kind);
+                wr<int>(off(item, PARENT), -1);
+                wr<int>(off(item, 8), line);
+                wr<int>(off(item, 12), column);
+                wr<int>(off(item, 16), nameHash);
+                wr<int>(off(item, 20), roleHash);
+                wr<int>(off(item, 24), firstToken);
+                wr<int>(off(item, 28), firstToken);
+                wr<int>(off(item, FIRST), -1);
+                wr<int>(off(item, NEXT), -1);
+                wr<int>(off(item, LAST), -1);
+                wr<int>(off(item, PREVIOUS), -1);
+                wr<int>(off(item, 56), firstToken);
+                wr<int>(off(arena, A_COUNT), index + 1);
+                // A fresh leaf cannot be an ancestor: append remains O(1).
+                if (parent >= 0) linkLast(arena, parent, index);
+                return index;
+            }
+
+            validate(arena >> p<byte>) -> bool {
+                guard arena != null else return false;
+                guard rd<int>(off(arena, A_ERROR)) == 0 else return false;
+                total >> int <- count(arena);
+                capacity >> int <- rd<int>(off(arena, A_CAPACITY));
+                guard capacity > 0 && capacity <= LIMIT && total >= 0 && total <= capacity else return false;
+                if (total == 0) return true;
+                marks >> p<int> <- cast<int>(alloc(total * sizeOf(int)));
+                guard marks != null else return false;
+                index >> int <- 0;
+                while (index < total) { wr(off(marks, index), 0); index += 1; }
+                index <- 0;
+                ok >> bool <- true;
+                while (index < total && ok) {
+                    owner >> p<byte> <- node(arena, index);
+                    parent >> int <- rd<int>(off(owner, PARENT));
+                    child >> int <- rd<int>(off(owner, FIRST));
+                    next >> int <- rd<int>(off(owner, NEXT));
+                    last >> int <- rd<int>(off(owner, LAST));
+                    prev >> int <- rd<int>(off(owner, PREVIOUS));
+                    if (!validLink(parent, total) || !validLink(child, total) ||
+                        !validLink(next, total) || !validLink(last, total) || !validLink(prev, total) ||
+                        (parent == -1 && (next != -1 || prev != -1))) {
+                        ok <- false; break;
+                    }
+                    previous >> int <- -1;
+                    while (child >= 0 && ok) {
+                        if (!validIndex(arena, child)) { ok <- false; break; }
+                        item >> p<byte> <- node(arena, child);
+                        if (rd(off(marks, child)) != 0 ||
+                            rd<int>(off(item, PARENT)) != index ||
+                            rd<int>(off(item, PREVIOUS)) != previous) {
+                            ok <- false; break;
+                        }
+                        wr(off(marks, child), 1);
+                        previous <- child;
+                        child <- rd<int>(off(item, NEXT));
+                    }
+                    if (rd<int>(off(owner, LAST)) != previous) ok <- false;
+                    index += 1;
+                }
+                index <- 0;
+                while (index < total && ok) {
+                    parent >> int <- rd<int>(off(node(arena, index), PARENT));
+                    if (parent >= 0 && rd(off(marks, index)) != 1) ok <- false;
+                    if (parent < 0 && rd(off(marks, index)) != 0) ok <- false;
+                    index += 1;
+                }
+                index <- 0;
+                while (index < total) { wr(off(marks, index), 0); index += 1; }
+                index <- 0;
+                while (index < total && ok) {
+                    cursor >> int <- index;
+                    while (cursor >= 0) {
+                        if (!validIndex(arena, cursor)) { ok <- false; break; }
+                        mark >> int <- rd(off(marks, cursor));
+                        if (mark == 1) { ok <- false; break; }
+                        if (mark == 2) break;
+                        wr(off(marks, cursor), 1);
+                        cursor <- rd<int>(off(node(arena, cursor), PARENT));
+                    }
+                    cursor <- index;
+                    while (cursor >= 0 && ok) {
+                        if (rd(off(marks, cursor)) != 1) break;
+                        wr(off(marks, cursor), 2);
+                        cursor <- rd<int>(off(node(arena, cursor), PARENT));
+                    }
+                    index += 1;
+                }
+                free(marks);
+                return ok;
+            }
+
+            layoutValid() -> bool {
+                return sizeOf(NodeRecord) == NODE_BYTES && alignOf(NodeRecord) == 8 &&
+                    offsetOf<NodeRecord>(firstChild) == FIRST &&
+                    offsetOf<NodeRecord>(lastChild) == LAST &&
+                    offsetOf<NodeRecord>(originToken) == 56 &&
+                    ast_schema.nccAstSchema.kindName(1) == "Program";
+            }
+
+            close(arena >> p<byte>) -> bool {
+                if (arena != null) { free(storage(arena)); free(arena); }
+                return true;
+            }
+    fa:
+        return true;
+}

@@ -1,0 +1,51 @@
+use <io:output>;
+
+domCompilerManualRawNoImport :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            source >> addr <- adr(b"alpha 42 + beta");
+            tokens >> p<byte> <- stackAlloc(compilerTokenStride() * 16, 8);
+            nodes >> p<byte> <- stackAlloc(compilerNodeStride() * 16, 8);
+            ir >> p<byte> <- stackAlloc(compilerIrStride() * 16, 8);
+            diagnostics >> p<byte> <- stackAlloc(compilerDiagnosticStride() * 8, 8);
+            unit >> p<byte> <- stackAlloc(compilerUnitStride(), 8);
+            copy >> p<byte> <- stackAlloc(compilerUnitStride(), 8);
+            report >> p<byte> <- stackAlloc(40, 8);
+            manifest >> p<byte> <- stackAlloc(compilerManifestStride(), 8);
+
+            initialized >> bool <- compilerUnitInit(
+                unit, source, 15,
+                tokens, 16,
+                nodes, 16,
+                ir, 16,
+                diagnostics, 8,
+                0
+            );
+            parsed >> bool <- compilerParse(unit);
+            astReady >> bool <- compilerAst(unit);
+            checked >> bool <- compilerSema(unit);
+            lowered >> bool <- compilerLower(unit);
+            diagnosed >> bool <- compilerDiagnosticWrite(unit, 0, 3, 9001, 6, 2, 44);
+            reported >> int <- compilerReport(unit, report);
+            manifested >> int <- compilerManifest(unit, manifest);
+            copied >> bool <- compilerCopy(copy, unit);
+
+            ok >> bool <- initialized && parsed && astReady && checked && lowered && diagnosed &&
+                reported == 40 && manifested == compilerManifestStride() && copied &&
+                compilerTokenCount(unit) == 4 && compilerNodeCount(unit) == 4 &&
+                compilerIrCount(unit) == 4 && compilerDiagnosticCount(unit) == 1 &&
+                compilerState(unit) == 4 && compilerState(copy) == 4;
+
+            reset >> bool <- compilerReset(copy);
+            ok <- ok && reset && compilerTokenCount(copy) == 0 && compilerState(copy) == 0;
+            println("manual compiler backend without import: " + (ok ? "true" : "false"));
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

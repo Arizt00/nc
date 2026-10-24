@@ -1,0 +1,44 @@
+staticAutomaticMemory {
+    stc:
+        data align(64) counter >> int <- 7;
+        bss zeroes >> array<byte, 4096>;
+        rodata section(".rodata.nc.contract") contract >> array<byte, 4> <- [1, 2, 3, 4];
+        tls align(64) errno >> int <- 1;
+        percpu bss ticks >> u64;
+        weak data hook >> p<void> <- null;
+        common scratch >> array<byte, 256>;
+        comdat("nc.shared.config") rodata config >> int <- 42;
+
+    fn:
+        initialize() -> void effects(module.init) {
+            counter <- 9;
+        }
+
+        finalize() -> void effects(module.fini) {
+            counter <- 0;
+        }
+
+        run() -> bool {
+            static align(32) calls >> int <- 0;
+            count >> int <- 8;
+            mark >> p<byte> <- stackMark();
+            values >> p<int> <- vla<int>(count);
+            wr(values, counter);
+            calls += 1;
+            value >> int <- rd(values);
+            restored >> bool <- stackRestore(mark);
+            return restored && calls == 1 && value == 9;
+        }
+
+        verify() -> bool {
+            first >> bool <- run();
+            second >> bool <- run();
+            return first && !second;
+        }
+
+    ref main ->> verify;
+
+    fa:
+        return true;
+
+}

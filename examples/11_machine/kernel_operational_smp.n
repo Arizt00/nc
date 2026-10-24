@@ -1,0 +1,38 @@
+kernelOperationalSmp :: kernel {
+    fn:
+        run() -> bool {
+            cpu0Stack at 0x8000;
+            cpu1Stack at 0x9000;
+            localValue at 0xFEED;
+
+            guard cpuRegister(0, true, cpu0Stack) &&
+                  cpuRegister(1, false, cpu1Stack) &&
+                  cpuStart(1) else return false;
+
+            guard cpuStack(1) == cpu1Stack else return false;
+            guard cpuLocalSet(1, 3, localValue) else return false;
+            guard cpuLocalGet(1, 3) == localValue else return false;
+
+            guard taskRegister(1, "idle0") &&
+                  taskRegister(2, "idle1") &&
+                  schedulerOpen() else return false;
+
+            guard schedulerBind(1, 0) &&
+                  schedulerBind(2, 1) &&
+                  schedulerNextOn(0) &&
+                  schedulerNextOn(1) else return false;
+
+            guard schedulerCurrentOn(0) == 1 &&
+                  schedulerCurrentOn(1) == 2 &&
+                  cpuSetCurrent(0) else return false;
+
+            guard cpuCount() == 2 && cpuOnlineCount() == 2 else return false;
+            guard ipiBroadcast(48) == 1 else return false;
+            guard ipiPending(1) == 1 && ipiPeek(1) == 48 else return false;
+
+            return ipiAck(1, 48) &&
+                   ipiPending(1) == 0;
+        }
+
+    ref main ->> run;
+}

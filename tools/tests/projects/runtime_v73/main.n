@@ -1,0 +1,40 @@
+use <io:output, concat>;
+use <text:string>;
+
+nativeStringProviders73 {
+    run() -> int {
+        if (strLen("") != 0 || strByteLen("abc") != 3 || len("abc") != 3) return 1;
+        utf8 >> array<byte,5> <- [195,169,207,128,0];
+        if (strLen(cast<str>(&utf8)) != 4 || strByteLen(cast<str>(&utf8)) != 4) return 2;
+        if (concat(null,"x") != null || concat3("x",null,"z") != null) return 3;
+        if (!strRelease(null)) return 4;
+        index >> int <- 0;
+        checksum >> int <- 0;
+        while (index < 4096) {
+            two >> str <- concat("native ","nC");
+            three >> str <- concat3("a","b","c");
+            empty >> str <- concat("","");
+            if (two == null || three == null || empty == null) return 5;
+            if (strByteLen(two) != 9 || strLen(three) != 3 || len(empty) != 0) return 6;
+            if (rd<byte>(cast<byte>(two)) != 110 || rd<byte>(off(cast<byte>(two),8)) != 67 ||
+                rd<byte>(off(cast<byte>(two),9)) != 0 || rd<byte>(off(cast<byte>(three),2)) != 99) return 7;
+            checksum += strByteLen(two)+strLen(three)+len(empty);
+            if (!strRelease(two) || !strRelease(three) || !strRelease(empty)) return 8;
+            index += 1;
+        }
+        if (checksum != 49152) return 9;
+        text >> array<byte,8193>;
+        data >> p<byte> <- cast<byte>(&text);
+        index <- 0;
+        while (index < 8192) { wr(off(data,index),120); index += 1; }
+        wr(off(data,8192),0);
+        longText >> str <- concat(cast<str>(data),"end");
+        if (longText == null || strByteLen(longText) != 8195 ||
+            rd(off(cast<byte>(longText),8194)) != 100 || rd(off(cast<byte>(longText),8195)) != 0) return 10;
+        if (!strRelease(longText)) return 11;
+        println("native-string-providers-ok");
+        return 254;
+    }
+    ref main ->> run;
+    fa: return true;
+}

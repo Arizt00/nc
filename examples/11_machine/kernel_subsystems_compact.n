@@ -1,0 +1,35 @@
+kernelSubsystemsCompact :: kernel {
+    fn:
+        run() -> bool {
+            stack0 at 0x8000;
+            stack1 at 0xA000;
+            page0 at 0x400000;
+            frame0 at 0x100000;
+            handler at 0x1000;
+
+            guard cpuRegister(0, true, stack0) &&
+                  cpuRegister(1, false, stack1) &&
+                  cpuStart(1) else return false;
+
+            guard frameInit(frame0, 64) &&
+                  pageMap(page0, frame0, 7) &&
+                  pageTranslate(page0) == frame0 else return false;
+
+            guard taskSpawn(1, 2, stack0) &&
+                  taskSpawn(2, 2, stack1) &&
+                  schedulerBind(1, 0) &&
+                  schedulerBind(2, 1) &&
+                  schedulerOpen() else return false;
+
+            guard schedulerNextOn(0) &&
+                  schedulerNextOn(1) &&
+                  syscallRegister(1, handler) else return false;
+
+            return cpuOnlineCount() == 2 &&
+                   schedulerCurrentOn(0) == 1 &&
+                   schedulerCurrentOn(1) == 2 &&
+                   syscallAvailable(1);
+        }
+
+    ref main ->> run;
+}

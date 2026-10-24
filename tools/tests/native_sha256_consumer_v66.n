@@ -1,0 +1,26 @@
+use <io:output>;
+use <project:sha256, content_cache>;
+
+nativeSha256Consumer66 {
+    type:
+        CacheView {
+            public: enabled >> bool; probes >> u64; hits >> u64; stores >> u64; restoredBytes >> u64;
+        }
+    run() -> int {
+        empty >> str <- sha256.nccSha256.bytes(cast<byte>(""),0);
+        abc >> str <- sha256.nccSha256.bytes(cast<byte>("abc"),3);
+        block >> str <- sha256.nccSha256.bytes(cast<byte>("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),56);
+        if (empty != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") return 1;
+        if (abc != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") return 2;
+        if (block != "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") return 3;
+        view >> CacheView <- content_cache.nccContentCache.contract();
+        if (!view.enabled || view.probes != 0 || view.hits != 0 || view.stores != 0 || view.restoredBytes != 0) return 4;
+        content_cache.nccContentCache.configure(false,"");
+        after >> CacheView <- content_cache.nccContentCache.contract();
+        if (after.enabled || !view.enabled) return 5;
+        strRelease(empty); strRelease(abc); strRelease(block);
+        println("sha256-cache-ok"); return 208;
+    }
+    ref main ->> run;
+    fa: return true;
+}

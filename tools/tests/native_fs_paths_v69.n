@@ -1,0 +1,49 @@
+use <io:output, render>;
+use <process:args>;
+
+nativeFsPaths69 {
+    verify(arguments >> addr) -> int {
+        if (argsCount(arguments) != 6) return 64;
+        directory >> str <- argsAt(arguments,1);
+        empty >> str <- argsAt(arguments,2);
+        missing >> str <- argsAt(arguments,3);
+        first >> str <- argsAt(arguments,4);
+        second >> str <- argsAt(arguments,5);
+        buffer >> array<byte,4096>;
+        data >> p<byte> <- cast<byte>(&buffer);
+        needed >> int <- listDirInto(directory,null,0);
+        if (needed != strByteLen(first)+strByteLen(second)+2) return 1;
+        length >> int <- listDirInto(directory,data,4096);
+        if (length != needed || rd(off(data,length)) != 0) return 2;
+        text >> str <- cast<str>(data);
+        if (text != first+"\n"+second+"\n" && text != second+"\n"+first+"\n") return 3;
+        wr(data,77);
+        if (listDirInto(directory,data,1) != needed || rd(data) != 0) return 4;
+        wr(data,77);
+        if (listDirInto(empty,data,4096) != 0 || rd(data) != 0) return 5;
+        if (listDirInto(missing,data,4096) != -1) return 6;
+        length = officialPathInto(directory,data,4096);
+        if (length <= 0 || length >= 4096 || rd(off(data,length)) != 0) return 7;
+        if (!exists(cast<str>(data))) return 8;
+        secondBuffer >> array<byte,4096>;
+        secondData >> p<byte> <- cast<byte>(&secondBuffer);
+        if (officialPathInto(cast<str>(data),secondData,4096) != length) return 9;
+        firstResolved >> str <- cast<str>(data);
+        secondResolved >> str <- cast<str>(secondData);
+        if (firstResolved != secondResolved) return 10;
+        wr(secondData,77);
+        if (officialPathInto(directory,secondData,length) != -2 || rd(secondData) != 77) return 11;
+        if (officialPathInto(directory,null,0) != -2) return 12;
+        if (officialPathInto(missing,secondData,4096) >= 0 || rd(secondData) != 77) return 13;
+        println("filesystem-paths-ok");
+        return 222;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        code >> int <- verify(arguments);
+        argsRelease(arguments);
+        return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

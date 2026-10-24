@@ -1,0 +1,49 @@
+use <io:output>;
+use <process:args>;
+
+gvnWireVerify71 {
+    check(path >> str) -> int {
+        bytes >> int <- fsSize(path);
+        if (bytes < 128) return 66;
+        graph >> p<byte> <- alloc(bytes);
+        if (graph == null) return 74;
+        if (fsReadInto(path,graph,bytes) != bytes) { free(graph); return 74; }
+        nodes >> int <- rd<int>(off(graph,28));
+        if (rd<int>(off(graph,4)) != 7 || rd<int>(off(graph,32)) != 104 ||
+            nodes <= 0 || nodes > (bytes-128)/128 || rd<u64>(off(graph,80)) != 128) { free(graph); return 66; }
+        sources >> int <- 0;
+        reuses >> int <- 0;
+        at >> int <- 0;
+        while (at < nodes) {
+            record >> p<byte> <- off(graph,128+at*104);
+            source >> int <- rd<int>(off(record,88));
+            slot >> int <- rd<int>(off(record,92));
+            type >> int <- rd<int>(off(record,96));
+            if (source < -1 || source > at || (source < 0 && (slot != -1 || type != 0))) { free(graph); return 66; }
+            if (source >= 0) {
+                origin >> p<byte> <- off(graph,128+source*104);
+                kind >> int <- rd<int>(off(record,4));
+                if ((kind != 27 && kind != 28) || slot < 0 || slot > 1 || type <= 0 || type >= 100000 ||
+                    rd<int>(off(origin,88)) != source || rd<int>(off(origin,92)) != slot || rd<int>(off(origin,96)) != type ||
+                    rd<int>(off(origin,4)) != kind || rd<int>(off(origin,36)) != rd<int>(off(record,36)) ||
+                    rd<int>(off(origin,12)) != rd<int>(off(record,12))) { free(graph); return 66; }
+                if (source == at) sources += 1;
+                else reuses += 1;
+            }
+            at += 1;
+        }
+        free(graph);
+        if (sources != 5 || reuses != 5) return 1;
+        println("gvn-wire-ok");
+        return 240;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 2) { argsRelease(arguments); return 64; }
+        result >> int <- check(argsAt(arguments,1));
+        argsRelease(arguments);
+        return result;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,30 @@
+use <io:output>;
+use <memory:stack>;
+
+typeCore {
+    fn:
+        copyBytes(source >> p<int>, destination >> p<int>, count >> int) -> void {
+            cp(destination, source, count * sizeOf(int));
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            source >> p<int> <- cast(stackAlloc(3 * sizeOf(int), alignOf(int)));
+            copy >> p<int> <- cast(stackAlloc(3 * sizeOf(int), alignOf(int)));
+
+            wr(off(source, 0), 4);
+            wr(off(source, 1), 8);
+            wr(off(source, 2), 15);
+            copyBytes(source, copy, 3);
+
+            ok >> bool <- rd(off(copy, 0)) == 4 && rd(off(copy, 2)) == 15;
+            println(ok ? "clone manual: ok" : "clone manual: error");
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

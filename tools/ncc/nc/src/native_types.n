@@ -1,0 +1,795 @@
+use <project:ir, mct_values, heap_abi, memory_abi, output_abi, string_abi, fs_abi, time_abi, json_abi, command_abi, diagnostics>;
+
+nccNativeTypes {
+    const:
+        AGGREGATE_BASE >> int <- 100000;
+        SIGNATURE_BASE >> int <- 1000000000;
+    fn:
+        internal:
+            aggregate(type >> int) -> bool { return type >= AGGREGATE_BASE; }
+            nominal(graph >> p<byte>, type >> int) -> int {
+                type = ir.nccIr.graphCanonicalType(graph,type);
+                guard type >= 0 else return -1;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,type);
+                if (kind == 11 || kind == 13) return type;
+                if (kind == 20) type <- ir.nccIr.graphNodeFirstChild(graph,type);
+                type = ir.nccIr.graphCanonicalType(graph,type);
+                kind = ir.nccIr.graphNodeAstKind(graph,type);
+                if (kind == 11 || kind == 13) return type;
+                owner >> int <- mct_values.nccMctValues.scope(graph,type);
+                while (owner >= 0) {
+                    at >> int <- 0;
+                    while (at < ir.nccIr.graphNodes(graph)) {
+                        kind <- ir.nccIr.graphNodeAstKind(graph,at);
+                        if ((kind == 11 || kind == 13) && mct_values.nccMctValues.scope(graph,at) == owner &&
+                            ir.nccIr.graphNodeNameEqual(graph,at,type)) return at;
+                        at += 1;
+                    }
+                    owner <- mct_values.nccMctValues.scope(graph,owner);
+                }
+                return -1;
+            }
+            field(graph >> p<byte>, declaration >> int, name >> int) -> int {
+                declaration = ir.nccIr.graphCanonicalType(graph,declaration);
+                child >> int <- declaration < 0 ? -1 : ir.nccIr.graphNodeFirstChild(graph,declaration);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 14 &&
+                        ir.nccIr.graphNodeNameEqual(graph,child,name)) return ir.nccIr.graphCanonicalType(graph,child);
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return -1;
+            }
+            expressionType(graph >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 128 else return -1;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (kind == 45) return nominal(graph,child);
+                if (kind == 26) return typeNode(graph,mct_values.nccMctValues.resolve(graph,node));
+                if (kind == 30) {
+                    selected >> int <- member(graph,node,depth+1);
+                    return typeNode(graph,selected >= 0 ? selected : mct_values.nccMctValues.resolve(graph,node));
+                }
+                if (kind == 29) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                    if (id == 1 || id == 60) return pointee(graph,argument(graph,node,0),depth+1);
+                    if (id == 3) return expressionType(graph,argument(graph,node,0),depth+1);
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 74) child <- ir.nccIr.graphNodeFirstChild(graph,child);
+                    bound >> int <- ir.nccIr.graphSignatureTypeNode(graph,child,-1);
+                    if (bound >= 0) return bound;
+                    target >> int <- mct_values.nccMctValues.resolve(graph,child);
+                    if (target >= 0) {
+                        type >> int <- typeNode(graph,target);
+                        if (ir.nccIr.graphNodeAstKind(graph,target) != 15 && ir.nccIr.graphNodeAstKind(graph,type) == 23)
+                            return functionResult(graph,type);
+                        return type;
+                    }
+                    function >> int <- expressionType(graph,child,depth+1);
+                    if (ir.nccIr.graphNodeAstKind(graph,function) == 23) return functionResult(graph,function);
+                    return ir.nccIr.graphSignatureTypeNode(graph,child,-1);
+                }
+                if (kind == 33) {
+                    parent >> int <- ir.nccIr.graphNodeParent(graph,node);
+                    if (ir.nccIr.graphNodeAstKind(graph,parent) == 12) return typeNode(graph,parent);
+                    if (ir.nccIr.graphNodeAstKind(graph,parent) == 46) {
+                        record >> int <- ir.nccIr.graphNodeParent(graph,parent);
+                        declaration >> int <- nominal(graph,ir.nccIr.graphNodeFirstChild(graph,record));
+                        return typeNode(graph,field(graph,declaration,parent));
+                    }
+                    if (ir.nccIr.graphNodeAstKind(graph,parent) == 37) {
+                        while (parent >= 0 && ir.nccIr.graphNodeAstKind(graph,parent) != 15) parent <- ir.nccIr.graphNodeParent(graph,parent);
+                        return typeNode(graph,parent);
+                    }
+                    if (ir.nccIr.graphNodeAstKind(graph,parent) == 29) {
+                        callee >> int <- ir.nccIr.graphNodeFirstChild(graph,parent);
+                        at >> int <- ir.nccIr.graphNodeNextSibling(graph,callee); index >> int <- 0;
+                        while (at >= 0 && at != node) { index += 1; at <- ir.nccIr.graphNodeNextSibling(graph,at); }
+                        if (ir.nccIr.graphNodeAstKind(graph,callee) == 74) callee <- ir.nccIr.graphNodeFirstChild(graph,callee);
+                        bound >> int <- ir.nccIr.graphSignatureTypeNode(graph,callee,index);
+                        if (bound >= 0) return bound;
+                        target >> int <- mct_values.nccMctValues.resolve(graph,callee);
+                        function >> int <- expressionType(graph,callee,depth+1);
+                        if (ir.nccIr.graphNodeAstKind(graph,function) == 23) return functionParameter(graph,function,index);
+                        at <- target < 0 ? -1 : ir.nccIr.graphNodeFirstChild(graph,target);
+                        while (at >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(graph,at) == 16) {
+                                if (index == 0) return typeNode(graph,at);
+                                index -= 1;
+                            }
+                            at <- ir.nccIr.graphNodeNextSibling(graph,at);
+                        }
+                    }
+                    if (ir.nccIr.graphNodeAstKind(graph,parent) == 33) {
+                        outer >> int <- expressionType(graph,parent,depth+1);
+                        if (ir.nccIr.graphNodeAstKind(graph,outer) == 21) return ir.nccIr.graphNodeFirstChild(graph,outer);
+                    }
+                }
+                if (kind == 31) {
+                    base >> int <- expressionType(graph,child,depth+1);
+                    if (ir.nccIr.graphNodeAstKind(graph,base) == 21 || ir.nccIr.graphNodeAstKind(graph,base) == 20)
+                        return ir.nccIr.graphNodeFirstChild(graph,base);
+                }
+                if (kind == 32) return expressionType(graph,ir.nccIr.graphNodeNextSibling(graph,child),depth+1);
+                return -1;
+            }
+            member(graph >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 128 && ir.nccIr.graphNodeAstKind(graph,node) == 30 else return -1;
+                base >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                return field(graph,nominal(graph,expressionType(graph,base,depth+1)),ir.nccIr.graphNodeNextSibling(graph,base));
+            }
+            aggregateBytes(graph >> p<byte>, type >> int) -> int {
+                if (type >= SIGNATURE_BASE) return (type-SIGNATURE_BASE)/64;
+                return aggregate(type) && ir.nccIr.graphNodeStorageValid(graph,type-AGGREGATE_BASE) ?
+                    ir.nccIr.graphNodeLayoutValue(graph,type-AGGREGATE_BASE) : -1;
+            }
+            aggregateAlign(graph >> p<byte>, type >> int) -> int {
+                if (type >= SIGNATURE_BASE) return 1 << ((type-SIGNATURE_BASE) & 31);
+                return aggregate(type) ? ir.nccIr.graphNodeStorageAlign(graph,type-AGGREGATE_BASE) : 0;
+            }
+            integerRecord(graph >> p<byte>, declaration >> int, depth >> int) -> bool {
+                guard declaration >= 0 && depth < 128 && ir.nccIr.graphNodeStorageValid(graph,declaration) else return false;
+                if (ir.nccIr.graphNodeAstKind(graph,declaration) == 21) {
+                    element >> int <- code(graph,ir.nccIr.graphNodeFirstChild(graph,declaration));
+                    return aggregate(element) ? integerRecord(graph,element-AGGREGATE_BASE,depth+1) : element > 0 && !floating(element);
+                }
+                if ((ir.nccIr.graphNodeFlags(graph,declaration) & 255) != 1) return false;
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,declaration);
+                count >> int <- 0;
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 14) {
+                        type >> int <- typeNode(graph,child);
+                        primitive >> int <- code(graph,type);
+                        if (aggregate(primitive)) {
+                            if (!integerRecord(graph,primitive-AGGREGATE_BASE,depth+1)) return false;
+                        } else if (primitive <= 0 || floating(primitive)) return false;
+                        if (!ir.nccIr.graphNodeStorageValid(graph,child)) return false;
+                        count += 1;
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return count > 0;
+            }
+            materialRecord(graph >> p<byte>, declaration >> int, depth >> int) -> bool {
+                guard declaration >= 0 && depth < 128 && ir.nccIr.graphNodeStorageValid(graph,declaration) else return false;
+                if (ir.nccIr.graphNodeAstKind(graph,declaration) == 21) {
+                    element >> int <- code(graph,ir.nccIr.graphNodeFirstChild(graph,declaration));
+                    return aggregate(element) ? materialRecord(graph,element-AGGREGATE_BASE,depth+1) : element > 0;
+                }
+                form >> int <- ir.nccIr.graphNodeFlags(graph,declaration) & 255;
+                if (form != 1 && form != 2) return false;
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,declaration); count >> int <- 0;
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 14) {
+                        type >> int <- code(graph,typeNode(graph,child));
+                        if (type <= 0 || !ir.nccIr.graphNodeStorageValid(graph,child)) return false;
+                        if (aggregate(type) && !materialRecord(graph,type-AGGREGATE_BASE,depth+1)) return false;
+                        count += 1;
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return count > 0;
+            }
+            mergeClass(left >> int, right >> int) -> int {
+                if (left == 1 || right == 1) return 1;
+                return left > right ? left : right;
+            }
+            recordClass(graph >> p<byte>, type >> int, base >> int, lane >> int, depth >> int) -> int {
+                guard depth < 128 else return -1;
+                bytes >> int <- aggregate(type) ? aggregateBytes(graph,type) : width(type);
+                if (base >= lane+8 || base+bytes <= lane) return 0;
+                if (!aggregate(type)) return floating(type) ? 2 : 1;
+                if (type >= SIGNATURE_BASE) return 1;
+                declaration >> int <- type-AGGREGATE_BASE;
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,declaration); result >> int <- 0;
+                if (ir.nccIr.graphNodeAstKind(graph,declaration) == 21) {
+                    element >> int <- code(graph,child);
+                    stride >> int <- aggregate(element) ? aggregateBytes(graph,element) : width(element);
+                    if (stride <= 0) return -1;
+                    at >> int <- lane > base ? ((lane-base)/stride)*stride : 0;
+                    while (at < bytes && base+at < lane+8) {
+                        result <- mergeClass(result,recordClass(graph,element,base+at,lane,depth+1)); at += stride;
+                    }
+                    return result;
+                }
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 14)
+                        result <- mergeClass(result,recordClass(graph,code(graph,typeNode(graph,child)),
+                            base+ir.nccIr.graphNodeLayoutValue(graph,child),lane,depth+1));
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return result;
+            }
+            abiClass(graph >> p<byte>, type >> int, lane >> int) -> int {
+                if (!aggregate(type)) return lane == 0 ? (floating(type) ? 2 : 1) : 0;
+                if (lane*8 >= aggregateBytes(graph,type)) return 0;
+                return ir.nccIr.graphAbi(graph) == 2 ? 1 : recordClass(graph,type,0,lane*8,0);
+            }
+            abiRegisters(graph >> p<byte>, type >> int, wanted >> int) -> int {
+                mode >> int <- returnMode(graph,type);
+                if (mode == 3) return ir.nccIr.graphAbi(graph) == 2 && wanted == 1 ? 1 : 0;
+                return (abiClass(graph,type,0) == wanted ? 1 : 0)+
+                    (aggregate(type) && mode == 2 && abiClass(graph,type,1) == wanted ? 1 : 0);
+            }
+            aggregateCompatible(graph >> p<byte>, left >> int, right >> int) -> bool {
+                if (!aggregate(left) || !aggregate(right) || aggregateSignature(graph,left) != aggregateSignature(graph,right)) return false;
+                return aggregateBytes(graph,left) > 16 ||
+                    (abiClass(graph,left,0) == abiClass(graph,right,0) && abiClass(graph,left,1) == abiClass(graph,right,1));
+            }
+            unaligned(graph >> p<byte>, declaration >> int, base >> int, depth >> int) -> bool {
+                guard declaration >= 0 && depth < 128 else return true;
+                if (ir.nccIr.graphNodeAstKind(graph,declaration) == 21) {
+                    element >> int <- code(graph,ir.nccIr.graphNodeFirstChild(graph,declaration));
+                    alignment >> int <- aggregate(element) ? aggregateAlign(graph,element) : width(element);
+                    return alignment <= 0 || base % alignment != 0 ||
+                        (aggregate(element) && unaligned(graph,element-AGGREGATE_BASE,base,depth+1));
+                }
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,declaration);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 14) {
+                        type >> int <- code(graph,typeNode(graph,child));
+                        displacement >> int <- base+ir.nccIr.graphNodeLayoutValue(graph,child);
+                        alignment >> int <- aggregate(type) ? aggregateAlign(graph,type) : width(type);
+                        if (alignment <= 0 || displacement % alignment != 0) return true;
+                        if (aggregate(type) && unaligned(graph,type-AGGREGATE_BASE,displacement,depth+1)) return true;
+                    }
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return false;
+            }
+            aggregateSignature(graph >> p<byte>, type >> int) -> int {
+                guard aggregate(type) else return -1;
+                if (type >= SIGNATURE_BASE) return type;
+                guard materialRecord(graph,type-AGGREGATE_BASE,0) else return -1;
+                bytes >> int <- aggregateBytes(graph,type);
+                alignment >> int <- aggregateAlign(graph,type);
+                if (bytes <= 0 || bytes > 16777215 || alignment <= 0) return -1;
+                power >> int <- 0;
+                while ((1 << power) < alignment && power < 30) { power += 1; }
+                return SIGNATURE_BASE+bytes*64+power+(unaligned(graph,type-AGGREGATE_BASE,0,0) ? 32 : 0);
+            }
+            returnMode(graph >> p<byte>, type >> int) -> int {
+                if (!aggregate(type)) return 0;
+                signature >> int <- aggregateSignature(graph,type);
+                if (signature < 0) return -1;
+                bytes >> int <- aggregateBytes(graph,signature);
+                if (ir.nccIr.graphAbi(graph) == 2) return bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8 ? 1 : 3;
+                if (bytes > 16 || ((signature-SIGNATURE_BASE) & 32) != 0) return 3;
+                return bytes <= 8 ? 1 : 2;
+            }
+            operation(graph >> p<byte>, node >> int) -> int {
+                role >> int <- ir.nccIr.graphNodeRoleHash(graph,node);
+                return role > 4224 && role < 4352 ? role-4224 : role;
+            }
+            typeNode(graph >> p<byte>, node >> int) -> int {
+                node = ir.nccIr.graphCanonicalType(graph,node);
+                guard node >= 0 else return -1;
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                while (child >= 0) {
+                    kind >> int <- ir.nccIr.graphNodeAstKind(graph,child);
+                    if ((kind >= 18 && kind <= 24) || kind == 11 || kind == 13) return ir.nccIr.graphCanonicalType(graph,child);
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return -1;
+            }
+            code(graph >> p<byte>, type >> int) -> int {
+                type = ir.nccIr.graphCanonicalType(graph,type);
+                guard type >= 0 else return -1;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,type);
+                if (kind == 19 && ir.nccIr.graphTextValue(graph,type,"Result")) {
+                    payload >> int <- ir.nccIr.graphNodeFirstChild(graph,type);
+                    error >> int <- ir.nccIr.graphNodeNextSibling(graph,payload);
+                    if (ir.nccIr.graphTextValue(graph,payload,"bool") &&
+                        ir.nccIr.graphTextValue(graph,error,"FsError") &&
+                        ir.nccIr.graphNodeNextSibling(graph,error) < 0) return 8;
+                    return -1;
+                }
+                if (kind == 20 || kind == 23) return ir.nccIr.graphPointerBits(graph)/8;
+                if (kind == 21) return AGGREGATE_BASE+type;
+                if (ir.nccIr.graphTextValue(graph,type,"void")) return 0;
+                if (ir.nccIr.graphTextValue(graph,type,"bool")) return 33;
+                if (ir.nccIr.graphTextValue(graph,type,"str")) return 34;
+                if (ir.nccIr.graphTextValue(graph,type,"char")) return 35;
+                if (ir.nccIr.graphTextValue(graph,type,"ft32") || ir.nccIr.graphTextValue(graph,type,"f32")) return 40;
+                if (ir.nccIr.graphTextValue(graph,type,"ft64") || ir.nccIr.graphTextValue(graph,type,"f64")) return 41;
+                if (ir.nccIr.graphTextValue(graph,type,"byte") ||
+                    ir.nccIr.graphTextValue(graph,type,"u8")) return 1;
+                if (ir.nccIr.graphTextValue(graph,type,"i8")) return 17;
+                if (ir.nccIr.graphTextValue(graph,type,"u16")) return 2;
+                if (ir.nccIr.graphTextValue(graph,type,"i16")) return 18;
+                if (ir.nccIr.graphTextValue(graph,type,"int") || ir.nccIr.graphTextValue(graph,type,"i32")) return 20;
+                if (ir.nccIr.graphTextValue(graph,type,"u32")) return 4;
+                if (ir.nccIr.graphTextValue(graph,type,"i64")) return 24;
+                if (ir.nccIr.graphTextValue(graph,type,"u64")) return 8;
+                if (ir.nccIr.graphTextValue(graph,type,"addr") || ir.nccIr.graphTextValue(graph,type,"usize"))
+                    return ir.nccIr.graphPointerBits(graph)/8;
+                if (ir.nccIr.graphTextValue(graph,type,"isize")) return 16+ir.nccIr.graphPointerBits(graph)/8;
+                declaration >> int <- nominal(graph,type);
+                return declaration >= 0 ? AGGREGATE_BASE+declaration : -1;
+            }
+            floating(type >> int) -> bool { return type == 40 || type == 41; }
+            width(type >> int) -> int { return type == 40 ? 4 : (type == 41 || aggregate(type) || type == 34 ? 8 : (type == 33 || type == 35 ? 1 : (type > 16 ? type-16 : type))); }
+            signed(type >> int) -> bool { return type >= 17 && type <= 24; }
+            common(left >> int, right >> int) -> int {
+                if (left == 34 || right == 34) return left == right ? 34 : -1;
+                if (floating(left) || floating(right)) return left == 41 || right == 41 ? 41 : 40;
+                if (width(left) < 4) left <- 20;
+                if (width(right) < 4) right <- 20;
+                if (width(left) > width(right)) return left;
+                if (width(right) > width(left)) return right;
+                return signed(left) && signed(right) ? left : width(left);
+            }
+            argument(graph >> p<byte>, call >> int, index >> int) -> int {
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,call);
+                child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                while (child >= 0 && index > 0) { child <- ir.nccIr.graphNodeNextSibling(graph,child); index -= 1; }
+                return child;
+            }
+            integerLiteral(graph >> p<byte>, node >> int) -> bool {
+                data >> p<byte> <- ir.nccIr.graphNodeName(graph,node);
+                bytes >> int <- ir.nccIr.graphNodeNameBytes(graph,node);
+                if (data == null || bytes <= 0) return false;
+                base >> int <- 10;
+                at >> int <- 0;
+                if (bytes > 2 && rd<byte>(data) == 48) {
+                    marker >> int <- rd<byte>(off(data,1));
+                    if (marker == 120 || marker == 88) base <- 16;
+                    if (marker == 98 || marker == 66) base <- 2;
+                    if (marker == 111 || marker == 79) base <- 8;
+                    if (base != 10) at <- 2;
+                }
+                digits >> int <- 0;
+                while (at < bytes) {
+                    digit >> int <- rd<byte>(off(data,at));
+                    if (digit != 95) {
+                        digit <- digit >= 48 && digit <= 57 ? digit-48 :
+                            (digit >= 65 && digit <= 70 ? digit-55 : (digit >= 97 && digit <= 102 ? digit-87 : -1));
+                        if (digit < 0 || digit >= base) return false;
+                        digits += 1;
+                    }
+                    at += 1;
+                }
+                return digits > 0;
+            }
+            literal(graph >> p<byte>, node >> int) -> u64 {
+                role >> int <- ir.nccIr.graphNodeRoleHash(graph,node);
+                if (role != 2) return ir.nccIr.graphNodeIntegerLiteral(graph,node);
+                data >> p<byte> <- ir.nccIr.graphNodeName(graph,node);
+                bytes >> int <- ir.nccIr.graphNodeNameBytes(graph,node);
+                base >> u64 <- 10;
+                at >> int <- 0;
+                if (bytes > 2 && rd<byte>(data) == 48) {
+                    marker >> int <- rd<byte>(off(data,1));
+                    if (marker == 120 || marker == 88) base <- 16;
+                    if (marker == 98 || marker == 66) base <- 2;
+                    if (marker == 111 || marker == 79) base <- 8;
+                    if (base != 10) at <- 2;
+                }
+                value >> u64 <- 0;
+                while (at < bytes) {
+                    digit >> int <- rd<byte>(off(data,at));
+                    if (digit != 95) {
+                        digit <- digit >= 48 && digit <= 57 ? digit-48 :
+                            (digit >= 65 && digit <= 70 ? digit-55 : (digit >= 97 && digit <= 102 ? digit-87 : -1));
+                        guard digit >= 0 && digit < base else return 0;
+                        value <- value*base+digit;
+                    }
+                    at += 1;
+                }
+                return value;
+            }
+            wideLiteral(graph >> p<byte>, node >> int) -> bool {
+                bits >> u64 <- literal(graph,node);
+                shifted >> u64 <- bits >> 32;
+                upper >> int <- shifted;
+                lower >> int <- bits;
+                return upper != 0 || lower < 0;
+            }
+            outputTag(graph >> p<byte>, node >> int) -> int {
+                type >> int <- expression(graph,node,0);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                declaration >> int <- kind == 26 ? mct_values.nccMctValues.resolve(graph,node) : -1;
+                declaredType >> int <- typeNode(graph,declaration);
+                character >> bool <- (kind == 25 && ir.nccIr.graphNodeRoleHash(graph,node) == 4) ||
+                    (declaredType >= 0 && ir.nccIr.graphTextValue(graph,declaredType,"char"));
+                pointer >> bool <- declaredType >= 0 && (ir.nccIr.graphNodeAstKind(graph,declaredType) == 20 ||
+                    ir.nccIr.graphTextValue(graph,declaredType,"addr"));
+                if (kind == 29) {
+                    intrinsic >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                    pointer <- pointer || intrinsic == 3 || (intrinsic >= 6 && intrinsic <= 8);
+                    callee >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                    if (ir.nccIr.graphNodeAstKind(graph,callee) == 74) {
+                        callee <- ir.nccIr.graphNodeFirstChild(graph,callee);
+                        generic >> int <- ir.nccIr.graphNodeNextSibling(graph,callee);
+                        character <- character || ((intrinsic == 1 || intrinsic == 60) && ir.nccIr.graphTextValue(graph,generic,"char"));
+                    }
+                    if (intrinsic == 1 || intrinsic == 60) {
+                        sourceType >> int <- typeNode(graph,mct_values.nccMctValues.resolve(graph,argument(graph,node,0)));
+                        if (sourceType >= 0 && ir.nccIr.graphNodeAstKind(graph,sourceType) == 20)
+                            character <- character || ir.nccIr.graphTextValue(graph,ir.nccIr.graphNodeFirstChild(graph,sourceType),"char");
+                    }
+                    resultType >> int <- typeNode(graph,mct_values.nccMctValues.resolve(graph,callee));
+                    pointer <- pointer || (resultType >= 0 && (ir.nccIr.graphNodeAstKind(graph,resultType) == 20 ||
+                        ir.nccIr.graphTextValue(graph,resultType,"addr")));
+                    if (ir.nccIr.graphNodeRuntimeIdentity(graph,callee)) {
+                        heap >> int <- heap_abi.nccHeapAbi.resolve(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee));
+                        pointer <- pointer || (heap >= 1 && heap <= 3);
+                    }
+                }
+                pointer <- pointer || (kind == 27 && ir.nccIr.graphNodeRoleHash(graph,node) == 43) || ir.nccIr.graphTextValue(graph,node,"null");
+                return output_abi.nccOutputAbi.valueTag(type,character,pointer);
+            }
+            expression(graph >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 256 else return -1;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                op >> int <- operation(graph,node);
+                if (kind == 45) return code(graph,nominal(graph,first));
+                if (kind == 33 || kind == 31) return code(graph,expressionType(graph,node,depth+1));
+                if (kind == 30) {
+                    selected >> int <- member(graph,node,depth+1);
+                    if (selected >= 0) return code(graph,typeNode(graph,selected));
+                }
+                if (kind == 25) {
+                    if (op == 76 || op == 77) return 33;
+                    if (op == 4) return 35;
+                    if (op == 3) return 34;
+                    if (op == 78) return 8;
+                    if (op == 2) return integerLiteral(graph,node) ? (wideLiteral(graph,node) ? 8 : 20) : 41;
+                    return -1;
+                }
+                if (kind == 26 || kind == 30) {
+                    if (ir.nccIr.graphTextValue(graph,node,"null")) return 8;
+                    return code(graph,typeNode(graph,mct_values.nccMctValues.resolve(graph,node)));
+                }
+                if (kind == 27) {
+                    if (op == 33) return 33;
+                    if (op == 43) return 8;
+                    return expression(graph,first,depth+1);
+                }
+                if (kind == 28 || kind == 32) {
+                    second >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    if (kind == 32) return common(expression(graph,second,depth+1),
+                        expression(graph,ir.nccIr.graphNodeNextSibling(graph,second),depth+1));
+                    if (op == 31 || op == 32 || (op >= 26 && op <= 29) || op == 48 || op == 49) return 33;
+                    return common(expression(graph,first,depth+1),expression(graph,second,depth+1));
+                }
+                if (kind == 29) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                    if (id == 1 || id == 60) {
+                        boundType >> int <- intrinsicType(graph,node,depth+1);
+                        if (boundType >= 0) return code(graph,boundType);
+                        return ir.nccIr.graphNodeIntrinsicTypeBytes(graph,node)+
+                            (ir.nccIr.graphNodeIntrinsicTypeSigned(graph,node) ? 16 : 0);
+                    }
+                    if (id == 2 || id == 61 || id == 20) return 0;
+                    if (id == 7) {
+                        if (ir.nccIr.graphNodeAstKind(graph,first) == 74) {
+                            name >> int <- ir.nccIr.graphNodeFirstChild(graph,first);
+                            castType >> int <- code(graph,ir.nccIr.graphNodeNextSibling(graph,name));
+                            if (floating(castType)) {
+                                sourceType >> int <- expressionType(graph,argument(graph,node,0),depth+1);
+                                sourceKind >> int <- ir.nccIr.graphNodeAstKind(graph,sourceType);
+                                if (sourceKind == 20 || sourceKind == 23 || ir.nccIr.graphTextValue(graph,sourceType,"addr")) return 8;
+                            }
+                            if (castType == 34 || floating(castType)) return castType;
+                            if (floating(expression(graph,argument(graph,node,0),depth+1))) return castType;
+                            return 8;
+                        }
+                        owner >> int <- ir.nccIr.graphNodeParent(graph,node);
+                        if (ir.nccIr.graphNodeAstKind(graph,owner) == 12 && floating(code(graph,typeNode(graph,owner)))) return code(graph,typeNode(graph,owner));
+                        if (ir.nccIr.graphNodeAstKind(graph,owner) == 12 && code(graph,typeNode(graph,owner)) == 34) return 34;
+                        if (ir.nccIr.graphNodeAstKind(graph,owner) == 37) {
+                            while (owner >= 0 && ir.nccIr.graphNodeAstKind(graph,owner) != 15) { owner <- ir.nccIr.graphNodeParent(graph,owner); }
+                            if (floating(code(graph,typeNode(graph,owner)))) return code(graph,typeNode(graph,owner));
+                            if (code(graph,typeNode(graph,owner)) == 34) return 34;
+                        }
+                        return 8;
+                    }
+                    if (id == 3 || id == 6 || id == 8 || (id >= 24 && id <= 26)) return 8;
+                    if (id == 4) return 24;
+                    if (id == 90) return 24;
+                    if (id == 5) return 33;
+                    if (ir.nccIr.graphNodeAstKind(graph,first) == 74) first <- ir.nccIr.graphNodeFirstChild(graph,first);
+                    if (ir.nccIr.graphSignatureArity(graph,first) >= 0) return signatureCode(graph,first,-1);
+                    target >> int <- mct_values.nccMctValues.resolve(graph,first);
+                    if (target >= 0) {
+                        type >> int <- typeNode(graph,target);
+                        return code(graph,ir.nccIr.graphNodeAstKind(graph,target) != 15 && ir.nccIr.graphNodeAstKind(graph,type) == 23 ? functionResult(graph,type) : type);
+                    }
+                    function >> int <- expressionType(graph,first,depth+1);
+                    if (ir.nccIr.graphNodeAstKind(graph,function) == 23) return code(graph,functionResult(graph,function));
+                    if (ir.nccIr.graphSignatureArity(graph,first) >= 0) return signatureCode(graph,first,-1);
+                    if (ir.nccIr.graphNodeRuntimeIdentity(graph,first)) {
+                        memory >> int <- memory_abi.nccMemoryAbi.resolve(ir.nccIr.graphNodeName(graph,first),ir.nccIr.graphNodeNameBytes(graph,first));
+                        if (memory > 0) return memory_abi.nccMemoryAbi.resultCode(memory);
+                        output >> int <- output_abi.nccOutputAbi.resolve(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (output > 0) return output_abi.nccOutputAbi.resultCode(output);
+                        string >> int <- string_abi.nccStringAbi.owned(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (string > 0) return string_abi.nccStringAbi.resultCode(string);
+                        filesystem >> int <- fs_abi.nccFsAbi.owned(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (filesystem > 0) return fs_abi.nccFsAbi.resultCode(filesystem);
+                        timer >> int <- time_abi.nccTimeAbi.owned(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (timer > 0) return time_abi.nccTimeAbi.resultCode(timer);
+                        json >> int <- json_abi.nccJsonAbi.owned(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (json > 0) return json_abi.nccJsonAbi.resultCode(json);
+                        command >> int <- command_abi.nccCommandAbi.owned(ir.nccIr.graphNodeName(graph,first),
+                            ir.nccIr.graphNodeNameBytes(graph,first),ir.nccIr.graphNodeOwner(graph,first),ir.nccIr.graphNodeOwnerBytes(graph,first));
+                        if (command > 0) return command_abi.nccCommandAbi.resultCode(command);
+                        return heap_abi.nccHeapAbi.resultCode(heap_abi.nccHeapAbi.resolve(
+                            ir.nccIr.graphNodeName(graph,first),ir.nccIr.graphNodeNameBytes(graph,first)));
+                    }
+                    return -1;
+                }
+                return -1;
+            }
+
+            signatureCode(graph >> p<byte>, callee >> int, parameter >> int) -> int {
+                type >> int <- ir.nccIr.graphSignatureTypeNode(graph,callee,parameter);
+                return type >= 0 ? code(graph,type) : ir.nccIr.graphSignatureCode(graph,callee,parameter);
+            }
+
+            functionResult(graph >> p<byte>, type >> int) -> int {
+                type = ir.nccIr.graphCanonicalType(graph,type);
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,type); last >> int <- -1;
+                while (child >= 0) { last = child; child = ir.nccIr.graphNodeNextSibling(graph,child); }
+                return ir.nccIr.graphCanonicalType(graph,last);
+            }
+            functionArity(graph >> p<byte>, type >> int) -> int {
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,ir.nccIr.graphCanonicalType(graph,type));
+                count >> int <- -1;
+                while (child >= 0) { count += 1; child = ir.nccIr.graphNodeNextSibling(graph,child); }
+                return count;
+            }
+            functionParameter(graph >> p<byte>, type >> int, position >> int) -> int {
+                if (position < 0 || position >= functionArity(graph,type)) return -1;
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,ir.nccIr.graphCanonicalType(graph,type));
+                while (position > 0) { child = ir.nccIr.graphNodeNextSibling(graph,child); position -= 1; }
+                return ir.nccIr.graphCanonicalType(graph,child);
+            }
+
+            functionAddressCompatible(graph >> p<byte>, expected >> int, actual >> int) -> bool {
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,actual);
+                if (ir.nccIr.graphNodeAstKind(graph,actual) != 27 || operation(graph,actual) != 43) return false;
+                target >> int <- mct_values.nccMctValues.resolve(graph,first);
+                count >> int <- functionArity(graph,expected);
+                pairs >> array<int,256>;
+                if (target < 0) {
+                    if (ir.nccIr.graphSignatureArity(graph,first) != count) return false;
+                    at >> int <- 0;
+                    while (at < count) {
+                        if (!sameType(graph,functionParameter(graph,expected,at),ir.nccIr.graphSignatureTypeNode(graph,first,at),cast<int>(&pairs),0)) return false;
+                        at += 1;
+                    }
+                    return sameType(graph,functionResult(graph,expected),ir.nccIr.graphSignatureTypeNode(graph,first,-1),cast<int>(&pairs),0);
+                }
+                if (ir.nccIr.graphNodeAstKind(graph,target) != 15) return false;
+                at >> int <- 0; child >> int <- ir.nccIr.graphNodeFirstChild(graph,target);
+                while (child >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 16) {
+                        if (at >= count || !sameType(graph,functionParameter(graph,expected,at),typeNode(graph,child),cast<int>(&pairs),0)) return false;
+                        at += 1;
+                    }
+                    child = ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                return at == count && sameType(graph,functionResult(graph,expected),typeNode(graph,target),cast<int>(&pairs),0);
+            }
+
+            pointee(graph >> p<byte>, expressionNode >> int, depth >> int) -> int {
+                if (expressionNode < 0 || depth >= 128) return -1;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,expressionNode);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,expressionNode);
+                if (kind == 27 && operation(graph,expressionNode) == 43)
+                    return expressionType(graph,first,depth+1);
+                if (kind == 32) return pointee(graph,ir.nccIr.graphNodeNextSibling(graph,first),depth+1);
+                if (kind == 29) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,expressionNode);
+                    if (id == 3) return pointee(graph,argument(graph,expressionNode,0),depth+1);
+                    if (id == 6 || id == 7) {
+                        if (ir.nccIr.graphNodeAstKind(graph,first) == 74)
+                            return ir.nccIr.graphCanonicalType(graph,ir.nccIr.graphNodeNextSibling(graph,ir.nccIr.graphNodeFirstChild(graph,first)));
+                        parent >> int <- ir.nccIr.graphNodeParent(graph,expressionNode);
+                        declared >> int <- ir.nccIr.graphNodeAstKind(graph,parent) == 12 ? typeNode(graph,parent) : -1;
+                        if (ir.nccIr.graphNodeAstKind(graph,declared) == 20)
+                            return ir.nccIr.graphCanonicalType(graph,ir.nccIr.graphNodeFirstChild(graph,declared));
+                        return pointee(graph,argument(graph,expressionNode,0),depth+1);
+                    }
+                }
+                type >> int <- ir.nccIr.graphCanonicalType(graph,expressionType(graph,expressionNode,depth+1));
+                if (ir.nccIr.graphNodeAstKind(graph,type) == 20)
+                    return ir.nccIr.graphCanonicalType(graph,ir.nccIr.graphNodeFirstChild(graph,type));
+                return -1;
+            }
+            intrinsicType(graph >> p<byte>, node >> int, depth >> int) -> int {
+                if (node < 0 || depth >= 128) return -1;
+                bound >> int <- ir.nccIr.graphNodeIntrinsicTypeNode(graph,node);
+                if (bound >= 0) return bound;
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (ir.nccIr.graphNodeAstKind(graph,first) == 74) {
+                    name >> int <- ir.nccIr.graphNodeFirstChild(graph,first);
+                    return ir.nccIr.graphCanonicalType(graph,ir.nccIr.graphNodeNextSibling(graph,name));
+                }
+                return pointee(graph,argument(graph,node,0),depth+1);
+            }
+
+            sameType(graph >> p<byte>, left >> int, right >> int, seen >> p<int>, depth >> int) -> bool {
+                left = ir.nccIr.graphCanonicalType(graph,left); right = ir.nccIr.graphCanonicalType(graph,right);
+                if (left >= 0 && ir.nccIr.graphNodeAstKind(graph,left) == 18 && aggregate(code(graph,left))) left = nominal(graph,left);
+                if (right >= 0 && ir.nccIr.graphNodeAstKind(graph,right) == 18 && aggregate(code(graph,right))) right = nominal(graph,right);
+                if (left == right && left >= 0) return true;
+                if (left < 0 || right < 0 || depth >= 128) return false;
+                at >> int <- 0;
+                while (at < depth) {
+                    if (rd(off(seen,at*2)) == left && rd(off(seen,at*2+1)) == right) return true;
+                    at += 1;
+                }
+                wr(off(seen,depth*2),left); wr(off(seen,depth*2+1),right);
+                a >> int <- ir.nccIr.graphNodeAstKind(graph,left);
+                b >> int <- ir.nccIr.graphNodeAstKind(graph,right);
+                if (a != b && !((a == 11 || a == 13) && (b == 11 || b == 13))) return false;
+                if (a == 18) {
+                    leftCode >> int <- code(graph,left); rightCode >> int <- code(graph,right);
+                    return leftCode >= 0 ? leftCode == rightCode : rightCode < 0 && ir.nccIr.graphNodeNameEqual(graph,left,right);
+                }
+                if (a == 20) return sameType(graph,ir.nccIr.graphNodeFirstChild(graph,left),ir.nccIr.graphNodeFirstChild(graph,right),seen,depth+1);
+                if (a == 21) return ir.nccIr.graphNodeStorageValid(graph,left) && ir.nccIr.graphNodeStorageValid(graph,right) &&
+                    ir.nccIr.graphNodeLayoutValue(graph,left) == ir.nccIr.graphNodeLayoutValue(graph,right) &&
+                    sameType(graph,ir.nccIr.graphNodeFirstChild(graph,left),ir.nccIr.graphNodeFirstChild(graph,right),seen,depth+1);
+                if (a == 11 || a == 13 || a == 14) {
+                    if (!ir.nccIr.graphNodeStorageValid(graph,left) || !ir.nccIr.graphNodeStorageValid(graph,right) ||
+                        ir.nccIr.graphNodeLayoutValue(graph,left) != ir.nccIr.graphNodeLayoutValue(graph,right) ||
+                        ir.nccIr.graphNodeStorageAlign(graph,left) != ir.nccIr.graphNodeStorageAlign(graph,right) ||
+                        (ir.nccIr.graphNodeFlags(graph,left) & 255) != (ir.nccIr.graphNodeFlags(graph,right) & 255)) return false;
+                }
+                if (a == 14) return ir.nccIr.graphNodeNameEqual(graph,left,right) && sameType(graph,typeNode(graph,left),typeNode(graph,right),seen,depth+1);
+                childA >> int <- ir.nccIr.graphNodeFirstChild(graph,left);
+                childB >> int <- ir.nccIr.graphNodeFirstChild(graph,right);
+                if (a == 11 || a == 13) {
+                    while (true) {
+                        while (childA >= 0 && ir.nccIr.graphNodeAstKind(graph,childA) != 14) { childA = ir.nccIr.graphNodeNextSibling(graph,childA); }
+                        while (childB >= 0 && ir.nccIr.graphNodeAstKind(graph,childB) != 14) { childB = ir.nccIr.graphNodeNextSibling(graph,childB); }
+                        if (childA < 0 || childB < 0) return childA < 0 && childB < 0;
+                        if (!sameType(graph,childA,childB,seen,depth+1)) return false;
+                        childA = ir.nccIr.graphNodeNextSibling(graph,childA); childB = ir.nccIr.graphNodeNextSibling(graph,childB);
+                    }
+                }
+                while (childA >= 0 && childB >= 0) {
+                    if (!sameType(graph,childA,childB,seen,depth+1)) return false;
+                    childA = ir.nccIr.graphNodeNextSibling(graph,childA); childB = ir.nccIr.graphNodeNextSibling(graph,childB);
+                }
+                return childA < 0 && childB < 0;
+            }
+
+            argumentCompatible(graph >> p<byte>, expected >> int, actual >> int) -> bool {
+                expected = ir.nccIr.graphCanonicalType(graph,expected);
+                if (expected < 0) return true;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,expected);
+                actualCode >> int <- expression(graph,actual,0);
+                expectedCode >> int <- code(graph,expected);
+                if (kind == 21 && ir.nccIr.graphNodeAstKind(graph,actual) == 33) {
+                    element >> int <- ir.nccIr.graphNodeFirstChild(graph,expected);
+                    elementCode >> int <- code(graph,element);
+                    stride >> int <- aggregate(elementCode) ? aggregateBytes(graph,elementCode) : width(elementCode);
+                    if (stride <= 0 || !ir.nccIr.graphNodeStorageValid(graph,expected)) return false;
+                    child >> int <- ir.nccIr.graphNodeFirstChild(graph,actual); count >> int <- 0;
+                    while (child >= 0) {
+                        if (!argumentCompatible(graph,element,child)) return false;
+                        count += 1; child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                    }
+                    return count == ir.nccIr.graphNodeLayoutValue(graph,expected)/stride;
+                }
+                if (kind == 20) {
+                    if (ir.nccIr.graphTextValue(graph,actual,"null")) return true;
+                    if (ir.nccIr.graphNodeAstKind(graph,actual) == 29 && ir.nccIr.graphNodeIntrinsicId(graph,actual) == 7) return true;
+                    actualType >> int <- expressionType(graph,actual,0);
+                    if (ir.nccIr.graphTextValue(graph,actualType,"addr")) return true;
+                    pointed >> int <- pointee(graph,actual,0);
+                    pairs >> array<int,256>;
+                    return pointed >= 0 && sameType(graph,ir.nccIr.graphNodeFirstChild(graph,expected),pointed,cast<int>(&pairs),0);
+                }
+                if (aggregate(expectedCode) || kind == 23) {
+                    if (kind == 23 && ir.nccIr.graphTextValue(graph,actual,"null")) return true;
+                    if (kind == 23 && ir.nccIr.graphNodeAstKind(graph,actual) == 29 && ir.nccIr.graphNodeIntrinsicId(graph,actual) == 7) return true;
+                    if (kind == 23 && ir.nccIr.graphNodeAstKind(graph,actual) == 32) {
+                        condition >> int <- ir.nccIr.graphNodeFirstChild(graph,actual);
+                        left >> int <- ir.nccIr.graphNodeNextSibling(graph,condition);
+                        right >> int <- ir.nccIr.graphNodeNextSibling(graph,left);
+                        return argumentCompatible(graph,expected,left) && argumentCompatible(graph,expected,right);
+                    }
+                    if (kind == 23 && functionAddressCompatible(graph,expected,actual)) return true;
+                    pairs >> array<int,256>;
+                    return sameType(graph,expected,expressionType(graph,actual,0),cast<int>(&pairs),0);
+                }
+                if (expectedCode == 34 && ir.nccIr.graphTextValue(graph,actual,"null")) return true;
+                if (expectedCode == 34 || actualCode == 34) return expectedCode == actualCode;
+                return expectedCode >= 0 && actualCode >= 0;
+            }
+
+        public:
+            projectSignatureError(kind >> int, line >> int, column >> int, path >> str) -> void {
+                diagnostics.nccDiagnostics.emitSema(kind,line,column,path);
+            }
+            validateBindings(graph >> p<byte>, sourceNodes >> int, path >> str) -> bool {
+                at >> int <- 0;
+                while (at < sourceNodes) {
+                    if (ir.nccIr.graphNodeAstKind(graph,at) == 45) {
+                        first >> int <- ir.nccIr.graphNodeFirstChild(graph,at);
+                        declaration >> int <- nominal(graph,first);
+                        if (declaration < 0) {
+                            diagnostics.nccDiagnostics.emitSema(3,ir.nccIr.graphNodeLine(graph,first),ir.nccIr.graphNodeColumn(graph,first),path); return false;
+                        }
+                        supplied >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                        unionType >> bool <- (ir.nccIr.graphNodeFlags(graph,declaration) & 255) == 2;
+                        if (unionType && (supplied < 0 || ir.nccIr.graphNodeNextSibling(graph,supplied) >= 0)) {
+                            diagnostics.nccDiagnostics.emitSema(5,ir.nccIr.graphNodeLine(graph,at),ir.nccIr.graphNodeColumn(graph,at),path); return false;
+                        }
+                        while (supplied >= 0) {
+                            selected >> int <- field(graph,declaration,supplied);
+                            value >> int <- ir.nccIr.graphNodeFirstChild(graph,supplied);
+                            if (selected < 0 || !argumentCompatible(graph,typeNode(graph,selected),value)) {
+                                diagnostics.nccDiagnostics.emitSema(selected < 0 ? 2 : 5,ir.nccIr.graphNodeLine(graph,supplied),ir.nccIr.graphNodeColumn(graph,supplied),path); return false;
+                            }
+                            supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                        }
+                        selected >> int <- unionType ? -1 : ir.nccIr.graphNodeFirstChild(graph,declaration);
+                        while (selected >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(graph,selected) == 14) {
+                                count >> int <- 0; supplied <- ir.nccIr.graphNodeNextSibling(graph,first);
+                                while (supplied >= 0) {
+                                    if (field(graph,declaration,supplied) == ir.nccIr.graphCanonicalType(graph,selected)) count += 1;
+                                    supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                                }
+                                if (count != 1) {
+                                    diagnostics.nccDiagnostics.emitSema(5,ir.nccIr.graphNodeLine(graph,at),ir.nccIr.graphNodeColumn(graph,at),path); return false;
+                                }
+                            }
+                            selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                        }
+                    }
+                    if (ir.nccIr.graphNodeAstKind(graph,at) == 29 && ir.nccIr.graphNodeIntrinsicId(graph,at) == 0) {
+                        callee >> int <- ir.nccIr.graphNodeFirstChild(graph,at);
+                        if (ir.nccIr.graphNodeAstKind(graph,callee) == 74) callee = ir.nccIr.graphNodeFirstChild(graph,callee);
+                        arity >> int <- ir.nccIr.graphSignatureArity(graph,callee);
+                        signature >> bool <- arity >= 0;
+                        function >> int <- signature ? -1 : expressionType(graph,callee,0);
+                        if (!signature && ir.nccIr.graphNodeAstKind(graph,function) == 23) arity <- functionArity(graph,function);
+                        if (arity >= 0) {
+                            index >> int <- 0; arg >> int <- argument(graph,at,0);
+                            while (arg >= 0) {
+                                if (index >= arity) {
+                                    diagnostics.nccDiagnostics.emitSema(7,ir.nccIr.graphNodeLine(graph,at),ir.nccIr.graphNodeColumn(graph,at),path); return false;
+                                }
+                                expected >> int <- signature ? ir.nccIr.graphSignatureTypeNode(graph,callee,index) : functionParameter(graph,function,index);
+                                if (!argumentCompatible(graph,expected,arg)) {
+                                    diagnostics.nccDiagnostics.emitSema(5,ir.nccIr.graphNodeLine(graph,arg),ir.nccIr.graphNodeColumn(graph,arg),path); return false;
+                                }
+                                index += 1; arg = ir.nccIr.graphNodeNextSibling(graph,arg);
+                            }
+                            if (index != arity) {
+                                diagnostics.nccDiagnostics.emitSema(7,ir.nccIr.graphNodeLine(graph,at),ir.nccIr.graphNodeColumn(graph,at),path); return false;
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+            bindIntrinsics(graph >> p<byte>, sourceNodes >> int) -> bool {
+                at >> int <- 0;
+                while (at < sourceNodes) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,at);
+                    if (id >= 1 && id <= 4) {
+                        type >> int <- ir.nccIr.graphNodeIntrinsicTypeNode(graph,at);
+                        if (type < 0) type = pointee(graph,argument(graph,at,0),0);
+                        if (type >= 0 && !ir.nccIr.projectSetIntrinsicType(graph,at,type,code(graph,type))) return false;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+    fa:
+        return true;
+}

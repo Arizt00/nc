@@ -1,0 +1,49 @@
+use <data:json>;
+use <project:release43_common, release43_distribution, release_io>;
+
+release43Supply {
+    fn:
+        private:
+            args(home >> str, verb >> str) -> int {
+                words >> int <- jsonParse("[\"ncup\"]"); release43_common.release43Common.arg(words,verb); release43_common.release43Common.arg(words,"--home"); release43_common.release43Common.arg(words,home); return words;
+            }
+            run(words >> int) -> int { return release43_common.release43Common.command(words,true); }
+        public:
+            inspect(out >> str, provided >> bool) -> void {
+                keys >> int <- jsonParse("[\"root_trust_bootstrap\",\"verify_passes_clean\",\"verify_detects_tampering\",\"verify_recovers_after_reinstall\",\"enterprise_mode_verified\",\"distribution_checksums_and_signature\",\"clean_install_pre_verifies_distribution\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(keys)) { release43_common.release43Common.record(release43_common.release43Common.stringAt(keys,at),false); at += 1; } release43_common.release43Common.release(keys);
+                home >> str <- release43_common.release43Common.workPath()+"/ncup-home"; enterpriseHome >> str <- release43_common.release43Common.workPath()+"/ncup-enterprise-home";
+                words >> int <- args(home,"init"); release43_common.release43Common.arg(words,"--profile"); release43_common.release43Common.arg(words,"minimal"); release43_common.release43Common.arg(words,"--force");
+                if (!release43_common.release43Common.succeeded(run(words))) { release43_common.release43Common.fail("ncup init failed for p7"); return; }
+                rootKey >> int <- release43_common.release43Common.load(home+"/keys/root-trust-key.v1.json");
+                release43_common.release43Common.record("root_trust_bootstrap",release43_common.release43Common.field(rootKey,"key_id") == "ncup-root-v2-2026" && release43_common.release43Common.field(rootKey,"signature_algorithm") == "hmac-sha256" && release43_common.release43Common.field(rootKey,"hash_algorithm") == "sha256"); release43_common.release43Common.release(rootKey);
+                release43_common.release43Common.record("verify_passes_clean",release43_common.release43Common.succeeded(run(args(home,"verify"))));
+                tc >> str <- "stable-"+release43_common.release43Common.host(); if (release43_common.release43Common.failed()) return;
+                if (release43_common.release43Common.fileType(home+"/toolchains/"+tc+"/bin") != 2) { release43_common.release43Common.fail("tamper target directory is missing: "+tc); return; }
+                if (!release43_common.release43Common.writeText(home+"/toolchains/"+tc+"/bin/ncc","tampered\n")) { release43_common.release43Common.fail("cannot write tampered compiler"); return; }
+                words <- args(home,"verify"); release43_common.release43Common.arg(words,"--toolchain"); release43_common.release43Common.arg(words,tc); row >> int <- run(words);
+                release43_common.release43Common.record("verify_detects_tampering",!release43_common.release43Common.succeeded(row) && strContains(release43_common.release43Common.field(row,"stdout")+"\n"+release43_common.release43Common.field(row,"stderr"),"checksum mismatch"));
+                words <- jsonParse("[\"ncup\",\"install\",\"stable\",\"--home\"]"); release43_common.release43Common.arg(words,home);
+                if (release43_common.release43Common.succeeded(run(words))) {
+                    words <- args(home,"verify"); release43_common.release43Common.arg(words,"--toolchain"); release43_common.release43Common.arg(words,tc);
+                    release43_common.release43Common.record("verify_recovers_after_reinstall",release43_common.release43Common.succeeded(run(words)));
+                }
+                words <- args(enterpriseHome,"init"); release43_common.release43Common.arg(words,"--profile"); release43_common.release43Common.arg(words,"minimal"); release43_common.release43Common.arg(words,"--enterprise-mirror"); release43_common.release43Common.arg(words,"https://mirror.enterprise.local/nc"); release43_common.release43Common.arg(words,"--enterprise-trust-key"); release43_common.release43Common.arg(words,"enterprise-trust-key-material-v1"); release43_common.release43Common.arg(words,"--force");
+                enterpriseReady >> bool <- release43_common.release43Common.succeeded(run(words));
+                if (enterpriseReady) enterpriseReady <- release43_common.release43Common.succeeded(run(args(enterpriseHome,"verify")));
+                if (enterpriseReady) {
+                    cfg >> int <- release43_common.release43Common.load(enterpriseHome+"/manifests/ncup-config.v1.json"); supply >> int <- jsonObjectGet(cfg,"supply_chain"); ent >> int <- jsonObjectGet(supply,"enterprise"); enabled >> int <- jsonObjectGet(ent,"enabled");
+                    release43_common.release43Common.record("enterprise_mode_verified",jsonGetBoolOr(enabled,false) && release43_common.release43Common.field(ent,"mirror") == "https://mirror.enterprise.local/nc" && release43_common.release43Common.field(ent,"trust_key_id") != "");
+                    release43_common.release43Common.release(enabled); release43_common.release43Common.release(ent); release43_common.release43Common.release(supply); release43_common.release43Common.release(cfg);
+                }
+                signingKey >> str <- "phase10-p7-signing-key-v1";
+                built >> bool <- provided;
+                if (!provided) built <- release43_distribution.release43Distribution.build(out,signingKey);
+                if (built) {
+                    release43_common.release43Common.record("distribution_checksums_and_signature",release43_distribution.release43Distribution.verify(out,signingKey) && release43_common.release43Common.fileSize(out+"/integrity/SHA256SUMS.sig") > 0);
+                    artifact >> str <- release43_distribution.release43Distribution.artifact(out);
+                    if (artifact != "") release43_common.release43Common.record("clean_install_pre_verifies_distribution",release43_distribution.release43Distribution.cleanInstall(out,artifact,signingKey));
+                }
+            }
+    fa: return true;
+}

@@ -1,0 +1,54 @@
+use <data:json>;
+
+jsonNativePeStatusOk :: runtime {
+    fn:
+        run() -> int {
+            root >> int <- jsonParse("{\"element\":\"Cm\",\"values\":[1,3]}");
+            if (root == 0) { return 10; }
+            values >> int <- jsonObjectGet(root, "values");
+            if (values == 0 || jsonArrayLen(values) != 2) { return 11; }
+            two >> int <- jsonNewInt(2);
+            if (!jsonArrayInsert(values, 1, two)) { return 12; }
+            four >> int <- jsonNewInt(4);
+            if (!jsonArrayPush(values, four) || jsonArrayLen(values) != 4) { return 13; }
+            removed >> int <- jsonArrayRemove(values, 0);
+            if (removed == 0 || jsonGetInt(removed) != 1) { return 14; }
+            pointer >> int <- jsonPointer(root, "/element");
+            if (pointer == 0 || jsonGetString(pointer) != "Cm") { return 15; }
+
+            built >> int <- jsonNewObject();
+            if (!jsonObjectSet(built, "root", root)) { return 20; }
+            if (!jsonObjectSet(built, "mutated", values)) { return 21; }
+            pretty >> str <- jsonStringifyPretty(built, 2);
+            if (!jsonValidate(pretty)) { return 22; }
+            if (!jsonSaveFile(built, "runtime_json_native_roundtrip.json", 2)) { return 30; }
+            loaded >> int <- jsonParseFile("runtime_json_native_roundtrip.json");
+            if (loaded == 0) { return 31; }
+            if (!jsonEquals(built, loaded)) { return 32; }
+            if (!jsonSaveFile(built, "settings.json", 2)) { return 33; }
+            settings >> int <- jsonParseFile("settings.json");
+            if (settings == 0 || !jsonEquals(built, settings)) { return 34; }
+
+            bad >> int <- jsonParse("{\"broken\":]");
+            if (bad != 0 || jsonErrorCode() != 1) { return 40; }
+            if (jsonErrorName() != "E_RUNTIME_JSON_PARSE_001") { return 41; }
+            if (jsonGetIntOr(bad, 77) != 77) { return 42; }
+
+            jsonRelease(loaded);
+            jsonRelease(settings);
+            jsonRelease(built);
+            jsonRelease(pointer);
+            jsonRelease(removed);
+            jsonRelease(four);
+            jsonRelease(two);
+            jsonRelease(values);
+            jsonRelease(root);
+            return 0;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

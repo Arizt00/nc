@@ -1,0 +1,234 @@
+use <data:json>;
+use <project:utility_json>;
+use <io:output, render>;
+use <process:args>;
+use <project:release_io, tool_cli, contract_checks, sha256, utility_source>;
+
+utilityMigrationV42 {
+    local:
+        passed >> int <- 0;
+        failed >> int <- 0;
+        rows >> int <- 0;
+        native >> str <- "";
+        python >> str <- "";
+        oracle >> str <- "";
+        cwd >> str <- "";
+    fn:
+        private:
+            check(value >> bool, label >> str) -> void {
+                if (value) passed += 1;
+                else { failed += 1; println("FAIL: "+label); }
+            }
+            hashMapsEqual(left >> int, right >> int) -> bool {
+                if (jsonKind(left) != 6 || jsonKind(right) != 6 || jsonObjectLen(left) != jsonObjectLen(right)) return false;
+                index >> int <- 0;
+                while (index < jsonObjectLen(left)) {
+                    key >> str <- jsonObjectKeyAt(left,index);
+                    a >> int <- jsonObjectBorrow(left,key); b >> int <- jsonObjectBorrow(right,key);
+                    same >> bool <- jsonKind(a) == 4 && jsonKind(b) == 4 && jsonStringView(a,"") == jsonStringView(b,"");
+                    jsonRelease(a); jsonRelease(b); free(cast<byte>(key));
+                    if (!same) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            inventory(root >> str, relative >> str, result >> int) -> bool {
+                path >> str <- release_io.releaseIo.path(root,relative);
+                if (release_io.releaseIo.fileType(path) == 0) return true;
+                names >> int <- release_io.releaseIo.names(path);
+                if (jsonKind(names) != 5) return false;
+                at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at);
+                    next >> str <- release_io.releaseIo.path(relative,jsonStringView(item,""));
+                    file >> str <- release_io.releaseIo.path(root,next);
+                    if (release_io.releaseIo.fileType(file) == 2) good <- inventory(root,next,result) && good;
+                    else {
+                        digest >> str <- sha256.nccSha256.file(file);
+                        if (strByteLen(digest) != 64) { println("Cannot hash corpus file: "+file); good <- false; }
+                        utility_json.utilityJson.put(result,next,jsonNewString(digest)); strRelease(digest);
+                    }
+                    strRelease(file); strRelease(next); jsonRelease(item); at += 1;
+                }
+                jsonRelease(names); return good;
+            }
+            prepare(root >> str, scenario >> int) -> bool {
+                if (release_io.releaseIo.fileType(root) != 0) return false;
+                if (!release_io.releaseIo.makeDirectories(root)) return false;
+                if (tool_cli.toolCli.hasFlag(scenario,"strict_directories")) {
+                    if (!release_io.releaseIo.makeDirectories(root+"/examples/root_at")) return false;
+                    if (!release_io.releaseIo.makeDirectories(root+"/examples/machine_at")) return false;
+                    if (!release_io.releaseIo.makeDirectories(root+"/examples/primitive_at")) return false;
+                }
+                directories >> int <- jsonObjectBorrow(scenario,"directories"); index >> int <- 0;
+                while (index < jsonArrayLen(directories)) {
+                    directory >> int <- jsonArrayBorrow(directories,index);
+                    made >> bool <- release_io.releaseIo.makeDirectories(root+"/"+jsonStringView(directory,""));
+                    jsonRelease(directory); index += 1;
+                    if (!made) { jsonRelease(directories); return false; }
+                }
+                jsonRelease(directories);
+                files >> int <- jsonObjectBorrow(scenario,"files"); at >> int <- 0; good >> bool <- true;
+                while (at < jsonObjectLen(files)) {
+                    key >> str <- jsonObjectKeyAt(files,at); value >> int <- jsonObjectBorrow(files,key);
+                    path >> str <- root+"/"+key;
+                    if (jsonKind(value) == 4) good <- release_io.releaseIo.write(path,jsonStringView(value,"")) && good;
+                    else {
+                        count >> int <- jsonArrayLen(value); bytes >> p<byte> <- cast(alloc(count+1)); index >> int <- 0;
+                        if (bytes == null) { jsonRelease(value); jsonRelease(files); free(cast<byte>(key)); return false; }
+                        while (index < count) {
+                            item >> int <- jsonArrayBorrow(value,index); wr(off(bytes,index),jsonGetIntOr(item,0));
+                            jsonRelease(item); index += 1;
+                        }
+                        good <- release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(path)) && good;
+                        good <- fsWriteFrom(path,bytes,count,false) == count && good; free(bytes);
+                    }
+                    strRelease(path); jsonRelease(value); free(cast<byte>(key)); at += 1;
+                }
+                jsonRelease(files); return good;
+            }
+            invoke(root >> str, operation >> int, original >> bool) -> int {
+                command >> int <- jsonNewArray();
+                tool_cli.toolCli.append(command,original ? python : native);
+                tool_cli.toolCli.append(command,original ? oracle : "migrate-low-level");
+                tool_cli.toolCli.append(command,"--root"); tool_cli.toolCli.append(command,root);
+                tool_cli.toolCli.append(command,"--wave"); tool_cli.toolCli.append(command,utility_json.utilityJson.field(operation,"wave"));
+                if (tool_cli.toolCli.hasFlag(operation,"apply")) tool_cli.toolCli.append(command,"--apply");
+                if (!tool_cli.toolCli.hasFlag(operation,"summary")) tool_cli.toolCli.append(command,"--json");
+                if (tool_cli.toolCli.hasFlag(operation,"report")) {
+                    tool_cli.toolCli.append(command,"--report"); tool_cli.toolCli.append(command,"reports/migration.json");
+                }
+                if (jsonObjectHas(operation,"extra")) tool_cli.toolCli.append(command,utility_json.utilityJson.field(operation,"extra"));
+                result >> int <- tool_cli.toolCli.execute(command,cwd,60000); jsonRelease(command); return result;
+            }
+            testOperation(aRoot >> str, bRoot >> str, operation >> int, label >> str) -> void {
+                beforeA >> int <- jsonNewObject(); beforeB >> int <- jsonNewObject();
+                check(inventory(aRoot,"examples",beforeA),label+" before-native");
+                check(inventory(bRoot,"examples",beforeB),label+" before-oracle");
+                a >> int <- invoke(aRoot,operation,false); b >> int <- invoke(bRoot,operation,true);
+                expected >> int <- release_io.releaseIo.number(operation,"code",0);
+                captured >> bool <- tool_cli.toolCli.clean(a) && tool_cli.toolCli.clean(b);
+                codeEqual >> bool <- release_io.releaseIo.number(a,"code",-99) == expected && release_io.releaseIo.number(b,"code",-99) == expected;
+                check(captured,label+" capture"); check(codeEqual,label+" exit-code");
+                same >> bool <- false;
+                if (expected == 0) {
+                    aText >> str <- utility_json.utilityJson.field(a,"stdout"); bText >> str <- utility_json.utilityJson.field(b,"stdout");
+                    if (tool_cli.toolCli.hasFlag(operation,"summary")) same <- aText == bText;
+                    else {
+                        aJson >> int <- jsonParse(aText); bJson >> int <- jsonParse(bText);
+                        same <- jsonKind(aJson) == 6 && jsonKind(bJson) == 6 && contract_checks.contractChecks.equal(aJson,bJson);
+                        jsonRelease(aJson); jsonRelease(bJson);
+                    }
+                    check(same,label+" output");
+                    if (tool_cli.toolCli.hasFlag(operation,"report")) {
+                        ar >> int <- jsonParseFile(aRoot+"/reports/migration.json"); br >> int <- jsonParseFile(bRoot+"/reports/migration.json");
+                        check(jsonKind(ar) == 6 && jsonKind(br) == 6 && contract_checks.contractChecks.equal(ar,br),label+" report");
+                        jsonRelease(ar); jsonRelease(br);
+                    }
+                }
+                afterA >> int <- jsonNewObject(); afterB >> int <- jsonNewObject();
+                check(inventory(aRoot,"examples",afterA),label+" after-native");
+                check(inventory(bRoot,"examples",afterB),label+" after-oracle");
+                sameFiles >> bool <- hashMapsEqual(afterA,afterB); check(sameFiles,label+" files");
+                legacyPreserved >> bool <- true; legacyAt >> int <- 0;
+                while (legacyAt < jsonObjectLen(beforeA)) {
+                    key >> str <- jsonObjectKeyAt(beforeA,legacyAt);
+                    if (strEndsWith(key,".n") || strEndsWith(key,".N")) {
+                        old >> int <- jsonObjectBorrow(beforeA,key); current >> int <- jsonObjectBorrow(afterA,key);
+                        legacyPreserved <- jsonKind(old) == 4 && jsonKind(current) == 4 &&
+                            jsonStringView(old,"") == jsonStringView(current,"") && legacyPreserved;
+                        jsonRelease(old); jsonRelease(current);
+                    }
+                    free(cast<byte>(key)); legacyAt += 1;
+                }
+                check(legacyPreserved,label+" legacy-preserved");
+                unchanged >> bool <- hashMapsEqual(beforeA,afterA) && hashMapsEqual(beforeB,afterB);
+                if (!tool_cli.toolCli.hasFlag(operation,"apply")) check(unchanged,label+" read-only");
+                row >> int <- jsonNewObject(); utility_json.utilityJson.put(row,"case",jsonNewString(label));
+                utility_json.utilityJson.put(row,"expected_code",jsonNewInt(expected)); utility_json.utilityJson.put(row,"capture_ok",jsonNewBool(captured));
+                utility_json.utilityJson.put(row,"exit_codes_equal",jsonNewBool(codeEqual));
+                if (expected == 0) utility_json.utilityJson.put(row,"output_equal",jsonNewBool(same));
+                utility_json.utilityJson.put(row,"files_equal",jsonNewBool(sameFiles)); utility_json.utilityJson.put(row,"examples_unchanged",jsonNewBool(unchanged));
+                utility_json.utilityJson.put(row,"legacy_preserved",jsonNewBool(legacyPreserved));
+                utility_json.utilityJson.put(row,"native",a); utility_json.utilityJson.put(row,"oracle",b);
+                utility_json.utilityJson.put(row,"native_files_after",afterA); utility_json.utilityJson.put(row,"oracle_files_after",afterB);
+                jsonRelease(beforeA); jsonRelease(beforeB); utility_json.utilityJson.push(rows,row);
+            }
+            sourceTests() -> void {
+                text >> str <- "PRIMITIVE [ @ ] x";
+                check(utility_source.utilitySource.family(cast(text),strByteLen(text)) == 4,"primitive excludes root");
+                text <- "// [@] and [@machine]";
+                check(utility_source.utilitySource.family(cast(text),strByteLen(text)) == 3,"comments retained by oracle contract");
+                text <- "[@ machine]";
+                check(utility_source.utilitySource.family(cast(text),strByteLen(text)) == 0,"space after @ not accepted");
+                bytes >> p<byte> <- cast(alloc(5));
+                if (bytes == null) { check(false,"allocation"); return; }
+                wr(bytes,192); wr(off(bytes,1),128);
+                check(!utility_source.utilitySource.validUtf8(bytes,2),"overlong utf8 rejected");
+                wr(bytes,240); wr(off(bytes,1),144); wr(off(bytes,2),128); wr(off(bytes,3),128);
+                check(utility_source.utilitySource.validUtf8(bytes,4),"supplementary utf8 accepted");
+                check(!utility_source.utilitySource.validUtf8(bytes,3),"truncated utf8 rejected");
+                wr(bytes,244); wr(off(bytes,1),144);
+                check(!utility_source.utilitySource.validUtf8(bytes,4),"out-of-range utf8 rejected"); free(bytes);
+                a >> int <- jsonParse("{\"a\":[1,2]}"); b >> int <- jsonParse("{\"a\":[1,3]}");
+                check(!contract_checks.contractChecks.equal(a,b),"comparator detects corruption"); jsonRelease(a); jsonRelease(b);
+                check(sha256.nccSha256.selfTest(),"sha256 vectors");
+                model >> int <- jsonNewObject(); child >> int <- jsonNewString("borrowed-value");
+                utility_json.utilityJson.put(model,"key",child);
+                check(jsonKind(child) == 0,"consuming JSON setter releases input handle");
+                check(utility_json.utilityJson.field(model,"key") == "borrowed-value","JSON view remains owned by parent");
+                encoded >> str <- jsonStringify(model); restored >> int <- jsonParse(encoded); free(cast<byte>(encoded));
+                check(hashMapsEqual(model,restored),"raw JSON serialization ownership");
+                utility_json.utilityJson.put(restored,"key",jsonNewString("corrupted"));
+                check(!hashMapsEqual(model,restored),"hash map detects mutation");
+                jsonRelease(restored); jsonRelease(model);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(arguments,"|--native|--python|--oracle|--out|--catalog|--corpus|","");
+                if (jsonKind(options) != 6) { println("utility-migration-v42 verify --native EXE --python EXE --oracle PY --out NEW_DIR --catalog JSON"); return 2; }
+                native <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--native",""));
+                python <- tool_cli.toolCli.value(options,"--python",""); oracle <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--oracle",""));
+                output >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--out",""));
+                cwd <- tool_cli.toolCli.absolute(".");
+                if (output == cwd || release_io.releaseIo.fileType(output) != 0 || python == "") { println("ERROR: require fresh --out and --python"); return 2; }
+                catalog >> int <- jsonParseFile(tool_cli.toolCli.value(options,"--catalog","bootstrap/utility-v42-cases.json"));
+                scenarios >> int <- jsonObjectBorrow(catalog,"scenarios");
+                if (jsonKind(scenarios) != 5 || jsonArrayLen(scenarios) == 0) { println("ERROR: empty catalog"); return 2; }
+                rows <- jsonNewArray(); sourceTests(); index >> int <- 0;
+                while (index < jsonArrayLen(scenarios)) {
+                    scenario >> int <- jsonArrayBorrow(scenarios,index); name >> str <- utility_json.utilityJson.field(scenario,"name");
+                    aRoot >> str <- output+"/"+name+"/native"; bRoot >> str <- output+"/"+name+"/oracle";
+                    ready >> bool <- prepare(aRoot,scenario) && prepare(bRoot,scenario); check(ready,name+" fixture");
+                    operations >> int <- jsonObjectBorrow(scenario,"operations"); at >> int <- 0;
+                    while (at < jsonArrayLen(operations) && ready) {
+                        operation >> int <- jsonArrayBorrow(operations,at);
+                        testOperation(aRoot,bRoot,operation,name+"-"+renderInt(at)); jsonRelease(operation); at += 1;
+                    }
+                    jsonRelease(operations); strRelease(aRoot); strRelease(bRoot); jsonRelease(scenario); index += 1;
+                }
+                corpus >> str <- tool_cli.toolCli.value(options,"--corpus","");
+                if (corpus != "") {
+                    corpus <- tool_cli.toolCli.absolute(corpus);
+                    index <- 1;
+                    while (index <= 4) {
+                        operation >> int <- jsonNewObject(); utility_json.utilityJson.put(operation,"wave",jsonNewString("wave"+renderInt(index)));
+                        missing >> bool <- release_io.releaseIo.fileType(corpus+"/examples/root_at") == 0 ||
+                            release_io.releaseIo.fileType(corpus+"/examples/machine_at") == 0 || release_io.releaseIo.fileType(corpus+"/examples/primitive_at") == 0;
+                        utility_json.utilityJson.put(operation,"code",jsonNewInt(index == 1 && missing ? 1 : 0));
+                        testOperation(corpus,corpus,operation,"repository-snapshot-wave"+renderInt(index));
+                        jsonRelease(operation); index += 1;
+                    }
+                }
+                report >> int <- jsonNewObject(); utility_json.utilityJson.put(report,"schema",jsonNewString("nc.utility.migration.verification.v42"));
+                utility_json.utilityJson.put(report,"status",jsonNewString(failed == 0 ? "ok" : "failed"));
+                utility_json.utilityJson.put(report,"passed",jsonNewInt(passed)); utility_json.utilityJson.put(report,"failed",jsonNewInt(failed));
+                utility_json.utilityJson.put(report,"cases",rows); utility_json.utilityJson.put(report,"oracle_sha256",jsonNewString(sha256.nccSha256.file(oracle)));
+                if (!utility_json.utilityJson.save(output+"/report.json",report)) { println("ERROR: cannot save report"); failed += 1; }
+                println("utility-v42: passed="+renderInt(passed)+" failed="+renderInt(failed)+" report="+output+"/report.json");
+                jsonRelease(report); jsonRelease(scenarios); jsonRelease(catalog); jsonRelease(options); argsRelease(arguments);
+                return failed == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

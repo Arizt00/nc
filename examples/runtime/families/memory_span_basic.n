@@ -1,0 +1,45 @@
+use <io:output>;
+use <memory:span, stack>;
+
+memorySpanBasic :: runtime {
+    fn:
+        prepareSegments(segments >> addr, data >> addr) -> bool {
+            first >> bool <- spanSegmentAt(segments, 0, data, 3);
+            second >> bool <- spanSegmentAt(segments, 1, data + 3, 3);
+            return first && second;
+        }
+
+        verify(descriptor >> addr) -> bool {
+            return spanCount(descriptor) == 2 &&
+                spanLen(descriptor) == 6 &&
+                spanRead8(descriptor, 4) == 50 &&
+                spanContains8(descriptor, 60) &&
+                !spanIsEmpty(descriptor);
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            data >> p<byte> <- stackAlloc(6, 1);
+            segmentBytes >> int <- spanSegmentStride();
+            segments >> p<byte> <- stackAlloc(segmentBytes * 2, 8);
+            descriptor >> p<byte> <- stackAlloc(spanStride(), 8);
+            index >> int <- 0;
+            while (index < 6) {
+                wr<byte>(data + index, (index + 1) * 10);
+                index += 1;
+            }
+            segmentsReady >> bool <- prepareSegments(adr(segments), adr(data));
+            spanReady >> bool <- spanAt(adr(descriptor), adr(segments), 2, 6, 0);
+            ok >> bool <- segmentsReady && spanReady && verify(adr(descriptor));
+            print("memory-span-manual-ok=");
+            if (ok) { println("true"); } else { println("false"); }
+            spanClear(adr(descriptor));
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

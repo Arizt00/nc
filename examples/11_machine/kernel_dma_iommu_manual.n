@@ -1,0 +1,29 @@
+kernelDmaIommuManual :: kernel {
+    fn:
+        configure() -> bool {
+            pageMeta at 0x100000;
+            iommu   at 0x110000;
+            queue   at 0x120000;
+            sg      at 0x130000;
+            source  at 0x200000;
+            bounce  at 0x210000;
+            faults  at 0x220000;
+            iova    at 0x40000000;
+
+            guard dma_pin_pages(pageMeta, 0, 16, 32, 24, 1) else return false;
+            guard dma_sg_write(sg, 0, iova, source, 4096, 3) else return false;
+            guard dma_bounce_to_device(bounce, source, 4096) else return false;
+            guard dma_cache_clean(bounce, 4096, 64) else return false;
+
+            guard iommu_map_entry128(iommu, 0, 0x200003, 0) else return false;
+            guard iommu_command_write(queue, 0, 0x46, 0) else return false;
+            guard dma_fence() else return false;
+
+            return dma_cache_invalidate(bounce, 4096, 64) &&
+                dma_bounce_from_device(source, bounce, 4096) &&
+                iommu_fault_copy(faults, 0, pageMeta, 32) &&
+                dma_unpin_pages(pageMeta, 0, 16, 32, 24, 1);
+        }
+
+    ref main ->> configure;
+}

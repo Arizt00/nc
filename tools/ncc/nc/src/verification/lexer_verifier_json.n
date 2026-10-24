@@ -1,0 +1,82 @@
+use <data:json>;
+use <project:lexer_verifier_bytes, lexer_verifier_contract>;
+
+lexerVerifierJson {
+    fn:
+        public:
+            completeBytes(text >> str, count >> int) -> bool { return count >= 0 && strByteLen(text) == count; }
+            captureText(row >> int, key >> str) -> str {
+                return lexer_verifier_bytes.lexerVerifierBytes.text(row,jsonObjectHas(row,key+"_diagnostic") ? key+"_diagnostic" : key);
+            }
+            completeStream(row >> int, key >> str, diagnostic >> bool) -> bool {
+                count >> int <- lexer_verifier_contract.lexerVerifierContract.number(row,key+"_bytes");
+                text >> str <- lexer_verifier_bytes.lexerVerifierBytes.text(row,key);
+                if (completeBytes(text,count)) return !jsonObjectHas(row,key+"_hex") && !jsonObjectHas(row,key+"_diagnostic");
+                guard diagnostic && count >= 0 && count <= 16777216 else return false;
+                encoded >> str <- lexer_verifier_bytes.lexerVerifierBytes.text(row,key+"_hex");
+                projected >> str <- captureText(row,key);
+                guard strByteLen(encoded) == count*2 && strByteLen(projected) == count else return false;
+                hex >> p<byte> <- cast(encoded); data >> p<byte> <- cast(projected); prefix >> p<byte> <- cast(text);
+                firstNul >> int <- -1; index >> int <- 0; prefixSize >> int <- strByteLen(text);
+                while (index < count) {
+                    high >> int <- lexer_verifier_bytes.lexerVerifierBytes.hex(rd(off(hex,index*2)));
+                    low >> int <- lexer_verifier_bytes.lexerVerifierBytes.hex(rd(off(hex,index*2+1)));
+                    guard high >= 0 && low >= 0 else return false;
+                    code >> int <- high*16+low;
+                    if (code == 0 && firstNul < 0) firstNul <- index;
+                    if ((rd(off(data,index)) & 255) != (code == 0 ? 1 : code)) return false;
+                    if (index < prefixSize && (rd(off(prefix,index)) & 255) != code) return false;
+                    index += 1;
+                }
+                return firstNul == prefixSize;
+            }
+            noNul(text >> str) -> bool {
+                data >> p<byte> <- cast(text); size >> int <- strByteLen(text);
+                index >> int <- 0; quoted >> bool <- false; escaped >> bool <- false;
+                while(index < size) {
+                    code >> int <- rd(off(data,index)) & 255;
+                    if(escaped) {
+                        if(code == 117 && index+4 < size && rd(off(data,index+1)) == 48 && rd(off(data,index+2)) == 48 && rd(off(data,index+3)) == 48 && rd(off(data,index+4)) == 48) return false;
+                        escaped <- false;
+                    } else if(quoted && code == 92) escaped <- true;
+                    else if(code == 34) quoted <- !quoted;
+                    index += 1;
+                }
+                return true;
+            }
+            // Stage0's token kind contains Rust Debug text. Keep its non-ASCII scalars
+            // as Rust escapes so the bootstrap JSON reader never truncates them.
+            tokens(text >> str) -> int {
+                guard noNul(text) else return 0;
+                count >> int <- strByteLen(text);
+                guard count >= 0 && count <= 16777216 else return 0;
+                source >> p<byte> <- cast(text);
+                output >> p<byte> <- cast(alloc(count*8+1));
+                guard output != null else return 0;
+                digits >> p<byte> <- cast("0123456789abcdef");
+                index >> int <- 0; out >> int <- 0; quoted >> bool <- false; escaped >> bool <- false; ok >> bool <- true;
+                while (index < count && ok) {
+                    value >> int <- rd<byte>(off(source,index)) & 255;
+                    if (value < 128) {
+                        wr(off(output,out),value); out += 1; index += 1;
+                        if (escaped) escaped <- false;
+                        else if (quoted && value == 92) escaped <- true;
+                        else if (value == 34) quoted <- !quoted;
+                    } else {
+                        width >> int <- lexer_verifier_bytes.lexerVerifierBytes.width(source,count,index);
+                        if (!quoted || escaped || width == 0) { ok <- false; break; }
+                        scalar >> int <- lexer_verifier_bytes.lexerVerifierBytes.scalar(source,index,width);
+                        wr(off(output,out),92); wr(off(output,out+1),92); wr(off(output,out+2),117); wr(off(output,out+3),123); out += 4;
+                        shift >> int <- 20;
+                        while (shift > 0 && (scalar >> shift) == 0) { shift -= 4; }
+                        while (shift >= 0) { wr(off(output,out),rd(off(digits,(scalar >> shift) & 15))); out += 1; shift -= 4; }
+                        wr(off(output,out),125); out += 1; index += width;
+                    }
+                }
+                wr(off(output,out),0);
+                encoded >> str <- cast(output);
+                result >> int <- ok && !quoted && !escaped ? jsonParse(encoded) : 0;
+                free(output); return result;
+            }
+    fa: return true;
+}

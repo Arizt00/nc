@@ -1,0 +1,36 @@
+use <process:args>;
+use <io:output>;
+
+nativeArgsSnapshotV58 {
+    run() -> int {
+        guard argsCount(null) == 0 && argsError(null) == 12 && argsRelease(null) else return 1;
+        rounds >> int <- 0;
+        while (rounds < 128) {
+            first >> addr <- argsOpen(); second >> addr <- argsOpen();
+            guard first != null && second != null && first != second else return 2;
+            count >> int <- argsCount(first);
+            guard argsError(first) == 0 && argsError(second) == 0 && count >= 1 && count == argsCount(second) else return 3;
+            vector >> p<addr> <- from<addr>(argsData(first));
+            guard vector != null && argsData(first) != argsData(second) else return 4;
+            bytes >> int <- 0; at >> int <- 0;
+            while (at < count) {
+                text >> str <- argsAt(first,at); otherText >> str <- argsAt(second,at);
+                guard text != null && otherText != null && adr(text) != adr(otherText) && text == otherText else return 5;
+                guard rd(off(vector,at)) == adr(text) else return 6;
+                bytes += strByteLen(text)+1; at += 1;
+            }
+            guard bytes == argsBytes(first) && bytes == argsBytes(second) else return 7;
+            guard rd<u64>(from<byte>(first)) == count && rd<u64>(off(from<byte>(first),16)) == bytes else return 8;
+            original >> p<byte> <- cast<byte>(argsAt(first,0)); copied >> p<byte> <- cast<byte>(argsAt(second,0));
+            saved >> byte <- rd(original);
+            wr(original,saved == 65 ? 66 : 65);
+            guard rd(copied) == saved else return 9;
+            wr(original,saved);
+            guard argsRelease(first) && strByteLen(argsAt(second,0)) > 0 && argsRelease(second) else return 10;
+            rounds += 1;
+        }
+        println("args snapshots ok"); return 143;
+    }
+    ref main ->> run;
+    fa: return true;
+}

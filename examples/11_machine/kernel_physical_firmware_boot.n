@@ -1,0 +1,34 @@
+kernelPhysicalFirmwareBoot :: kernel {
+    fn:
+        inspectBoot() -> bool {
+            guard bootValid() else return false;
+            guard bootMemoryCount() > 0 else return false;
+            guard bootMemorySize(0) > 0 else return false;
+            guard bootFlags() >= 0 else return false;
+
+            acpi <- bootPlatform(2);
+            uefi <- bootPlatform(3);
+            smbios32 <- bootPlatform(11);
+            smbios64 <- bootPlatform(12);
+            fdt <- bootPlatform(6);
+
+            framebuffer <- bootFramebuffer();
+            commandLine <- bootCommandLine();
+
+            guard acpi == null || bootPlatformSize(2) > 0 else return false;
+            guard uefi == null || bootPlatformSize(3) > 0 else return false;
+            guard smbios32 == null || bootPlatformSize(11) > 0 else return false;
+            guard smbios64 == null || bootPlatformSize(12) > 0 else return false;
+            guard fdt == null || bootPlatformSize(6) > 0 else return false;
+            guard framebuffer == null || (
+                bootFramebufferBase() != null &&
+                bootFramebufferWidth() > 0 &&
+                bootFramebufferHeight() > 0 &&
+                bootFramebufferPitch() > 0
+            ) else return false;
+
+            return bootMemoryKind(0) >= 0 && (uefi != null || acpi != null || fdt != null);
+        }
+
+    ref main ->> inspectBoot;
+}

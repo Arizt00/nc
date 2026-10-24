@@ -1,0 +1,26 @@
+use <io:output>;
+
+nativeRuntimeClock76 {
+    run() -> int {
+        before >> u32 <- monotonicMs();
+        seconds >> int <- timestamp();
+        wall >> int <- now();
+        milliseconds >> int <- nowMs();
+        if (seconds <= 0 || wall < seconds || wall-seconds > 2) return 1;
+        sleepMs(40);
+        after >> u32 <- monotonicMs();
+        elapsed >> u32 <- after-before;
+        if (elapsed < 25 || elapsed > 30000) return 2;
+        // nowMs retains the published signed 32-bit ABI, including wraparound.
+        next >> int <- nowMs();
+        nextBits >> u32 <- next;
+        previousBits >> u32 <- milliseconds;
+        delta >> u32 <- nextBits-previousBits;
+        if (delta < 25 || delta > 30000) return 3;
+        sleepMs(0); sleepMs(-1);
+        println("native-runtime-clock-ok");
+        return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

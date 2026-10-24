@@ -1,0 +1,106 @@
+use <project:machine_authority>;
+
+nccTargetDomainAuthority {
+    const:
+        DOMAIN_KERNEL >> str <- "kernel";
+        DOMAIN_SYSTEM >> str <- "system";
+
+        CAP_COUNTER_IDENTITY >> str <- "counter-identity";
+        CAP_SCHEDULER_WAIT >> str <- "scheduler-wait";
+        CAP_DEBUG_TRAP >> str <- "debug-trap";
+        CAP_TLB_SHOOTDOWN >> str <- "tlb-shootdown";
+        CAP_SEGMENT_LIFECYCLE >> str <- "segment-lifecycle";
+
+    stc:
+        verified >> u64 <- 0;
+
+    fn:
+        private:
+            validDomain(domain >> str) -> bool {
+                return domain == DOMAIN_KERNEL || domain == DOMAIN_SYSTEM;
+            }
+
+            supportedPair(arch >> str, domain >> str, capability >> str) -> bool {
+                guard validDomain(domain) else return false;
+                normalized >> str <- machine_authority.nccMachineAuthority.normalizeArch(arch);
+                if ((normalized == "x86_64" || normalized == "i386") &&
+                    capability == CAP_COUNTER_IDENTITY) return true;
+                if (normalized == "aarch64" && capability == CAP_SCHEDULER_WAIT) return true;
+                if (normalized == "armv7" && capability == CAP_DEBUG_TRAP) return true;
+                if ((normalized == "riscv32" || normalized == "riscv64") &&
+                    capability == CAP_TLB_SHOOTDOWN) return true;
+                return normalized == "wasm32" && domain == DOMAIN_SYSTEM &&
+                    capability == CAP_SEGMENT_LIFECYCLE;
+            }
+
+        public:
+            manual(domain >> str) -> bool { return validDomain(domain); }
+
+            hiddenScheduler(domain >> str) -> bool {
+                return validDomain(domain) ? false : true;
+            }
+
+            requiredCount(arch >> str, domain >> str, capability >> str) -> int {
+                guard supportedPair(arch, domain, capability) else return 0;
+                normalized >> str <- machine_authority.nccMachineAuthority.normalizeArch(arch);
+                if (capability == CAP_COUNTER_IDENTITY) return 2;
+                if (capability == CAP_SCHEDULER_WAIT) return 2;
+                if (capability == CAP_DEBUG_TRAP) return 1;
+                if (capability == CAP_TLB_SHOOTDOWN) return 3;
+                if (normalized == "wasm32" && capability == CAP_SEGMENT_LIFECYCLE) return 4;
+                return 0;
+            }
+
+            requiredAt(arch >> str, domain >> str, capability >> str, index >> int) -> str {
+                guard index >= 0 && index < requiredCount(arch, domain, capability) else return "";
+                normalized >> str <- machine_authority.nccMachineAuthority.normalizeArch(arch);
+                if (capability == CAP_COUNTER_IDENTITY) return index == 0 ? "rdpmc" : "rdpid";
+                if (capability == CAP_SCHEDULER_WAIT) return index == 0 ? "wfet" : "wfit";
+                if (capability == CAP_DEBUG_TRAP) return "dbg";
+                if (capability == CAP_TLB_SHOOTDOWN) {
+                    if (index == 0) return "sfence.w.inval";
+                    if (index == 1) return "sinval.vma";
+                    return "sfence.inval.ir";
+                }
+                if (normalized == "wasm32" && capability == CAP_SEGMENT_LIFECYCLE) {
+                    if (index == 0) return "memory.init";
+                    if (index == 1) return "data.drop";
+                    if (index == 2) return "table.init";
+                    return "elem.drop";
+                }
+                return "";
+            }
+
+            material(arch >> str, domain >> str, capability >> str) -> bool {
+                count >> int <- requiredCount(arch, domain, capability);
+                guard count > 0 && manual(domain) && !hiddenScheduler(domain) else return false;
+                index >> int <- 0;
+                while (index < count) {
+                    guard machine_authority.nccMachineAuthority.supports(
+                        arch, requiredAt(arch, domain, capability, index)
+                    ) else return false;
+                    index += 1;
+                }
+                verified += 1;
+                return true;
+            }
+
+            inspect(arch >> str, domain >> str, capability >> str, expected >> int) -> bool {
+                return requiredCount(arch, domain, capability) == expected &&
+                    material(arch, domain, capability);
+            }
+
+            selfTest() -> bool {
+                return inspect("x86_64", DOMAIN_KERNEL, CAP_COUNTER_IDENTITY, 2) &&
+                    inspect("i386", DOMAIN_SYSTEM, CAP_COUNTER_IDENTITY, 2) &&
+                    inspect("aarch64", DOMAIN_KERNEL, CAP_SCHEDULER_WAIT, 2) &&
+                    inspect("armv7", DOMAIN_SYSTEM, CAP_DEBUG_TRAP, 1) &&
+                    inspect("riscv32", DOMAIN_KERNEL, CAP_TLB_SHOOTDOWN, 3) &&
+                    inspect("riscv64", DOMAIN_KERNEL, CAP_TLB_SHOOTDOWN, 3) &&
+                    inspect("wasm32", DOMAIN_SYSTEM, CAP_SEGMENT_LIFECYCLE, 4) &&
+                    requiredCount("wasm32", DOMAIN_KERNEL, CAP_SEGMENT_LIFECYCLE) == 0;
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,109 @@
+use <io:output, render>;
+use <data:json>;
+use <process:args, command>;
+
+release_cli_tests {
+    const:
+        TIMEOUT_MS >> int <- 30000;
+        CASE_COUNT >> int <- 13;
+    local:
+        rows >> int <- 0;
+        failures >> int <- 0;
+    fn:
+        private:
+            quoted(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                size >> int <- strByteLen(value);
+                data >> p<byte> <- cast(alloc(size*2+3));
+                guard data != null else return "";
+                wr(data,34);
+                cursor >> int <- 1;
+                index >> int <- 0;
+                while (index < size) {
+                    code >> int <- rd(off(source,index));
+                    if (code == 34 || code == 92) { wr(off(data,cursor),92); cursor += 1; }
+                    wr(off(data,cursor),code);
+                    cursor += 1;
+                    index += 1;
+                }
+                wr(off(data,cursor),34);
+                wr(off(data,cursor+1),0);
+                text >> str <- cast(data);
+                return text;
+            }
+            invoke(line >> str) -> int {
+                child >> addr <- commandOpen(line,"",null,null,null,0);
+                guard child != null else return -1000;
+                if (!commandStarted(child)) { commandRelease(child); return -1001; }
+                waited >> int <- commandWait(child,TIMEOUT_MS);
+                if (waited != 0) {
+                    commandTerminate(child,15);
+                    commandWait(child,3000);
+                    commandRelease(child);
+                    return -1002;
+                }
+                code >> int <- commandExitCode(child);
+                commandRelease(child);
+                return code;
+            }
+            check(name >> str, command >> str, expected >> int) -> void {
+                actual >> int <- invoke(command);
+                passed >> bool <- actual == expected;
+                if (!passed) failures += 1;
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"name",jsonNewString(name));
+                jsonObjectSet(row,"expected",jsonNewInt(expected));
+                jsonObjectSet(row,"observed",jsonNewInt(actual));
+                jsonObjectSet(row,"passed",jsonNewBool(passed));
+                jsonArrayPush(rows,row);
+                println((passed ? "PASS " : "FAIL ")+name+" exit="+renderInt(actual));
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                if (argsCount(arguments) != 3) {
+                    println("release_cli_tests CANDIDATE NEW_WORK_DIRECTORY");
+                    argsRelease(arguments);
+                    return 2;
+                }
+                candidate >> str <- argsAt(arguments,1);
+                work >> str <- argsAt(arguments,2);
+                guard exists(candidate) && work != "" && !exists(work) else {
+                    argsRelease(arguments);
+                    return 2;
+                }
+                executable >> str <- quoted(candidate);
+                rows <- jsonNewArray();
+                failures <- 0;
+                check("self-test",executable+" release-self-test --work "+quoted(work),0);
+                if (!exists(work)) { jsonRelease(rows); argsRelease(arguments); return 1; }
+                staging >> str <- " --staging "+quoted(work+"/staging")+" --report "+quoted(work+"/cli-layout.json");
+                check("layout-valid",executable+" release-layout"+staging,0);
+                check("layout-absent",executable+" release-layout --staging "+quoted(work+"/absent")+" --report "+quoted(work+"/cli-absent.json"),2);
+                check("layout-invalid-option",executable+" release-layout --wrong x",2);
+                check("layout-help",executable+" release-layout --help",0);
+                check("notes-valid",executable+" release-notes --root "+quoted(work+"/notes-root")+" --out "+quoted(work+"/cli-notes")+" --timestamp 2026-01-01T00:00:00Z",0);
+                check("notes-missing-value",executable+" release-notes --out",2);
+                check("notes-help",executable+" release-notes --help",0);
+                evidence >> str <- " --root "+quoted(work+"/evidence")+" --out "+quoted(work+"/cli-ci.json")+" --markdown-out "+quoted(work+"/cli-ci.md");
+                check("ci-valid",executable+" verify-machine-ci"+evidence+" --head fixture-head --timestamp 2026-01-01T00:00:00Z",0);
+                check("ci-wrong-head",executable+" verify-machine-ci"+evidence+" --head wrong",1);
+                check("ci-missing-arguments",executable+" verify-machine-ci",2);
+                check("ci-help",executable+" verify-machine-ci --help",0);
+                check("compound-option-rejected",executable+" release-notes "+quoted("--root|--out")+" x",2);
+                report >> int <- jsonNewObject();
+                passed >> bool <- failures == 0 && jsonArrayLen(rows) == CASE_COUNT;
+                jsonObjectSet(report,"schema",jsonNewString("nc.release.native-cli-tests.v38"));
+                jsonObjectSet(report,"implementation_language",jsonNewString("nC"));
+                jsonObjectSet(report,"cases",rows);
+                jsonObjectSet(report,"passed",jsonNewBool(passed));
+                jsonObjectSet(report,"failures",jsonNewInt(failures));
+                saved >> bool <- jsonSaveFile(report,work+"/cli-report.json",2);
+                jsonRelease(report);
+                argsRelease(arguments);
+                return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

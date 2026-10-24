@@ -1,0 +1,32 @@
+use <io:output, render>;
+
+mobileBackendSmoke :: runtime {
+    fn:
+        backendSurface() -> bool {
+            tick >> int <- get_current_time();
+            readable >> bool <- permissions::canRead(".");
+            server <- network::server_open(0);
+            closed >> bool <- server::close();
+            adb >> int <- telephony::adb_connect(5555);
+            return tick >= 0 && readable == readable && closed && adb >= 0;
+        }
+
+        run() -> bool {
+            if (!permissions::request([PERM_PHONE, PERM_NET])) return false;
+            if (!tts_engine::connect("es-ES")) return false;
+
+            var response <- network::request("provider://phone-location");
+            state >> str <- telephony::getState();
+            city >> str <- response.json("city");
+
+            println(city);
+            return response.status == 200 && state == "INCOMING" &&
+                tts_engine::speak("Llamada localizada");
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

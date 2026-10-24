@@ -1,0 +1,35 @@
+kernelDebugHardeningManual :: kernel {
+    fn:
+        debug(trap, regs, mem, symbols, symbol, rsp, saved, crash >> addr) -> bool {
+            copied <- dbgRegs(trap, regs, 24);
+            dumped <- dbgDump(trap, mem, 256);
+            frames <- dbgTrace(trap, mem, 32);
+            symbolized <- dbgSym(symbols, 64, trap, symbol);
+            checksum <- rspSum(mem, dumped);
+            packet <- rspFrame(mem, dumped, rsp);
+            width <- brkSet(trap, saved);
+            restored <- brkDel(trap, saved, width);
+            reported <- crashWrite(crash, 7, trap, regs, trap, 2);
+
+            return copied == 24 && dumped == 256 && frames >= 0 && symbolized &&
+                checksum >= 0 && packet == dumped + 4 && restored && reported;
+        }
+
+        harden(canary, shadow, image >> addr, slide, guard >> int) -> bool {
+            relocated <- kaslr(image, slide);
+            written <- canarySet(canary, guard);
+            valid <- canaryOk(canary, guard);
+            poisoned <- sanPoison(shadow, 0, 255);
+            detected <- !sanOk(shadow, 0);
+            cleared <- sanClear(shadow, 0);
+
+            return relocated != image && written && valid && poisoned && detected &&
+                cleared && sanOk(shadow, 0);
+        }
+
+        idle() -> bool {
+            return true;
+        }
+
+    ref main ->> idle;
+}

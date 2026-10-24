@@ -1,0 +1,62 @@
+
+fsIoHost {
+    fn:
+        private:
+            opened(path >> str, access >> u32, mode >> u32) -> addr {
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                chars >> int <- osWMultiByteToWideChar(65001,8,adr(path),-1,null,0);
+                if (chars <= 0) return invalid;
+                text >> p<u16> <- cast<u16>(alloc(chars*2));
+                if (text == null) { osWSetLastError(8); return invalid; }
+                if (osWMultiByteToWideChar(65001,8,adr(path),-1,adr(text),chars) != chars) {
+                    error >> u32 <- osWGetLastError(); free(text); osWSetLastError(error); return invalid;
+                }
+                handle >> addr <- osWCreateFileW(adr(text),access,7,null,mode,128,null);
+                error >> u32 <- osWGetLastError(); free(text); osWSetLastError(error);
+                return handle;
+            }
+        public:
+            writeBytes(path >> str, data >> p<byte>, bytes >> int, append >> bool) -> int {
+                access >> u32 <- append ? 4 : 0x40000000;
+                mode >> u32 <- append ? 4 : 2;
+                handle >> addr <- opened(path,access,mode);
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                if (handle == invalid) return -1;
+                at >> int <- 0;
+                while (at < bytes) {
+                    got >> u32 <- 0;
+                    if (osWWriteFile(handle,adr(off(data,at)),bytes-at,adr(&got),null) == 0 || got == 0) {
+                        error >> u32 <- osWGetLastError(); osWCloseHandle(handle); osWSetLastError(error); return -1;
+                    }
+                    at += got;
+                }
+                return osWCloseHandle(handle) != 0 ? at : -1;
+            }
+            readBytes(path >> str, data >> p<byte>, bytes >> int) -> int {
+                access >> u32 <- 0x80000000;
+                handle >> addr <- opened(path,access,3);
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                if (handle == invalid) return -1;
+                at >> int <- 0;
+                while (at < bytes) {
+                    got >> u32 <- 0;
+                    if (osWReadFile(handle,adr(off(data,at)),bytes-at,adr(&got),null) == 0) {
+                        error >> u32 <- osWGetLastError(); osWCloseHandle(handle); osWSetLastError(error); return -1;
+                    }
+                    if (got == 0) break;
+                    at += got;
+                }
+                return osWCloseHandle(handle) != 0 ? at : -1;
+            }
+            size(path >> str) -> int {
+                access >> u32 <- 0x80000000;
+                handle >> addr <- opened(path,access,3);
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                if (handle == invalid) return -1;
+                bytes >> i64 <- 0;
+                ok >> bool <- osWGetFileSizeEx(handle,adr(&bytes)) != 0;
+                closed >> bool <- osWCloseHandle(handle) != 0;
+                return ok && closed && bytes >= 0 && bytes <= 2147483647 ? bytes : -1;
+            }
+    fa: return true;
+}

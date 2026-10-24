@@ -1,0 +1,38 @@
+use <data:json>;
+use <io:output>;
+
+signatureConsumers70 {
+    ownedText(object >> int, key >> str) -> str {
+        item >> int <- jsonObjectBorrow(object,key);
+        value >> str <- jsonGetStringOr(item,"");
+        jsonRelease(item);
+        return value;
+    }
+    writeWord(out >> p<byte>, value >> u64) -> void {
+        wr<u32>(out,value);
+        wr<u32>(off(out,4),value >>> 32);
+    }
+    run() -> int {
+        buffer >> array<byte,8>;
+        writeWord(cast<byte>(&buffer),305419912);
+        if (rd<u32>(cast<byte>(&buffer)) != 305419912 || rd<u32>(off(cast<byte>(&buffer),4)) != 0) return 1;
+        writeWord(cast<byte>(&buffer),0xABCDEF0123456789);
+        if (rd<u64>(cast<byte>(&buffer)) != 0xABCDEF0123456789) return 2;
+        object >> int <- jsonNewObject();
+        original >> int <- jsonNewString("owned-signature");
+        jsonObjectSet(object,"name",original);
+        jsonRelease(original);
+        text >> str <- ownedText(object,"name");
+        replacement >> int <- jsonNewString("replacement");
+        jsonObjectSet(object,"name",replacement);
+        jsonRelease(replacement);
+        jsonRelease(object);
+        ok >> bool <- text == "owned-signature" && strByteLen(text) == 15;
+        strRelease(text);
+        if (!ok) return 3;
+        println("signature-consumers-ok");
+        return 234;
+    }
+    ref main ->> run;
+    fa: return true;
+}

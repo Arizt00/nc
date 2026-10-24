@@ -1,0 +1,784 @@
+/*
+ * Copia del reto WAL + replicacion sincronica, usando buffers y punteros.
+ *
+ * Diferencia con walReplicacionSincronica.n:
+ * - El WAL y la memoria de datos se tratan como buffers lineales tipados.
+ * - Los contadores y estados UP/DOWN no se leen directamente: se accede a
+ *   ellos mediante ptr<int>, simulando metadatos de nodo direccionables.
+ *
+ * Nota de implementacion:
+ * - En esta build, buffer<T> no es un tipo nominal cerrado y bufferRead devuelve
+ *   any; por eso el buffer material se modela con memRegion<int>, que conserva
+ *   tipos, bounds y regionInvalidate. La familia buffer queda importada como
+ *   contrato de dominio, y los wrappers bufferGet/bufferPut exponen la intencion.
+ */
+use <collections:queue>;
+use <io:output, render, input>;
+use <memory:ptr, region, buffer, heap>;
+
+walReplicacionBuffersPunteros :: runtime {
+    /*
+     * Registro conceptual. En memoria no guardamos objetos WalRecord: lo
+     * serializamos en un buffer lineal, como haria un WAL real en disco.
+     */
+    WalRecord :: type {
+            txId >> int;
+            op >> int;
+            key >> int;
+            value >> int;
+            status >> int;
+        constructure:
+            static(txId >> int, op >> int, key >> int, value >> int, status >> int) -> WalRecord;
+    }
+
+    const:
+        MAX_TX >> int <- 16;
+        WAL_FIELDS >> int <- 5;
+        NODE_COUNT >> int <- 3;
+        KEY_COUNT >> int <- 10;
+
+    stc:
+
+        /*
+         * Buffers materiales:
+         * - walBuffer simula el disco/WAL persistente.
+         * - dataBuffer simula la memoria de datos de cada nodo.
+         */
+        walBuffer >> memRegion<int>;
+        dataBuffer >> memRegion<int>;
+
+        /*
+         * Metadatos direccionables. Los valores existen como enteros, pero el
+         * simulador opera sobre ellos a traves de punteros.
+         */
+        leaderCount >> int;
+        followerACount >> int;
+        followerBCount >> int;
+        leaderUp >> int;
+        followerAUp >> int;
+        followerBUp >> int;
+
+        leaderCountAddr >> addr;
+        followerACountAddr >> addr;
+        followerBCountAddr >> addr;
+        leaderUpAddr >> addr;
+        followerAUpAddr >> addr;
+        followerBUpAddr >> addr;
+
+        pLeaderCount >> p<int>;
+        pFollowerACount >> p<int>;
+        pFollowerBCount >> p<int>;
+        pLeaderUp >> p<int>;
+        pFollowerAUp >> p<int>;
+        pFollowerBUp >> p<int>;
+
+        acks >> queue<int>;
+        ackStorage >> p<int>;
+        nextTx >> int;
+        running >> bool;
+
+    fn:
+        boot() -> bool {
+            /*
+             * Reservas:
+             * - WAL: 3 nodos * 16 registros * 5 campos <- 240 celdas.
+             * - Data: 3 nodos * 10 llaves <- 30 celdas.
+             *
+             * En C serian buffers int wal[240] y data[30].
+             * En C++ podria ser vector<int>. Aqui memRegion<int> conserva
+             * bounds, tipo del elemento y finalizacion explicita.
+             */
+            walBuffer <- regionCreate<int>(240);
+            dataBuffer <- regionCreate<int>(30);
+            ackStorage <- cast(alloc(NODE_COUNT * sizeOf(int)));
+            acks <- queueAt(ackStorage, NODE_COUNT);
+
+            leaderCount <- 0;
+            followerACount <- 0;
+            followerBCount <- 0;
+            leaderUp <- 1;
+            followerAUp <- 1;
+            followerBUp <- 1;
+
+            /*
+             * Punteros a metadatos.
+             * En esta build ptrRead<T> devuelve result, asi que las lecturas
+             * logicas se hacen desde variables tipadas. Aun asi mantenemos
+             * punteros reales y escribimos por ptrWrite<T> para mostrar el
+             * canal material de actualizacion.
+             */
+            leaderCountAddr <- 0x5100;
+            followerACountAddr <- 0x5104;
+            followerBCountAddr <- 0x5108;
+            leaderUpAddr <- 0x5110;
+            followerAUpAddr <- 0x5114;
+            followerBUpAddr <- 0x5118;
+
+            pLeaderCount !> p<int> : leaderCountAddr;
+            pFollowerACount !> p<int> : followerACountAddr;
+            pFollowerBCount !> p<int> : followerBCountAddr;
+            pLeaderUp !> p<int> : leaderUpAddr;
+            pFollowerAUp !> p<int> : followerAUpAddr;
+            pFollowerBUp !> p<int> : followerBUpAddr;
+
+            wr(pLeaderCount, leaderCount);
+            wr(pFollowerACount, followerACount);
+            wr(pFollowerBCount, followerBCount);
+            wr(pLeaderUp, leaderUp);
+            wr(pFollowerAUp, followerAUp);
+            wr(pFollowerBUp, followerBUp);
+
+            nextTx <- 1;
+            running <- true;
+            return true;
+        }
+
+        promptInt(label >> str) -> int {
+            print(colorBold(label, "yellow"));
+            flush();
+            v <- readInt();
+            return v;
+        }
+
+        hr(tone >> str) -> bool {
+            println(color("------------------------------------------------------------", tone));
+            return true;
+        }
+
+        title(text >> str, tone >> str) -> bool {
+            println("");
+            hr(tone);
+            println(colorBold(" " + text, tone));
+            hr(tone);
+            return true;
+        }
+
+        phase(text >> str) -> bool {
+            println(colorBold("  > " + text, "cyan"));
+            return true;
+        }
+
+        okLine(text >> str) -> bool {
+            println(color("  OK  " + text, "green"));
+            return true;
+        }
+
+        warnLine(text >> str) -> bool {
+            println(color("  WARN " + text, "yellow"));
+            return true;
+        }
+
+        errLine(text >> str) -> bool {
+            println(colorBold("  FAIL " + text, "red"));
+            return true;
+        }
+
+        infoLine(text >> str) -> bool {
+            println(color("  " + text, "gray"));
+            return true;
+        }
+
+        menuItem(num >> int, text >> str, tone >> str) -> bool {
+            println(color("  " + renderInt(num) + ". " + text, tone));
+            return true;
+        }
+
+        menuBack() -> bool {
+            println(color("  0. Volver", "gray"));
+            return true;
+        }
+
+        nodo(node >> int) -> str {
+            if (node == 0) { return "LIDER"; }
+            if (node == 1) { return "SEGUIDOR_A"; }
+            if (node == 2) { return "SEGUIDOR_B"; }
+            return "NODO?";
+        }
+
+        opName(op >> int) -> str {
+            if (op == 1) { return "CREATE"; }
+            if (op == 2) { return "UPDATE"; }
+            if (op == 3) { return "DELETE"; }
+            return "OP?";
+        }
+
+        statusName(status >> int) -> str {
+            if (status == 1) { return "COMMITTED"; }
+            return "PENDING";
+        }
+
+        aliveName(value >> int) -> str {
+            if (value == 1) { return "UP"; }
+            return "DOWN";
+        }
+
+        statusColor(status >> int) -> str {
+            if (status == 1) { return "green"; }
+            return "yellow";
+        }
+
+        aliveColor(value >> int) -> str {
+            if (value == 1) { return "green"; }
+            return "red";
+        }
+
+        nodeColor(node >> int) -> str {
+            if (node == 0) { return "cyan"; }
+            if (node == 1) { return "magenta"; }
+            return "blue";
+        }
+
+        bufferGet(index >> int) -> int {
+            /*
+             * Wrapper de lectura de buffer WAL tipado.
+             * Se usa regionRead porque bufferRead devuelve any en esta build.
+             */
+            return regionRead(walBuffer, index);
+        }
+
+        bufferPut(index >> int, value >> int) -> bool {
+            /*
+             * Wrapper de escritura de buffer WAL tipado.
+             * En C seria wal[index] <- value.
+             */
+            regionWrite(walBuffer, index, value);
+            return true;
+        }
+
+        dataGet(index >> int) -> int {
+            return regionRead(dataBuffer, index);
+        }
+
+        dataPut(index >> int, value >> int) -> bool {
+            regionWrite(dataBuffer, index, value);
+            return true;
+        }
+
+        countOf(node >> int) -> int {
+            if (node == 0) { return leaderCount; }
+            if (node == 1) { return followerACount; }
+            return followerBCount;
+        }
+
+        setCount(node >> int, value >> int) -> bool {
+            if (node == 0) {
+                leaderCount <- value;
+                wr(pLeaderCount, value);
+                return true;
+            }
+
+            if (node == 1) {
+                followerACount <- value;
+                wr(pFollowerACount, value);
+                return true;
+            }
+
+            followerBCount <- value;
+            wr(pFollowerBCount, value);
+            return true;
+        }
+
+        isUp(node >> int) -> int {
+            if (node == 0) { return leaderUp; }
+            if (node == 1) { return followerAUp; }
+            return followerBUp;
+        }
+
+        setUp(node >> int, value >> int) -> bool {
+            if (node == 0) {
+                leaderUp <- value;
+                wr(pLeaderUp, value);
+                return true;
+            }
+
+            if (node == 1) {
+                followerAUp <- value;
+                wr(pFollowerAUp, value);
+                return true;
+            }
+
+            followerBUp <- value;
+            wr(pFollowerBUp, value);
+            return true;
+        }
+
+        walIndex(node >> int, pos >> int, campo >> int) -> int {
+            return (((node * 16) + pos) * 5) + campo;
+        }
+
+        dataIndex(node >> int, key >> int) -> int {
+            return (node * 10) + key;
+        }
+
+        readWal(node >> int, pos >> int, campo >> int) -> int {
+            return bufferGet(walIndex(node, pos, campo));
+        }
+
+        writeWal(node >> int, pos >> int, txId >> int, op >> int, key >> int, value >> int, status >> int) -> bool {
+            bufferPut(walIndex(node, pos, 0), txId);
+            bufferPut(walIndex(node, pos, 1), op);
+            bufferPut(walIndex(node, pos, 2), key);
+            bufferPut(walIndex(node, pos, 3), value);
+            bufferPut(walIndex(node, pos, 4), status);
+            return true;
+        }
+
+        findSlot(node >> int, txId >> int) -> int {
+            i <- 0;
+            count <- countOf(node);
+
+            while (i < count) {
+                if (readWal(node, i, 0) == txId) {
+                    return i;
+                }
+
+                i <- i + 1;
+            }
+
+            return -1;
+        }
+
+        appendOrUpdate(node >> int, txId >> int, op >> int, key >> int, value >> int, status >> int) -> int {
+            posLog <- findSlot(node, txId);
+
+            if (posLog >= 0) {
+                writeWal(node, posLog, txId, op, key, value, status);
+                return posLog;
+            }
+
+            count <- countOf(node);
+
+            if (count >= 16) {
+                errLine("WAL lleno en " + nodo(node));
+                return -1;
+            }
+
+            writeWal(node, count, txId, op, key, value, status);
+            setCount(node, count + 1);
+            return count;
+        }
+
+        applyData(node >> int, op >> int, key >> int, value >> int) -> bool {
+            if (op == 3) {
+                dataPut(dataIndex(node, key), 0);
+            } else {
+                dataPut(dataIndex(node, key), value);
+            }
+
+            return true;
+        }
+
+        commitOn(node >> int, txId >> int) -> bool {
+            posLog <- findSlot(node, txId);
+
+            if (posLog < 0) {
+                return false;
+            }
+
+            op <- readWal(node, posLog, 1);
+            key <- readWal(node, posLog, 2);
+            value <- readWal(node, posLog, 3);
+
+            bufferPut(walIndex(node, posLog, 4), 1);
+            applyData(node, op, key, value);
+            return true;
+        }
+
+        replicatePending(follower >> int, txId >> int, op >> int, key >> int, value >> int) -> int {
+            if (isUp(follower) == 0) {
+                errLine(nodo(follower) + " no responde");
+                return 0;
+            }
+
+            appendOrUpdate(follower, txId, op, key, value, 0);
+            acks.enqueue(follower);
+            okLine(nodo(follower) + " buffer WAL=PENDING -> OK");
+            return 1;
+        }
+
+        drainAcks() -> bool {
+            while (!acks.isEmpty()) {
+                node <- acks.dequeue();
+                infoLine("ack recibido de " + nodo(node));
+            }
+
+            return true;
+        }
+
+        normalizeKey(key >> int) -> int {
+            if (key < 1) { return 1; }
+            if (key > 9) { return 9; }
+            return key;
+        }
+
+        submitTx(op >> int, key >> int, value >> int) -> bool {
+            k <- normalizeKey(key);
+            tx <- nextTx;
+            nextTx <- nextTx + 1;
+
+            title("TX " + renderInt(tx) + " " + opName(op), "cyan");
+            phase("Fase 1: lider escribe en buffer WAL=PENDING");
+            appendOrUpdate(0, tx, op, k, value, 0);
+
+            phase("Fase 2: propagacion por red simulada");
+            okA <- replicatePending(1, tx, op, k, value);
+            okB <- replicatePending(2, tx, op, k, value);
+            drainAcks();
+
+            oks <- okA + okB;
+
+            phase("Fase 3: validacion de mayoria");
+            if (oks >= 1) {
+                okLine("mayoria alcanzada: lider + " + renderInt(oks) + " seguidor(es)");
+                commitOn(0, tx);
+
+                if (okA == 1) { commitOn(1, tx); }
+                if (okB == 1) { commitOn(2, tx); }
+
+                okLine("resultado: COMMITTED");
+                return true;
+            }
+
+            warnLine("sin mayoria: queda PENDING en el buffer WAL del lider");
+            errLine("resultado: NO COMMITTED");
+            return false;
+        }
+
+        disconnect(follower >> int) -> bool {
+            if (follower < 1) { return false; }
+            if (follower > 2) { return false; }
+
+            setUp(follower, 0);
+            warnLine(nodo(follower) + " desconectado por ptrWrite");
+            return true;
+        }
+
+        syncFollower(follower >> int) -> bool {
+            /*
+             * Sincronizacion: compara slots del buffer WAL del lider con
+             * el buffer WAL del seguidor. Los metadatos count se leen por ptr.
+             */
+            leaderSlots <- countOf(0);
+            i <- 0;
+            synced <- 0;
+
+            title("SYNC " + nodo(follower) + " desde LIDER", "magenta");
+
+            while (i < leaderSlots) {
+                tx <- readWal(0, i, 0);
+                op <- readWal(0, i, 1);
+                key <- readWal(0, i, 2);
+                value <- readWal(0, i, 3);
+                status <- readWal(0, i, 4);
+                oldPos <- findSlot(follower, tx);
+                oldStatus <- -1;
+
+                if (oldPos >= 0) {
+                    oldStatus <- readWal(follower, oldPos, 4);
+                }
+
+                if (oldPos < 0 || oldStatus != status) {
+                    appendOrUpdate(follower, tx, op, key, value, status);
+
+                    if (status == 1) {
+                        applyData(follower, op, key, value);
+                    }
+
+                    synced <- synced + 1;
+                }
+
+                i <- i + 1;
+            }
+
+            okLine("registros sincronizados: " + renderInt(synced));
+            return true;
+        }
+
+        wake(follower >> int) -> bool {
+            if (follower < 1) { return false; }
+            if (follower > 2) { return false; }
+
+            setUp(follower, 1);
+            okLine(nodo(follower) + " despierta por ptrWrite");
+            syncFollower(follower);
+            return true;
+        }
+
+        printRecord(node >> int, pos >> int) -> bool {
+            tx <- readWal(node, pos, 0);
+            op <- readWal(node, pos, 1);
+            key <- readWal(node, pos, 2);
+            value <- readWal(node, pos, 3);
+            status <- readWal(node, pos, 4);
+
+            println(
+                color("  [" + renderInt(pos) + "] ", "gray") +
+                "tx=" + color(renderInt(tx), "cyan") +
+                " op=" + color(opName(op), "magenta") +
+                " key=" + color(renderInt(key), "yellow") +
+                " value=" + color(renderInt(value), "blue") +
+                " status=" + colorBold(statusName(status), statusColor(status))
+            );
+            return true;
+        }
+
+        printWal(node >> int) -> bool {
+            title("BUFFER WAL " + nodo(node), nodeColor(node));
+
+            count <- countOf(node);
+            if (count == 0) {
+                infoLine("vacio");
+                return true;
+            }
+
+            i <- 0;
+            while (i < count) {
+                printRecord(node, i);
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        printAllWal() -> bool {
+            printWal(0);
+            printWal(1);
+            printWal(2);
+            return true;
+        }
+
+        printData(node >> int) -> bool {
+            title("BUFFER DATA " + nodo(node), nodeColor(node));
+
+            key <- 1;
+            while (key < 10) {
+                value <- dataGet(dataIndex(node, key));
+                if (value == 0) {
+                    println(color("  key " + renderInt(key) + " -> " + renderInt(value), "gray"));
+                } else {
+                    println("  key " + color(renderInt(key), "yellow") + " -> " + colorBold(renderInt(value), "green"));
+                }
+                key <- key + 1;
+            }
+
+            return true;
+        }
+
+        printAllData() -> bool {
+            printData(0);
+            printData(1);
+            printData(2);
+            return true;
+        }
+
+        clusterStatus() -> bool {
+            title("Cluster por punteros", "cyan");
+            printNodeStatus(0);
+            printNodeStatus(1);
+            printNodeStatus(2);
+            return true;
+        }
+
+        printNodeStatus(node >> int) -> bool {
+            println(
+                "  " + colorBold(nodo(node), nodeColor(node)) +
+                " status=" + colorBold(aliveName(isUp(node)), aliveColor(isUp(node))) +
+                " wal=" + color(renderInt(countOf(node)), "yellow")
+            );
+            return true;
+        }
+
+        txFromMenu(op >> int) -> bool {
+            key <- promptInt("key [1..9]> ");
+            value <- 0;
+
+            if (op != 3) {
+                value <- promptInt("value> ");
+            }
+
+            submitTx(op, key, value);
+            return true;
+        }
+
+        menuTransacciones() -> bool {
+            active <- true;
+
+            while (active) {
+                title("Transacciones", "cyan");
+                menuItem(1, "CREATE", "green");
+                menuItem(2, "UPDATE", "yellow");
+                menuItem(3, "DELETE", "red");
+                menuItem(4, "Demo rapida", "magenta");
+                menuBack();
+
+                op <- promptInt("tx> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { txFromMenu(1); }
+                if (op == 2) { txFromMenu(2); }
+                if (op == 3) { txFromMenu(3); }
+                if (op == 4) {
+                    submitTx(1, 1, 100);
+                    submitTx(2, 1, 150);
+                    submitTx(1, 2, 900);
+                }
+            }
+
+            return true;
+        }
+
+        menuRed() -> bool {
+            active <- true;
+
+            while (active) {
+                title("Red y fallos", "yellow");
+                menuItem(1, "Desconectar SEGUIDOR_A", "red");
+                menuItem(2, "Desconectar SEGUIDOR_B", "red");
+                menuItem(3, "Despertar + sync SEGUIDOR_A", "green");
+                menuItem(4, "Despertar + sync SEGUIDOR_B", "green");
+                menuItem(5, "Estado del cluster", "cyan");
+                menuBack();
+
+                op <- promptInt("red> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { disconnect(1); }
+                if (op == 2) { disconnect(2); }
+                if (op == 3) { wake(1); }
+                if (op == 4) { wake(2); }
+                if (op == 5) { clusterStatus(); }
+            }
+
+            return true;
+        }
+
+        menuWal() -> bool {
+            active <- true;
+
+            while (active) {
+                title("Ver buffers WAL", "magenta");
+                menuItem(1, "Lider", "cyan");
+                menuItem(2, "Seguidor A", "magenta");
+                menuItem(3, "Seguidor B", "blue");
+                menuItem(4, "Todos", "green");
+                menuBack();
+
+                op <- promptInt("wal> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { printWal(0); }
+                if (op == 2) { printWal(1); }
+                if (op == 3) { printWal(2); }
+                if (op == 4) { printAllWal(); }
+            }
+
+            return true;
+        }
+
+        menuData() -> bool {
+            active <- true;
+
+            while (active) {
+                title("Ver buffers DATA", "blue");
+                menuItem(1, "Lider", "cyan");
+                menuItem(2, "Seguidor A", "magenta");
+                menuItem(3, "Seguidor B", "blue");
+                menuItem(4, "Todos", "green");
+                menuBack();
+
+                op <- promptInt("data> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { printData(0); }
+                if (op == 2) { printData(1); }
+                if (op == 3) { printData(2); }
+                if (op == 4) { printAllData(); }
+            }
+
+            return true;
+        }
+
+        demoFalloYRecuperacion() -> bool {
+            title("Demo: buffer + ptr, fallo y recuperacion", "magenta");
+            submitTx(1, 1, 100);
+            disconnect(1);
+            submitTx(2, 1, 250);
+            submitTx(1, 2, 500);
+            printAllWal();
+            wake(1);
+            printAllWal();
+            printAllData();
+            return true;
+        }
+
+        demoSinMayoria() -> bool {
+            title("Demo: buffer + ptr, sin mayoria", "red");
+            disconnect(1);
+            disconnect(2);
+            submitTx(1, 3, 700);
+            clusterStatus();
+            printAllWal();
+            wake(1);
+            wake(2);
+            return true;
+        }
+
+        menuDemos() -> bool {
+            active <- true;
+
+            while (active) {
+                title("Demos", "magenta");
+                menuItem(1, "Fallo de un seguidor y recuperacion", "yellow");
+                menuItem(2, "Sin mayoria", "red");
+                menuBack();
+
+                op <- promptInt("demo> ");
+
+                if (op == 0) { active <- false; }
+                if (op == 1) { demoFalloYRecuperacion(); }
+                if (op == 2) { demoSinMayoria(); }
+            }
+
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+
+            while (running) {
+                title("WAL + Replicacion con buffers y punteros", "cyan");
+                infoLine("mayoria = LIDER + 1 SEGUIDOR | estado WAL = PENDING/COMMITTED");
+                menuItem(1, "Transacciones", "green");
+                menuItem(2, "Red y fallos", "yellow");
+                menuItem(3, "Ver buffers WAL", "magenta");
+                menuItem(4, "Ver buffers DATA", "blue");
+                menuItem(5, "Estado del cluster", "cyan");
+                menuItem(6, "Demos", "magenta");
+                menuItem(7, "Salir", "gray");
+
+                op <- promptInt("menu> ");
+
+                if (op == 1) { menuTransacciones(); }
+                if (op == 2) { menuRed(); }
+                if (op == 3) { menuWal(); }
+                if (op == 4) { menuData(); }
+                if (op == 5) { clusterStatus(); }
+                if (op == 6) { menuDemos(); }
+                if (op == 7) { running <- false; }
+            }
+
+            println(colorBold("simulador buffer/ptr cerrado", "cyan"));
+            return true;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+            regionInvalidate(walBuffer);
+            regionInvalidate(dataBuffer);
+            free(ackStorage);
+            return true;
+        }
+
+}

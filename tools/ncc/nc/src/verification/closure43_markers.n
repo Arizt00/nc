@@ -1,0 +1,117 @@
+use <data:json>;
+use <io:render>;
+use <project:closure43_core, release_io>;
+
+closure43Markers {
+    stc:
+        blocked >> int <- 0;
+        classified >> int <- 0;
+        total >> int <- 0;
+        runtimeOnly >> bool <- false;
+    fn:
+        private:
+            scanText(path >> str) -> str {
+                absolute >> str <- closure43_core.closure43Core.path(path); size >> int <- fsSize(absolute);
+                if (size < 0) return "";
+                source >> p<byte> <- cast(alloc(size+1)); result >> p<byte> <- cast(alloc(size+1));
+                if (source == null || result == null) { if (source != null) free(source); if (result != null) free(result); return ""; }
+                if (fsReadInto(absolute,source,size) != size) { free(source); free(result); return ""; }
+                index >> int <- 0; written >> int <- 0;
+                // Match read_text(errors="ignore").splitlines(), including Unicode separators.
+                while (index < size) {
+                    byte >> int <- rd(off(source,index)) & 255; width >> int <- 1; valid >> bool <- true;
+                    if (byte >= 128) {
+                        width <- byte >= 194 && byte <= 223 ? 2 : (byte >= 224 && byte <= 239 ? 3 : (byte >= 240 && byte <= 244 ? 4 : 0));
+                        valid <- width != 0 && index+width <= size; at >> int <- 1;
+                        while (valid && at < width) { next >> int <- rd(off(source,index+at)) & 255; if (next < 128 || next > 191) valid <- false; at += 1; }
+                        if (valid && width >= 3) { next >> int <- rd(off(source,index+1)) & 255; if ((byte == 224 && next < 160) || (byte == 237 && next > 159) || (byte == 240 && next < 144) || (byte == 244 && next > 143)) valid <- false; }
+                    }
+                    if (!valid) { index += 1; continue; }
+                    separator >> bool <- byte == 10 || byte == 11 || byte == 12 || byte == 13 || (byte >= 28 && byte <= 30);
+                    if (width == 2 && byte == 194 && (rd(off(source,index+1)) & 255) == 133) separator <- true;
+                    if (width == 3 && byte == 226 && (rd(off(source,index+1)) & 255) == 128 && ((rd(off(source,index+2)) & 255) == 168 || (rd(off(source,index+2)) & 255) == 169)) separator <- true;
+                    if (separator) { wr(off(result,written),10); written += 1; if (byte == 13 && index+1 < size && (rd(off(source,index+1)) & 255) == 10) width += 1; }
+                    else { cp(off(result,written),off(source,index),width); written += width; }
+                    index += width;
+                }
+                wr(off(result,written),0); free(source); text >> str <- cast(result); return text;
+            }
+            negative(path >> str) -> bool {
+                lower >> str <- strToLower(path);
+                return strContains(lower,"_fail") || strContains(lower,"negative") || strContains(lower,"deferred") || strContains(lower,"manifest") || strContains(lower,"fixture");
+            }
+            marker(line >> str) -> bool {
+                patterns >> int <- jsonParse("[\"<expr>\",\"placeholder\",\"runtime stub\",\"stub route\",\"section not allowed outside [@primitive] context\",\"Expected Semicolon\",\"Expected identifier\",\"Expected LBrace\",\"no matching function\",\"unresolved import path\"]");
+                index >> int <- 0; found >> bool <- false;
+                while (index < jsonArrayLen(patterns)) { item >> int <- jsonArrayGet(patterns,index); if (strContains(line,jsonGetString(item))) found <- true; jsonRelease(item); index += 1; }
+                jsonRelease(patterns); return found;
+            }
+            inspect(path >> str) -> void {
+                text >> str <- scanText(path); cursor >> int <- 0; lineNumber >> int <- 1;
+                while (cursor < strByteLen(text)) {
+                    rest >> str <- strSubstring(text,cursor,strByteLen(text)-cursor); end >> int <- strIndexOf(rest,"\n"); if (end < 0) end <- strByteLen(rest);
+                    line >> str <- strSubstring(rest,0,end);
+                    if (marker(line)) {
+                        official >> bool <- strContains(line,"compiler.no-placeholder-expr");
+                        example >> bool <- strStartsWith(path,runtimeOnly ? "examples/runtime/" : "examples/") && !negative(path);
+                        row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"path",path); closure43_core.closure43Core.put(row,"line",jsonNewInt(lineNumber));
+                        trimmed >> str <- strTrim(line);
+                        if (example && !official) { closure43_core.closure43Core.set(row,"text",closure43_core.closure43Core.prefix(trimmed,220)); closure43_core.closure43Core.push(blocked,row); }
+                        else {
+                            category >> str <- runtimeOnly ? "documented_diagnostic_or_negative" : "documented_or_negative";
+                            if (official) category <- "official_policy_reference";
+                            else if (runtimeOnly && strStartsWith(path,"docs/status/") && strContains(strToLower(line),"placeholder")) category <- "status_boundary";
+                            else if (!runtimeOnly && (strStartsWith(path,"reports/compiler_closure/") || path == "docs/status/STATUS_compiler_industrial_release.md")) category <- "compiler_closure_evidence";
+                            else if (!runtimeOnly && (strStartsWith(path,"docs/spec/") || strStartsWith(path,"crates/") || strStartsWith(path,"tests/") || strStartsWith(path,"tools/"))) category <- "official_diagnostic_or_source";
+                            closure43_core.closure43Core.set(row,"class",category); closure43_core.closure43Core.set(row,"match",closure43_core.closure43Core.prefix(trimmed,160));
+                            if (total < 80) closure43_core.closure43Core.push(classified,row); else jsonRelease(row); total += 1;
+                        }
+                    }
+                    cursor += end+1; lineNumber += 1;
+                }
+                strRelease(text);
+            }
+            scan(path >> str, depth >> int) -> void {
+                if (depth > 256) { closure43_core.closure43Core.fail("marker scan exceeded maximum depth"); return; }
+                kind >> int <- release_io.releaseIo.fileType(closure43_core.closure43Core.path(path));
+                if (kind == 1) { inspect(path); return; }
+                if (kind != 2) return;
+                names >> int <- closure43_core.closure43Core.entries(path); index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    entry >> int <- jsonArrayGet(names,index); name >> str <- jsonGetString(entry); child >> str <- path+"/"+name;
+                    if ((runtimeOnly || (name != "target" && name != ".git")) && release_io.releaseIo.fileType(closure43_core.closure43Core.path(child)) == 1) inspect(child);
+                    jsonRelease(entry); index += 1;
+                }
+                index <- 0;
+                while (index < jsonArrayLen(names)) {
+                    entry >> int <- jsonArrayGet(names,index); name >> str <- jsonGetString(entry); child >> str <- path+"/"+name;
+                    if ((runtimeOnly || (name != "target" && name != ".git")) && release_io.releaseIo.fileType(closure43_core.closure43Core.path(child)) == 2) scan(child,depth+1);
+                    jsonRelease(entry); index += 1;
+                }
+                jsonRelease(names);
+            }
+        public:
+            execute(runtime >> bool) -> int {
+                runtimeOnly <- runtime; blocked <- jsonNewArray(); classified <- jsonNewArray(); total <- 0;
+                roots >> int <- jsonParse(runtime ? "[\"examples/runtime\",\"reports/runtime_closure\",\"docs/spec/runtime\",\"docs/status/STATUS_runtime_90_families_industrial_release.md\"]" : "[\"examples\",\"reports\",\"docs\",\"crates\",\"tests\",\"tools\"]"); index >> int <- 0;
+                location >> str <- closure43_core.closure43Core.replace(closure43_core.closure43Core.workspace(),"\\","/")+"/";
+                if (!runtime && (strContains(location,"/target/") || strContains(location,"/.git/"))) index <- jsonArrayLen(roots);
+                while (index < jsonArrayLen(roots)) { root >> int <- jsonArrayGet(roots,index); scan(jsonGetString(root),0); jsonRelease(root); index += 1; }
+                report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"status",jsonArrayLen(blocked) == 0 ? "ok" : "blocked");
+                closure43_core.closure43Core.set(report,"pattern","<expr>|String\\(\\\"<expr>\\\"\\)|placeholder|runtime stub|stub route|section not allowed outside \\[@primitive\\] context|Expected Semicolon|Expected identifier|Expected LBrace|no matching function|unresolved import path");
+                jsonObjectSet(report,"blocking_occurrences",blocked); closure43_core.closure43Core.put(report,"classified_non_blocking_count",jsonNewInt(total)); jsonObjectSet(report,"classified_sample",classified);
+                closure43_core.closure43Core.stamp(report,"evidence_hash"); jsonRelease(roots); jsonRelease(blocked); jsonRelease(classified); return report;
+            }
+            write(report >> int, runtime >> bool) -> void {
+                out >> str <- runtime ? "reports/runtime_closure/final_validation/" : "reports/compiler_closure/final_validation/";
+                closure43_core.closure43Core.save(out+"anti_marker_gate.json",report);
+                blockers >> int <- jsonObjectGet(report,"blocking_occurrences");
+                text >> str <- (runtime ? "# F.2 Runtime Anti-marker Gate" : "# F.1 Anti-marker Gate")+"\n\nstatus: "+closure43_core.closure43Core.field(report,"status")+"\nblocking_occurrences: "+renderInt(jsonArrayLen(blockers))+"\nclassified_non_blocking_count: "+renderInt(release_io.releaseIo.number(report,"classified_non_blocking_count",0))+"\nevidence_hash: "+closure43_core.closure43Core.field(report,"evidence_hash")+"\n\n## Blocking occurrences\n";
+                if (jsonArrayLen(blockers) == 0) text <- text+"- none\n";
+                index >> int <- 0;
+                while (index < jsonArrayLen(blockers)) { row >> int <- jsonArrayGet(blockers,index); text <- text+"- "+closure43_core.closure43Core.field(row,"path")+":"+renderInt(release_io.releaseIo.number(row,"line",0))+" `"+closure43_core.closure43Core.field(row,"text")+"`\n"; jsonRelease(row); index += 1; }
+                text <- text+"\n## Classification\n"+(runtime ? "Occurrences outside generated runtime runnable/check-only examples are diagnostic/status text or documented negative paths.\n" : "Occurrences outside official runnable/check-only examples are diagnostic/spec/evidence text, documented negative paths, or official policy names such as `compiler.no-placeholder-expr`.\n");
+                closure43_core.closure43Core.write(out+"anti_marker_gate.md",text); jsonRelease(blockers);
+            }
+    fa: return true;
+}

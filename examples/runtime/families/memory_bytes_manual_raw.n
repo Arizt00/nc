@@ -1,0 +1,44 @@
+use <memory:bytes, stack>;
+use <io:output>;
+
+memoryBytesManualRaw {
+    fn:
+        writeSource(source >> p<byte>) -> bool {
+            wr(off(source, 0), 0x6E);
+            wr(off(source, 1), 0x43);
+            wr(off(source, 2), 0x21);
+            return true;
+        }
+
+        encode(source >> p<byte>, hex >> p<byte>) -> bool {
+            written >> int <- bytesToHex(source, 3, hex, 6);
+            return written == 6 && byteAt(hex, 0) == 54 &&
+                byteAt(hex, 1) == 101 && byteAt(hex, 4) == 50 &&
+                byteAt(hex, 5) == 49;
+        }
+
+        decode(hex >> p<byte>, decoded >> p<byte>) -> bool {
+            written >> int <- hexToBytes(hex, 6, decoded, 3);
+            return written == 3 && byteAt(decoded, 0) == 0x6E &&
+                byteAt(decoded, 1) == 0x43 && byteAt(decoded, 2) == 0x21;
+        }
+
+        compare(source >> p<byte>, decoded >> p<byte>) -> bool {
+            return bytesLen(source, 3) == 3 && bytesEq(source, 3, decoded, 3);
+        }
+
+        run() -> bool {
+            source >> p<byte> <- stackAlloc(3, 1);
+            hex >> p<byte> <- stackAlloc(6, 1);
+            decoded >> p<byte> <- stackAlloc(3, 1);
+            ok >> bool <- writeSource(source) && encode(source, hex) &&
+                decode(hex, decoded) && compare(source, decoded);
+            println("manual nC memory bytes backend: " + (ok ? "true" : "false"));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

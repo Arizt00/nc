@@ -1,0 +1,40 @@
+use <collections:result>;
+use <memory:ptr, map>;
+
+memoryMapComplete :: runtime {
+    stc:
+        p>> p<byte>; //ptr<byte> ==> byte*
+        q >> p<byte>;
+        first   >> byte <- 0;
+        outside >> byte <- 0;
+        ok      >> bool <- false;
+
+    fn:
+        run() -> bool {
+            p <- unwrap(map(4096));
+            ok <- wr(p, 65); //Write* ==> ptrWrite
+            first <- rd(p);//Read* ==> ptrRead
+
+            q <- off(p, 5000);//ptrOffset ==> Offset*
+            ok <- ok && wr(q, 77);
+            outside <- rd(q);
+
+            p <- unwrap(remap(p, 8192, true));
+            ok <- ok && unwrap(mapProtect(p, 1));
+            ok <- ok && unwrap(mapProtect(p, 3));
+            ok <- ok && unwrap(mapAdvise(p, 0));
+            ok <- ok && unwrap(mapSync(p, 1));
+            ok <- ok && mapLen(p) == 8192;
+            ok <- ok && mapAddress(p) == p;
+            ok <- ok && mapIsMapped(p);
+            ok <- ok && first == 65 && outside == 77;
+            ok <- ok && unwrap(unmap(p));
+            return ok && !mapIsMapped(p);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

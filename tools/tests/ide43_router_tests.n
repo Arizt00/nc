@@ -1,0 +1,53 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, cert_json, tool_cli, ide43_core, ide43_golden, sha256>;
+
+ide43RouterTests {
+    fn:
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(args,"|--repo|--candidate|--fixture|--work|--out|","");
+                if (options == 0) return 2;
+                repo >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--repo","."));
+                candidate >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                work >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--work",""));
+                if (release_io.releaseIo.fileType(work) != 0 || !release_io.releaseIo.makeDirectories(work)) return 2;
+                files >> int <- ide43_core.ide43Core.list("high.n|root.nb|machine.NM|primitive.ncp|bb.nbb|surface.n|after-head.n");
+                padding >> str <- "";
+                at >> int <- 0; while (at < 8192) { padding <- padding+" "; at += 1; }
+                golden >> int <- jsonParseFile(repo+"/bootstrap/ide43-golden.json");
+                hosts >> int <- jsonObjectGet(golden,"hosts"); host >> int <- jsonObjectGet(hosts,envHas("WINDIR") ? "windows" : "linux");
+                frozen >> int <- jsonObjectGet(host,"router");
+                ide43_golden.ide43Golden.scope("", "", work,repo,fixture);
+                cases >> int <- jsonNewArray(); passed >> bool <- jsonArrayLen(frozen) == 7; index >> int <- 0;
+                while (index < jsonArrayLen(files)) {
+                    name >> int <- jsonArrayGet(files,index); file >> str <- tool_cli.toolCli.absolute(work+"/"+jsonStringView(name,""));
+                    content >> str <- "demo { to main { print(1); } }\n";
+                    if (index == 5) content <- "primitive"+"[@] boot { signal: ready; }\n";
+                    if (index == 6) content <- padding+"primitive"+"[@] boot { signal: ready; }\n";
+                    release_io.releaseIo.write(file,content);
+                    words >> int <- ide43_core.ide43Core.list("route-jetbrains|--file"); jsonArrayInsert(words,0,jsonNewString(candidate));
+                    cert_json.certJson.push(words,jsonNewString(file)); cert_json.certJson.push(words,jsonNewString("--ncup"));
+                    cert_json.certJson.push(words,jsonNewString(fixture)); cert_json.certJson.push(words,jsonNewString("--json"));
+                    native >> int <- tool_cli.toolCli.execute(words,repo,30000); jsonRelease(words);
+                    a >> int <- jsonArrayGet(frozen,index); raw >> int <- jsonParse(release_io.releaseIo.field(native,"stdout")); b >> int <- ide43_golden.ide43Golden.model(raw);
+                    good >> bool <- tool_cli.toolCli.clean(native) && tool_cli.toolCli.hasFlag(native,"ok") && jsonKind(a) == 6 && jsonEquals(a,b);
+                    passed <- good && passed;
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"file",jsonNewString(file)); cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                    cert_json.certJson.put(row,"oracle",jsonClone(a)); cert_json.certJson.put(row,"native",jsonClone(b)); cert_json.certJson.push(cases,row);
+                    println((good ? "PASS " : "FAIL ")+"router "+jsonStringView(name,""));
+                    jsonRelease(a); jsonRelease(b); jsonRelease(raw); jsonRelease(native); jsonRelease(name); index += 1;
+                }
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.ide43.native-router-golden.v1"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed)); cert_json.certJson.put(report,"cases",jsonClone(cases));
+                cert_json.certJson.put(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                if (!cert_json.certJson.save(tool_cli.toolCli.value(options,"--out",work+"/router.json"),report)) passed <- false;
+                ide43_golden.ide43Golden.close(); jsonRelease(golden); jsonRelease(hosts); jsonRelease(host); jsonRelease(frozen);
+                jsonRelease(report); jsonRelease(cases); jsonRelease(files); jsonRelease(options); argsRelease(args); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

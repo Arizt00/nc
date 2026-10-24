@@ -1,0 +1,92 @@
+use <data:json>;
+use <project:release_io, tool_cli, cert_json>;
+
+ide43Golden {
+    local:
+        mappings >> int;
+    fn:
+        private:
+            replaced(value >> str, needle >> str, replacement >> str) -> str {
+                if (needle == "") return value;
+                result >> str <- ""; tail >> str <- value; index >> int <- strIndexOf(tail,needle);
+                while (index >= 0) {
+                    result <- result+strSubstring(tail,0,index)+replacement;
+                    tail <- strSubstring(tail,index+strByteLen(needle),strByteLen(tail)-index-strByteLen(needle));
+                    index <- strIndexOf(tail,needle);
+                }
+                return result+tail;
+            }
+            slashes(value >> str, windows >> bool) -> str {
+                result >> str <- strSubstring(value,0,strByteLen(value)); data >> p<byte> <- cast(result); index >> int <- 0;
+                while (index < strByteLen(result)) {
+                    if (windows && rd(off(data,index)) == 47) wr(off(data,index),92);
+                    if (!windows && rd(off(data,index)) == 92) wr(off(data,index),47);
+                    index += 1;
+                }
+                return result;
+            }
+            typedCommand(value >> int) -> bool {
+                cmd >> int <- jsonObjectGet(value,"cmd"); code >> int <- jsonObjectGet(value,"code");
+                ok >> int <- jsonObjectGet(value,"ok"); out >> int <- jsonObjectGet(value,"stdout"); err >> int <- jsonObjectGet(value,"stderr");
+                good >> bool <- jsonObjectLen(value) == 5 && jsonKind(cmd) == 4 && strByteLen(jsonStringView(cmd,"")) > 0 &&
+                    jsonKind(code) == 3 && jsonKind(ok) == 2 && jsonKind(out) == 4 && jsonKind(err) == 4;
+                jsonRelease(cmd); jsonRelease(code); jsonRelease(ok); jsonRelease(out); jsonRelease(err); return good;
+            }
+        public:
+            scope(root >> str, temporary >> str, work >> str, repo >> str, fixture >> str) -> void {
+                mappings <- jsonNewObject();
+                cert_json.certJson.put(mappings,root,jsonNewString("$ROOT"));
+                cert_json.certJson.put(mappings,temporary,jsonNewString("$TEMP"));
+                cert_json.certJson.put(mappings,fixture,jsonNewString("$FIXTURE"));
+                cert_json.certJson.put(mappings,release_io.releaseIo.directory(fixture),jsonNewString("$FIXTURE_DIR"));
+                cert_json.certJson.put(mappings,work,jsonNewString("$WORK"));
+                cert_json.certJson.put(mappings,repo,jsonNewString("$REPO"));
+            }
+            text(value >> str) -> str {
+                result >> str <- value; matched >> bool <- false; index >> int <- 0;
+                while (index < jsonObjectLen(mappings)) {
+                    prefix >> str <- jsonObjectKeyAt(mappings,index); token >> int <- jsonObjectGet(mappings,prefix);
+                    win >> str <- slashes(prefix,true); unix >> str <- slashes(prefix,false);
+                    if (prefix != "" && (strContains(result,prefix) || strContains(result,win) || strContains(result,unix))) matched <- true;
+                    result <- replaced(result,prefix,jsonStringView(token,""));
+                    result <- replaced(result,win,jsonStringView(token,""));
+                    result <- replaced(result,unix,jsonStringView(token,""));
+                    free(cast<byte>(prefix)); jsonRelease(token); strRelease(win); strRelease(unix); index += 1;
+                }
+                if (matched) return slashes(result,false);
+                return result;
+            }
+            model(value >> int) -> int {
+                if (jsonKind(value) == 6) {
+                    result >> int <- jsonNewObject(); index >> int <- 0;
+                    if (jsonObjectHas(value,"cmd") && !typedCommand(value))
+                        cert_json.certJson.put(result,"invalid_command_shape",jsonNewBool(true));
+                    while (index < jsonObjectLen(value)) {
+                        key >> str <- jsonObjectKeyAt(value,index); item >> int <- jsonObjectGet(value,key); normalized >> int <- 0;
+                        if (key == "cmd") normalized <- jsonNewString("$COMMAND");
+                        else if (key == "generated_at") {
+                            raw >> str <- jsonStringView(item,"");
+                            normalized <- jsonNewString(jsonKind(item) == 4 && strByteLen(raw) == 20 && strEndsWith(raw,"Z") ? "$CLOCK" : "$INVALID_CLOCK");
+                        } else if ((key == "stdout" || key == "stderr") && jsonKind(item) == 4) {
+                            decoded >> int <- jsonParse(jsonStringView(item,""));
+                            if (jsonKind(decoded) == 6 || jsonKind(decoded) == 5) normalized <- model(decoded);
+                            else normalized <- model(item);
+                            jsonRelease(decoded);
+                        } else normalized <- model(item);
+                        cert_json.certJson.put(result,key,normalized); jsonRelease(item); free(cast<byte>(key)); index += 1;
+                    }
+                    return result;
+                }
+                if (jsonKind(value) == 5) {
+                    result >> int <- jsonNewArray(); index >> int <- 0;
+                    while (index < jsonArrayLen(value)) {
+                        item >> int <- jsonArrayGet(value,index); cert_json.certJson.push(result,model(item)); jsonRelease(item); index += 1;
+                    }
+                    return result;
+                }
+                if (jsonKind(value) == 4) return jsonNewString(text(jsonStringView(value,"")));
+                return jsonClone(value);
+            }
+            close() -> void { jsonRelease(mappings); }
+    fa: return true;
+}

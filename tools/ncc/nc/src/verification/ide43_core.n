@@ -1,0 +1,174 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, cert_json>;
+
+ide43Core {
+    local:
+        invalid >> bool <- false;
+    fn:
+        public:
+            reset() -> void { invalid <- false; }
+            valid() -> bool { return !invalid; }
+            fail(message >> str) -> void { invalid <- true; println("ide43: "+message); }
+            readText(path >> str) -> str {
+                size >> int <- fsSize(path);
+                guard size >= 0 && size <= 134217728 else return "";
+                data >> p<byte> <- cast(alloc(size+1));
+                guard data != null else return "";
+                if (fsReadInto(path,data,size) != size) { free(data); return ""; }
+                wr(off(data,size),0);
+                // Clone raw file storage before exposing a strRelease-compatible value.
+                view >> str <- cast(data); result >> str <- strSubstring(view,0,strByteLen(view));
+                free(data); return result;
+            }
+            read(root >> str, relative >> str) -> int {
+                file >> str <- release_io.releaseIo.path(root,relative);
+                value >> int <- jsonParseFile(file);
+                if (jsonKind(value) != 6) { fail("invalid JSON object: "+file); jsonRelease(value); return 0; }
+                return value;
+            }
+            list(words >> str) -> int {
+                result >> int <- jsonNewArray();
+                first >> int <- 0; index >> int <- 0;
+                bytes >> p<byte> <- cast(words); size >> int <- strByteLen(words);
+                while (index <= size) {
+                    if (index == size || rd(off(bytes,index)) == 124) {
+                        if (index > first) cert_json.certJson.push(result,jsonNewString(strSubstring(words,first,index-first)));
+                        first <- index+1;
+                    }
+                    index += 1;
+                }
+                return result;
+            }
+            lookup(value >> int, path >> str) -> int {
+                parts >> int <- list(path);
+                current >> int <- jsonClone(value);
+                index >> int <- 0;
+                while (index < jsonArrayLen(parts)) {
+                    part >> int <- jsonArrayGet(parts,index);
+                    next >> int <- jsonObjectGet(current,jsonStringView(part,""));
+                    jsonRelease(part); jsonRelease(current); current <- next; index += 1;
+                }
+                jsonRelease(parts); return current;
+            }
+            field(value >> int, path >> str) -> str {
+                child >> int <- ide43_core.ide43Core.lookup(value,path);
+                text >> str <- jsonStringView(child,"");
+                copy >> str <- strSubstring(text,0,strByteLen(text));
+                jsonRelease(child); return copy;
+            }
+            is(value >> int, path >> str, expected >> str) -> bool {
+                child >> int <- lookup(value,path);
+                result >> bool <- jsonKind(child) == 4 && jsonStringView(child,"") == expected;
+                jsonRelease(child); return result;
+            }
+            boolean(value >> int, path >> str, expected >> bool) -> bool {
+                child >> int <- lookup(value,path);
+                result >> bool <- jsonKind(child) == 2 && jsonGetBoolOr(child,false) == expected;
+                jsonRelease(child); return result;
+            }
+            truth(value >> int) -> bool {
+                kind >> int <- jsonKind(value);
+                if (kind == 0 || kind == 1) return false;
+                if (kind == 2) return jsonGetBoolOr(value,false);
+                if (kind == 3) return jsonGetFloatOr(value,0.0) != 0.0;
+                if (kind == 4) return jsonStringView(value,"") != "";
+                if (kind == 5) return jsonArrayLen(value) > 0;
+                return jsonObjectLen(value) > 0;
+            }
+            nonempty(value >> int, path >> str) -> bool {
+                child >> int <- lookup(value,path); result >> bool <- truth(child); jsonRelease(child); return result;
+            }
+            members(value >> int, path >> str, words >> str, exact >> bool) -> bool {
+                array >> int <- lookup(value,path); expected >> int <- list(words);
+                result >> bool <- jsonKind(array) == 5;
+                index >> int <- 0;
+                while (index < jsonArrayLen(expected)) {
+                    entry >> int <- jsonArrayGet(expected,index);
+                    result <- release_io.releaseIo.contains(array,jsonStringView(entry,"")) && result;
+                    jsonRelease(entry); index += 1;
+                }
+                if (exact) {
+                    index <- 0;
+                    while (index < jsonArrayLen(array)) {
+                        entry >> int <- jsonArrayGet(array,index);
+                        result <- jsonKind(entry) == 4 && release_io.releaseIo.contains(expected,jsonStringView(entry,"")) && result;
+                        jsonRelease(entry); index += 1;
+                    }
+                }
+                jsonRelease(array); jsonRelease(expected); return result;
+            }
+            sequence(value >> int, path >> str, words >> str) -> bool {
+                array >> int <- lookup(value,path); expected >> int <- list(words);
+                result >> bool <- jsonEquals(array,expected); jsonRelease(array); jsonRelease(expected); return result;
+            }
+            files(root >> str, words >> str, regular >> bool) -> bool {
+                paths >> int <- list(words); result >> bool <- true; index >> int <- 0;
+                while (index < jsonArrayLen(paths)) {
+                    entry >> int <- jsonArrayGet(paths,index);
+                    kind >> int <- release_io.releaseIo.fileType(release_io.releaseIo.path(root,jsonStringView(entry,"")));
+                    result <- (regular ? kind == 1 : kind != 0) && result;
+                    jsonRelease(entry); index += 1;
+                }
+                jsonRelease(paths); return result;
+            }
+            references(root >> str, value >> int, path >> str, object >> bool) -> bool {
+                source >> int <- lookup(value,path);
+                result >> bool <- true; index >> int <- 0;
+                count >> int <- object ? jsonObjectLen(source) : jsonArrayLen(source);
+                while (index < count) {
+                    entry >> int <- 0;
+                    if (object) {
+                        key >> str <- jsonObjectKeyAt(source,index); entry <- jsonObjectGet(source,key); free(cast<byte>(key));
+                    } else entry <- jsonArrayGet(source,index);
+                    rel >> str <- jsonStringView(entry,"");
+                    result <- jsonKind(entry) == 4 && (!object || rel != "") &&
+                        release_io.releaseIo.fileType(release_io.releaseIo.path(root,rel)) != 0 && result;
+                    jsonRelease(entry); index += 1;
+                }
+                jsonRelease(source); return result;
+            }
+            markers(text >> str, words >> str) -> bool {
+                tokens >> int <- list(words); result >> bool <- true; index >> int <- 0;
+                while (index < jsonArrayLen(tokens)) {
+                    token >> int <- jsonArrayGet(tokens,index);
+                    result <- strContains(text,jsonStringView(token,"")) && result;
+                    jsonRelease(token); index += 1;
+                }
+                jsonRelease(tokens); return result;
+            }
+            record(checks >> int, key >> str, value >> bool) -> void { cert_json.certJson.put(checks,key,jsonNewBool(value)); }
+            initialize(words >> str) -> int {
+                checks >> int <- jsonNewObject(); names >> int <- list(words); index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayGet(names,index); record(checks,jsonStringView(name,""),false);
+                    jsonRelease(name); index += 1;
+                }
+                jsonRelease(names); return checks;
+            }
+            extensions(text >> str) -> int {
+                values >> int <- jsonNewArray(); cursor >> int <- 0; size >> int <- strByteLen(text);
+                while (cursor < size) {
+                    tail >> str <- strSubstring(text,cursor,size-cursor);
+                    found >> int <- strIndexOf(tail,"extensions=\"");
+                    strRelease(tail); if (found < 0) break;
+                    start >> int <- cursor+found+12;
+                    tail <- strSubstring(text,start,size-start); close >> int <- strIndexOf(tail,"\"");
+                    strRelease(tail); if (close < 0) break;
+                    raw >> str <- strSubstring(text,start,close);
+                    index >> int <- 0; first >> int <- 0; data >> p<byte> <- cast(raw);
+                    while (index <= close) {
+                        if (index == close || rd(off(data,index)) == 59) {
+                            item >> str <- strTrim(strSubstring(raw,first,index-first));
+                            if (item != "") cert_json.certJson.push(values,jsonNewString(item));
+                            first <- index+1;
+                        }
+                        index += 1;
+                    }
+                    strRelease(raw); cursor <- start+close+1;
+                }
+                return values;
+            }
+    fa: return true;
+}
+

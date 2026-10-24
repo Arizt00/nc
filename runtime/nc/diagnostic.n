@@ -1,0 +1,99 @@
+/* Canonical diagnostic ABI v2. Every byte is owned and written by the caller. */
+
+diagnostic {
+    const:
+        DIAG_MAGIC >> u32 <- 0x4944434E;
+        DIAG_ABI >> u16 <- 2;
+        DIAG_BYTES >> u16 <- 128;
+        DIAG_NO_CAUSE >> u32 <- 0xFFFFFFFF;
+        DIAG_STABLE_TYPE_SECTION >> u64 <- 0x7EB89AAB7DD8EF64;
+
+    stc:
+        selfRecord >> array<byte, 128>;
+
+    fn:
+        public:
+            diagOpen(
+                record >> p<byte>,
+                severity >> int,
+                domain >> int,
+                flags >> int,
+                stableId >> u64
+            ) -> void {
+                cursor >> int <- 0;
+                while (cursor < 128) {
+                    wr<byte>(off(record, cursor), 0);
+                    cursor += 1;
+                }
+                wr<u32>(off(record, 0), DIAG_MAGIC);
+                wr<u16>(off(record, 4), DIAG_ABI);
+                wr<u16>(off(record, 6), DIAG_BYTES);
+                wr<byte>(off(record, 8), severity);
+                wr<byte>(off(record, 9), domain);
+                wr<u16>(off(record, 10), 0);
+                wr<u32>(off(record, 12), flags);
+                wr<u64>(off(record, 16), stableId);
+                wr<u32>(off(record, 96), DIAG_NO_CAUSE);
+            }
+
+            diagText(
+                record >> p<byte>,
+                slot >> int,
+                arenaOffset >> int,
+                textBytes >> int
+            ) -> void {
+                field >> p<byte> <- off(record, 24 + slot * 8);
+                wr<u32>(field, arenaOffset);
+                wr<u32>(off(field, 4), textBytes);
+            }
+
+            diagSpan(
+                record >> p<byte>,
+                line >> int,
+                column >> int,
+                endLine >> int,
+                endColumn >> int
+            ) -> void {
+                wr<u32>(off(record, 80), line);
+                wr<u32>(off(record, 84), column);
+                wr<u32>(off(record, 88), endLine);
+                wr<u32>(off(record, 92), endColumn);
+            }
+
+            diagCause(
+                record >> p<byte>,
+                first >> int,
+                count >> int
+            ) -> void {
+                wr<u32>(off(record, 96), first);
+                wr<u32>(off(record, 100), count);
+            }
+
+            diagValid(record >> p<byte>) -> bool {
+                return rd<u32>(off(record, 0)) == DIAG_MAGIC &&
+                    rd<u16>(off(record, 4)) == DIAG_ABI &&
+                    rd<u16>(off(record, 6)) == DIAG_BYTES;
+            }
+
+            selfTest() -> bool {
+                record >> p<byte> <- cast(&selfRecord);
+                diagOpen(record, 3, 4, 0, DIAG_STABLE_TYPE_SECTION);
+                diagText(record, 0, 0, 27);
+                diagText(record, 1, 27, 29);
+                diagText(record, 2, 56, 8);
+                diagText(record, 3, 64, 11);
+                diagSpan(record, 5, 13, 5, 13);
+                ok >> bool <- diagValid(record) &&
+                    rd<byte>(off(record, 8)) == 3 &&
+                    rd<byte>(off(record, 9)) == 4 &&
+                    rd<u64>(off(record, 16)) == DIAG_STABLE_TYPE_SECTION &&
+                    rd<u32>(off(record, 80)) == 5 &&
+                    rd<u32>(off(record, 84)) == 13;
+                return ok;
+            }
+
+    ref main ->> selfTest;
+
+    fa:
+        return true;
+}

@@ -1,0 +1,65 @@
+use <io:output, render>;
+use <data:json>;
+use <process:args>;
+use <project:ir, native_types>;
+
+recordIdentity78 {
+    show(graph >> p<byte>, node >> int) -> void {
+        if (node < 0) { println("missing type"); return; }
+        print(renderInt(node)); print(" kind="); print(renderInt(ir.nccIr.graphNodeAstKind(graph,node)));
+        print(" bytes="); print(renderInt(ir.nccIr.graphNodeLayoutValue(graph,node)));
+        print(" align="); print(renderInt(ir.nccIr.graphNodeStorageAlign(graph,node)));
+        print(" flags="); print(renderInt(ir.nccIr.graphNodeFlags(graph,node)));
+        print(" name=");
+        count >> int <- ir.nccIr.graphNodeNameBytes(graph,node);
+        data >> p<byte> <- alloc(count+1); cp(data,ir.nccIr.graphNodeName(graph,node),count); wr(off(data,count),0);
+        println(cast<str>(data)); free(data);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 64;
+        graph >> p<byte> <- ir.nccIr.projectGraphFor(argsAt(arguments,1),"x86_64-pc-windows-msvc");
+        shapes >> int <- jsonParseFile(argsAt(arguments,2)); if (graph == null || shapes == 0) return 65;
+        record >> int <- jsonArrayBorrow(shapes,0); function >> int <- 0; candidate >> int <- 0;
+        while (candidate < jsonArrayLen(shapes)) {
+            shape >> int <- jsonArrayBorrow(shapes,candidate);
+            parameters >> int <- jsonObjectBorrow(shape,"parameters");
+            if (jsonArrayLen(parameters) == 3 && function == 0) function <- jsonClone(shape);
+            jsonRelease(parameters); jsonRelease(shape); candidate += 1;
+        }
+        if (function == 0) return 67;
+        source >> int <- ir.nccIr.graphNodes(graph);
+        count >> int <- ir.nccIr.projectTypeNodes(record)+ir.nccIr.projectTypeNodes(function);
+        reserved >> p<byte> <- ir.nccIr.projectReserveTypes(graph,count,16384);
+        ir.nccIr.projectReleaseGraph(graph); graph <- reserved; if (graph == null) return 66;
+        if (!ir.nccIr.projectImportTypes(graph,record,source)) return 1;
+        at >> int <- 0; bound >> int <- 0;
+        while (at < source) {
+            if (ir.nccIr.graphNodeAstKind(graph,at) == 12 && ir.nccIr.graphTextValue(graph,at,"m")) {
+                if (ir.nccIr.projectBindType(graph,native_types.nccNativeTypes.typeNode(graph,at),source)) bound += 1;
+            }
+            at += 1;
+        }
+        expected >> int <- source+ir.nccIr.projectTypeNodes(record);
+        if (!ir.nccIr.projectImportTypes(graph,function,expected)) return 2;
+        at <- 0; matched >> int <- 0;
+        while (at < source) {
+            if (ir.nccIr.graphNodeAstKind(graph,at) == 29) {
+                callee >> int <- ir.nccIr.graphNodeFirstChild(graph,at);
+                if (ir.nccIr.graphTextValue(graph,callee,"mixed")) {
+                    matched += 1;
+                    actual >> int <- native_types.nccNativeTypes.argument(graph,at,0);
+                    if (!native_types.nccNativeTypes.argumentCompatible(graph,expected,actual)) {
+                        show(graph,expected); show(graph,native_types.nccNativeTypes.expressionType(graph,actual,0)); return 3;
+                    }
+                }
+            }
+            at += 1;
+        }
+        if (bound != 1 || matched != 1 || !native_types.nccNativeTypes.materialRecord(graph,source,0) ||
+            native_types.nccNativeTypes.aggregateBytes(graph,100000+source) != 16) return 4;
+        ir.nccIr.projectReleaseGraph(graph); jsonRelease(record); jsonRelease(function); jsonRelease(shapes); argsRelease(arguments);
+        println("native-record-identity-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

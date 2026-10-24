@@ -1,0 +1,222 @@
+use <io:output, render>;
+use <data:json>;
+use <process:args, env>;
+use <project:release_io, tool_cli, ncup_session, contract_checks, sha256>;
+
+ncupTests {
+    stc:
+        root >> str;
+        work >> str;
+        lab >> str;
+        candidate >> str;
+        frozenPath >> str;
+        fixture >> str;
+        checks >> int;
+        failures >> int <- 0;
+        counter >> int <- 0;
+        frozen >> int;
+    fn:
+        private:
+            check(name >> str, passed >> bool) -> void {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"name",jsonNewString(name)); jsonObjectSet(row,"passed",jsonNewBool(passed));
+                jsonArrayPush(checks,row); if (!passed) failures += 1;
+                println((passed ? "PASS " : "FAIL ")+name);
+            }
+            append(words >> int, value >> str) -> void { tool_cli.toolCli.append(words,value); }
+            execute(binary >> str, words >> int) -> int {
+                argv >> int <- jsonNewArray(); append(argv,binary);
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) { jsonArrayPush(argv,jsonArrayGet(words,index)); index += 1; }
+                result >> int <- tool_cli.toolCli.execute(argv,lab,120000);
+                jsonRelease(words); jsonRelease(argv); return result;
+            }
+            testCase(mode >> str, fault >> str, expected >> int) -> void {
+                counter += 1;
+                name >> str <- mode+"-"+(fault == "" ? "normal" : fault);
+                envSet("NCC_FIXTURE_FAULT",fault);
+                baseline >> int <- jsonObjectGet(frozen,name);
+                before >> int <- jsonObjectGet(baseline,"report");
+                words >> int <- jsonNewArray(); append(words,"release-"+mode);
+                append(words,"--root"); append(words,lab); append(words,"--candidate"); append(words,fixture);
+                append(words,"--work"); append(words,work+"/native-"+renderInt(counter));
+                report >> str <- work+"/native-"+renderInt(counter)+".json";
+                append(words,"--report"); append(words,report);
+                native >> int <- execute(candidate,words);
+                after >> int <- jsonParseFile(report);
+                check(name+"-captured",jsonKind(baseline) == 6 && tool_cli.toolCli.clean(native));
+                check(name+"-exit",release_io.releaseIo.number(baseline,"exit",999) == expected && release_io.releaseIo.number(native,"code",998) == expected);
+                a >> int <- jsonObjectGet(before,"checks"); b >> int <- jsonObjectGet(after,"checks");
+                check(name+"-checks",jsonKind(a) == 6 && jsonKind(b) == 6 && contract_checks.contractChecks.equal(a,b));
+                check(name+"-schema",release_io.releaseIo.field(before,"schema") != "" && release_io.releaseIo.field(before,"schema") == release_io.releaseIo.field(after,"schema"));
+                if (failures > 0) {
+                    release_io.releaseIo.save(work+"/comparison-"+renderInt(counter)+"-oracle.json",baseline);
+                    release_io.releaseIo.save(work+"/comparison-"+renderInt(counter)+"-native.json",native);
+                }
+                jsonRelease(a); jsonRelease(b); jsonRelease(before); jsonRelease(after); jsonRelease(native); jsonRelease(baseline);
+            }
+            setup() -> void {
+                lab <- work+"/repository";
+                release_io.releaseIo.makeDirectories(lab+"/tools/release");
+                names >> int <- jsonParse("[\"disk_layout\",\"ncup_commands\",\"toolchain_resolution\",\"first_run\",\"imports_operational\"]");
+                provenance >> int <- jsonObjectGet(frozen,"_provenance"); originals >> int <- jsonObjectGet(provenance,"originals");
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayGet(names,index); identity >> int <- jsonObjectGet(originals,jsonGetString(item));
+                    check("frozen-original-"+jsonGetString(item),strByteLen(release_io.releaseIo.field(identity,"sha256")) == 64);
+                    jsonRelease(identity); jsonRelease(item); index += 1;
+                }
+                jsonRelease(names); jsonRelease(originals); jsonRelease(provenance);
+                importFiles >> int <- jsonParse("[\"docs/spec/release/v2_0_0_imports_operational_spec.md\",\"docs/spec/release/v2_0_0_imports_operational_compatibility_spec.md\",\"docs/status/STATUS_IMPORTS_OPERATIONAL_v2_0_0.md\",\"docs/spec/root/base_inputs/nc_runtime_api_90_familias.md\",\"crates/ncc-ast/src/import_catalog/runtime_api_catalog_generated.rs\"]");
+                index <- 0;
+                while (index < jsonArrayLen(importFiles)) {
+                    file >> int <- jsonArrayGet(importFiles,index); release_io.releaseIo.write(lab+"/"+jsonGetString(file),"fixture only\n");
+                    jsonRelease(file); index += 1;
+                }
+                jsonRelease(importFiles);
+                release_io.releaseIo.write(lab+"/docs/spec/release/v2_0_0_imports_operational_contract.json","{\"schema\":\"nc.imports.operational.contract.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"declaration\":\"all_official_imports_operational\"}");
+                artifacts >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_first_run_spec.md\",\"docs/spec/release/v2_0_0_phase10_first_run_compatibility_spec.md\",\"docs/status/STATUS_PHASE10_punto13_first_run_v2_0_0.md\",\"tools/release/qa_phase10_p13_v2_0_0.sh\",\"tools/ncc/nc/src/verification/ncup_first_run.n\"]");
+                index <- 0;
+                while (index < jsonArrayLen(artifacts)) {
+                    item >> int <- jsonArrayGet(artifacts,index); release_io.releaseIo.write(lab+"/"+jsonGetString(item),"fixture only\n");
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(artifacts);
+                release_io.releaseIo.write(lab+"/docs/spec/release/v2_0_0_phase10_first_run_contract.json","{\"schema\":\"nc.phase10.first-run.contract.v1\",\"first_run\":{\"doctor_required\":true},\"required_gates\":[\"release_phase10_first_run_gate_tests\"]}");
+                release_io.releaseIo.makeDirectories(lab+"/bin"); release_io.releaseIo.makeDirectories(lab+"/target/debug");
+                suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                check("fixture-cargo",fsCopy(fixture,lab+"/bin/cargo"+suffix) >= 0);
+                check("fixture-ncc",fsCopy(fixture,lab+"/bin/ncc"+suffix) >= 0);
+                check("fixture-debug-ncc",fsCopy(fixture,lab+"/target/debug/ncc"+suffix) >= 0);
+                release_io.releaseIo.makeDirectories(lab+"/path-bin");
+                check("fixture-path-probe",fsCopy(fixture,lab+"/path-bin/ncup-v40-probe"+suffix) >= 0);
+                if (!envHas("WINDIR")) {
+                    words >> int <- jsonNewArray(); append(words,"+x"); append(words,lab+"/bin/cargo"); append(words,lab+"/bin/ncc"); append(words,lab+"/target/debug/ncc"); append(words,lab+"/path-bin/ncup-v40-probe");
+                    row >> int <- execute("chmod",words); check("fixture-executable",tool_cli.toolCli.hasFlag(row,"ok")); jsonRelease(row);
+                }
+            }
+            suite() -> void {
+                testCase("ncup-disk","",0);
+                testCase("ncup-disk","missing-directory",1);
+                testCase("ncup-disk","missing-manifest",1);
+                testCase("ncup-disk","bad-doctor",1);
+                testCase("ncup-commands","",0);
+                testCase("ncup-commands","empty-after-uninstall",1);
+                testCase("ncup-commands","bad-doctor",1);
+                testCase("ncup-resolution","",0);
+                testCase("ncup-resolution","malformed-which",1);
+                testCase("ncup-resolution","false-success",1);
+                testCase("first-run","",0);
+                testCase("first-run","bad-demo",1);
+                testCase("first-run","bad-global-run",1);
+                importsCase("",0,0);
+                importsCase("imports-failure",1,1);
+                importsCase("zero-tests",0,1);
+                release_io.releaseIo.write(lab+"/docs/spec/release/v2_0_0_imports_operational_contract.json","{}");
+                importsCase("invalid-contract",1,1);
+            }
+            importsCase(fault >> str, oldExit >> int, nativeExit >> int) -> void {
+                envSet("NCC_FIXTURE_FAULT",fault);
+                baseline >> int <- jsonObjectGet(frozen,"imports-"+fault);
+                before >> int <- jsonObjectGet(baseline,"report");
+                words >> int <- jsonNewArray(); append(words,"release-imports");
+append(words,"--root"); append(words,lab);
+                append(words,"--cargo"); append(words,fixture); append(words,"--report"); append(words,work+"/imports-"+fault+".json");
+                native >> int <- execute(candidate,words);
+                after >> int <- jsonParseFile(work+"/imports-"+fault+".json");
+                check("imports-"+fault+"-capture",jsonKind(baseline) == 6 && tool_cli.toolCli.clean(native));
+                check("imports-"+fault+"-exit",release_io.releaseIo.number(baseline,"exit",999) == oldExit && release_io.releaseIo.number(native,"code",998) == nativeExit);
+                a >> int <- jsonObjectGet(before,"checks"); b >> int <- jsonObjectGet(after,"checks");
+                if (fault != "zero-tests") check("imports-"+fault+"-checks",jsonKind(a) == 6 && jsonKind(b) == 6 && contract_checks.contractChecks.equal(a,b));
+                else check("imports-empty-test-filter-no-longer-passes",release_io.releaseIo.allTrue(a) && !release_io.releaseIo.allTrue(b));
+                observed >> int <- jsonObjectGet(after,"commands");
+                check("imports-"+fault+"-all-five-commands",jsonArrayLen(observed) == 5);
+                jsonRelease(observed); jsonRelease(a); jsonRelease(b); jsonRelease(before); jsonRelease(after); jsonRelease(native); jsonRelease(baseline);
+            }
+            environmentCase(name >> str, value >> str, present >> bool) -> void {
+                if (present) envSet("NCC_FIXTURE_PROBE",value); else envRemove("NCC_FIXTURE_PROBE");
+                words >> int <- jsonParse("[\"env-probe\"]");
+                row >> int <- execute("ncup-v40-probe",words);
+                release_io.releaseIo.save(work+"/"+name+".json",row);
+                model >> int <- jsonParse(release_io.releaseIo.field(row,"stdout"));
+                check(name,tool_cli.toolCli.hasFlag(row,"ok") && contract_checks.contractChecks.boolean(model,"present",present) && release_io.releaseIo.field(model,"value") == value && contract_checks.contractChecks.boolean(model,"native_fixture_only",true));
+                jsonRelease(model); jsonRelease(row);
+            }
+        public:
+            run(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--work|--candidate|--fixture|--frozen-oracle|","|--help|-h|");
+                if (options == 0) return 2;
+                if (tool_cli.toolCli.hasFlag(options,"--help")) { println("ncc-tools ncup-self-test --candidate NATIVE --fixture NATIVE_FIXTURE [--frozen-oracle SEALED_JSON] --work NEW_DIRECTORY [--root REPO]"); jsonRelease(options); return 0; }
+                root <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                work <- tool_cli.toolCli.value(options,"--work","");
+                if (work == "" || release_io.releaseIo.fileType(work) != 0) { jsonRelease(options); return 2; }
+                work <- tool_cli.toolCli.absolute(work);
+                candidate <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                frozenPath <- tool_cli.toolCli.value(options,"--frozen-oracle",root+"/bootstrap/existing43-ncup-"+(envHas("WINDIR") ? "windows" : "linux")+"-frozen.json");
+                expectedHash >> str <- envHas("WINDIR") ? "8ac32384c744bc2e4f07f69c839e2871cac3aa47b982a9dfd2226502ffaf8946" : "d0fcece098e1c7f4f164c600c20283b2cdf1d80af77fc203fb21c4ffb7b2d2c6";
+                if (sha256.nccSha256.file(frozenPath) != expectedHash) { println("ERROR: frozen oracle digest mismatch"); jsonRelease(options); return 2; }
+                frozen <- jsonParseFile(frozenPath);
+                if (jsonKind(frozen) != 6 || jsonObjectLen(frozen) != 18) { jsonRelease(frozen); jsonRelease(options); return 2; }
+                guard release_io.releaseIo.fileType(candidate) == 1 && release_io.releaseIo.fileType(fixture) == 1 else return 2;
+                checks <- jsonNewArray(); failures <- 0; counter <- 0;
+                check("null-json-boolean-is-false",!jsonGetBool(0));
+                check("absent-contract-boolean-is-rejected",!contract_checks.contractChecks.boolean(0,"absent",false));
+                release_io.releaseIo.makeDirectories(work+"/temp");
+                setup();
+                keys >> int <- jsonParse("[\"PATH\",\"TEMP\",\"TMP\",\"TMPDIR\",\"NCUP_HOME\",\"NCUP_TOOLCHAIN\",\"NCC_FIXTURE_ROOT\",\"NCC_FIXTURE_FAULT\",\"NCC_FIXTURE_PROBE\"]");
+                saved >> int <- jsonNewObject(); existed >> int <- jsonNewObject();
+                index >> int <- 0;
+                while (index < jsonArrayLen(keys)) {
+                    item >> int <- jsonArrayGet(keys,index); key >> str <- jsonGetString(item);
+                    jsonObjectSet(saved,key,jsonNewString(ncup_session.ncupSession.environment(key)));
+                    jsonObjectSet(existed,key,jsonNewBool(envHas(key)));
+                    jsonRelease(item); index += 1;
+                }
+                separator >> str <- envHas("WINDIR") ? ";" : ":";
+                envSet("PATH",lab+"/bin"+separator+lab+"/bin"+separator+release_io.releaseIo.field(saved,"PATH"));
+                envSet("TEMP",work+"/temp"); envSet("TMP",work+"/temp"); envSet("TMPDIR",work+"/temp");
+                envSet("NCC_FIXTURE_ROOT",work); envSet("NCUP_HOME",work+"/unused-home"); envRemove("NCUP_TOOLCHAIN");
+                envSet("PATH",lab+"/path-bin"+separator+lab+"/bin"+separator+lab+"/bin"+separator+release_io.releaseIo.field(saved,"PATH"));
+                environmentCase("child-new-environment-variable","value with spaces = and \\ slash",true);
+                environmentCase("child-replaced-environment-variable","replacement",true);
+                environmentCase("child-removed-environment-variable","",false);
+                suite();
+                envSet("NCC_FIXTURE_FAULT","");
+                words >> int <- jsonParse("[\"release-ncup-disk\",\"--root\"]"); append(words,lab);
+                append(words,"--candidate"); append(words,fixture);
+                append(words,"--report"); append(words,work+"/automatic-work.json");
+                automatic >> int <- execute(candidate,words);
+                autoReport >> int <- jsonParseFile(work+"/automatic-work.json");
+                autoHome >> str <- release_io.releaseIo.forwardPath(release_io.releaseIo.field(autoReport,"home"));
+                check("automatic-work-executes",tool_cli.toolCli.hasFlag(automatic,"ok"));
+                check("automatic-work-uses-host-temporary",strStartsWith(autoHome,release_io.releaseIo.forwardPath(work)+"/temp/ncup-native-probes/"));
+                check("automatic-work-retained",release_io.releaseIo.fileType(autoHome) == 2 && contract_checks.contractChecks.boolean(autoReport,"work_retained",true));
+                jsonRelease(autoReport); jsonRelease(automatic);
+                words <- jsonParse("[\"release-ncup-disk\",\"--work\"]"); append(words,work);
+                rejected >> int <- execute(candidate,words);
+                check("existing-work-rejected",release_io.releaseIo.number(rejected,"code",0) == 2); jsonRelease(rejected);
+                words <- jsonParse("[\"release-ncup-disk\",\"--candidate\",\"absent\",\"--cargo\",\"absent\"]");
+                rejected <- execute(candidate,words);
+                check("ambiguous-candidate-rejected",release_io.releaseIo.number(rejected,"code",0) == 2); jsonRelease(rejected);
+                index <- 0;
+                while (index < jsonArrayLen(keys)) {
+                    item >> int <- jsonArrayGet(keys,index); key >> str <- jsonGetString(item);
+                    if (tool_cli.toolCli.hasFlag(existed,key)) envSet(key,release_io.releaseIo.field(saved,key)); else envRemove(key);
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(saved); jsonRelease(existed); jsonRelease(keys);
+                report >> int <- release_io.releaseIo.report("nc.native.ncup.verification.tests.v1");
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"tests",jsonNewInt(jsonArrayLen(checks)));
+                jsonObjectSet(report,"failures",jsonNewInt(failures)); jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+                jsonObjectSet(report,"fixtures_not_real_installations",jsonNewBool(true));
+                jsonObjectSet(report,"python_executed",jsonNewBool(false));
+                jsonObjectSet(report,"frozen_oracle_sha256",jsonNewString(sha256.nccSha256.file(frozenPath)));
+                jsonObjectSet(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                jsonObjectSet(report,"fixture_sha256",jsonNewString(sha256.nccSha256.file(fixture)));
+                jsonRelease(frozen);
+                savedOk >> bool <- release_io.releaseIo.save(work+"/report.json",report);
+                jsonRelease(report); jsonRelease(options); return failures == 0 && savedOk ? 0 : 1;
+            }
+    fa: return true;
+}

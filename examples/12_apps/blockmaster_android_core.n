@@ -1,0 +1,245 @@
+// --- IMPORTS ESPECÍFICOS PARA CONTROL DE TIEMPO Y LLAMADAS ---
+use <io:output, render, input>;
+
+// --- CONFIGURACIÓN DEL SISTEMA DE URGENCIA ---
+SERVICE_NAME :: const <- "BlockMaster_Urgencia";
+PC_PORT :: const <- 8080;
+VENTANA_URGENCIA_SEGUNDOS :: const <- 60; // Si llama en < 60s, se considera urgencia
+
+// Estructura para rastrear historial reciente (para lógica de doble llamada)
+HistorialLlamada :: type {
+    numero >> str;
+    ultimoTiempo >> int; // Timestamp actual
+}
+
+abrirControladorUrgencia :: runtime {
+    stc:
+        listaPermitidos >> Array<Bloqueo>;      // Lista gestionada desde PC (Whitelist)
+        historialReciente >> Array<HistorialLlamada>; // Rastreo de llamadas recientes
+
+        servidorRed >> Object;
+        conectadoPC >> bool <- false;
+
+        // ─── INICIALIZACIÓN Y CONFIGURACIÓN DE TIEMPO ───
+
+    fn:
+        cargarConfiguracion() -> bool {
+            println("[Urgencia]: Cargando configuración de filtro...");
+
+            // Intentar cargar lista permitida desde archivo local
+            if (fexists("/sdcard/whitelist.txt")) {
+                var lineas <- fread_lines("/sdcard/whitelist.txt");
+                for linea in lineas {
+                    listaPermitidos.push(Bloqueo(
+                        numero: linea.split("|")[0],
+                        patron: "",
+                        origen: "PC"
+                    ));
+                }
+            }
+
+            return true;
+        }
+
+        limpiarHistorialAntiguo() -> bool {
+            // Elimina registros que hayan pasado la ventana de tiempo (ej: 60s)
+            var indice <- historialReciente.len - 1;
+
+            while (indice >= 0) {
+                var registro <- historialReciente[indice];
+
+                // Comparamos timestamp con hora actual del sistema
+                var ahora <- get_current_time();
+
+                if ((ahora - registro.ultimoTiempo) > VENTANA_URGENCIA_SEGUNDOS) {
+                    historialReciente.remove(indice);
+                } else {
+                    indice--; // Avanzar solo si no se borró
+                }
+            }
+
+            return true;
+        }
+
+        registrarLlamadaEntrante(numero >> str) -> bool {
+            limpiarHistorialAntiguo(); // Aseguramos que los datos estén frescos
+
+            var yaExiste <- false;
+            for registro in historialReciente {
+                if (registro.numero == numero) {
+                    yaExiste <- true;
+                    registro.ultimoTiempo <- get_current_time(); // Actualizamos timestamp
+                    break;
+                }
+            }
+
+            if (!yaExiste) {
+                historialReciente.push(HistorialLlamada(
+                    numero: numero,
+                    ultimoTiempo: get_current_time()
+                ));
+            } else {
+                // Ya estaba en la lista -> Es el SEGUNDO intento (o más)
+                return true;
+            }
+
+            return false; // Primera llamada reciente
+        }
+
+        verificarUrgenciaYPermitir(numero >> str) -> bool {
+            var esPermiso <- false;
+            var esUrgencia <- false;
+
+            // 1. ¿Está en la lista de permitidos (Whitelist)?
+            for permitido in listaPermitidos {
+                if (permitido.numero == numero || permitido.patron != "" && numero.contains(permitido.patron)) {
+                    esPermiso <- true;
+                    break;
+                }
+            }
+
+            // 2. ¿Es una "Doble Llamada" (Urgencia)?
+            var registroEnHistorial <- false;
+            for historial in historialReciente {
+                if (historial.numero == numero) {
+                    registroEnHistorial <- true;
+                    break;
+                }
+            }
+
+            /* La lógica de doble llamada se activa si ya existe en el histórico reciente
+            * y hemos hecho la misma comprobación recientemente.
+            * Nota: Para simplificar, permitimos el paso si está registrado en los últimos 60s
+            * Y ha llamado antes (detectado por el historial previo).
+            */
+
+            if (registroEnHistorial) {
+                esUrgencia <- true;
+            }
+
+            return (esPermiso || esUrgencia);
+        }
+
+            // ─── MONITOREO PRINCIPAL CON LA NUEVA LÓGICA ───
+
+        monitorearLlamada() -> bool {
+            println("[Urgencia]: Monitor activo. Filtrado WHITELIST + URGENCIA.");
+
+            while (true) {
+                var estado <- telephony::getState();
+
+                if (estado == "INCOMING") {
+                    var numeroEntrante <- telephony::getIncomingNumber();
+
+                    // 1. Registrar esta llamada en el historial de tiempo
+                    registrarLlamadaEntrante(numeroEntrante);
+
+                    // 2. Verificar si debe ser permitida
+                    if (verificarUrgenciaYPermitir(numeroEntrante)) {
+                        println(colorBold("✅ Permitida: " + renderStr(numeroEntrante), "green"));
+
+                        // Opcional: Decir quién es o que pasó
+                        tts_engine::speak("Llamada permitida por lista o urgencia.");
+                    } else {
+                        println("[BLOCKED] Llamada denegada (Sin registro + Sin duplicidad).");
+
+                        // Acción de rechazo silencioso
+                        telephony::rejectCall();
+
+                        // Audio para confirmar que fue bloqueado
+                        tts_engine::speak("Llamante desconocido, doble toque para entrar.");
+                    }
+
+                } else {
+                    sleep(1); // Esperar estado siguiente
+                }
+            }
+        }
+
+            // ─── COMANDOS REMOTOS (PC -> Móvil) ───
+
+        procesarComandoPC(comando >> str) -> bool {
+            var partes <- comando.split(" ");
+            var accion <- partes[0].trim().lower();
+
+            match (accion) {
+                case "AGREGAR_WHITELIST":
+                    // AGREGAR_WHITELIST +34620123
+                    if (partes.len > 1) {
+                        listaPermitidos.push(Bloqueo(numero: partes[1], patron: "", origen: "PC"));
+                        guardarWhitelist();
+                        println("[Urgencia]: Agregado a whitelist.");
+                    }
+                    return true;
+
+                case "ELIMINAR_WHITELIST":
+                     if (partes.len > 1) {
+                        // Buscar y borrar
+                        for i in range(listaPermitidos.len) {
+                            if (listaPermitidos[i].numero == partes[1]) {
+                                listaPermitidos.remove(i);
+                                break;
+                            }
+                        }
+                        guardarWhitelist();
+                        println("[Urgencia]: Eliminado de whitelist.");
+                     }
+                    return true;
+
+                case "HISTORIAL":
+                    // Muestra cuántas llamadas recientes hay en memoria (para debug)
+                    var texto <- "";
+                    for h in historialReciente {
+                        texto += renderStr(h.numero) + ",";
+                    }
+                    send_bytes(texto);
+                    return true;
+
+                case "AJUSTAR_TIEMPO":
+                    // AJUSTAR_TIEMPO 30 (segundos para ventana de urgencia)
+                    if (partes.len > 1) {
+                        VENTANA_URGENCIA_SEGUNDOS <- partes[1].toInt();
+                        println("[Urgencia]: Ventana de urgencia cambiada a " + renderInt(VENTANA_URGENCIA_SEGUNDOS));
+                    }
+                    return true;
+
+                case "ESTADO":
+                    send_bytes("WHITELIST|" + renderInt(listaPermitidos.len) + "|HISTORIAL|" + renderInt(historialReciente.len));
+                    return true;
+
+                default:
+                    println(colorBold("Comando PC desconocido.", "yellow"));
+            }
+
+            return true;
+        }
+
+        guardarWhitelist() -> bool {
+            var contenido <- "";
+            for w in listaPermitidos {
+                contenido += w.numero + "\n";
+            }
+            return fswrite("/sdcard/whitelist.txt", contenido);
+        }
+
+        run() -> bool {
+            println(colorBold("=== INICIANDO BLOCKMASTER URGENCIA ===", "magenta"));
+
+            if (!cargarPermisos()) return false;
+            if (!cargarConfiguracion()) return false;
+
+            // Iniciar servidor en segundo plano (se espera comando del PC)
+            conectarServidor();
+
+            monitorearLlamada(); // Bucle principal
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}
+

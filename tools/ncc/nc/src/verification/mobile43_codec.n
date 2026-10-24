@@ -1,0 +1,227 @@
+use <project:sha256>;
+
+mobile43Codec {
+    const:
+        ALPHABET >> str <- "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    fn:
+        public:
+            owned(data >> p<byte>, count >> int) -> str {
+                view >> str <- cast(data);
+                text >> str <- strSubstring(view,0,count);
+                free(data); return text;
+            }
+            writeLength(data >> p<byte>, count >> int) -> void {
+                a >> int <- count/16777216;
+                b >> int <- (count/65536)%256;
+                c >> int <- (count/256)%256;
+                d >> int <- count%256;
+                wr(data,a);
+                wr(off(data,1),b);
+                wr(off(data,2),c);
+                wr(off(data,3),d);
+            }
+            readLength(data >> p<byte>) -> int {
+                a >> int <- rd(data);
+                b >> int <- rd(off(data,1));
+                c >> int <- rd(off(data,2));
+                d >> int <- rd(off(data,3));
+                a <- a&255; b <- b&255; c <- c&255; d <- d&255;
+                return a*16777216+b*65536+c*256+d;
+            }
+            field(value >> str, index >> int) -> str {
+                bytes >> p<byte> <- cast(value);
+                start >> int <- 0;
+                part >> int <- 0;
+                cursor >> int <- 0;
+                length >> int <- strByteLen(value);
+                while (cursor <= length) {
+                    if (cursor == length || rd(off(bytes,cursor)) == 124) {
+                        if (part == index) return strSubstring(value,start,cursor-start);
+                        part += 1; start <- cursor+1;
+                    }
+                    cursor += 1;
+                }
+                return "";
+            }
+            fieldIs(value >> str, index >> int, expected >> str) -> bool {
+                bytes >> p<byte> <- cast(value);
+                begin >> int <- 0; part >> int <- 0; cursor >> int <- 0;
+                length >> int <- strByteLen(value);
+                while (cursor <= length) {
+                    if (cursor == length || rd(off(bytes,cursor)) == 124) {
+                        if (part == index) {
+                            other >> p<byte> <- cast(expected);
+                            count >> int <- strByteLen(expected);
+                            difference >> int <- (cursor-begin)^count;
+                            at >> int <- 0;
+                            while (at < count && at < cursor-begin) {
+                                difference <- difference | (rd(off(bytes,begin+at))^rd(off(other,at)));
+                                at += 1;
+                            }
+                            return difference == 0;
+                        }
+                        part += 1; begin <- cursor+1;
+                    }
+                    cursor += 1;
+                }
+                return false;
+            }
+            fields(value >> str) -> int {
+                count >> int <- 1;
+                bytes >> p<byte> <- cast(value);
+                cursor >> int <- 0;
+                while (cursor < strByteLen(value)) {
+                    if (rd(off(bytes,cursor)) == 124) count += 1;
+                    cursor += 1;
+                }
+                return count;
+            }
+            equal(left >> str, right >> str) -> bool {
+                a >> int <- strByteLen(left);
+                b >> int <- strByteLen(right);
+                difference >> int <- a ^ b;
+                x >> p<byte> <- cast(left); y >> p<byte> <- cast(right);
+                index >> int <- 0;
+                while (index < a && index < b) {
+                    difference <- difference | (rd(off(x,index)) ^ rd(off(y,index)));
+                    index += 1;
+                }
+                return difference == 0;
+            }
+            hex(data >> p<byte>, count >> int) -> str {
+                output >> p<byte> <- cast(alloc(count*2+1));
+                guard output != null else return "";
+                digits >> p<byte> <- cast("0123456789abcdef");
+                index >> int <- 0;
+                while (index < count) {
+                    value >> int <- rd(off(data,index)) & 255;
+                    wr(off(output,index*2),rd(off(digits,value/16)));
+                    wr(off(output,index*2+1),rd(off(digits,value%16)));
+                    index += 1;
+                }
+                wr(off(output,count*2),0);
+                return owned(output,count*2);
+            }
+            nibble(code >> int) -> int {
+                if (code >= 48 && code <= 57) return code-48;
+                if (code >= 65 && code <= 70) return code-55;
+                if (code >= 97 && code <= 102) return code-87;
+                return -1;
+            }
+            unhex(value >> str, output >> p<byte>, count >> int) -> bool {
+                guard strByteLen(value) == count*2 else return false;
+                bytes >> p<byte> <- cast(value);
+                index >> int <- 0;
+                while (index < count) {
+                    high >> int <- nibble(rd(off(bytes,index*2)));
+                    low >> int <- nibble(rd(off(bytes,index*2+1)));
+                    guard high >= 0 && low >= 0 else return false;
+                    wr(off(output,index),high*16+low); index += 1;
+                }
+                return true;
+            }
+            sign(token >> str, value >> str) -> str {
+                key >> p<byte> <- cast(alloc(64));
+                inner >> p<byte> <- cast(alloc(64+strByteLen(value)));
+                outer >> p<byte> <- cast(alloc(96));
+                if (key == null || inner == null || outer == null) {
+                    free(key); free(inner); free(outer); return "";
+                }
+                index >> int <- 0;
+                while (index < 64) { wr(off(key,index),0); index += 1; }
+                count >> int <- strByteLen(token);
+                if (count > 64) {
+                    shortened >> str <- sha256.nccSha256.bytes(cast(token),count);
+                    if (!unhex(shortened,key,32)) {
+                        strRelease(shortened); free(key); free(inner); free(outer); return "";
+                    }
+                    strRelease(shortened);
+                } else cp(key,cast<byte>(token),count);
+                index <- 0;
+                while (index < 64) {
+                    wr(off(inner,index),rd(off(key,index)) ^ 54);
+                    wr(off(outer,index),rd(off(key,index)) ^ 92);
+                    index += 1;
+                }
+                cp(off(inner,64),cast<byte>(value),strByteLen(value));
+                digest >> str <- sha256.nccSha256.bytes(inner,64+strByteLen(value));
+                valid >> bool <- unhex(digest,off(outer,64),32);
+                strRelease(digest);
+                result >> str <- valid ? sha256.nccSha256.bytes(outer,96) : "";
+                free(key); free(inner); free(outer);
+                return result;
+            }
+            utf8(data >> p<byte>, count >> int) -> bool {
+                index >> int <- 0;
+                while (index < count) {
+                    first >> int <- rd(off(data,index)) & 255;
+                    if (first == 0) return false;
+                    if (first < 128) { index += 1; continue; }
+                    width >> int <- first >= 194 && first <= 223 ? 2 :
+                        (first >= 224 && first <= 239 ? 3 : (first >= 240 && first <= 244 ? 4 : 0));
+                    guard width > 0 && index+width <= count else return false;
+                    second >> int <- rd(off(data,index+1)) & 255;
+                    if (first == 224 && second < 160) return false;
+                    if (first == 237 && second >= 160) return false;
+                    if (first == 240 && second < 144) return false;
+                    if (first == 244 && second >= 144) return false;
+                    step >> int <- 1;
+                    while (step < width) {
+                        byte >> int <- rd(off(data,index+step)) & 255;
+                        guard byte >= 128 && byte <= 191 else return false;
+                        step += 1;
+                    }
+                    index += width;
+                }
+                return true;
+            }
+            encode(value >> str) -> str {
+                count >> int <- strByteLen(value);
+                output >> p<byte> <- cast(alloc((count*4+2)/3+1));
+                guard output != null else return "";
+                bytes >> p<byte> <- cast(value); alphabet >> p<byte> <- cast(ALPHABET);
+                index >> int <- 0; written >> int <- 0;
+                while (index < count) {
+                    a >> int <- rd(off(bytes,index)) & 255;
+                    b >> int <- index+1 < count ? rd(off(bytes,index+1)) & 255 : 0;
+                    c >> int <- index+2 < count ? rd(off(bytes,index+2)) & 255 : 0;
+                    wr(off(output,written),rd(off(alphabet,a/4)));
+                    wr(off(output,written+1),rd(off(alphabet,(a%4)*16+b/16)));
+                    written += 2;
+                    if (index+1 < count) { wr(off(output,written),rd(off(alphabet,(b%16)*4+c/64))); written += 1; }
+                    if (index+2 < count) { wr(off(output,written),rd(off(alphabet,c%64))); written += 1; }
+                    index += 3;
+                }
+                wr(off(output,written),0); return owned(output,written);
+            }
+            digit(code >> int) -> int {
+                if (code >= 65 && code <= 90) return code-65;
+                if (code >= 97 && code <= 122) return code-71;
+                if (code >= 48 && code <= 57) return code+4;
+                if (code == 45 || code == 43) return 62;
+                if (code == 95 || code == 47) return 63;
+                return -1;
+            }
+            decode(value >> str) -> str {
+                count >> int <- strByteLen(value);
+                guard count%4 != 1 else return "";
+                output >> p<byte> <- cast(alloc(count*3/4+1));
+                guard output != null else return "";
+                input >> p<byte> <- cast(value);
+                index >> int <- 0; written >> int <- 0;
+                while (index < count) {
+                    a >> int <- digit(rd(off(input,index)));
+                    b >> int <- digit(rd(off(input,index+1)));
+                    c >> int <- index+2 < count ? digit(rd(off(input,index+2))) : 0;
+                    d >> int <- index+3 < count ? digit(rd(off(input,index+3))) : 0;
+                    if (a < 0 || b < 0 || c < 0 || d < 0) { free(output); return ""; }
+                    wr(off(output,written),a*4+b/16); written += 1;
+                    if (index+2 < count) { wr(off(output,written),(b%16)*16+c/4); written += 1; }
+                    if (index+3 < count) { wr(off(output,written),(c%4)*64+d); written += 1; }
+                    index += 4;
+                }
+                if (!utf8(output,written)) { free(output); return ""; }
+                wr(off(output,written),0); return owned(output,written);
+            }
+    fa: return true;
+}

@@ -1,0 +1,162 @@
+use <data:json>;
+use <io:render>;
+use <process:env>;
+use <project:release43_common, release43_archive, release_io, sha256, cert_json>;
+
+release43Distribution {
+    stc: diagnostic >> str <- "";
+    const:
+        BINS >> str <- "[\"ncc\",\"nfmt\",\"nlint\",\"nbuild\",\"npkg\",\"nide\",\"nclsp\",\"ncup\",\"ncup-init\"]";
+        COMPONENTS >> str <- "[\"compiler\",\"runtime\",\"stdlib\",\"fmt\",\"lint\",\"lsp\",\"docs\",\"sources\"]";
+    fn:
+        private:
+            set(object >> int, key >> str, value >> str) -> void { release43_common.release43Common.put(object,key,jsonNewString(value)); }
+            digit(c >> int) -> int { return c <= 57 ? c-48 : c-87; }
+            tomlQuote(value >> str) -> str {
+                result >> str <- "\""; at >> int <- 0;
+                while (at < strByteLen(value)) { c >> int <- rd<byte>(off<byte>(cast<byte>(value),at)); if (c == 92 || c == 34) result <- result+"\\"; result <- result+strSubstring(value,at,1); at += 1; }
+                return result+"\"";
+            }
+            decode(hex >> str, data >> p<byte>) -> void {
+                rawBytes >> p<byte> <- cast(hex); at >> int <- 0;
+                while (at < 32) { wr(off(data,at),digit(rd(off(rawBytes,at*2)))*16+digit(rd(off(rawBytes,at*2+1)))); at += 1; }
+            }
+        public:
+            verificationMessage() -> str { return diagnostic; }
+            components() -> int { return jsonParse(COMPONENTS); }
+            hmac(key >> str, data >> p<byte>, count >> int) -> str {
+                block >> p<byte> <- cast(alloc(64)); inner >> p<byte> <- cast(alloc(64+count)); outer >> p<byte> <- cast(alloc(96));
+                if (block == null || inner == null || outer == null) { free(block); free(inner); free(outer); return ""; }
+                at >> int <- 0; while (at < 64) { wr(off(block,at),0); at += 1; }
+                if (strByteLen(key) > 64) decode(sha256.nccSha256.bytes(cast<byte>(key),strByteLen(key)),block);
+                else cp(block,cast<byte>(key),strByteLen(key));
+                at <- 0; while (at < 64) { value >> int <- rd(off(block,at)) & 255; wr(off(inner,at),value ^ 54); wr(off(outer,at),value ^ 92); at += 1; }
+                cp(off(inner,64),data,count); decode(sha256.nccSha256.bytes(inner,count+64),off(outer,64));
+                result >> str <- sha256.nccSha256.bytes(outer,96); free(block); free(inner); free(outer); return result;
+            }
+            build(out >> str, key >> str) -> bool {
+                target >> str <- release43_common.release43Common.host(); if (release43_common.release43Common.failed()) return false;
+                root >> str <- release43_common.release43Common.rootPath();
+                cargoTarget >> str <- root+"/target/tmp/release43/cargo-"+target;
+                args >> int <- jsonParse("[\"build\",\"-p\",\"ncc-cli\",\"--release\",\"--target\"]"); release43_common.release43Common.arg(args,target);
+                release43_common.release43Common.arg(args,"--target-dir"); release43_common.release43Common.arg(args,cargoTarget);
+                bins >> int <- jsonParse(BINS); at >> int <- 0;
+                while (at < jsonArrayLen(bins)) { release43_common.release43Common.arg(args,"--bin"); release43_common.release43Common.arg(args,release43_common.release43Common.stringAt(bins,at)); at += 1; }
+                row >> int <- release43_common.release43Common.invoke("cargo",args);
+                if (!release43_common.release43Common.succeeded(row)) { release43_common.release43Common.release(bins); return false; }
+                stage >> str <- out+"/staging/"+target; at <- 0; suffix >> str <- strContains(target,"windows") ? ".exe" : "";
+                while (at < jsonArrayLen(bins)) {
+                    bin >> str <- release43_common.release43Common.stringAt(bins,at);
+                    if (!release43_common.release43Common.copyRequired(cargoTarget+"/"+target+"/release/"+bin+suffix,stage+"/bin/"+bin+suffix)) { release43_common.release43Common.release(bins); return false; }
+                    at += 1;
+                }
+                bundle >> int <- jsonNewObject(); set(bundle,"schema","nc.phase10.distribution.bundle.v1"); set(bundle,"version","2.0.0"); set(bundle,"target",target); set(bundle,"state","frozen");
+                release43_common.release43Common.put(bundle,"bins",bins);
+                if (!release43_common.release43Common.save(stage+"/manifest.v1.json",bundle)) return false; release43_common.release43Common.release(bundle);
+                artifact >> str <- "nc-v2.0.0-"+target+(suffix == "" ? ".tar.gz" : ".zip");
+                if (suffix == "") {
+                    if (!release43_archive.release43Archive.tarGz(stage,out+"/packages/"+artifact,"",true)) return false;
+                } else if (!release43_archive.release43Archive.zip(stage,out+"/packages/"+artifact,"")) return false;
+                hash >> str <- release43_common.release43Common.hashFile(out+"/packages/"+artifact); if (hash == "") return false; sums >> str <- hash+"  "+artifact+"\n";
+                if (!release43_common.release43Common.writeText(out+"/integrity/SHA256SUMS",sums) || !release43_common.release43Common.writeText(out+"/integrity/SHA256SUMS.sig",hmac(key,cast<byte>(sums),strByteLen(sums))+"\n")) return false;
+                sbom >> int <- jsonNewObject(); set(sbom,"schema","ncc.sbom.v1"); release43_common.release43Common.put(sbom,"artifact_count",jsonNewInt(1));
+                set(sbom,"version","1.0.1"); set(sbom,"series","1.x"); set(sbom,"generated_at",release_io.releaseIo.utc(timestamp()));
+                metadataRow >> int <- release43_common.release43Common.invoke("cargo",jsonParse("[\"metadata\",\"--format-version\",\"1\",\"--no-deps\"]"));
+                if (!release43_common.release43Common.succeeded(metadataRow)) return false;
+                metadata >> int <- release43_common.release43Common.doc(metadataRow); set(sbom,"workspace_root",release43_common.release43Common.field(metadata,"workspace_root")); set(sbom,"artifact_dir",release43_common.release43Common.absolute(out+"/packages"));
+                sourcePackages >> int <- jsonObjectGet(metadata,"packages"); packageRows >> int <- jsonNewArray(); at <- 0;
+                while (at < jsonArrayLen(sourcePackages)) {
+                    sourcePackage >> int <- jsonArrayGet(sourcePackages,at); packageRow >> int <- jsonNewObject();
+                    release43_common.release43Common.put(packageRow,"name",jsonObjectGet(sourcePackage,"name")); release43_common.release43Common.put(packageRow,"version",jsonObjectGet(sourcePackage,"version"));
+                    release43_common.release43Common.put(packageRow,"id",jsonObjectGet(sourcePackage,"id")); release43_common.release43Common.put(packageRow,"license",jsonObjectGet(sourcePackage,"license"));
+                    release43_common.release43Common.push(packageRows,packageRow); release43_common.release43Common.release(sourcePackage); at += 1;
+                }
+                release43_common.release43Common.put(sbom,"packages",packageRows); release43_common.release43Common.release(sourcePackages); release43_common.release43Common.release(metadata);
+                artifacts >> int <- jsonNewArray(); item >> int <- jsonNewObject(); set(item,"path",artifact); set(item,"sha256",hash); release43_common.release43Common.push(artifacts,item); release43_common.release43Common.put(sbom,"artifacts",artifacts);
+                if (!release43_common.release43Common.save(out+"/integrity/SBOM.ncc.v1.json",sbom)) return false; release43_common.release43Common.release(sbom);
+                attestation >> int <- jsonNewObject(); set(attestation,"schema","ncc.release.integrity.attestation.v1"); set(attestation,"version","1.0.1"); set(attestation,"series","1.x"); set(attestation,"generated_at",release_io.releaseIo.utc(timestamp())); set(attestation,"hash_algorithm","sha256");
+                release43_common.release43Common.put(attestation,"artifact_count",jsonNewInt(1)); set(attestation,"checksums_file","SHA256SUMS"); set(attestation,"signature_file","SHA256SUMS.sig"); set(attestation,"signing_key_env","NCC_RELEASE_SIGNING_KEY"); release43_common.release43Common.put(attestation,"signature_present",jsonNewBool(true));
+                if (!release43_common.release43Common.save(out+"/integrity/attestation.v1.json",attestation)) return false; release43_common.release43Common.release(attestation);
+                model >> int <- jsonNewObject(); set(model,"schema","nc.release.manifest.v1"); set(model,"version","2.0.0"); set(model,"state","frozen"); set(model,"generated_at",release_io.releaseIo.utc(timestamp())); set(model,"min_ncup_version","2.0.0"); release43_common.release43Common.put(model,"breaking_notes",jsonNewArray()); release43_common.release43Common.put(model,"components",components());
+                channels >> int <- jsonNewObject(); names >> int <- jsonParse("[\"stable\",\"beta\",\"nightly\"]"); at <- 0;
+                base >> str <- envHas("NC_RELEASE_BASE_URL") ? release43_common.release43Common.env("NC_RELEASE_BASE_URL") : "https://releases.nc-lang.org/v2.0.0/phase10_p1_dist/packages";
+                while (at < 3) {
+                    channel >> str <- release43_common.release43Common.stringAt(names,at); rel >> str <- "channels/"+channel+"/channel-manifest.toml";
+                    entry >> int <- jsonNewObject(); set(entry,"manifest",rel); release43_common.release43Common.put(entry,"entry_count",jsonNewInt(1)); release43_common.release43Common.put(channels,channel,entry);
+                    text >> str <- "schema = \"nc.release.channel.manifest.v1\"\nversion = \"2.0.0\"\nstate = \"frozen\"\nchannel = \""+channel+"\"\nmin_ncup_version = \"2.0.0\"\nbreaking_notes = []\n\n[compatibility]\nmin_ncup_version = \"2.0.0\"\nbreaking_notes = []\n\n[components]\nitems = "+COMPONENTS+"\n\n[[entries]]\ntoolchain_id = \""+channel+"-"+target+"\"\ntarget = \""+target+"\"\nartifact = \""+artifact+"\"\nurl = "+tomlQuote(base+"/"+artifact)+"\nsha256 = \""+hash+"\"\ncomponents = "+COMPONENTS+"\n";
+                    if (!release43_common.release43Common.writeText(out+"/manifests/"+rel,text)) return false; at += 1;
+                }
+                release43_common.release43Common.release(names); release43_common.release43Common.put(model,"channels",channels);
+                packages >> int <- jsonNewArray(); item <- jsonNewObject(); set(item,"target",target); set(item,"artifact",artifact); set(item,"sha256",hash); set(item,"url",base+"/"+artifact); release43_common.release43Common.push(packages,item); release43_common.release43Common.put(model,"packages",packages);
+                integrity >> int <- jsonNewObject(); set(integrity,"checksums","../integrity/SHA256SUMS"); set(integrity,"signature","../integrity/SHA256SUMS.sig"); set(integrity,"sbom","../integrity/SBOM.ncc.v1.json"); set(integrity,"attestation","../integrity/attestation.v1.json"); release43_common.release43Common.put(model,"integrity_bundle",integrity);
+                good >> bool <- release43_common.release43Common.save(out+"/manifests/release-manifest.json",model); release43_common.release43Common.release(model); return good;
+            }
+            verify(out >> str, key >> str) -> bool {
+                diagnostic <- "";
+                required >> int <- jsonParse("[\"SHA256SUMS\",\"SHA256SUMS.sig\",\"SBOM.ncc.v1.json\",\"attestation.v1.json\"]"); index >> int <- 0;
+                while (index < jsonArrayLen(required)) {
+                    name >> str <- release43_common.release43Common.stringAt(required,index);
+                    if (release43_common.release43Common.fileType(out+"/integrity/"+name) != 1) { diagnostic <- "missing integrity file: "+name; release43_common.release43Common.release(required); return false; } index += 1;
+                }
+                release43_common.release43Common.release(required);
+                sums >> str <- release43_common.release43Common.text(out+"/integrity/SHA256SUMS");
+                lines >> int <- release43_common.release43Common.lines(sums); at >> int <- 0; count >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(lines)) {
+                    line >> str <- strTrim(release43_common.release43Common.stringAt(lines,at));
+                    if (line != "") {
+                        separator >> int <- strIndexOf(line,"  ");
+                        if (separator != 64) { diagnostic <- "invalid checksum row"; good <- false; break; }
+                        name >> str <- strSubstring(line,66,strByteLen(line)-66);
+                        if (!release43_common.release43Common.relative(name) || release43_common.release43Common.hashFile(out+"/packages/"+name) != strSubstring(line,0,64)) { diagnostic <- "checksum verification FAILED: "+name; good <- false; break; }
+                        count += 1;
+                    }
+                    at += 1;
+                }
+                release43_common.release43Common.release(lines); if (!good || count == 0) { if (diagnostic == "") diagnostic <- "empty checksum inventory"; return false; }
+                signature >> str <- strTrim(release43_common.release43Common.text(out+"/integrity/SHA256SUMS.sig"));
+                if (signature != "" && (key == "" || signature != hmac(key,cast<byte>(sums),strByteLen(sums)))) { diagnostic <- "signature mismatch for SHA256SUMS"; return false; }
+                sbom >> int <- release43_common.release43Common.load(out+"/integrity/SBOM.ncc.v1.json"); attestation >> int <- release43_common.release43Common.load(out+"/integrity/attestation.v1.json");
+                if (sbom == 0 || attestation == 0) { release43_common.release43Common.release(sbom); release43_common.release43Common.release(attestation); diagnostic <- "invalid SBOM or attestation JSON"; return false; }
+                artifacts >> int <- jsonObjectGet(sbom,"artifacts");
+                good <- release43_common.release43Common.field(sbom,"schema") == "ncc.sbom.v1" && jsonKind(artifacts) == 5 && jsonArrayLen(artifacts) > 0 && release_io.releaseIo.number(sbom,"artifact_count",-1) == count && release43_common.release43Common.field(attestation,"schema") == "ncc.release.integrity.attestation.v1" && release_io.releaseIo.number(attestation,"artifact_count",-1) == count;
+                release43_common.release43Common.release(artifacts); release43_common.release43Common.release(sbom); release43_common.release43Common.release(attestation); if (!good) diagnostic <- "invalid SBOM or attestation"; return good;
+            }
+            artifact(out >> str) -> str {
+                files >> int <- release43_archive.release43Archive.files(out+"/packages"); if (files == 0) return "";
+                firstZip >> str <- ""; at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    name >> str <- release43_common.release43Common.stringAt(files,at);
+                    if (strStartsWith(name,"nc-v2.0.0-") && strEndsWith(name,".tar.gz")) { release43_common.release43Common.release(files); return out+"/packages/"+name; }
+                    if (firstZip == "" && strStartsWith(name,"nc-v2.0.0-") && strEndsWith(name,".zip")) firstZip <- out+"/packages/"+name;
+                    at += 1;
+                }
+                release43_common.release43Common.release(files); return firstZip;
+            }
+            cleanInstall(out >> str, artifact >> str, key >> str) -> bool {
+                if (!verify(out,key)) return false;
+                extract >> str <- release43_common.release43Common.workPath()+"/clean-"+renderInt(nowMs());
+                if (!release43_common.release43Common.makeDirectories(extract)) return false;
+                extractArgs >> int <- jsonParse("[\"-xzf\"]"); release43_common.release43Common.arg(extractArgs,artifact); release43_common.release43Common.arg(extractArgs,"-C"); release43_common.release43Common.arg(extractArgs,extract);
+                if (!release43_common.release43Common.succeeded(release43_common.release43Common.invoke(release43_common.release43Common.nativeTool("tar"),extractArgs))) return false;
+                home >> str <- extract+"/ncup-home"; suffix >> str <- ""; bins >> int <- jsonParse(BINS); at >> int <- 0;
+                while (at < jsonArrayLen(bins)) {
+                    bin >> str <- release43_common.release43Common.stringAt(bins,at); if (release43_common.release43Common.fileType(extract+"/bin/"+bin+suffix) != 1) { release43_common.release43Common.release(bins); return false; } at += 1;
+                }
+                args >> int <- jsonParse("[\"--home\"]"); release43_common.release43Common.arg(args,home); release43_common.release43Common.arg(args,"--force"); release43_common.release43Common.arg(args,"--profile"); release43_common.release43Common.arg(args,"default"); release43_common.release43Common.arg(args,"--default-toolchain"); release43_common.release43Common.arg(args,"stable-"+release43_common.release43Common.host());
+                if (!release43_common.release43Common.succeeded(release43_common.release43Common.invoke(extract+"/bin/ncup-init"+suffix,args))) return false;
+                at <- 0;
+                while (at < 2) {
+                    args <- jsonParse(at == 0 ? "[\"ncup\",\"doctor\",\"--home\"]" : "[\"ncup\",\"verify\",\"--home\"]"); release43_common.release43Common.arg(args,home);
+                    if (!release43_common.release43Common.succeeded(release43_common.release43Common.invoke(extract+"/bin/ncc"+suffix,args))) return false; at += 1;
+                }
+                args <- jsonParse("[\"nclsp\",\"validate\",\"examples/root_at/root_at_minimal_ok.nb\",\"--profile\",\"expert\",\"--migration-stage\",\"strict\",\"--json\"]");
+                if (!release43_common.release43Common.succeeded(release43_common.release43Common.invoke(extract+"/bin/ncc"+suffix,args))) return false;
+                at <- 1;
+                while (at < 7) {
+                    bin >> str <- release43_common.release43Common.stringAt(bins,at);
+                    if (!release43_common.release43Common.succeeded(release43_common.release43Common.invoke(extract+"/bin/"+bin+suffix,jsonParse("[\"--help\"]")))) return false; at += 1;
+                }
+                release43_common.release43Common.release(bins); return true;
+            }
+    fa: return true;
+}

@@ -1,0 +1,327 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, command, env>;
+use <project:release_io, tool_cli, contract_checks, sha256, editor_json>;
+
+editorRpc {
+    const:
+        MAX_FRAMES >> int <- 4096;
+        MAX_WIRE >> int <- 16777216;
+    fn:
+        private:
+            quotedJson(value >> str) -> str {
+                size >> int <- strByteLen(value);
+                data >> p<byte> <- cast(alloc(size*6+3));
+                guard data != null else return "";
+                source >> p<byte> <- cast(value);
+                cursor >> int <- 1; wr(data,34);
+                index >> int <- 0;
+                hex >> p<byte> <- cast("0123456789abcdef");
+                while (index < size) {
+                    byte >> int <- rd(off(source,index)) & 255;
+                    if (byte == 34 || byte == 92) { wr(off(data,cursor),92); cursor += 1; }
+                    if (byte < 32) {
+                        wr(off(data,cursor),92); wr(off(data,cursor+1),117);
+                        wr(off(data,cursor+2),48); wr(off(data,cursor+3),48);
+                        wr(off(data,cursor+4),rd(off(hex,byte/16))); wr(off(data,cursor+5),rd(off(hex,byte%16)));
+                        cursor += 6;
+                    } else { wr(off(data,cursor),byte); cursor += 1; }
+                    index += 1;
+                }
+                wr(off(data,cursor),34); wr(off(data,cursor+1),0);
+                rawText >> str <- cast(data); result >> str <- strSubstring(rawText,0,strLen(rawText)); free(data); return result;
+            }
+            wireJson(model >> int) -> str {
+                kind >> int <- jsonKind(model);
+                if (kind == 4) return quotedJson(jsonStringView(model,""));
+                if (kind != 5 && kind != 6) {
+                    rawText >> str <- jsonStringify(model);
+                    owned >> str <- strSubstring(rawText,0,strLen(rawText)); free(cast<byte>(rawText)); return owned;
+                }
+                result >> str <- kind == 5 ? "[" : "{";
+                count >> int <- kind == 5 ? jsonArrayLen(model) : jsonObjectLen(model);
+                index >> int <- 0;
+                while (index < count) {
+                    if (index > 0) result <- result+",";
+                    value >> int <- 0;
+                    if (kind == 5) value <- jsonArrayGet(model,index);
+                    else {
+                        key >> str <- jsonObjectKeyAt(model,index);
+                        quoted >> str <- quotedJson(key); result <- result+quoted+":"; strRelease(quoted);
+                        value <- jsonObjectGet(model,key); free(cast<byte>(key));
+                    }
+                    encoded >> str <- wireJson(value); result <- result+encoded;
+                    strRelease(encoded); jsonRelease(value); index += 1;
+                }
+                return result+(kind == 5 ? "]" : "}");
+            }
+            environment(name >> str) -> str {
+                data >> p<byte> <- cast(alloc(32768));
+                guard data != null else return "";
+                count >> int <- envGet(name,adr(data),32767);
+                if (count < 0 || count >= 32767) { free(data); return ""; }
+                wr(off(data,count),0); result >> str <- cast(data); return result;
+            }
+            byteSlice(source >> str, start >> int, length >> int) -> str {
+                data >> p<byte> <- cast(alloc(length+1));
+                guard data != null else return "";
+                cp(data,off(cast<byte>(source),start),length); wr(off(data,length),0);
+                result >> str <- cast(data); return result;
+            }
+            executable(path >> str) -> str {
+                if (release_io.releaseIo.fileType(path) == 1) return path;
+                return "";
+            }
+            search(name >> str) -> str {
+                value >> str <- environment("PATH");
+                bytes >> p<byte> <- cast(value);
+                split >> int <- envHas("WINDIR") ? 59 : 58;
+                first >> int <- 0;
+                index >> int <- 0;
+                while (index <= strByteLen(value)) {
+                    if (index == strByteLen(value) || rd(off(bytes,index)) == split) {
+                        directory >> str <- byteSlice(value,first,index-first);
+                        candidate >> str <- executable(directory+"/"+name);
+                        if (candidate != "") return tool_cli.toolCli.absolute(candidate);
+                        if (envHas("WINDIR")) {
+                            candidate <- executable(directory+"/"+name+".exe");
+                            if (candidate != "") return tool_cli.toolCli.absolute(candidate);
+                        }
+                        free(cast<byte>(directory)); first <- index+1;
+                    }
+                    index += 1;
+                }
+                free(cast<byte>(value)); return "";
+            }
+            adapter(root >> str, configured >> str) -> int {
+                words >> int <- jsonNewArray();
+                if (configured == "") configured <- environment("NC_SYS_LSP_BIN");
+                if (strStartsWith(configured,"~/")) configured <- environment(envHas("WINDIR") ? "USERPROFILE" : "HOME")+strSubstring(configured,1,strLen(configured)-1);
+                path >> str <- executable(configured);
+                if (path == "") path <- search("nc-sys-lsp");
+                if (path == "") path <- executable(environment("LOCALAPPDATA")+"/nC/bin/nc-sys-lsp.exe");
+                if (path == "") path <- executable(environment(envHas("WINDIR") ? "USERPROFILE" : "HOME")+"/.local/bin/nc-sys-lsp");
+                if (path == "") path <- executable(root+"/target/release/nc-sys-lsp.exe");
+                if (path == "") path <- executable(root+"/target/release/nc-sys-lsp");
+                if (path != "") tool_cli.toolCli.append(words,tool_cli.toolCli.absolute(path));
+                else {
+                    path <- search("go");
+                    if (path == "") return words;
+                    tool_cli.toolCli.append(words,path); tool_cli.toolCli.append(words,"run");
+                    tool_cli.toolCli.append(words,"tools/nc-sys-lsp/main.go");
+                }
+                tool_cli.toolCli.append(words,"lsp"); return words;
+            }
+            request(method >> str, id >> int, params >> int) -> int {
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result,"jsonrpc",jsonNewString("2.0"));
+                if (id > 0) jsonObjectSet(result,"id",jsonNewInt(id));
+                jsonObjectSet(result,"method",jsonNewString(method)); jsonObjectSet(result,"params",params);
+                return result;
+            }
+            firstId(messages >> int, id >> int) -> int {
+                index >> int <- 0;
+                while (index < jsonArrayLen(messages)) {
+                    item >> int <- jsonArrayGet(messages,index);
+                    if (release_io.releaseIo.number(item,"id",-1) == id) return item;
+                    jsonRelease(item); index += 1;
+                }
+                return 0;
+            }
+        public:
+            frame(model >> int) -> str {
+                body >> str <- wireJson(model);
+                result >> str <- "Content-Length: "+renderInt(strByteLen(body))+"\r\n\r\n"+body;
+                strRelease(body); return result;
+            }
+            decode(wire >> str) -> int {
+                result >> int <- jsonNewArray();
+                bytes >> p<byte> <- cast(wire);
+                count >> int <- strByteLen(wire);
+                cursor >> int <- 0;
+                if (count > MAX_WIRE) { jsonRelease(result); return 0; }
+                while (cursor < count) {
+                    marker >> int <- cursor;
+                    while (marker+3 < count) {
+                        if (rd(off(bytes,marker)) == 13 && rd(off(bytes,marker+1)) == 10 && rd(off(bytes,marker+2)) == 13 && rd(off(bytes,marker+3)) == 10) break;
+                        marker += 1;
+                    }
+                    // The oracle ignores trailing data without a complete header separator.
+                    if (marker+3 >= count) break;
+                    length >> int <- -1;
+                    lineStart >> int <- cursor;
+                    at >> int <- cursor;
+                    while (at <= marker && length < 0) {
+                        if (at == marker || rd(off(bytes,at)) == 13) {
+                            line >> str <- byteSlice(wire,lineStart,at-lineStart);
+                            colon >> int <- strIndexOf(line,":");
+                            if (colon >= 0) {
+                                key >> str <- strToLower(strTrim(strSubstring(line,0,colon)));
+                                if (key == "content-length") {
+                                    value >> str <- strTrim(strSubstring(line,colon+1,strLen(line)-colon-1));
+                                    valueBytes >> p<byte> <- cast(value);
+                                    position >> int <- 0;
+                                    if (strStartsWith(value,"+")) position <- 1;
+                                    length <- 0;
+                                    if (position >= strByteLen(value)) length <- -2;
+                                    while (position < strByteLen(value) && length >= 0) {
+                                        digit >> int <- rd(off(valueBytes,position))-48;
+                                        if (digit < 0 || digit > 9 || length > MAX_WIRE/10) length <- -2;
+                                        else length <- length*10+digit;
+                                        position += 1;
+                                    }
+                                    strRelease(value);
+                                }
+                                strRelease(key);
+                            }
+                            free(cast<byte>(line)); lineStart <- at+2;
+                        }
+                        at += 1;
+                    }
+                    cursor <- marker+4;
+                    if (length <= 0 || length > count-cursor || jsonArrayLen(result) >= MAX_FRAMES) { jsonRelease(result); return 0; }
+                    body >> str <- byteSlice(wire,cursor,length);
+                    item >> int <- editor_json.editorJson.parse(body); free(cast<byte>(body));
+                    if (jsonKind(item) != 6) { jsonRelease(item); jsonRelease(result); return 0; }
+                    jsonArrayPush(result,item); cursor += length;
+                }
+                return result;
+            }
+            documents(root >> str) -> int {
+                result >> int <- jsonParse("[{\"path\":\"examples/machine/native/x86_64_cldemote.nm\",\"language_id\":\"nc-machine\",\"source\":\"\"},{\"path\":\"target/tmp/lsp-semantic-root.nb\",\"language_id\":\"nc-root\",\"source\":\"sample :: root {\\n site:\\n  bootSlot:\\n routine:\\n  materialize() -> bool { return true; }\\n}\"},{\"path\":\"target/tmp/lsp-semantic-primitive.nbb\",\"language_id\":\"nc-primitive\",\"source\":\"primitive\\u005b@] target riscv32:\\n capability memory:\\n  allow memory.read;\\n anchor reset0:\\n  addr physaddr(0x1000);\\n operation enter():\\n  capability memory;\"},{\"path\":\"target/tmp/lsp-semantic-hardware.ncp\",\"language_id\":\"nc-hardware\",\"source\":\"primitive\\u005b@] target aarch64:\\n capability dma:\\n  allow port.write;\\n anchor boot0:\\n  addr physaddr(0x80000);\\n operation start():\\n  capability dma;\"}]");
+                index >> int <- 0;
+                rows >> int <- jsonNewArray();
+                while (index < 4) {
+                    item >> int <- jsonArrayGet(result,index);
+                    path >> str <- root+"/"+editor_json.editorJson.field(item,"path");
+                    jsonObjectSet(item,"path",jsonNewString(path));
+                    jsonObjectSet(item,"uri",jsonNewString("file://"+release_io.releaseIo.forwardPath(path)));
+                    if (index == 0) jsonObjectSet(item,"source",jsonNewString(release_io.releaseIo.text(path)));
+                    jsonArrayPush(rows,item); index += 1;
+                }
+                jsonRelease(result); return rows;
+            }
+            payload(documents >> int) -> str {
+                init >> int <- request("initialize",1,jsonParse("{\"initializationOptions\":{\"profile\":\"expert\",\"migrationStage\":\"strict\"}}"));
+                wire >> str <- frame(init); jsonRelease(init);
+                index >> int <- 0;
+                while (index < jsonArrayLen(documents)) {
+                    document >> int <- jsonArrayGet(documents,index);
+                    td >> int <- jsonNewObject();
+                    jsonObjectSet(td,"uri",jsonObjectGet(document,"uri"));
+                    jsonObjectSet(td,"languageId",jsonObjectGet(document,"language_id"));
+                    jsonObjectSet(td,"version",jsonNewInt(1)); jsonObjectSet(td,"text",jsonObjectGet(document,"source"));
+                    params >> int <- jsonNewObject(); jsonObjectSet(params,"textDocument",td);
+                    open >> int <- request("textDocument/didOpen",0,params); wire <- wire+frame(open); jsonRelease(open);
+                    td <- jsonNewObject(); jsonObjectSet(td,"uri",jsonObjectGet(document,"uri"));
+                    params <- jsonParse("{\"position\":{\"line\":0,\"character\":0}}"); jsonObjectSet(params,"textDocument",td);
+                    completion >> int <- request("textDocument/completion",index+2,params); wire <- wire+frame(completion);
+                    jsonRelease(completion); jsonRelease(document); index += 1;
+                }
+                shutdown >> int <- request("shutdown",jsonArrayLen(documents)+2,jsonParse("null"));
+                goodbye >> int <- request("exit",0,jsonParse("null"));
+                wire <- wire+frame(shutdown)+frame(goodbye); jsonRelease(shutdown); jsonRelease(goodbye);
+                return wire;
+            }
+            validate(messages >> int, documents >> int) -> str {
+                if (jsonKind(messages) != 5 || jsonArrayLen(messages) == 0) return "no valid JSON-RPC frames received";
+                init >> int <- firstId(messages,1);
+                if (init == 0 || !jsonObjectHas(init,"result")) return "initialize response not found";
+                result >> int <- jsonObjectGet(init,"result");
+                if (jsonKind(result) != 6) return "invalid initialize result";
+                caps >> int <- jsonObjectGet(result,"capabilities");
+                if (jsonObjectHas(caps,"completionProvider")) return "manual low-level server must not advertise completionProvider";
+                jsonRelease(caps); jsonRelease(result); jsonRelease(init);
+                index >> int <- 0;
+                while (index < jsonArrayLen(documents)) {
+                    document >> int <- jsonArrayGet(documents,index);
+                    uri >> str <- editor_json.editorJson.field(document,"uri");
+                    found >> bool <- false;
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(messages)) {
+                        message >> int <- jsonArrayGet(messages,at);
+                        params >> int <- jsonObjectGet(message,"params");
+                        if (editor_json.editorJson.field(message,"method") == "textDocument/publishDiagnostics" && jsonKind(params) == 6 && editor_json.editorJson.field(params,"uri") == uri) found <- true;
+                        jsonRelease(params); jsonRelease(message); at += 1;
+                    }
+                    if (!found) return "publishDiagnostics not found for document "+renderInt(index);
+                    completion >> int <- firstId(messages,index+2);
+                    if (completion == 0) return "textDocument/completion not found for document "+renderInt(index);
+                    result <- jsonObjectGet(completion,"result");
+                    if (jsonObjectHas(completion,"result") && jsonKind(result) != 6) return "invalid completion result";
+                    items >> int <- jsonObjectGet(result,"items");
+                    if (jsonArrayLen(items) > 0 || jsonObjectLen(items) > 0 || (jsonKind(items) == 4 && jsonStringView(items,"") != "") || (jsonKind(items) == 2 && jsonGetBoolOr(items,false)) || (jsonKind(items) == 3 && jsonGetFloat(items) != 0.0)) return "low-level document returned completion items";
+                    jsonRelease(items); jsonRelease(result); jsonRelease(completion); jsonRelease(document); index += 1;
+                }
+                shutdown >> int <- firstId(messages,jsonArrayLen(documents)+2);
+                if (shutdown == 0) return "shutdown response not found";
+                result <- jsonObjectGet(shutdown,"result");
+                good >> bool <- !jsonObjectHas(shutdown,"result") || jsonKind(result) == 1;
+                jsonRelease(result); jsonRelease(shutdown);
+                return good ? "" : "shutdown response must be null";
+            }
+            relay(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--input|--command|","");
+                guard options != 0 else return 2;
+                line >> str <- tool_cli.toolCli.value(options,"--command","");
+                root >> str <- tool_cli.toolCli.value(options,"--root","");
+                input >> str <- release_io.releaseIo.text(tool_cli.toolCli.value(options,"--input",""));
+                guard line != "" && strByteLen(input) > 0 && strByteLen(input) < 1048576 else return 2;
+                expected >> int <- strByteLen(input);
+                pipe >> addr <- commandPipeOpen(true,false);
+                guard pipe != null else return 1;
+                child >> addr <- commandOpen(line,root,commandPipeReadHandle(pipe),null,null,0);
+                commandPipeCloseRead(pipe);
+                if (child == null || !commandStarted(child)) { commandPipeRelease(pipe); if (child != null) commandRelease(child); return 1; }
+                cursor >> int <- 0;
+                while (cursor < strByteLen(input)) {
+                    part >> p<byte> <- off(cast<byte>(input),cursor);
+                    written >> int <- commandPipeWrite(pipe,adr(part),strByteLen(input)-cursor);
+                    if (written <= 0) break;
+                    cursor += written;
+                }
+                commandPipeCloseWrite(pipe);
+                waited >> int <- commandWait(child,30000);
+                if (waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child);
+                commandRelease(child); commandPipeRelease(pipe); free(cast<byte>(input)); jsonRelease(options);
+                return waited == 0 && cursor == expected ? code : 1;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) { println("editor-lsp-smoke [--root REPO] [--adapter EXE] --out DIR"); return 0; }
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--adapter|--out|","");
+                guard options != 0 else return 2;
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                output >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--out","target/tmp/editor-v42-lsp"));
+                guard release_io.releaseIo.fileType(root+"/examples/machine/native/x86_64_cldemote.nm") == 1 else { println("Missing machine LSP fixture"); return 1; }
+                explicit >> str <- tool_cli.toolCli.value(options,"--adapter","");
+                if (explicit != "" && release_io.releaseIo.fileType(explicit) != 1) { println("Configured adapter not found"); return 1; }
+                command >> int <- adapter(root,explicit);
+                guard jsonArrayLen(command) > 0 else { println("nc-sys-lsp is not installed and Go is not available"); return 1; }
+                docs >> int <- documents(root);
+                input >> str <- payload(docs);
+                guard release_io.releaseIo.write(output+"/request.bin",input) else return 1;
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,tool_cli.toolCli.absolute(argsAt(arguments,0)));
+                tool_cli.toolCli.append(words,"editor-lsp-relay");
+                tool_cli.toolCli.append(words,"--root"); tool_cli.toolCli.append(words,root);
+                tool_cli.toolCli.append(words,"--input"); tool_cli.toolCli.append(words,output+"/request.bin");
+                tool_cli.toolCli.append(words,"--command"); tool_cli.toolCli.append(words,tool_cli.toolCli.arrayLine(command));
+                capture >> int <- tool_cli.toolCli.execute(words,root,35000);
+                wire >> str <- editor_json.editorJson.field(capture,"stdout");
+                messages >> int <- decode(wire);
+                failure >> str <- tool_cli.toolCli.hasFlag(capture,"ok") ? validate(messages,docs) : "lsp adapter process failed";
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.editor.lsp.smoke.report.v42"));
+                jsonObjectSet(report,"status",jsonNewString(failure == "" ? "ok" : "error"));
+                jsonObjectSet(report,"error",jsonNewString(failure));
+                jsonObjectSet(report,"adapter_argv",command); jsonObjectSet(report,"capture",capture);
+                jsonObjectSet(report,"messages",messages); jsonObjectSet(report,"documents",docs);
+                jsonObjectSet(report,"request_sha256",jsonNewString(sha256.nccSha256.file(output+"/request.bin")));
+                saved >> bool <- release_io.releaseIo.write(output+"/response.bin",wire) && release_io.releaseIo.write(output+"/report.json",wireJson(report)+"\n");
+                println(failure == "" && saved ? "OK: nc-sys-lsp jsonrpc adapter smoke" : "ERROR: "+failure);
+                jsonRelease(report); jsonRelease(words); jsonRelease(options); strRelease(input);
+                return failure == "" && saved ? 0 : 1;
+            }
+    fa: return true;
+}

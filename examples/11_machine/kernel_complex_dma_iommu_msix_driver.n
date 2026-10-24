@@ -1,0 +1,58 @@
+kernelComplexDmaIommuMsixDriver :: kernel {
+    fn:
+        armDevice() -> bool {
+            ecam       at 0xE0000000;
+            bar        at 0xD0000000;
+            iommuRoot  at 0x100000;
+            iotlbQueue at 0x101000;
+            dmaRing    at 0x200000;
+            bounce     at 0x210000;
+            msixTable  at 0xD0002000;
+
+            guard pci_ecam_read32(ecam, 0, 3, 0, 0) >= 0 else return false;
+            guard pci_ecam_write32(ecam, 0, 3, 0, 4, 6) else return false;
+
+            guard iommu_map_entry(iommuRoot, 0x100000000, 0x210003) else return false;
+            guard iommu_invalidate(iotlbQueue, 1) else return false;
+
+            *64(msixTable + 0, 0xFEE00000);
+            *32(msixTable + 8, 0x41);
+            *32(msixTable + 12, 0);
+
+            *64(dmaRing + 0, 0x100000000);
+            *32(dmaRing + 8, 4096);
+            *32(bar + 0x10, 0x100000000);
+            *32(bar + 0x18, 4096);
+
+            return dma_fence() && virtio_notify(bar, 0);
+        }
+
+        recoverDevice() -> bool {
+            ecam      at 0xE0000000;
+            bar       at 0xD0000000;
+            iotlb     at 0x101000;
+            msixTable at 0xD0002000;
+
+            *32(msixTable + 12, 1);
+            guard pci_ecam_write32(ecam, 0, 3, 0, 4, 0) else return false;
+            guard iommu_invalidate(iotlb, 1) else return false;
+            guard pci_ecam_write32(ecam, 0, 3, 0, 4, 6) else return false;
+            *32(msixTable + 12, 0);
+
+            status <- load32(bar + 0x20);
+            guard status >= 0 else return false;
+
+            return dma_fence();
+        }
+
+        run() -> bool {
+            lapic at 0xFEE00000;
+
+            guard armDevice() else return recoverDevice();
+            irq <- load32(lapic + 0xB0);
+            guard irq >= 0 else return recoverDevice();
+            return recoverDevice();
+        }
+
+    ref main ->> run;
+}

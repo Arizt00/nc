@@ -1,0 +1,89 @@
+use <io:output>;
+use <text:string>;
+
+stringBasic :: runtime {
+    fn:
+        run() -> bool {
+            empty >> str <- strEmpty();
+            repeated >> str <- repeatChar('x', 3);
+            character >> str <- charToStr('Z');
+            fromCode >> str <- charFromCode(90);
+            joined >> str <- strConcat("manual ", "nC");
+            sliced >> str <- strSubstring("abcdef", 2, 3);
+            upper >> str <- strToUpper("raw");
+            lower >> str <- strToLower("BYTE");
+            trimmed >> str <- strTrim("  exact  ");
+            integer >> str <- strFromInt(-42);
+            boolean >> str <- strFromBool(true);
+            floating >> str <- strFromFt64(3.5);
+            parts >> array<str> <- strSplit("red::green::blue", "::");
+            partCount >> int <- parts.len;
+
+            print("joined=");
+            println(joined);
+            print("sliced=");
+            println(sliced);
+            print("floating=");
+            println(floating);
+            print("parts=");
+            print(parts[0]);
+            print("|");
+            print(parts[1]);
+            print("|");
+            println(parts[2]);
+
+            basicOk >> bool <-
+                strLen(empty) == 0 &&
+                strByteLen(joined) == 9 &&
+                repeated == "xxx" &&
+                charCode('Z') == 90 &&
+                character == "Z" &&
+                fromCode == "Z" &&
+                sliced == "cde";
+            compareOk >> bool <- strCompare("a", "b") < 0;
+            findOk >> bool <-
+                strEq("same", "same") &&
+                strContains(joined, "nC");
+            edgeOk >> bool <-
+                strIndexOf(joined, "nC") == 7 &&
+                strStartsWith(joined, "manual") &&
+                strEndsWith(joined, "nC");
+            searchOk >> bool <- compareOk && findOk && edgeOk;
+            convertOk >> bool <-
+                upper == "RAW" &&
+                lower == "byte" &&
+                trimmed == "exact" &&
+                integer == "-42" &&
+                boolean == "true" &&
+                floating == "3.5";
+            splitOk >> bool <-
+                partCount == 3 &&
+                parts[0] == "red" &&
+                parts[1] == "green" &&
+                parts[2] == "blue";
+            ok >> bool <- basicOk && searchOk && convertOk && splitOk;
+
+            print("manual nC string provider: ");
+            println(ok ? "true" : "false");
+
+            strSplitRelease(cast<byte>(&parts));
+            strRelease(floating);
+            strRelease(boolean);
+            strRelease(integer);
+            strRelease(trimmed);
+            strRelease(lower);
+            strRelease(upper);
+            strRelease(sliced);
+            strRelease(joined);
+            strRelease(character);
+            strRelease(fromCode);
+            strRelease(repeated);
+            strRelease(empty);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

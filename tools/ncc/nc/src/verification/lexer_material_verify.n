@@ -1,0 +1,163 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:frontend_session, lexer_verifier_contract, lexer_verifier_bytes, lexer_verifier_cases, lexer_verifier_tests, lexer_verifier_compare, lexer_verifier_json, release_io, tool_cli, sha256>;
+
+lexerMaterialVerify {
+    stc:
+        kinds >> int;
+        tokenCount >> int;
+    fn:
+        private:
+            completeCapture(row >> int) -> bool {
+                diagnostic >> bool <- !tool_cli.toolCli.hasFlag(row,"ok");
+                return tool_cli.toolCli.clean(row) &&
+                    lexer_verifier_json.lexerVerifierJson.completeStream(row,"stdout",diagnostic) &&
+                    lexer_verifier_json.lexerVerifierJson.completeStream(row,"stderr",diagnostic);
+            }
+            argumentsFor(path >> str, oracle >> bool) -> int {
+                words >> int <- jsonNewArray();
+                if (oracle) tool_cli.toolCli.append(words,"compiler");
+                tool_cli.toolCli.append(words,"tokens"); tool_cli.toolCli.append(words,path);
+                tool_cli.toolCli.append(words,oracle ? "--json" : "--material");
+                return words;
+            }
+            caseRun(path >> str, nativeOnly >> bool) -> int {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"path",jsonNewString(path));
+                hash >> str <- sha256.nccSha256.file(path); jsonObjectSet(row,"sha256",jsonNewString(hash)); strRelease(hash);
+                b >> int <- frontend_session.frontendSession.invokeProgram(frontend_session.frontendSession.compiler("candidate"),argumentsFor(path,false),nativeOnly ? 5000 : 30000);
+                if (nativeOnly) {
+                    frontend_session.frontendSession.check(completeCapture(b) && release_io.releaseIo.number(b,"code",0) == 1,"invalid-utf8-"+path);
+                    jsonObjectSet(row,"rejected",jsonNewBool(true)); jsonRelease(b); return row;
+                }
+                a >> int <- frontend_session.frontendSession.invoke("stage0",argumentsFor(path,true));
+                accepted >> bool <- tool_cli.toolCli.hasFlag(a,"ok");
+                ok >> bool <- completeCapture(a) && completeCapture(b) && accepted == tool_cli.toolCli.hasFlag(b,"ok");
+                jsonObjectSet(row,"accepted",jsonNewBool(accepted));
+                if (accepted && ok) {
+                    size >> int <- fsSize(path);
+                    bytes >> p<byte> <- null;
+                    if (size >= 0 && size <= 134217728) bytes <- cast(alloc(size+1));
+                    doc >> int <- 0;
+                    if (bytes != null && fsReadInto(path,bytes,size) == size) {
+                        doc <- lexer_verifier_compare.lexerVerifierCompare.documents(
+                            lexer_verifier_bytes.lexerVerifierBytes.text(a,"stdout"),
+                            lexer_verifier_bytes.lexerVerifierBytes.text(b,"stdout"),bytes,size,kinds);
+                    }
+                    free(bytes);
+                    reserved >> int <- lexer_verifier_contract.lexerVerifierContract.number(doc,"reserved_record_bytes");
+                    ok <- jsonKind(doc) == 6 && reserved >= 0;
+                    count >> int <- lexer_verifier_contract.lexerVerifierContract.number(doc,"count");
+                    if (strEndsWith(path,"/large-comment.n")) ok <- reserved == 12288 && ok;
+                    if (ok) tokenCount += count;
+                    jsonObjectSet(row,"tokens",jsonNewInt(count));
+                    jsonObjectSet(row,"reserved_record_bytes",jsonNewInt(reserved));
+                    jsonRelease(doc);
+                } else if (ok) {
+                    out >> str <- lexer_verifier_json.lexerVerifierJson.captureText(a,"stdout")+lexer_verifier_json.lexerVerifierJson.captureText(a,"stderr");
+                    text >> str <- lexer_verifier_json.lexerVerifierJson.captureText(b,"stdout")+lexer_verifier_json.lexerVerifierJson.captureText(b,"stderr");
+                    first >> int <- lexer_verifier_contract.lexerVerifierContract.position(out);
+                    second >> int <- lexer_verifier_contract.lexerVerifierContract.position(text);
+                    ok <- release_io.releaseIo.number(a,"code",0) == 1 && release_io.releaseIo.number(b,"code",0) == 1 &&
+                        jsonKind(first) == 5 && jsonEquals(first,second);
+                    jsonObjectSet(row,"diagnostic_position",second);
+                    strRelease(out); strRelease(text); jsonRelease(first); jsonRelease(second);
+                }
+                frontend_session.frontendSession.check(ok,"lexer-case-"+path);
+                if (ok) println("PASS "+path);
+                jsonRelease(a); jsonRelease(b); return row;
+            }
+            measure(details >> int) -> void {
+                measures >> int <- jsonNewObject();
+                version >> int <- 0;
+                path >> str <- frontend_session.frontendSession.outputPath()+"/cases/large-comment.n";
+                while (version < 2 && frontend_session.frontendSession.good()) {
+                    samples >> int <- jsonNewArray(); times >> p<int> <- cast(alloc(7*sizeOf(int)));
+                    if (times == null) { frontend_session.frontendSession.check(false,"timing-allocation"); break; }
+                    index >> int <- 0;
+                    while (index < 7) {
+                        row >> int <- frontend_session.frontendSession.invoke(version == 0 ? "stage0" : "candidate",argumentsFor(path,version == 0));
+                        doc >> int <- jsonParse(lexer_verifier_bytes.lexerVerifierBytes.text(row,"stdout"));
+                        frontend_session.frontendSession.check(completeCapture(row) && tool_cli.toolCli.hasFlag(row,"ok") && lexer_verifier_contract.lexerVerifierContract.number(doc,"count") == 1,"timing-"+renderInt(version)+"-"+renderInt(index));
+                        value >> int <- release_io.releaseIo.number(row,"elapsed_ms",-1);
+                        lexer_verifier_bytes.lexerVerifierBytes.push(samples,value);
+                        at >> int <- index;
+                        while (at > 0 && rd(off(times,at-1)) > value) { wr(off(times,at),rd(off(times,at-1))); at -= 1; }
+                        wr(off(times,at),value); jsonRelease(row); jsonRelease(doc); index += 1;
+                    }
+                    metric >> int <- jsonNewObject(); jsonObjectSet(metric,"samples_ms",samples);
+                    jsonObjectSet(metric,"median_ms",jsonNewInt(rd(off(times,3))));
+                    jsonObjectSet(measures,version == 0 ? "rust_stage0" : "nc_candidate",metric);
+                    jsonRelease(metric); jsonRelease(samples); free(times); version += 1;
+                }
+                jsonObjectSet(details,"startup_plus_2MiB_comment",measures); jsonRelease(measures);
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                root >> str <- "."; work >> str <- ""; candidate >> str <- ""; stage0 >> str <- "";
+                corpus >> int <- jsonNewArray(); only >> bool <- false; index >> int <- 2;
+                while (index < argsCount(arguments)) {
+                    key >> str <- argsAt(arguments,index);
+                    if (key == "--only-differential") { only <- true; index += 1; continue; }
+                    if (index+1 >= argsCount(arguments)) { jsonRelease(corpus); return 2; }
+                    value >> str <- argsAt(arguments,index+1);
+                    if (strStartsWith(value,"--")) { jsonRelease(corpus); return 2; }
+                    if (key == "--root") root <- value;
+                    else if (key == "--out") work <- value;
+                    else if (key == "--candidate") candidate <- value;
+                    else if (key == "--stage0") stage0 <- value;
+                    else if (key == "--corpus") tool_cli.toolCli.append(corpus,value);
+                    else { jsonRelease(corpus); return 2; }
+                    index += 2;
+                }
+                if (candidate == "" || stage0 == "") { jsonRelease(corpus); return 2; }
+                root <- tool_cli.toolCli.absolute(root);
+                if (work == "") work <- root+"/target/lexer-material-v34";
+                if (!frontend_session.frontendSession.configure(root,work,candidate,stage0,stage0)) { jsonRelease(corpus); return 2; }
+                started >> int <- monotonicMs(); kinds <- jsonNewObject(); tokenCount <- 0;
+                details >> int <- jsonNewObject();
+                frontend_session.frontendSession.check(lexer_verifier_tests.lexerVerifierTests.run(),"independent-decoder-spans-self-test");
+                hash >> str <- sha256.nccSha256.file(root+"/tools/ncc/nc/src/lexer/lexer.n"); jsonObjectSet(details,"source_sha256",jsonNewString(hash)); strRelease(hash);
+                if (!only) {
+                    words >> int <- jsonNewArray(); tool_cli.toolCli.append(words,"lexer-self-test"); tool_cli.toolCli.append(words,root+"/tools/ncc/nc/src/lexer/lexer.n");
+                    run >> int <- frontend_session.frontendSession.invoke("candidate",words);
+                    frontend_session.frontendSession.check(tool_cli.toolCli.hasFlag(run,"ok"),"lexer-api-self-test"); jsonRelease(run);
+                    words <- jsonParse("[\"self-test\"]"); run <- frontend_session.frontendSession.invoke("candidate",words);
+                    frontend_session.frontendSession.check(tool_cli.toolCli.hasFlag(run,"ok"),"frontend-self-test"); jsonRelease(run);
+                }
+                jsonObjectSet(details,"native_api_self_test",jsonNewBool(!only && frontend_session.frontendSession.good()));
+                jsonObjectSet(details,"native_frontend_self_test",jsonNewBool(!only && frontend_session.frontendSession.good()));
+                paths >> int <- lexer_verifier_cases.lexerVerifierCases.generate();
+                if (jsonArrayLen(corpus) == 0) { tool_cli.toolCli.append(corpus,root+"/tools/ncc/nc/src"); tool_cli.toolCli.append(corpus,root+"/bootstrap/corpus/ncc-stage2-lexer"); }
+                index <- 0;
+                while (index < jsonArrayLen(corpus)) {
+                    item >> int <- jsonArrayBorrow(corpus,index); path >> str <- jsonStringView(item,"");
+                    frontend_session.frontendSession.check(lexer_verifier_cases.lexerVerifierCases.collect(paths,path,0),"corpus-"+path); jsonRelease(item); index += 1;
+                }
+                jsonRelease(corpus);
+                cases >> int <- jsonNewArray(); invalid >> int <- jsonNewArray(); index <- 0;
+                while (index < jsonArrayLen(paths) && frontend_session.frontendSession.good()) {
+                    item >> int <- jsonArrayBorrow(paths,index); flag >> int <- jsonObjectBorrow(item,"native_only"); nativeOnly >> bool <- jsonGetBoolOr(flag,false);
+                    row >> int <- caseRun(lexer_verifier_bytes.lexerVerifierBytes.text(item,"path"),nativeOnly);
+                    jsonArrayPush(nativeOnly ? invalid : cases,row); jsonRelease(row); jsonRelease(flag); jsonRelease(item); index += 1;
+                }
+                jsonRelease(paths);
+                jsonObjectSet(details,"cases",cases); jsonRelease(cases);
+                frontend_session.frontendSession.check(jsonArrayLen(invalid) == 5,"five-distinct-invalid-utf8-fixtures");
+                jsonObjectSet(details,"invalid_utf8_cases",jsonNewInt(jsonArrayLen(invalid))); jsonObjectSet(details,"invalid_utf8_evidence",invalid); jsonRelease(invalid);
+                names >> int <- jsonNewArray(); index <- 0;
+                while (index < jsonObjectLen(kinds)) {
+                    key >> str <- jsonObjectKeyAt(kinds,index); tool_cli.toolCli.append(names,key); free(cast<byte>(key)); index += 1;
+                }
+                frontend_session.frontendSession.check(jsonObjectLen(kinds) == 99,"canonical-token-inventory");
+                ordered >> int <- release_io.releaseIo.sorted(names); jsonObjectSet(details,"token_kinds_exercised",ordered);
+                jsonRelease(ordered); jsonRelease(names); jsonRelease(kinds);
+                jsonObjectSet(details,"token_count",jsonNewInt(tokenCount));
+                measure(details);
+                jsonObjectSet(details,"elapsed_ms",jsonNewInt(monotonicMs()-started));
+                jsonObjectSet(details,"benchmark_scope",jsonNewString("whole process including file IO and one EOF JSON token; not C execution parity"));
+                return frontend_session.frontendSession.finishDifferential("nc.lexer.differential.v2",details,!only);
+            }
+    fa: return true;
+}

@@ -1,0 +1,107 @@
+
+fsDescribeHost {
+    fn:
+        private:
+            release(text >> p<u16>) -> void { osWHeapFree(osWGetProcessHeap(),0,adr(text)); }
+            wide(path >> str, extra >> int) -> p<u16> {
+                chars >> int <- osWMultiByteToWideChar(65001,8,adr(path),-1,null,0);
+                if (chars <= 0 || chars > 2147483647 / 2 - extra) return null;
+                text >> p<u16> <- from<u16>(osWHeapAlloc(osWGetProcessHeap(),0,(chars+extra)*2));
+                if (text == null) return null;
+                if (osWMultiByteToWideChar(65001,8,adr(path),-1,adr(text),chars) != chars) { release(text); return null; }
+                return text;
+            }
+        public:
+            inspect(path >> str, out >> p<byte>) -> bool {
+                text >> p<u16> <- wide(path,0);
+                if (text == null) return false;
+                storage >> array<u32,9>;
+                data >> p<byte> <- cast<byte>(&storage);
+                status >> i32 <- osWGetFileAttributesExW(adr(text),0,adr(data)); release(text);
+                if (status == 0) return false;
+                attributes >> u32 <- rd<u32>(cast<u32>(data));
+                high >> u64 <- rd<u32>(cast<u32>(off(data,28)));
+                low >> u64 <- rd<u32>(cast<u32>(off(data,32)));
+                high = high & 0xFFFFFFFF; low = low & 0xFFFFFFFF;
+                size >> u64 <- (high << 32) | low;
+                ticks >> u64 <- rd<u64>(cast<u64>(off(data,20)));
+                modified >> u64 <- ticks >= 116444736000000000 ? (ticks-116444736000000000)/10000000 : 0;
+                directory >> bool <- (attributes & 16) != 0;
+                readonly >> bool <- (attributes & 1) != 0;
+                mode >> u32 <- directory ? (readonly ? 365 : 511) : (readonly ? 292 : 438);
+                wr<u64>(cast<u64>(out),size); wr<u64>(cast<u64>(off(out,8)),modified);
+                wr<u32>(cast<u32>(off(out,16)),directory ? 2 : 1);
+                wr<u32>(cast<u32>(off(out,20)),mode); wr<u32>(cast<u32>(off(out,24)),readonly ? 1 : 0);
+                return true;
+            }
+            names(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                pattern >> p<u16> <- wide(path,3);
+                if (pattern == null) return -1;
+                chars >> int <- 0;
+                while (rd(off(pattern,chars)) != 0) { chars += 1; }
+                if (chars > 0 && rd(off(pattern,chars-1)) != 47 && rd(off(pattern,chars-1)) != 92) {
+                    wr(off(pattern,chars),92); chars += 1;
+                }
+                wr(off(pattern,chars),42); wr(off(pattern,chars+1),0);
+                recordStorage >> array<u64,74>;
+                record >> p<byte> <- cast<byte>(&recordStorage);
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                handle >> addr <- osWFindFirstFileW(adr(pattern),adr(record));
+                firstError >> u32 <- osWGetLastError(); release(pattern);
+                if (out != null && capacity > 0) wr(out,0);
+                if (handle == invalid) {
+                    if (firstError != 2) return -1;
+                    entryStorage >> array<u64,4>;
+                    data >> p<byte> <- cast<byte>(&entryStorage);
+                    return inspect(path,data) && rd<u32>(cast<u32>(off(data,16))) == 2 ? 0 : -1;
+                }
+                needed >> int <- 0;
+                status >> int <- 0;
+                while (true) {
+                    name >> p<u16> <- cast<u16>(off(record,44));
+                    chars = 0;
+                    while (rd(off(name,chars)) != 0) { chars += 1; }
+                    skip >> bool <- (chars == 1 && rd(name) == 46) ||
+                        (chars == 2 && rd(name) == 46 && rd(off(name,1)) == 46);
+                    if (!skip) {
+                        bytes >> int <- osWWideCharToMultiByte(65001,0,adr(name),chars,null,0,null,null);
+                        if (bytes <= 0 || needed > 2147483646-bytes) { status = -1; break; }
+                        next >> int <- needed + bytes + 1;
+                        if (out != null && capacity > next) {
+                            if (osWWideCharToMultiByte(65001,0,adr(name),chars,adr(off(out,needed)),bytes,null,null) != bytes) { status = -1; break; }
+                            wr(off(out,needed+bytes),10); wr(off(out,next),0);
+                        }
+                        needed = next;
+                    }
+                    if (osWFindNextFileW(handle,adr(record)) == 0) { if (osWGetLastError() != 18) status = -1; break; }
+                }
+                if (osWFindClose(handle) == 0) status = -1;
+                return status == 0 ? needed : -1;
+            }
+            canonical(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                input >> p<u16> <- wide(path,0);
+                if (input == null) return -4;
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                handle >> addr <- osWCreateFileW(adr(input),0,7,null,3,33554432,null); release(input);
+                if (handle == invalid) return -1;
+                needed >> u32 <- osWGetFinalPathNameByHandleW(handle,null,0,0);
+                if (needed == 0) { osWCloseHandle(handle); return -3; }
+                if (needed > 1073741823) { osWCloseHandle(handle); return -4; }
+                text >> p<u16> <- from<u16>(osWHeapAlloc(osWGetProcessHeap(),0,(needed+1)*2));
+                if (text == null) { osWCloseHandle(handle); return -4; }
+                written >> u32 <- osWGetFinalPathNameByHandleW(handle,adr(text),needed+1,0);
+                closed >> bool <- osWCloseHandle(handle) != 0;
+                if (written == 0 || written > needed || !closed) { release(text); return -3; }
+                bytes >> int <- osWWideCharToMultiByte(65001,0,adr(text),written,null,0,null,null);
+                result >> int <- -2;
+                if (bytes <= 0) result = -3;
+                else if (capacity > bytes) {
+                    if (osWWideCharToMultiByte(65001,0,adr(text),written,adr(out),bytes,null,null) == bytes) {
+                        wr(off(out,bytes),0); result = bytes;
+                    } else result = -3;
+                }
+                release(text);
+                return result;
+            }
+    fa: return true;
+}

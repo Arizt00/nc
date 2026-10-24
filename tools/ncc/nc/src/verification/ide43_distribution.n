@@ -1,0 +1,119 @@
+use <data:json>;
+use <io:output, erroroutput, render>;
+use <process:args, env>;
+use <fs:dir>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_bundle, ide43_host>;
+
+ide43Distribution {
+    fn:
+        private:
+            archive(directory >> str, suffix >> str) -> str {
+                // Match find|head filesystem order, not the shared helper's sorted order.
+                data >> p<byte> <- cast(alloc(1048577)); if (data == null) return "";
+                count >> int <- listDirInto(directory,data,1048576);
+                if (count < 0 || count >= 1048576) { free(data); return ""; }
+                wr(off(data,count),0); text >> str <- cast(data); first >> int <- 0; index >> int <- 0;
+                while (index <= count) {
+                    byte >> int <- rd(off(data,index));
+                    if (byte == 0 || byte == 10 || byte == 13) {
+                        name >> str <- strSubstring(text,first,index-first); path >> str <- directory+"/"+name;
+                        if (strEndsWith(name,suffix) && !ide43_host.ide43Host.link(path) && release_io.releaseIo.fileType(path) == 1) { free(data); return path; }
+                        first <- index+1;
+                    }
+                    index += 1;
+                }
+                free(data); return "";
+            }
+            copyArchiveBytes(source >> str, destination >> str) -> bool {
+                size >> int <- fsSize(source); if (size < 0 || size > 134217728) return false;
+                data >> p<byte> <- cast(alloc(size+1)); if (data == null) return false;
+                result >> bool <- fsReadInto(source,data,size) == size;
+                if (result) result <- fsWriteFrom(destination,data,size,false) == size;
+                free(data); return result;
+            }
+            retainOrDefer(source >> str, output >> str, ide >> str, filename >> str, reason >> str) -> str {
+                if (source != "") {
+                    normalized >> str <- release_io.releaseIo.forwardPath(source);
+                    data >> p<byte> <- cast(normalized); at >> int <- strByteLen(normalized)-1;
+                    while (at >= 0) { if (rd(off(data,at)) == 47) break; at -= 1; }
+                    name >> str <- strSubstring(normalized,at+1,strByteLen(normalized)-at-1);
+                    if (!copyArchiveBytes(source,output+"/"+name)) {
+                        eprintln("ide43: unable to copy archive "+source+" -> "+output+"/"+name+" bytes="+renderInt(fsSize(source)));
+                        return "error";
+                    }
+                    return "built";
+                }
+                value >> int <- jsonNewObject();
+                cert_json.certJson.put(value,"schema",jsonNewString("nc.ide."+ide+".bundle.deferred.v1"));
+                cert_json.certJson.put(value,"version",jsonNewString("2.0.0")); cert_json.certJson.put(value,"state",jsonNewString("frozen"));
+                cert_json.certJson.put(value,"status",jsonNewString("deferred")); cert_json.certJson.put(value,"reason",jsonNewString(reason));
+                saved >> bool <- cert_json.certJson.save(output+"/"+filename,value); jsonRelease(value);
+                return saved ? "deferred" : "error";
+            }
+            installers(path >> str) -> bool {
+                value >> int <- jsonNewObject(); policy >> int <- jsonNewObject();
+                cert_json.certJson.put(value,"schema",jsonNewString("nc.ide.lowlevel.installers.v1"));
+                cert_json.certJson.put(value,"version",jsonNewString("2.0.0")); cert_json.certJson.put(value,"state",jsonNewString("frozen"));
+                cert_json.certJson.put(policy,"sources",ide43_core.ide43Core.list("official-site|github-releases"));
+                cert_json.certJson.put(policy,"low_level_runtime_required_for",ide43_core.ide43Core.list("jetbrains-low-level|vscode-low-level|ghidra"));
+                cert_json.certJson.put(policy,"windows_binary_pattern",jsonNewString("ncc.{ide}.windows.exe")); cert_json.certJson.put(value,"policy",policy);
+                ides >> int <- ide43_core.ide43Core.list("jetbrains|intellij|vscode|ghidra");
+                systems >> int <- ide43_core.ide43Core.list("windows|linux|macos"); rows >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < 3) {
+                    os >> int <- jsonArrayGet(systems,index); at >> int <- 0;
+                    while (at < 4) {
+                        ide >> int <- jsonArrayGet(ides,at); name >> str <- jsonStringView(ide,""); system >> str <- jsonStringView(os,"");
+                        row >> int <- jsonNewObject(); cert_json.certJson.put(row,"ide",jsonNewString(name)); cert_json.certJson.put(row,"os",jsonNewString(system));
+                        cert_json.certJson.put(row,"artifact",jsonNewString("ncc."+name+"."+system+(index == 0 ? ".exe" : (index == 1 ? ".sh" : ".pkg"))));
+                        cert_json.certJson.put(row,"status",jsonNewString("planned")); cert_json.certJson.push(rows,row); jsonRelease(ide); at += 1;
+                    }
+                    jsonRelease(os); index += 1;
+                }
+                cert_json.certJson.put(value,"installers",rows); succeeded >> bool <- cert_json.certJson.save(path,value);
+                jsonRelease(value); jsonRelease(ides); jsonRelease(systems); return succeeded;
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--zip|--gradle|--npx|","|--help|-h|");
+                if (options == 0) return 2;
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ide43-distribution [--root REPO] [--zip ZIP] [--gradle GRADLE] [--npx NPX]"); jsonRelease(options); return 0;
+                }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                out >> str <- root+"/var/releases/v2_0_0/phase10_ide_dist"; jbDir >> str <- root+"/tools/jetbrains/nc-language-plugin"; vsDir >> str <- root+"/tools/vscode/nc-language";
+                paths >> int <- ide43_core.ide43Core.list("jetbrains|vscode|ghidra|installers"); index >> int <- 0;
+                while (index < 4) {
+                    path >> int <- jsonArrayGet(paths,index); ready >> bool <- release_io.releaseIo.makeDirectories(out+"/"+jsonStringView(path,""));
+                    jsonRelease(path); if (!ready) { jsonRelease(paths); jsonRelease(options); return 1; } index += 1;
+                }
+                jsonRelease(paths);
+                if (release_io.releaseIo.fileType(jbDir+"/gradlew") == 1 && ide43_host.ide43Host.executable(jbDir+"/gradlew")) ide43_bundle.ide43Bundle.run(jbDir+"/gradlew","buildPlugin",jbDir);
+                else ide43_bundle.ide43Bundle.run(tool_cli.toolCli.value(options,"--gradle","gradle"),"buildPlugin",jbDir);
+                jb >> str <- retainOrDefer(archive(jbDir+"/build/distributions",".zip"),out+"/jetbrains","jetbrains",
+                    "nc-jetbrains-plugin-v2_0_0.deferred.json","gradle buildPlugin artifact unavailable on current host");
+                ide43_bundle.ide43Bundle.run(tool_cli.toolCli.value(options,"--npx",envHas("WINDIR") ? "npx.cmd" : "npx"),"--yes|@vscode/vsce|package|--no-dependencies",vsDir);
+                vs >> str <- retainOrDefer(archive(vsDir,".vsix"),out+"/vscode","vscode","nc-language-v2_0_0.deferred.json","vsce artifact unavailable on current host");
+                gh >> str <- "built";
+                if (!ide43_bundle.ide43Bundle.ghidra(root,tool_cli.toolCli.value(options,"--zip",envHas("WINDIR") ? "C:/Windows/System32/tar.exe" : "zip"),false))
+                    gh <- retainOrDefer("",out+"/ghidra","ghidra","nc-ghidra-extension-v2_0_0.deferred.json","ghidra extension build failed");
+                if (jb == "error" || vs == "error" || gh == "error" || !installers(out+"/installers/manifest.v1.json")) { jsonRelease(options); return 1; }
+                println("OK: ide installers manifest var/releases/v2_0_0/phase10_ide_dist/installers/manifest.v1.json");
+                payload >> int <- jsonNewObject(); bundles >> int <- jsonNewObject();
+                cert_json.certJson.put(payload,"schema",jsonNewString("nc.phase10.ide.distribution.report.v1"));
+                cert_json.certJson.put(payload,"version",jsonNewString("2.0.0")); cert_json.certJson.put(payload,"state",jsonNewString("frozen"));
+                cert_json.certJson.put(payload,"generated_at",jsonNewString(release_io.releaseIo.utc(timestamp())));
+                cert_json.certJson.put(payload,"status",jsonNewString(jb == "deferred" || vs == "deferred" || gh == "deferred" ? "partial" : "ok"));
+                cert_json.certJson.put(payload,"out_dir",jsonNewString("var/releases/v2_0_0/phase10_ide_dist"));
+                cert_json.certJson.put(bundles,"jetbrains",jsonNewString(jb)); cert_json.certJson.put(bundles,"vscode",jsonNewString(vs)); cert_json.certJson.put(bundles,"ghidra",jsonNewString(gh));
+                cert_json.certJson.put(payload,"ide_bundles",bundles);
+                succeeded >> bool <- cert_json.certJson.save(root+"/docs/status/F10_P20_ide_distribution_report.json",payload);
+                jsonRelease(payload); jsonRelease(options);
+                if (succeeded) {
+                    println("OK: ide distribution report docs/status/F10_P20_ide_distribution_report.json");
+                    println("OK: phase10 IDE distribution -> var/releases/v2_0_0/phase10_ide_dist");
+                }
+                return succeeded ? 0 : 1;
+            }
+    fa: return true;
+}
+

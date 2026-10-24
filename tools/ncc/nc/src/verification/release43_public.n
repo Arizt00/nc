@@ -1,0 +1,306 @@
+use <data:json>;
+use <io:output, render, errorOutput>;
+use <process:env>;
+use <project:release43_common, release43_archive, release43_host, release_io, tool_cli, cert_json, sha256, release43_json>;
+
+release43Public {
+    fn:
+        private:
+            generatedText(path >> str, text >> str) -> bool {
+                if (!envHas("WINDIR")) return release43_common.release43Common.writeText(path,text);
+                data >> p<byte> <- cast(alloc(strByteLen(text)*2+1)); if (data == null) return false; at >> int <- 0; count >> int <- 0;
+                while (at < strByteLen(text)) { c >> int <- rd<byte>(off<byte>(cast<byte>(text),at)) & 255; if (c == 10) { wr(off(data,count),13); count += 1; } wr(off(data,count),c); count += 1; at += 1; }
+                wr(off(data,count),0); content >> str <- cast(data); good >> bool <- release43_common.release43Common.writeText(path,content); free(data); return good;
+            }
+            field(object >> int, key >> str) -> str { return release43_common.release43Common.field(object,key); }
+            joined(base >> str, rel >> str) -> str {
+                if (strStartsWith(rel,"/") || (envHas("WINDIR") && (strStartsWith(rel,"\\") || strContains(rel,":")))) return rel;
+                return base+"/"+rel;
+            }
+            copyFile(source >> str, destination >> str) -> bool {
+                if (release43_common.release43Common.fileType(source) == 1 && release43_common.release43Common.fileType(destination) == 1) {
+                    if (release43_common.release43Common.absolute(source) == release43_common.release43Common.absolute(destination)) return release43_common.release43Common.fail("source and destination are the same file");
+                    identity >> str <- release43_host.release43Host.identity(source);
+                    if (identity != "" && identity == release43_host.release43Host.identity(destination)) return release43_common.release43Common.fail("source and destination are the same file");
+                }
+                return release43_common.release43Common.copyRequired(source,destination);
+            }
+            character(text >> str, index >> int) -> int {
+                value >> int <- rd<byte>(off<byte>(cast<byte>(text),index));
+                if (value < 128) return value;
+                count >> int <- value < 224 ? 2 : (value < 240 ? 3 : 4); value <- value & (count == 2 ? 31 : (count == 3 ? 15 : 7)); at >> int <- 1;
+                while (at < count && index+at < strByteLen(text)) { value <- value*64+(rd<byte>(off<byte>(cast<byte>(text),index+at)) & 63); at += 1; } return value;
+            }
+            nextCharacter(text >> str, index >> int) -> int {
+                if (index >= strByteLen(text)) return index+1;
+                value >> int <- rd<byte>(off<byte>(cast<byte>(text),index)); return index+(value < 128 ? 1 : (value < 224 ? 2 : (value < 240 ? 3 : 4)));
+            }
+            globAt(pattern >> str, name >> str, p >> int, n >> int) -> bool {
+                if (p == strByteLen(pattern)) return n == strByteLen(name);
+                token >> int <- character(pattern,p);
+                if (token == 42) {
+                    p += 1; while (p < strByteLen(pattern) && character(pattern,p) == 42) { p += 1; }
+                    while (n <= strByteLen(name)) { if (globAt(pattern,name,p,n)) return true; n <- nextCharacter(name,n); } return false;
+                }
+                if (n >= strByteLen(name)) return false;
+                if (token == 63) return globAt(pattern,name,p+1,nextCharacter(name,n));
+                if (token == 91) {
+                    end >> int <- p+1; if (end < strByteLen(pattern) && character(pattern,end) == 33) end += 1;
+                    if (end < strByteLen(pattern) && character(pattern,end) == 93) end += 1;
+                    while (end < strByteLen(pattern) && character(pattern,end) != 93) { end <- nextCharacter(pattern,end); }
+                    if (end < strByteLen(pattern)) {
+                        at >> int <- p+1; negate >> bool <- character(pattern,at) == 33; if (negate) at += 1;
+                        found >> bool <- false; value >> int <- character(name,n);
+                        while (at < end) {
+                            low >> int <- character(pattern,at); at <- nextCharacter(pattern,at); high >> int <- low;
+                            if (at+1 < end && character(pattern,at) == 45) { at += 1; high <- character(pattern,at); at <- nextCharacter(pattern,at); }
+                            if (value >= low && value <= high) found <- true;
+                        }
+                        if (found == negate) return false; return globAt(pattern,name,end+1,nextCharacter(name,n));
+                    }
+                }
+                return token == character(name,n) ? globAt(pattern,name,nextCharacter(pattern,p),nextCharacter(name,n)) : false;
+            }
+            pruneGlob(base >> str, parts >> int, index >> int) -> bool {
+                if (index == jsonArrayLen(parts)) {
+                    if (release43_common.release43Common.fileType(base) != 1) return true;
+                    return release43_common.release43Common.deleteFile(base);
+                }
+                part >> str <- release43_common.release43Common.stringAt(parts,index);
+                if (part == "." || part == "..") return pruneGlob(base+"/"+part,parts,index+1);
+                if (part == "**") {
+                    if (!pruneGlob(base,parts,index+1)) return false;
+                } else if (strContains(part,"**")) return release43_common.release43Common.fail("invalid recursive glob pattern");
+                if (release43_common.release43Common.fileType(base) != 2) return true;
+                names >> int <- release43_common.release43Common.names(base); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(names) && good) {
+                    name >> str <- release43_common.release43Common.stringAt(names,at); path >> str <- base+"/"+name;
+                    if (part == "**") {
+                        if (release43_common.release43Common.fileType(path) == 2 && !release43_host.release43Host.link(path)) good <- pruneGlob(path,parts,index);
+                    } else {
+                        pattern >> str <- envHas("WINDIR") ? strToLower(part) : part; candidate >> str <- envHas("WINDIR") ? strToLower(name) : name;
+                        if (globAt(pattern,candidate,0,0)) good <- pruneGlob(path,parts,index+1);
+                    }
+                    at += 1;
+                }
+                release43_common.release43Common.release(names); return good;
+            }
+            requiredManifest(manifest >> int) -> bool {
+                keys >> int <- jsonParse("[\"public_files\",\"public_doc_files\",\"public_tool_files\",\"public_trees\",\"public_test_groups\",\"public_examples\",\"forbidden_public_roots\"]"); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(keys)) { key >> str <- release43_common.release43Common.stringAt(keys,at); item >> int <- jsonObjectGet(manifest,key); if (jsonKind(item) != 5) good <- false; release43_common.release43Common.release(item); at += 1; }
+                release43_common.release43Common.release(keys); trees >> int <- jsonObjectGet(manifest,"public_trees"); fixtures >> int <- jsonObjectGet(manifest,"public_fixture_trees");
+                if (jsonArrayLen(trees) > 0) {
+                    keys <- jsonParse("[\"private_roots\",\"private_segments\",\"private_file_suffixes\",\"private_path_fragments\"]"); at <- 0;
+                    while (at < jsonArrayLen(keys)) { key >> str <- release43_common.release43Common.stringAt(keys,at); item >> int <- jsonObjectGet(manifest,key); if (jsonKind(item) != 5) good <- false; release43_common.release43Common.release(item); at += 1; }
+                    release43_common.release43Common.release(keys);
+                } else if (jsonArrayLen(fixtures) > 0) { item >> int <- jsonObjectGet(manifest,"private_file_suffixes"); if (jsonKind(item) != 5) good <- false; release43_common.release43Common.release(item); }
+                release43_common.release43Common.release(trees); release43_common.release43Common.release(fixtures); return good;
+            }
+            safe(base >> str, rel >> str) -> bool { return release43_common.release43Common.relative(rel) && release43_common.release43Common.inside(base+"/"+rel,base); }
+            archiveForbidden(path >> str) -> bool {
+                parts >> int <- release43_common.release43Common.segments(path); index >> int <- 0; bad >> bool <- false;
+                while (index < jsonArrayLen(parts)) {
+                    part >> str <- release43_common.release43Common.stringAt(parts,index);
+                    if (part == ".git" || part == "target" || part == "dist" || part == "_archive" || part == "_tmp" || part == "reports" || part == ".ncc") bad <- true;
+                    index += 1;
+                }
+                release43_common.release43Common.release(parts); return bad;
+            }
+            suffix(path >> str) -> str {
+                slash >> int <- -1; dot >> int <- -1; data >> p<byte> <- cast(path); at >> int <- 0;
+                while (at < strByteLen(path)) { if (rd(off(data,at)) == 47) slash <- at; if (rd(off(data,at)) == 46) dot <- at; at += 1; }
+                if (dot <= slash+1 || dot+1 >= strByteLen(path)) return "";
+                return strSubstring(path,dot,strByteLen(path)-dot);
+            }
+            privatePath(rel >> str, manifest >> int) -> bool {
+                parts >> int <- release43_common.release43Common.segments(rel);
+                roots >> int <- jsonObjectGet(manifest,"private_roots"); segments >> int <- jsonObjectGet(manifest,"private_segments");
+                first >> str <- release43_common.release43Common.stringAt(parts,0);
+                bad >> bool <- release_io.releaseIo.contains(roots,first); at >> int <- 0;
+                while (at < jsonArrayLen(parts)) { bad <- bad || release_io.releaseIo.contains(segments,release43_common.release43Common.stringAt(parts,at)); at += 1; }
+                suffixes >> int <- jsonObjectGet(manifest,"private_file_suffixes"); bad <- bad || release_io.releaseIo.contains(suffixes,suffix(rel));
+                fragments >> int <- jsonObjectGet(manifest,"private_path_fragments"); at <- 0;
+                while (at < jsonArrayLen(fragments)) {
+                    fragment >> str <- release43_common.release43Common.stringAt(fragments,at); bad <- bad || strContains("/"+rel+"/",fragment); at += 1;
+                }
+                release43_common.release43Common.release(parts); release43_common.release43Common.release(roots); release43_common.release43Common.release(segments); release43_common.release43Common.release(suffixes); release43_common.release43Common.release(fragments); return bad;
+            }
+            replaceSlash(text >> str) -> str {
+                copy >> str <- strSubstring(text,0,strByteLen(text)); data >> p<byte> <- cast(copy); at >> int <- 0;
+                while (at < strByteLen(copy)) { if (rd(off(data,at)) == 47) wr(off(data,at),10); at += 1; } return copy;
+            }
+            manifestCopy(dist >> str, rel >> str, manifest >> int) -> bool {
+                keys >> int <- jsonParse("[\"schema\",\"public_name\",\"dist_root\",\"public_files\",\"public_doc_files\",\"public_trees\",\"public_test_groups\",\"public_examples\",\"forbidden_public_roots\"]");
+                model >> int <- jsonNewObject(); at >> int <- 0;
+                while (at < jsonArrayLen(keys)) { key >> str <- release43_common.release43Common.stringAt(keys,at); if (!jsonObjectHas(manifest,key)) return release43_common.release43Common.fail("missing public manifest key: "+key); release43_common.release43Common.put(model,key,jsonObjectGet(manifest,key)); at += 1; }
+                policy >> int <- jsonNewObject(); source >> int <- jsonObjectGet(manifest,"public_example_name_policy");
+                if (source == 0) return release43_common.release43Common.fail("missing public example name policy");
+                if (!jsonObjectHas(source,"forbid_path_tokens")) { release43_common.release43Common.release(source); return release43_common.release43Common.fail("missing public example path tokens"); }
+                release43_common.release43Common.put(policy,"forbid_path_tokens",jsonObjectGet(source,"forbid_path_tokens"));
+                release43_common.release43Common.put(policy,"description",jsonNewString("Public examples use topic names. Internal milestone fixtures stay only in the development tree."));
+                release43_common.release43Common.put(model,"public_example_name_policy",policy);
+                rawExamples >> str <- field(manifest,"__release43_public_examples"); content >> str <- "{"; at <- 0;
+                while (at < jsonObjectLen(model)) {
+                    key >> str <- jsonObjectKeyAt(model,at); if (at > 0) content <- cert_json.certJson.append(content,","); quoted >> str <- cert_json.certJson.quote(key);
+                    content <- cert_json.certJson.append(content,quoted); strRelease(quoted); content <- cert_json.certJson.append(content,":");
+                    if (key == "public_examples" && rawExamples != "") content <- cert_json.certJson.append(content,rawExamples);
+                    else { value >> int <- jsonObjectGet(model,key); rendered >> str <- cert_json.certJson.stringify(value); content <- cert_json.certJson.append(content,rendered); strRelease(rendered); release43_common.release43Common.release(value); }
+                    free(cast<byte>(key)); at += 1;
+                }
+                content <- cert_json.certJson.append(content,"}\n"); good >> bool <- release43_common.release43Common.writeText(joined(dist,rel),content); strRelease(content); strRelease(rawExamples);
+                release43_common.release43Common.release(source); release43_common.release43Common.release(keys); release43_common.release43Common.release(model); return good;
+            }
+            copyList(root >> str, dist >> str, manifest >> int, key >> str) -> bool {
+                rows >> int <- jsonObjectGet(manifest,key); if (jsonKind(rows) != 5) return release43_common.release43Common.fail("manifest requires array: "+key);
+                at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(rows) && good) {
+                    rel >> str <- release43_common.release43Common.stringAt(rows,at);
+                    if (key == "public_tool_files" && strEndsWith(rel,"public_beta_manifest.json")) good <- manifestCopy(dist,rel,manifest);
+                    else good <- copyFile(joined(root,rel),joined(dist,rel));
+                    at += 1;
+                }
+                release43_common.release43Common.release(rows); return good;
+            }
+            filteredTree(root >> str, source >> str, dist >> str, dest >> str, manifest >> int, fixture >> bool) -> bool {
+                sourcePath >> str <- joined(root,source);
+                tree >> int <- release43_common.release43Common.tree(sourcePath); if (tree == 0) return false;
+                if (!fixture && !strStartsWith(sourcePath,root+"/") && sourcePath != root && jsonArrayLen(tree) > 0) { release43_common.release43Common.release(tree); return release43_common.release43Common.fail("public tree is outside repository root"); }
+                sourceRel >> str <- fixture ? source : (sourcePath == root ? "." : strSubstring(sourcePath,strByteLen(root)+1,strByteLen(sourcePath)-strByteLen(root)-1));
+                prune >> int <- jsonObjectGet(manifest,"public_package_prune"); flag >> int <- prune == 0 ? 0 : jsonObjectGet(prune,"fixture_build_artifacts"); pruneBuilds >> bool <- jsonGetBoolOr(flag,false); release43_common.release43Common.release(flag); release43_common.release43Common.release(prune);
+                suffixes >> int <- jsonObjectGet(manifest,"private_file_suffixes"); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(tree) && good) {
+                    row >> int <- jsonArrayGet(tree,at); rel >> str <- field(row,"path"); kind >> int <- release_io.releaseIo.number(row,"kind",0);
+                    skipped >> bool <- fixture ? kind == 1 && release_io.releaseIo.contains(suffixes,suffix(rel)) : privatePath(sourceRel+"/"+rel,manifest);
+                    if (fixture && pruneBuilds && archiveForbidden(rel)) skipped <- true;
+                    if (!skipped) {
+                        target >> str <- joined(joined(dist,fixture ? dest : sourceRel),rel);
+                        good <- kind == 2 ? release43_common.release43Common.makeDirectories(target) : copyFile(sourcePath+"/"+rel,target);
+                    }
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(tree); release43_common.release43Common.release(suffixes); return good;
+            }
+        public:
+            layout(options >> int) -> int {
+                root >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--root","."));
+                path >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--manifest",root+"/tools/release/public_beta_manifest.json"));
+                manifestText >> str <- release43_common.release43Common.text(path); manifest >> int <- 0;
+                if (strByteLen(manifestText) == release43_common.release43Common.fileSize(path)) manifest <- release43_json.release43Json.manifest(manifestText);
+                strRelease(manifestText);
+                if (jsonKind(manifest) != 6) { eprintln("invalid public beta manifest: "+path); return 1; }
+                if (!requiredManifest(manifest)) { eprintln("public beta manifest is missing required arrays"); release43_common.release43Common.release(manifest); return 1; }
+                selectedDist >> str <- tool_cli.toolCli.value(options,"--dist","");
+                finalDist >> str <- release43_common.release43Common.absolute(selectedDist == "" ? joined(root,field(manifest,"dist_root")) : selectedDist);
+                boundary >> str <- root+"/dist/public-beta";
+                if (!release43_common.release43Common.inside(finalDist,boundary)) { eprintln("public beta dist must stay under "+boundary+": "+finalDist); release43_common.release43Common.release(manifest); return 1; }
+                if (!jsonObjectHas(manifest,"public_name")) { release43_common.release43Common.release(manifest); return 1; } name >> str <- field(manifest,"public_name");
+                keep >> bool <- tool_cli.toolCli.hasFlag(options,"--keep");
+                stage >> str <- joined(boundary+"/.staging/release43-"+renderInt(nowMs()),name);
+                dist >> str <- keep ? finalDist : stage;
+                if (!release43_common.release43Common.makeDirectories(dist)) return 1;
+                good >> bool <- copyList(root,dist,manifest,"public_files");
+                if (good) good <- copyList(root,dist,manifest,"public_doc_files");
+                if (good) good <- copyList(root,dist,manifest,"public_tool_files");
+                rows >> int <- jsonObjectGet(manifest,"public_trees"); at >> int <- 0;
+                while (at < jsonArrayLen(rows) && good) { good <- filteredTree(root,release43_common.release43Common.stringAt(rows,at),dist,"",manifest,false); at += 1; }
+                release43_common.release43Common.release(rows); rows <- jsonObjectGet(manifest,"public_fixture_trees"); at <- 0;
+                while (at < jsonArrayLen(rows) && good) {
+                    row >> int <- jsonArrayGet(rows,at); good <- filteredTree(root,field(row,"source"),dist,field(row,"dest"),manifest,true); release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(rows);
+                prune >> int <- jsonObjectGet(manifest,"public_package_prune");
+                if (good && tool_cli.toolCli.hasFlag(prune,"crate_integration_tests") && release43_common.release43Common.fileType(dist+"/crates") == 2) {
+                    names >> int <- release43_common.release43Common.names(dist+"/crates"); at <- 0;
+                    while (at < jsonArrayLen(names) && good) {
+                        tests >> str <- dist+"/crates/"+release43_common.release43Common.stringAt(names,at)+"/tests";
+                        if (release43_common.release43Common.fileType(tests) == 2) good <- release43_common.release43Common.remove(tests,dist); at += 1;
+                    }
+                    release43_common.release43Common.release(names);
+                }
+                release43_common.release43Common.release(prune);
+                if (good) good <- generatedText(dist+"/.cargo/config.toml","[build]\nrustflags = [\"--cfg\", \"ncc_public_beta\", \"--check-cfg=cfg(ncc_public_beta)\"]\n");
+                readme >> str <- "# Public beta tests\n\nThis tree is the public test matrix skeleton.\nThe full internal corpus remains in the development workspace until names and fixtures are curated.\n\nGroups:\n";
+                rows <- jsonObjectGet(manifest,"public_test_groups"); at <- 0;
+                while (at < jsonArrayLen(rows) && good) {
+                    group >> str <- release43_common.release43Common.stringAt(rows,at); good <- release43_common.release43Common.writeText(joined(dist,group)+"/.gitkeep","");
+                    readme <- readme+"- `"+group+"`\n"; at += 1;
+                }
+                release43_common.release43Common.release(rows); if (good) good <- generatedText(dist+"/tests/README.md",readme);
+                warnings >> int <- jsonNewArray(); rows <- jsonObjectGet(manifest,"public_examples"); at <- 0;
+                while (at < jsonArrayLen(rows) && good) {
+                    row >> int <- jsonArrayGet(rows,at); source >> str <- field(row,"source"); dest >> str <- field(row,"dest");
+                    if (release43_common.release43Common.fileType(joined(root,source)) != 0) good <- copyFile(joined(root,source),joined(dist,dest));
+                    else release43_common.release43Common.arg(warnings,"missing example source: "+source);
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(rows);
+                note >> str <- "# ncc public beta layout\n\nThis directory was generated from `tools/release/public_beta_manifest.json`.\nIt is a public surface, not the full development workspace.\n\n## Hidden from public dist\n";
+                rows <- jsonObjectGet(manifest,"forbidden_public_roots"); at <- 0;
+                while (at < jsonArrayLen(rows)) { note <- note+"- `"+release43_common.release43Common.stringAt(rows,at)+"`\n"; at += 1; }
+                release43_common.release43Common.release(rows);
+                if (jsonArrayLen(warnings) > 0) {
+                    note <- note+"\n## Warnings\n"; at <- 0;
+                    while (at < jsonArrayLen(warnings)) { note <- note+"- "+release43_common.release43Common.stringAt(warnings,at)+"\n"; at += 1; }
+                }
+                if (good) good <- generatedText(dist+"/PUBLIC_BETA_LAYOUT.md",note);
+                if (good && !keep) {
+                    good <- release43_common.release43Common.remove(finalDist,boundary) && release43_common.release43Common.makeDirectories(release_io.releaseIo.directory(finalDist));
+                    if (good) good <- release43_common.release43Common.renamePath(stage,finalDist);
+                }
+                if (!good) { eprintln(release43_common.release43Common.message() == "" ? "public beta layout failed" : release43_common.release43Common.message()); release43_common.release43Common.release(manifest); release43_common.release43Common.release(warnings); return 1; }
+                println("OK: public beta layout generated at "+finalDist);
+                if (jsonArrayLen(warnings) > 0) {
+                    println("WARN: public beta generated with warnings"); at <- 0;
+                    while (at < jsonArrayLen(warnings)) { println("- "+release43_common.release43Common.stringAt(warnings,at)); at += 1; }
+                }
+                release43_common.release43Common.release(warnings); release43_common.release43Common.release(manifest); return 0;
+            }
+            package(options >> int) -> int {
+                root >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--root","."));
+                source >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--source",root+"/dist/public-beta/ncc"));
+                out >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--out",root+"/dist/public-beta/artifacts"));
+                stem >> str <- tool_cli.toolCli.value(options,"--stem","ncc-public-beta-source");
+                if (source == root || release_io.releaseIo.directory(source) == root) { eprintln("refusing to package repository root; expected dist/public-beta/ncc"); return 1; }
+                if (release43_common.release43Common.fileType(source) != 2) { eprintln("missing public beta package directory: "+source); return 1; }
+                tree >> int <- release43_common.release43Common.tree(source); if (tree == 0) return 1;
+                bad >> str <- ""; count >> int <- 0; at >> int <- 0;
+                while (at < jsonArrayLen(tree)) {
+                    row >> int <- jsonArrayGet(tree,at); path >> str <- field(row,"path"); forbidden >> bool <- archiveForbidden(path);
+                    if (forbidden && count < 10) { bad <- bad+(bad == "" ? "" : ", ")+path; count += 1; }
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                release43_common.release43Common.release(tree); if (bad != "") { eprintln("public beta source contains forbidden paths: "+bad); return 1; }
+                existed >> bool <- release43_common.release43Common.fileType(out) != 0;
+                if (!release43_common.release43Common.makeDirectories(out)) return 1;
+                if (existed) {
+                    if (strStartsWith(stem,"/") || (envHas("WINDIR") && strContains(stem,":"))) { eprintln("non-relative glob pattern"); return 1; }
+                    pattern >> str <- envHas("WINDIR") ? release_io.releaseIo.forwardPath(stem) : stem;
+                    parts >> int <- release43_common.release43Common.segments(pattern+"*"); good >> bool <- pruneGlob(out,parts,0); release43_common.release43Common.release(parts);
+                    if (!good) return 1;
+                }
+                zip >> str <- out+"/"+stem+".zip"; tar >> str <- out+"/"+stem+".tar.gz";
+                if (strStartsWith(stem,"/") || (envHas("WINDIR") && strContains(stem,":"))) { zip <- stem+".zip"; tar <- stem+".tar.gz"; }
+                zip <- release43_common.release43Common.absolute(zip); tar <- release43_common.release43Common.absolute(tar);
+                if (release43_common.release43Common.fileType(release_io.releaseIo.directory(zip)) != 2) { eprintln("missing archive parent directory"); return 1; }
+                if (!release43_archive.release43Archive.zip(source,zip,"ncc") || !release43_archive.release43Archive.tarGz(source,tar,"ncc",false)) { eprintln("public beta archive failed: "+release43_common.release43Common.message()); return 1; }
+                manifest >> int <- jsonNewObject(); release43_common.release43Common.put(manifest,"schema",jsonNewString("ncc.public_beta.package.v1"));
+                created >> str <- release_io.releaseIo.utc(timestamp()); milliseconds >> int <- nowMs()%1000;
+                fraction >> str <- renderInt(milliseconds); while (strByteLen(fraction) < 3) { fraction <- "0"+fraction; }
+                release43_common.release43Common.put(manifest,"created_utc",jsonNewString(strSubstring(created,0,strByteLen(created)-1)+"."+fraction+"000+00:00"));
+                relative >> str <- release43_common.release43Common.relativePath(source,root);
+                if (relative == "") { release43_common.release43Common.release(manifest); eprintln(release43_common.release43Common.message()); return 1; }
+                release43_common.release43Common.put(manifest,"source",jsonNewString(relative)); release43_common.release43Common.put(manifest,"archive_root",jsonNewString("ncc"));
+                files >> int <- release43_archive.release43Archive.files(source); release43_common.release43Common.put(manifest,"file_count",jsonNewInt(jsonArrayLen(files))); release43_common.release43Common.release(files);
+                rows >> int <- jsonNewArray(); sums >> str <- ""; at <- 0;
+                println("OK: packaged public beta from "+source);
+                while (at < 2) {
+                    artifact >> str <- at == 0 ? zip : tar; parts >> int <- release43_common.release43Common.segments(artifact); name >> str <- release43_common.release43Common.stringAt(parts,jsonArrayLen(parts)-1); release43_common.release43Common.release(parts); hash >> str <- release43_common.release43Common.hashFile(artifact);
+                    row >> int <- jsonNewObject(); release43_common.release43Common.put(row,"file",jsonNewString(name)); release43_common.release43Common.put(row,"bytes",release43_common.release43Common.integer64(release43_common.release43Common.fileSize64(artifact))); release43_common.release43Common.put(row,"sha256",jsonNewString(hash)); release43_common.release43Common.push(rows,row);
+                    sums <- sums+hash+"  "+name+"\n"; println(name+" "+release43_common.release43Common.wideText(release43_common.release43Common.fileSize64(artifact))+" bytes sha256:"+hash); at += 1;
+                }
+                release43_common.release43Common.put(manifest,"artifacts",rows);
+                good >> bool <- release43_common.release43Common.writeText(out+"/SHA256SUMS.txt",sums) && release43_common.release43Common.save(out+"/PACKAGE_MANIFEST.json",manifest); release43_common.release43Common.release(manifest);
+                println("checksums: "+out+"/SHA256SUMS.txt"); println("manifest: "+out+"/PACKAGE_MANIFEST.json"); return good ? 0 : 1;
+            }
+    fa: return true;
+}

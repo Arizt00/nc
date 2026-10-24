@@ -1,0 +1,46 @@
+use <data:json>;
+use <project:release_io, ide43_core>;
+
+ide43Jetbrains {
+    fn:
+        public:
+            evaluate(root >> str) -> int {
+                checks >> int <- ide43_core.ide43Core.initialize("ncup_which_ncc_json_ok|jetbrains_router_high_level_uses_nclsp|jetbrains_router_low_level_uses_nc_sys_lsp|plugin_artifacts_present|jetbrains_capability_contract_present|jetbrains_base_sources_present|plugin_contract_consistent|plugin_product_version_1_0_0_21v|professional_ide_parity_contract");
+                ide43_core.ide43Core.record(checks,"plugin_artifacts_present",ide43_core.ide43Core.files(root,"tools/jetbrains/nc-language-plugin/README.md|tools/jetbrains/nc-language-plugin/build.gradle.kts|tools/jetbrains/nc-language-plugin/gradle.properties|tools/jetbrains/nc-language-plugin/settings.gradle.kts|tools/jetbrains/nc-language-plugin/src/main/resources/META-INF/plugin.xml|tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/NcFileType.kt|tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/NcLspModeRouter.kt|tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/NcToolchainResolver.kt|tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/NcResolveToolchainAction.kt|tools/jetbrains/nc-language-plugin/src/main/kotlin/dev/nc/jetbrains/NcRouteLspAction.kt|tools/ncc/nc/src/verification/ide43_jetbrains_router.n|tools/jetbrains/nc-language-plugin/capabilities.contract.json",true));
+                cap >> int <- ide43_core.ide43Core.read(root,"tools/jetbrains/nc-language-plugin/capabilities.contract.json");
+                ide43_core.ide43Core.record(checks,"jetbrains_capability_contract_present",
+                    ide43_core.ide43Core.is(cap,"schema","nc.jetbrains.plugin.capabilities.v1") &&
+                    ide43_core.ide43Core.is(cap,"semantic_authority","ncc") &&
+                    ide43_core.ide43Core.members(cap,"marketplace_capabilities","live_diagnostics|semantic_tokens|package_for_marketplace",false));
+                ide43_core.ide43Core.record(checks,"professional_ide_parity_contract",
+                    ide43_core.ide43Core.is(cap,"version","1.0.0.21v") &&
+                    ide43_core.ide43Core.is(cap,"professional_ide_parity|tier","c_cpp_rust_java_grade") &&
+                    ide43_core.ide43Core.members(cap,"professional_ide_parity|reference_languages","c|cpp|rust|java",false) &&
+                    ide43_core.ide43Core.members(cap,"professional_ide_parity|required_surfaces","debug_active_file",false) &&
+                    ide43_core.ide43Core.is(cap,"professional_ide_parity|source_of_truth","ncc"));
+                ide43_core.ide43Core.record(checks,"jetbrains_base_sources_present",ide43_core.ide43Core.references(root,cap,"base_sources",false));
+                gradle >> str <- ide43_core.ide43Core.readText(root+"/tools/jetbrains/nc-language-plugin/build.gradle.kts");
+                xml >> str <- ide43_core.ide43Core.readText(root+"/tools/jetbrains/nc-language-plugin/src/main/resources/META-INF/plugin.xml");
+                if (release_io.releaseIo.fileType(root+"/tools/jetbrains/nc-language-plugin/build.gradle.kts") != 1 ||
+                    release_io.releaseIo.fileType(root+"/tools/jetbrains/nc-language-plugin/src/main/resources/META-INF/plugin.xml") != 1)
+                    ide43_core.ide43Core.fail("jetbrains source missing");
+                ide43_core.ide43Core.record(checks,"plugin_product_version_1_0_0_21v",
+                    strContains(gradle,"version = \"1.0.0.21v\"") && strContains(xml,"<version>1.0.0.21v</version>"));
+                jsonRelease(cap); strRelease(gradle); strRelease(xml);
+                return checks;
+            }
+            finalize(root >> str, checks >> int) -> void {
+                contract >> int <- ide43_core.ide43Core.read(root,"docs/spec/release/v2_0_0_phase10_jetbrains_integration_contract.json");
+                ide43_core.ide43Core.record(checks,"plugin_contract_consistent",
+                    ide43_core.ide43Core.is(contract,"schema","nc.phase10.jetbrains.integration.contract.v1") &&
+                    ide43_core.ide43Core.is(contract,"plugin_product_version","1.0.0.21v") &&
+                    ide43_core.ide43Core.sequence(contract,"jetbrains|toolchain_autodetect_command","ncup|which|ncc|--json") &&
+                    ide43_core.ide43Core.members(contract,"jetbrains|ides","clion",false) &&
+                    ide43_core.ide43Core.is(contract,"jetbrains|professional_ide_parity|tier","c_cpp_rust_java_grade") &&
+                    ide43_core.ide43Core.members(contract,"jetbrains|low_level_runtime_installers","ncc.jetbrains.windows.exe|ncc.jetbrains.linux.sh|ncc.jetbrains.macos.pkg",true) &&
+                    ide43_core.ide43Core.members(contract,"required_gates","release_phase10_jetbrains_gate_tests",false));
+                jsonRelease(contract);
+            }
+    fa: return true;
+}
+

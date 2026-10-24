@@ -1,0 +1,67 @@
+nativeLayoutV49 {
+    type:
+        Packet {
+            public:
+                tag >> int;
+                flags >> byte;
+            layout:
+                repr(C);
+                align(16);
+        }
+        Nested {
+            public:
+                prefix >> byte;
+                packet >> Packet;
+                samples >> array<word, 3>;
+                link >> p<Nested>;
+        }
+        Wire {
+            public:
+                firstByte >> byte;
+                value >> u64;
+            layout:
+                packed;
+        }
+        Choice union {
+            public:
+                value >> u64;
+                data >> array<byte, 17>;
+        }
+        Tail {
+            public:
+                count >> int;
+                data >> array<byte, 0>;
+            layout:
+                flexible(data);
+        }
+        Large {
+            public:
+                data >> array<byte, 1024>;
+            layout:
+                align(64);
+        }
+
+    fn:
+        run() -> int {
+            if (sizeOf(Packet) != 16 || alignOf(Packet) != 16) return 1;
+            if (offsetOf<Packet>(tag) != 0 || offsetOf(Packet, flags) != 4) return 2;
+            if (sizeOf(Nested) != 48 || alignOf(Nested) != 16) return 3;
+            if (offsetOf<Nested>(packet) != 16 || offsetOf<Nested>(samples) != 32) return 4;
+            if (offsetOf<Nested>(link) != 40) return 5;
+            if (sizeOf(Wire) != 9 || alignOf<Wire>() != 1 || offsetOf<Wire>(value) != 1) return 6;
+            if (sizeOf(Choice) != 24 || offsetOf<Choice>(data) != 0) return 7;
+            if (sizeOf(Tail) != 4 || offsetOf<Tail>(data) != 4) return 8;
+            if (sizeOf(Large) != 1024 || alignOf(Large) != 64) return 9;
+            memory >> p<byte> <- alloc(sizeOf(Nested));
+            if (memory == null) return 10;
+            tagSlot >> p<int> <- cast<int>(off(memory, offsetOf<Nested>(packet)));
+            wr(tagSlot, 42);
+            if (rd(tagSlot) != 42) { free(memory); return 11; }
+            free(memory);
+            return 91;
+        }
+
+    ref main ->> run;
+    fa:
+        return true;
+}

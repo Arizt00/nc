@@ -1,0 +1,137 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_golden, sha256>;
+
+ide43RouterMatrix {
+    fn:
+        private:
+            seed(work >> str, spec >> int) -> bool {
+                kind >> str <- release_io.releaseIo.field(spec,"kind"); file >> str <- work+"/"+release_io.releaseIo.field(spec,"file");
+                if (kind == "missing" || kind == "cli") return true;
+                if (kind == "directory") return release_io.releaseIo.makeDirectories(file);
+                pattern >> int <- jsonObjectGet(spec,"pattern"); count >> int <- release_io.releaseIo.number(spec,"repeat",1);
+                tail >> str <- release_io.releaseIo.field(spec,"tail"); width >> int <- jsonArrayLen(pattern); size >> int <- width*count+strByteLen(tail);
+                buffer >> p<byte> <- cast(alloc(size+1)); if (buffer == null) { jsonRelease(pattern); return false; }
+                index >> int <- 0;
+                while (index < width*count) {
+                    byte >> int <- jsonArrayGet(pattern,index % width); wr(off(buffer,index),jsonGetIntOr(byte,0)); jsonRelease(byte); index += 1;
+                }
+                bytes >> p<byte> <- cast(tail); at >> int <- 0;
+                while (at < strByteLen(tail)) { wr(off(buffer,index+at),rd(off(bytes,at))); at += 1; }
+                good >> bool <- release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(file)) && fsWriteFrom(file,buffer,size,false) == size;
+                free(buffer); jsonRelease(pattern); return good;
+            }
+            expand(value >> str, file >> str, fixture >> str) -> str {
+                if (value == "$FILE") return file;
+                if (value == "$FIXTURE") return fixture;
+                if (value == "--file=$FILE") return "--file="+file;
+                if (value == "--ncup=$FIXTURE") return "--ncup="+fixture;
+                if (value == "--fi=$FILE") return "--fi="+file;
+                if (value == "--ncu=$FIXTURE") return "--ncu="+fixture;
+                return value;
+            }
+            stream(value >> str) -> int {
+                decoded >> int <- jsonParse(strTrim(value));
+                if (jsonKind(decoded) == 5 || jsonKind(decoded) == 6) {
+                    result >> int <- ide43_golden.ide43Golden.model(decoded); jsonRelease(decoded); return result;
+                }
+                jsonRelease(decoded);
+                normalized >> str <- ""; bytes >> p<byte> <- cast(value); index >> int <- 0;
+                while (index < strByteLen(value)) {
+                    byte >> int <- rd(off(bytes,index));
+                    if (byte == 13) {
+                        normalized <- normalized+"\n"; index += 1;
+                        if (index < strByteLen(value)) { if (rd(off(bytes,index)) == 10) index += 1; }
+                    } else { normalized <- normalized+strSubstring(value,index,1); index += 1; }
+                }
+                return jsonNewString(ide43_golden.ide43Golden.text(strTrim(normalized)));
+            }
+            model(row >> int, spec >> int, work >> str) -> int {
+                result >> int <- jsonNewObject();
+                cert_json.certJson.put(result,"code",jsonObjectGet(row,"code")); cert_json.certJson.put(result,"capture_ok",jsonObjectGet(row,"capture_ok"));
+                decoded >> int <- jsonParse(release_io.releaseIo.field(row,"stdout"));
+                if (release_io.releaseIo.field(spec,"fault") == "which-empty" && jsonKind(decoded) == 6) {
+                    // pathlib.resolve("") uses cwd; its parent changes with the private test directory.
+                    parent >> str <- release_io.releaseIo.directory(work);
+                    if (release_io.releaseIo.field(decoded,"bin_dir") == parent) jsonObjectSet(decoded,"bin_dir",jsonNewString("$WORK_PARENT"));
+                    command >> int <- jsonObjectGet(decoded,"command"); first >> int <- jsonArrayGet(command,0);
+                    if (jsonStringView(first,"") == parent+(envHas("WINDIR") ? "\\" : "/")+"nclsp") {
+                        normalized >> int <- jsonNewArray(); cert_json.certJson.push(normalized,jsonNewString("$WORK_PARENT/nclsp")); index >> int <- 1;
+                        while (index < jsonArrayLen(command)) { cert_json.certJson.push(normalized,jsonArrayGet(command,index)); index += 1; }
+                        cert_json.certJson.put(decoded,"command",normalized);
+                    }
+                    jsonRelease(command); jsonRelease(first);
+                    cert_json.certJson.put(result,"stdout",ide43_golden.ide43Golden.model(decoded));
+                } else cert_json.certJson.put(result,"stdout",stream(release_io.releaseIo.field(row,"stdout")));
+                jsonRelease(decoded);
+                cert_json.certJson.put(result,"stderr",stream(release_io.releaseIo.field(row,"stderr"))); return result;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(args,"|--repo|--candidate|--fixture|--work|--out|--cycles|--case|","|--record|");
+                if (options == 0) return 2;
+                repo >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--repo","."));
+                candidate >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                work >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--work",""));
+                parsed >> int <- jsonParse(tool_cli.toolCli.value(options,"--cycles","1")); cycles >> int <- jsonGetIntOr(parsed,0); jsonRelease(parsed);
+                if (cycles < 1 || cycles > 256 || release_io.releaseIo.fileType(work) != 0 || !release_io.releaseIo.makeDirectories(work)) return 2;
+                release_io.releaseIo.makeDirectories(work+"/sub");
+                manifest >> int <- jsonParseFile(repo+"/bootstrap/ide43-router-matrix.json"); specs >> int <- jsonObjectGet(manifest,"cases");
+                expectations >> int <- jsonObjectGet(manifest,"expected"); frozen >> int <- jsonObjectGet(expectations,envHas("WINDIR") ? "windows" : "linux");
+                record >> bool <- tool_cli.toolCli.hasFlag(options,"--record");
+                passed >> bool <- jsonArrayLen(specs) > 0 && jsonArrayLen(frozen) == jsonArrayLen(specs);
+                rows >> int <- jsonNewArray(); failures >> int <- jsonNewArray(); completed >> int <- 0;
+                ide43_golden.ide43Golden.scope("","",work,repo,fixture);
+                cycle >> int <- 0;
+                while (cycle < cycles) {
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(specs)) {
+                        spec >> int <- jsonArrayGet(specs,index);
+                        selected >> str <- tool_cli.toolCli.value(options,"--case","");
+                        if (selected != "" && selected != release_io.releaseIo.field(spec,"id")) { jsonRelease(spec); index += 1; continue; }
+                        seeded >> bool <- seed(work,spec);
+                        file >> str <- tool_cli.toolCli.absolute(work+"/"+release_io.releaseIo.field(spec,"file"));
+                        if (jsonObjectHas(spec,"spelling")) file <- release_io.releaseIo.field(spec,"spelling");
+                        fault >> str <- release_io.releaseIo.field(spec,"fault"); envSet("IDE43_FAULT",fault);
+                        template >> int <- jsonObjectGet(spec,"arguments"); words >> int <- jsonNewArray();
+                        cert_json.certJson.push(words,jsonNewString(candidate)); cert_json.certJson.push(words,jsonNewString("route-jetbrains"));
+                        at >> int <- 0;
+                        while (at < jsonArrayLen(template)) {
+                            word >> int <- jsonArrayGet(template,at);
+                            cert_json.certJson.push(words,jsonNewString(expand(jsonStringView(word,""),file,fixture))); jsonRelease(word); at += 1;
+                        }
+                        native >> int <- tool_cli.toolCli.execute(words,work,30000); actual >> int <- model(native,spec,work);
+                        expected >> int <- jsonArrayGet(frozen,index);
+                        good >> bool <- seeded && tool_cli.toolCli.clean(native) && jsonKind(expected) == 6 && jsonEquals(expected,actual);
+                        passed <- good && passed; completed += 1;
+                        if (!good && !record) {
+                            failure >> int <- jsonNewObject(); cert_json.certJson.put(failure,"case",jsonObjectGet(spec,"id"));
+                            cert_json.certJson.put(failure,"cycle",jsonNewInt(cycle)); cert_json.certJson.put(failure,"actual",jsonClone(actual));
+                            cert_json.certJson.put(failure,"expected",jsonClone(expected)); cert_json.certJson.push(failures,failure);
+                        }
+                        if (cycle == 0) {
+                            row >> int <- jsonNewObject(); cert_json.certJson.put(row,"id",jsonObjectGet(spec,"id"));
+                            cert_json.certJson.put(row,"fault",jsonNewString(fault)); cert_json.certJson.put(row,"arguments",jsonClone(words));
+                            cert_json.certJson.put(row,"input_sha256",jsonNewString(sha256.nccSha256.file(work+"/"+release_io.releaseIo.field(spec,"file"))));
+                            cert_json.certJson.put(row,"native",jsonClone(native)); cert_json.certJson.put(row,"model",jsonClone(actual));
+                            cert_json.certJson.push(rows,row);
+                        }
+                        jsonRelease(native); jsonRelease(actual); jsonRelease(expected); jsonRelease(words); jsonRelease(template); jsonRelease(spec); index += 1;
+                    }
+                    println((record ? "RECORDED " : (passed ? "PASS " : "FAIL "))+"router cycle "+renderInt(cycle+1)+"/"+renderInt(cycles)); cycle += 1;
+                }
+                envRemove("IDE43_FAULT");
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.ide43.router-matrix.v1"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed && !record)); cert_json.certJson.put(report,"record_only",jsonNewBool(record));
+                cert_json.certJson.put(report,"invocations",jsonNewInt(completed)); cert_json.certJson.put(report,"cycles",jsonNewInt(cycles));
+                cert_json.certJson.put(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                cert_json.certJson.put(report,"cases",jsonClone(rows)); cert_json.certJson.put(report,"failures",jsonClone(failures));
+                saved >> bool <- cert_json.certJson.save(tool_cli.toolCli.value(options,"--out",work+"/router-matrix.json"),report);
+                jsonRelease(report); jsonRelease(failures); jsonRelease(rows); jsonRelease(manifest); jsonRelease(specs); jsonRelease(expectations); jsonRelease(frozen);
+                ide43_golden.ide43Golden.close(); jsonRelease(options); argsRelease(args); return saved && (passed || record) ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

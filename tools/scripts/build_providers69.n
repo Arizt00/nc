@@ -1,0 +1,115 @@
+use <data:json>;
+use <io:output, std>;
+use <process:args, command, env>;
+use <fs:dir>;
+
+buildProviders69 {
+    option(args >> addr, name >> str, fallback >> str) -> str {
+        at >> int <- 1;
+        while (at + 1 < argsCount(args)) {
+            if (argsAt(args, at) == name) return argsAt(args, at + 1);
+            at += 1;
+        }
+        return fallback;
+    }
+    quote(text >> str) -> str {
+        if (strContains(text, "\"") || strContains(text, "\n") || strContains(text, "\r")) return "";
+        return "\"" + text + "\"";
+    }
+    invoke(line >> str, windows >> bool) -> bool {
+        child >> addr <- commandOpen(line, ".", windows ? stdIn() : null,
+            windows ? stdOut() : null, windows ? stdErr() : null, 0);
+        if (child == null) return false;
+        started >> bool <- commandStarted(child);
+        waited >> int <- started ? commandWait(child, 120000) : -1;
+        if (started && waited != 0) { commandTerminate(child, 15); commandWait(child, 3000); }
+        status >> int <- commandExitCode(child); commandRelease(child);
+        return started && waited == 0 && status == 0;
+    }
+    build(args >> addr, windows >> bool) -> int {
+        base >> str <- option(args, "--base64", "");
+        previous >> str <- option(args, "--previous67", "");
+        scalar >> str <- option(args, "--scalar66", "");
+        core >> str <- option(args, "--core", "");
+        host >> str <- option(args, "--host", "");
+        prior >> str <- option(args, "--previous68", "");
+        clockCore >> str <- option(args,"--clock-core","");
+        clockHost >> str <- option(args,"--clock-host","");
+        out >> str <- option(args, "--out", "");
+        manifest >> int <- jsonParseFile(option(args, "--manifest", "bootstrap/runtime-v69-exports.json"));
+        if (base == "" || previous == "" || scalar == "" || core == "" || host == "" || prior == "" || out == "" || manifest == 0) return 64;
+        if (quote(base) == "" || quote(previous) == "" || quote(scalar) == "" || quote(core) == "" || quote(host) == "" || quote(prior) == "" || quote(out) == "") return 64;
+        if (!exists(out)) createDir(out);
+        if (!exists(out)) return 73;
+        objcopy >> str <- option(args, "--objcopy", windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "objcopy");
+        linker >> str <- option(args, "--linker", windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+        if (quote(objcopy) == "" || quote(linker) == "") return 64;
+        exports >> int <- jsonObjectGet(manifest, "exports");
+        objects >> int <- jsonObjectGet(manifest, "objects");
+        if (jsonArrayLen(exports) != 152 || jsonArrayLen(objects) != 24 || fsSize(core) <= 0 || fsSize(host) <= 0 ||
+            quote(clockCore) == "" || quote(clockHost) == "" || fsSize(clockCore) <= 0 || fsSize(clockHost) <= 0) return 65;
+        suffix >> str <- windows ? ".obj" : ".o";
+        publishedCore >> str <- out + "/fs_describe.exports" + suffix;
+        publishedHost >> str <- out + "/fs_describe.host" + suffix;
+        if (!invoke(quote(objcopy) + " --redefine-sym nc$S$P$18$fsDescribeProvider$26$provider_fs_fsMetadataInto=nC.runtime.fs.fsMetadataInto --redefine-sym nc$S$P$18$fsDescribeProvider$29$provider_fs_fsPermissionsInto=nC.runtime.fs.fsPermissionsInto --redefine-sym nc$S$P$18$fsDescribeProvider$23$provider_fs_listDirInto=nC.runtime.fs.listDirInto --redefine-sym nc$S$P$18$fsDescribeProvider$28$provider_fs_officialPathInto=nC.runtime.fs.officialPathInto " +
+            quote(core) + " " + quote(publishedCore), windows)) return 1;
+        if (!invoke(quote(objcopy) + " --redefine-sym fsDescribeHost_inspect=nc$S$P$14$fsDescribeHost$7$inspect" +
+            " --redefine-sym fsDescribeHost_names=nc$S$P$14$fsDescribeHost$5$names --redefine-sym fsDescribeHost_canonical=nc$S$P$14$fsDescribeHost$9$canonical " +
+            quote(host) + " " + quote(publishedHost), windows)) return 1;
+        publishedClock >> str <- out+"/wall_clock.exports"+suffix;
+        publishedClockHost >> str <- out+"/wall_clock.host"+suffix;
+        if (!invoke(quote(objcopy)+" --redefine-sym nc$S$P$17$wallClockProvider$17$provider_time_now=nC.runtime.time.now"+
+            " --redefine-sym nc$S$P$17$wallClockProvider$19$provider_time_nowMs=nC.runtime.time.nowMs "+
+            quote(clockCore)+" "+quote(publishedClock),windows)) return 1;
+        if (!invoke(quote(objcopy)+" --redefine-sym wallClockHost_milliseconds=nc$S$P$13$wallClockHost$12$milliseconds "+
+            quote(clockHost)+" "+quote(publishedClockHost),windows)) return 1;
+        inputs >> str <- " " + quote(publishedCore) + " " + quote(publishedHost) + " " + quote(prior + "/timestamp.exports" + suffix) +
+            " "+quote(publishedClock)+" "+quote(publishedClockHost)+
+            " " + quote(prior + "/timestamp.host" + suffix) +
+            " " + quote(previous + "/json.exports" + suffix) + " " + quote(scalar + "/text_scalar.exports" + suffix);
+        at >> int <- 0;
+        while (at < jsonArrayLen(objects)) {
+            name >> str <- jsonGetStringOr(jsonArrayGet(objects, at), "");
+            if (name != "json.exports") {
+                path >> str <- base + "/" + name + suffix;
+                if (fsSize(path) <= 0) return 74;
+                inputs += " " + quote(path);
+            }
+            at += 1;
+        }
+        artifact >> str <- out + (windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+        if (windows) {
+            published >> str <- "";
+            at <- 0;
+            while (at < jsonArrayLen(exports)) {
+                published += " /export:" + jsonGetStringOr(jsonArrayGet(exports, at), ""); at += 1;
+            }
+            support >> str <- option(args, "--compiler-support", "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+            if (!invoke(quote(linker) + " /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:" + quote(artifact) + published + inputs +
+                " C:/msys64/mingw64/lib/libkernel32.a C:/msys64/mingw64/lib/libshell32.a " + quote(support), windows)) return 1;
+        } else {
+            bytes >> int <- fsSize(prior + "/runtime.exports.map");
+            if (bytes <= 0) return 74;
+            data >> p<byte> <- cast(alloc(bytes));
+            if (data == null) return 74;
+            copied >> bool <- fsReadInto(prior + "/runtime.exports.map", data, bytes) == bytes &&
+                fsWriteFrom(out + "/runtime.exports.map", data, bytes, false) == bytes;
+            free(data);
+            if (!copied) return 74;
+            version >> str <- "NC_RUNTIME_69 { global: \"nC.runtime.fs.fsMetadataInto\"; \"nC.runtime.fs.fsPermissionsInto\"; \"nC.runtime.fs.listDirInto\"; \"nC.runtime.fs.officialPathInto\"; \"nC.runtime.time.now\"; \"nC.runtime.time.nowMs\"; } NC_RUNTIME_68;\n";
+            if (fsWriteFrom(out + "/runtime.exports.map", cast<byte>(version), strByteLen(version), true) != strByteLen(version)) return 74;
+            if (!invoke(quote(linker) + " -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script " +
+                quote(out + "/runtime.exports.map") + " -o " + quote(artifact) + inputs + " -lc", windows)) return 1;
+        }
+        jsonRelease(exports); jsonRelease(objects); jsonRelease(manifest);
+        println("provider v69 built: " + artifact);
+        return fsSize(artifact) > 0 ? 0 : 74;
+    }
+    run() -> int {
+        args >> addr <- argsOpen();
+        result >> int <- build(args, envHas("WINDIR")); argsRelease(args);
+        return result;
+    }
+    ref main ->> run;
+    fa: return true;
+}

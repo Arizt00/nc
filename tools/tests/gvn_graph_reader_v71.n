@@ -1,0 +1,30 @@
+use <io:output>;
+use <process:args>;
+use <project:ir>;
+
+gvnGraphReader71 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3) { argsRelease(arguments); return 64; }
+        graph >> p<byte> <- ir.nccIr.projectReadGraph(
+            argsAt(arguments,1),argsAt(arguments,2)
+        );
+        argsRelease(arguments);
+        if (graph == null) return 66;
+        sources >> int <- 0;
+        reuses >> int <- 0;
+        node >> int <- 0;
+        while (node < ir.nccIr.graphNodes(graph)) {
+            source >> int <- ir.nccIr.graphNodeGvnSource(graph,node);
+            if (source == node) sources += 1;
+            else if (source >= 0) reuses += 1;
+            node += 1;
+        }
+        ir.nccIr.projectReleaseGraph(graph);
+        if (sources != 5 || reuses != 5) return 1;
+        println("gvn-reader-ok");
+        return 240;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,84 @@
+use <data:json>;
+use <project:closure43_core>;
+
+closure43Documents {
+    fn:
+        private:
+            lookup(context >> int, path >> int) -> int {
+                current >> int <- jsonClone(context); index >> int <- 0;
+                while (index < jsonArrayLen(path)) {
+                    entry >> int <- jsonArrayGet(path,index);
+                    next >> int <- jsonObjectGet(current,jsonGetString(entry));
+                    jsonRelease(current); jsonRelease(entry); current <- next; index += 1;
+                }
+                return current;
+            }
+            row(parts >> int, context >> int) -> str {
+                if (jsonKind(parts) == 4) return jsonGetString(parts);
+                result >> str <- ""; index >> int <- 0;
+                while (index < jsonArrayLen(parts)) {
+                    part >> int <- jsonArrayGet(parts,index);
+                    if (jsonKind(part) == 4) result <- result+jsonGetString(part);
+                    else {
+                        path >> int <- jsonObjectGet(part,"path"); value >> int <- lookup(context,path);
+                        if ((value == 0 || jsonKind(value) == 1) && jsonObjectHas(part,"default")) { jsonRelease(value); value <- jsonObjectGet(part,"default"); }
+                        if (jsonObjectHas(part,"length")) {
+                            length >> int <- jsonKind(value) == 4 ? closure43_core.closure43Core.characters(jsonGetString(value)) : jsonArrayLen(value);
+                            result <- result+closure43_core.closure43Core.display(jsonNewInt(length));
+                        } else result <- result+closure43_core.closure43Core.display(value);
+                        jsonRelease(value); jsonRelease(path);
+                    }
+                    jsonRelease(part); index += 1;
+                }
+                return result;
+            }
+        public:
+            content(document >> int, context >> int) -> str {
+                result >> str <- ""; blockIndex >> int <- 0;
+                while (blockIndex < jsonArrayLen(document)) {
+                    block >> int <- jsonArrayGet(document,blockIndex); parts >> int <- jsonObjectGet(block,"row");
+                    if (!jsonObjectHas(block,"repeat")) result <- result+row(parts,context);
+                    else {
+                        path >> int <- jsonObjectGet(block,"repeat"); items >> int <- lookup(context,path); index >> int <- 0;
+                        count >> int <- jsonKind(items) == 6 ? jsonObjectLen(items) : jsonArrayLen(items);
+                        separator >> str <- closure43_core.closure43Core.field(block,"separator");
+                        while (index < count) {
+                            child >> int <- jsonKind(items) == 6 ? jsonObjectGet(items,jsonObjectKeyAt(items,index)) : jsonArrayGet(items,index);
+                            closure43_core.closure43Core.put(context,"item",child);
+                            if (index > 0) result <- result+separator;
+                            result <- result+row(parts,context); index += 1;
+                        }
+                        jsonRelease(path); jsonRelease(items);
+                    }
+                    jsonRelease(block); jsonRelease(parts); blockIndex += 1;
+                }
+                return result;
+            }
+            render(document >> int, context >> int) -> str {
+                result >> str <- ""; lineIndex >> int <- 0; count >> int <- 0;
+                while (lineIndex < jsonArrayLen(document)) {
+                    line >> int <- jsonArrayGet(document,lineIndex); parts >> int <- jsonObjectGet(line,"row");
+                    if (jsonObjectHas(line,"repeat")) {
+                        path >> int <- jsonObjectGet(line,"repeat"); items >> int <- lookup(context,path); index >> int <- 0;
+                        while (index < jsonArrayLen(items)) {
+                            closure43_core.closure43Core.put(context,"item",jsonArrayGet(items,index));
+                            if (count > 0) result <- result+"\n";
+                            if (jsonObjectHas(line,"rows")) {
+                                rows >> int <- jsonObjectGet(line,"rows"); rowIndex >> int <- 0;
+                                while (rowIndex < jsonArrayLen(rows)) {
+                                    if (rowIndex > 0) result <- result+"\n";
+                                    current >> int <- jsonArrayGet(rows,rowIndex); result <- result+row(current,context);
+                                    jsonRelease(current); rowIndex += 1;
+                                }
+                                jsonRelease(rows);
+                            } else result <- result+row(parts,context);
+                            index += 1; count += 1;
+                        }
+                        jsonRelease(path); jsonRelease(items);
+                    } else { if (count > 0) result <- result+"\n"; result <- result+row(parts,context); count += 1; }
+                    jsonRelease(line); jsonRelease(parts); lineIndex += 1;
+                }
+                return result+"\n";
+            }
+    fa: return true;
+}

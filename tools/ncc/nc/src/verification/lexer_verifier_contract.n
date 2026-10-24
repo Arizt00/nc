@@ -1,0 +1,246 @@
+use <data:json>;
+use <io:output>;
+
+lexerVerifierContract {
+    const:
+        INVALID >> int <- -2147483647;
+        // Unicode decimal blocks recognized by the retained Python 3.12 oracle.
+        DECIMAL_ZEROES >> str <- "\u{30}\u{660}\u{6f0}\u{7c0}\u{966}\u{9e6}\u{a66}\u{ae6}\u{b66}\u{be6}\u{c66}\u{ce6}\u{d66}\u{de6}\u{e50}\u{ed0}\u{f20}\u{1040}\u{1090}\u{17e0}\u{1810}\u{1946}\u{19d0}\u{1a80}\u{1a90}\u{1b50}\u{1bb0}\u{1c40}\u{1c50}\u{a620}\u{a8d0}\u{a900}\u{a9d0}\u{a9f0}\u{aa50}\u{abf0}\u{ff10}\u{104a0}\u{10d30}\u{11066}\u{110f0}\u{11136}\u{111d0}\u{112f0}\u{11450}\u{114d0}\u{11650}\u{116c0}\u{11730}\u{118e0}\u{11950}\u{11c50}\u{11d50}\u{11da0}\u{11f50}\u{16a60}\u{16ac0}\u{16b50}\u{1d7ce}\u{1d7d8}\u{1d7e2}\u{1d7ec}\u{1d7f6}\u{1e140}\u{1e2f0}\u{1e4f0}\u{1e950}\u{1fbf0}";
+    fn:
+        private:
+            decimal(text >> str, output >> p<int>) -> bool {
+                guard output != null && sizeOf(int) == 4 else return false;
+                size >> int <- strByteLen(text); data >> p<byte> <- cast(text);
+                guard size > 0 else return false;
+                negative >> bool <- rd(data) == 45;
+                first >> int <- negative ? 1 : 0;
+                digits >> int <- size-first;
+                guard digits > 0 && digits <= 10 else return false;
+                if (digits > 1 && rd(off(data,first)) == 48) return false;
+                bound >> p<byte> <- cast(negative ? "2147483648" : "2147483647");
+                order >> int <- 0; at >> int <- 0;
+                while (at < digits) {
+                    code >> int <- rd(off(data,first+at));
+                    guard code >= 48 && code <= 57 else return false;
+                    if (digits == 10 && order == 0) order <- code-rd(off(bound,at));
+                    at += 1;
+                }
+                guard order <= 0 else return false;
+                // Range is proven lexically before arithmetic; negative accumulation admits INT32_MIN.
+                result >> int <- 0; at <- first;
+                while (at < size) {
+                    digit >> int <- rd(off(data,at))-48;
+                    result <- negative ? result*10-digit : result*10+digit;
+                    at += 1;
+                }
+                wr(output,result); return true;
+            }
+            scalar(data >> p<byte>, size >> int, at >> int, width >> p<int>) -> int {
+                wr(width,1);
+                guard (at >= 0 && at < size) else return -1;
+                first >> int <- rd(off(data,at)) & 255;
+                if (first < 128) return first;
+                count >> int <- first >= 194 && first <= 223 ? 2 : (first >= 224 && first <= 239 ? 3 : (first >= 240 && first <= 244 ? 4 : 0));
+                guard count > 0 && count <= size-at else return -1;
+                second >> int <- rd(off(data,at+1)) & 255;
+                if ((first == 224 && second < 160) || (first == 237 && second >= 160) ||
+                    (first == 240 && second < 144) || (first == 244 && second >= 144)) return -1;
+                value >> int <- first & (count == 2 ? 31 : (count == 3 ? 15 : 7));
+                index >> int <- 1;
+                while (index < count) {
+                    code >> int <- rd(off(data,at+index)) & 255;
+                    guard code >= 128 && code <= 191 else return -1;
+                    value <- value*64+(code & 63); index += 1;
+                }
+                wr(width,count); return value;
+            }
+            digitAt(data >> p<byte>, size >> int, at >> int, width >> p<int>) -> int {
+                code >> int <- scalar(data,size,at,width);
+                if (code >= 48 && code <= 57) return code-48;
+                if (code < 128) return -1;
+                zeroes >> p<byte> <- cast(DECIMAL_ZEROES);
+                length >> int <- strByteLen(DECIMAL_ZEROES); index >> int <- 0; step >> int <- 1;
+                while (index < length) {
+                    zero >> int <- scalar(zeroes,length,index,&step);
+                    if (code >= zero && code < zero+10) return code-zero;
+                    index += step;
+                }
+                return -1;
+            }
+            digitEnd(data >> p<byte>, size >> int, first >> int) -> int {
+                at >> int <- first; width >> int <- 1;
+                while (at < size && digitAt(data,size,at,&width) >= 0) { at += width; }
+                return at;
+            }
+            pair(data >> p<byte>, first >> int, middle >> int, last >> int) -> int {
+                output >> p<byte> <- cast(alloc(last-first+4));
+                guard output != null else return 0;
+                wr(output,91); used >> int <- 1; part >> int <- 0; valid >> bool <- true;
+                while (part < 2 && valid) {
+                    at >> int <- part == 0 ? first : middle+1;
+                    end >> int <- part == 0 ? middle : last;
+                    begin >> int <- used; digits >> int <- 0; width >> int <- 1;
+                    while (at < end) {
+                        digit >> int <- digitAt(data,end,at,&width);
+                        if (digit < 0) { valid <- false; break; }
+                        if (digit != 0 || used > begin) { wr(off(output,used),48+digit); used += 1; }
+                        digits += 1; at += width;
+                    }
+                    // Match int()'s default decimal conversion limit; never fall back after a match.
+                    if (digits > 4300) valid <- false;
+                    if (used == begin) { wr(off(output,used),48); used += 1; }
+                    wr(off(output,used),part == 0 ? 44 : 93); used += 1; part += 1;
+                }
+                wr(off(output,used),0);
+                text >> str <- cast(output);
+                result >> int <- valid ? jsonParse(text) : 0;
+                free(output); return result;
+            }
+            expect(name >> str, valid >> bool) -> bool {
+                if (!valid) println("FAIL lexer contract: "+name);
+                return valid;
+            }
+            integerCase(text >> str, accepted >> bool, expected >> int) -> bool {
+                value >> int <- jsonParse(text); output >> int <- 73;
+                success >> bool <- tryInteger(value,&output);
+                ok >> bool <- success == accepted && output == (accepted ? expected : 73);
+                if (!accepted) ok <- integer(value) == INVALID && ok;
+                jsonRelease(value); return expect("integer "+text,ok);
+            }
+            positionCase(text >> str, expected >> str) -> bool {
+                actual >> int <- position(text); wanted >> int <- jsonParse(expected);
+                ok >> bool <- expected == "null" ? actual == 0 : jsonKind(actual) == 5 && jsonEquals(actual,wanted);
+                jsonRelease(actual); jsonRelease(wanted); return expect("position "+text,ok);
+            }
+        public:
+            // Does not consume value; output is unchanged on failure.
+            tryInteger(value >> int, output >> p<int>) -> bool {
+                guard output != null && jsonKind(value) == 3 else return false;
+                encoded >> str <- jsonStringify(value);
+                guard encoded != "" else return false;
+                ok >> bool <- decimal(encoded,output);
+                free(cast<byte>(encoded)); return ok;
+            }
+            tryNumber(row >> int, key >> str, output >> p<int>) -> bool {
+                value >> int <- jsonObjectBorrow(row,key);
+                ok >> bool <- tryInteger(value,output);
+                jsonRelease(value); return ok;
+            }
+            // Compatibility sentinel for existing nonnegative lexer fields; tryInteger disambiguates it.
+            integer(value >> int) -> int {
+                result >> int <- INVALID;
+                tryInteger(value,&result); return result;
+            }
+            number(row >> int, key >> str) -> int {
+                result >> int <- INVALID;
+                tryNumber(row,key,&result); return result;
+            }
+            // Owned [line,column], or handle 0. Mirrors Python arrow-first search and greedy .*.
+            position(text >> str) -> int {
+                data >> p<byte> <- cast(text); size >> int <- strByteLen(text); at >> int <- 0;
+                while (at+5 <= size) {
+                    if (rd(off(data,at)) == 32 && rd(off(data,at+1)) == 45 && rd(off(data,at+2)) == 45 &&
+                        rd(off(data,at+3)) == 62 && rd(off(data,at+4)) == 32) {
+                        first >> int <- at+5; end >> int <- first;
+                        while (end < size && rd(off(data,end)) != 10) { end += 1; }
+                        colon >> int <- end-1;
+                        while (colon >= first) {
+                            if (rd(off(data,colon)) == 58) {
+                                middle >> int <- digitEnd(data,end,colon+1);
+                                if (middle > colon+1 && middle < end && rd(off(data,middle)) == 58) {
+                                    last >> int <- digitEnd(data,end,middle+1);
+                                    if (last > middle+1) return pair(data,colon+1,middle,last);
+                                }
+                            }
+                            colon -= 1;
+                        }
+                        at <- end;
+                    } else at += 1;
+                }
+                at <- 0;
+                while (at < size) {
+                    if (rd(off(data,at)) == 91) {
+                        middle >> int <- digitEnd(data,size,at+1);
+                        if (middle > at+1 && middle < size && rd(off(data,middle)) == 58) {
+                            last >> int <- digitEnd(data,size,middle+1);
+                            if (last > middle+1 && last < size && rd(off(data,last)) == 93) return pair(data,at+1,middle,last);
+                        }
+                    }
+                    at += 1;
+                }
+                return 0;
+            }
+            selfTest() -> bool {
+                minimum >> int <- -2147483647-1;
+                ok >> bool <- expect("int32-layout",sizeOf(int) == 4);
+                ok <- integerCase("0",true,0) && ok;
+                ok <- integerCase("-0",true,0) && ok;
+                ok <- integerCase("1",true,1) && ok;
+                ok <- integerCase("-1",true,-1) && ok;
+                ok <- integerCase("2147483647",true,2147483647) && ok;
+                ok <- integerCase("-2147483648",true,minimum) && ok;
+                ok <- integerCase("-2147483647",true,INVALID) && ok;
+                ok <- integerCase("2147483648",false,0) && ok;
+                ok <- integerCase("-2147483649",false,0) && ok;
+                ok <- integerCase("4294967296",false,0) && ok;
+                ok <- integerCase("4294967297",false,0) && ok;
+                ok <- integerCase("9223372036854775807",false,0) && ok;
+                ok <- integerCase("-9223372036854775808",false,0) && ok;
+                ok <- integerCase("9223372036854775808",false,0) && ok;
+                ok <- integerCase("-9223372036854775809",false,0) && ok;
+                ok <- integerCase("18446744073709551616",false,0) && ok;
+                ok <- integerCase("18446744073709551617",false,0) && ok;
+                ok <- integerCase("-18446744073709551617",false,0) && ok;
+                ok <- integerCase("340282366920938463463374607431768211456",false,0) && ok;
+                ok <- integerCase("1.0",false,0) && ok;
+                ok <- integerCase("1e0",false,0) && ok;
+                ok <- integerCase("true",false,0) && ok;
+                ok <- integerCase("false",false,0) && ok;
+                ok <- integerCase("null",false,0) && ok;
+                ok <- integerCase("\"1\"",false,0) && ok;
+                ok <- integerCase("[]",false,0) && ok;
+                ok <- integerCase("{}",false,0) && ok;
+                ok <- integerCase("+1",false,0) && ok;
+                ok <- integerCase("01",false,0) && ok;
+                ok <- positionCase("","null") && ok;
+                ok <- positionCase("noise:7:8","null") && ok;
+                ok <- positionCase("[7:8","null") && ok;
+                ok <- positionCase("[7:8x]","null") && ok;
+                ok <- positionCase("[-1:2]","null") && ok;
+                ok <- positionCase("[0:0]","[0,0]") && ok;
+                ok <- positionCase("[0007:0008]","[7,8]") && ok;
+                ok <- positionCase("[7:8] then [9:10]","[7,8]") && ok;
+                ok <- positionCase("noise:7:8\n --> file.n:1:2","[1,2]") && ok;
+                ok <- positionCase("noise:7:8\n --> file.n:3:4","[3,4]") && ok;
+                ok <- positionCase("[7:8]\n --> file.n:3:4","[3,4]") && ok;
+                ok <- positionCase(" --> C:/a:7:8/file.n:3:4 suffix","[3,4]") && ok;
+                ok <- positionCase(" --> file.n:1:2:3","[2,3]") && ok;
+                ok <- positionCase(" --> a:1:2 trailing:3:4x","[3,4]") && ok;
+                ok <- positionCase(" --> a:1:2 --> b:3:4","[3,4]") && ok;
+                ok <- positionCase(" --> a:1:2\n --> b:3:4","[1,2]") && ok;
+                ok <- positionCase(" --> broken\n --> b:3:4","[3,4]") && ok;
+                ok <- positionCase(" --> broken\n[5:6]","[5,6]") && ok;
+                ok <- positionCase(" --> broken\nfile:3:4","null") && ok;
+                ok <- positionCase(" --> file.n:1:2\r\n[5:6]","[1,2]") && ok;
+                ok <- positionCase(" --> file.n:1:2\rtrail:3:4","[3,4]") && ok;
+                ok <- positionCase("--> file.n:1:2","null") && ok;
+                ok <- positionCase(" -->file.n:1:2","null") && ok;
+                ok <- positionCase("[\u{661}\u{662}:\u{ff13}]","[12,3]") && ok;
+                ok <- positionCase(" --> f:\u{1d7d9}:\u{1e4f2}","[1,2]") && ok;
+                ok <- positionCase("[\u{b2}:3]","null") && ok;
+                ok <- positionCase("[18446744073709551616:18446744073709551617]","[18446744073709551616,18446744073709551617]") && ok;
+                owner >> int <- jsonParse("{\"valid\":17,\"overflow\":18446744073709551617}");
+                cycle >> int <- 0;
+                while (cycle < 2000) {
+                    value >> int <- 73;
+                    ok <- tryNumber(owner,"valid",&value) && value == 17 && number(owner,"valid") == 17 && ok;
+                    value <- 73;
+                    ok <- !tryNumber(owner,"overflow",&value) && value == 73 && number(owner,"overflow") == INVALID && ok;
+                    ok <- number(owner,"missing") == INVALID && ok;
+                    cycle += 1;
+                }
+                jsonRelease(owner);
+                return expect("borrowed-owner-cycles",ok);
+            }
+    fa: return true;
+}

@@ -1,0 +1,153 @@
+
+commandHost {
+    fn:
+        private:
+            errorCode() -> int { return rd<i32>(from<i32>(osL__errno_location())); }
+            milliseconds() -> i64 {
+                stamp >> array<i64,2>; data >> p<i64> <- cast<i64>(&stamp);
+                if (osLclock_gettime(1,adr(data)) != 0) return -1;
+                return rd(off(data,0))*1000+rd(off(data,1))/1000000;
+            }
+            argv(line >> str) -> p<byte> {
+                source >> p<byte> <- cast<byte>(line);
+                if (source == null) return null;
+                bytes >> u64 <- 0;
+                while (rd(off(source,bytes)) != 0) { bytes += 1; }
+                if (bytes == 0 || bytes > 2147483647/9-2) return null;
+                result >> p<byte> <- cast<byte>(calloc(1,(bytes+2)*9));
+                if (result == null) return null;
+                slots >> p<addr> <- cast<addr>(result);
+                text >> p<byte> <- off(result,(bytes+2)*8);
+                count >> int <- 0; cursor >> int <- 0; at >> int <- 0;
+                while (at < bytes) {
+                    while (at < bytes && (rd(off(source,at)) == 32 || rd(off(source,at)) == 9 || rd(off(source,at)) == 10)) { at += 1; }
+                    if (at == bytes) break;
+                    wr(off(slots,count),adr(off(text,cursor))); count += 1;
+                    quote >> int <- 0;
+                    while (at < bytes) {
+                        code >> int <- rd(off(source,at));
+                        if (quote == 0 && (code == 32 || code == 9 || code == 10)) break;
+                        at += 1;
+                        if ((code == 34 || code == 39) && (quote == 0 || quote == code)) { quote <- quote == 0 ? code : 0; continue; }
+                        if (code == 92 && quote != 39) {
+                            if (at == bytes) { free(result); return null; }
+                            code <- rd(off(source,at)); at += 1;
+                        }
+                        wr(off(text,cursor),code); cursor += 1;
+                    }
+                    if (quote != 0) { free(result); return null; }
+                    wr(off(text,cursor),0); cursor += 1;
+                }
+                if (count == 0 || rd<byte>(from<byte>(rd(slots))) == 0) { free(result); return null; }
+                wr(off(slots,count),null); return result;
+            }
+            writeProtected(fd >> int, buffer >> addr, bytes >> int) -> int {
+                blocked >> array<u64,16>; previous >> array<u64,16>; pending >> array<u64,16>;
+                set >> addr <- adr(&blocked); old >> addr <- adr(&previous);
+                osLsigemptyset(set); osLsigaddset(set,13);
+                status >> int <- osLpthread_sigmask(0,set,old);
+                if (status != 0) return -status;
+                wasPending >> bool <- osLsigpending(adr(&pending)) != 0 || (rd<u64>(cast<u64>(&pending)) & 4096) != 0;
+                count >> i64 <- -1; failure >> int <- 0;
+                repeat { count <- osLwrite(fd,buffer,bytes); failure <- count < 0 ? errorCode() : 0; } until (failure != 4);
+                if (failure == 32 && !wasPending) {
+                    zero >> array<u64,2>; wr<u64>(cast<u64>(&zero),0); wr<u64>(off(cast<u64>(&zero),1),0);
+                    osLsigtimedwait(set,null,adr(&zero));
+                }
+                restored >> int <- osLpthread_sigmask(2,old,null);
+                if (restored != 0 && count >= 0) return -restored;
+                return count < 0 ? -failure : count;
+            }
+        public:
+            standard(channel >> int) -> addr { return from<byte>(channel+1); }
+            open(data >> p<byte>, line >> str, cwd >> str, input >> addr, output >> addr, error >> addr, flags >> int) -> int {
+                if (flags != 0) return 22;
+                arguments >> p<byte> <- argv(line);
+                if (arguments == null) return 22;
+                // glibc x86_64 file-actions: 2 ints, a pointer and 16 padding ints (80 bytes).
+                storage >> array<u64,10>; actions >> addr <- adr(&storage);
+                status >> int <- osLposix_spawn_file_actions_init(actions);
+                if (status != 0) { free(arguments); return status; }
+                if (cast<byte>(cwd) != null && rd<byte>(cast<byte>(cwd)) != 0) status <- osLposix_spawn_file_actions_addchdir_np(actions,adr(cwd));
+                copies >> array<int,3>; fds >> p<int> <- cast<int>(&copies);
+                index >> int <- 0;
+                while (index < 3) { wr(off(fds,index),-1); index += 1; }
+                index <- 0;
+                while (index < 3 && status == 0) {
+                    selected >> addr <- index == 0 ? input : index == 1 ? output : error;
+                    if (selected != null) {
+                        fd >> int <- adr(selected)-1;
+                        duplicate >> int <- osLfcntl(fd,1030,3);
+                        if (duplicate < 0) status <- errorCode();
+                        else { wr(off(fds,index),duplicate); status <- osLposix_spawn_file_actions_adddup2(actions,duplicate,index); }
+                    }
+                    index += 1;
+                }
+                index <- 0;
+                while (index < 3 && status == 0) {
+                    fd >> int <- rd(off(fds,index));
+                    if (fd >= 0) status <- osLposix_spawn_file_actions_addclose(actions,fd);
+                    index += 1;
+                }
+                environmentSlot >> addr <- osLdlsym(null,adr("environ"));
+                if (status == 0 && environmentSlot == null) status <- 38;
+                pid >> int <- 0;
+                if (status == 0) status <- osLposix_spawnp(adr(&pid),rd<addr>(arguments),actions,null,adr(arguments),rd<addr>(from<byte>(environmentSlot)));
+                osLposix_spawn_file_actions_destroy(actions);
+                index <- 0;
+                while (index < 3) { fd >> int <- rd(off(fds,index)); if (fd >= 0) osLclose(fd); index += 1; }
+                free(arguments);
+                if (status == 0) { wr<addr>(data,from<byte>(pid)); wr<int>(off(data,16),pid); }
+                return status;
+            }
+            wait(data >> p<byte>, timeout >> int) -> int {
+                if (rd<int>(off(data,44)) != 0) return 0;
+                pid >> int <- rd<int>(off(data,16));
+                start >> i64 <- milliseconds(); if (start < 0) return -errorCode();
+                repeat {
+                    native >> int <- 0;
+                    result >> int <- osLwaitpid(pid,adr(&native),timeout < 0 ? 0 : 1);
+                    if (result == pid) {
+                        signal >> int <- native & 127;
+                        wr<int>(off(data,40),signal == 0 ? (native >> 8) & 255 : 128+signal);
+                        wr<int>(off(data,44),1); return 0;
+                    }
+                    if (result < 0 && errorCode() != 4) return -errorCode();
+                    if (timeout >= 0) {
+                        now >> i64 <- milliseconds(); if (now < 0) return -errorCode();
+                        if (now-start >= timeout) return 258;
+                        delay >> array<u64,2>; wr<u64>(cast<u64>(&delay),0); wr<u64>(off(cast<u64>(&delay),1),1000000);
+                        osLnanosleep(adr(&delay),null);
+                    }
+                } until (false);
+                return -22;
+            }
+            terminate(native >> addr, code >> int) -> int { pid >> int <- adr(native); return osLkill(pid,code) == 0 ? 0 : errorCode(); }
+            closeHandle(native >> addr) -> int { fd >> int <- adr(native)-1; return osLclose(fd) == 0 ? 0 : errorCode(); }
+            release(data >> p<byte>) -> bool {
+                // No hidden termination or reaper. The caller must wait before discarding a live child.
+                return true;
+            }
+            pipeOpen(data >> p<byte>, inheritRead >> bool, inheritWrite >> bool) -> int {
+                storage >> array<int,2>; fds >> p<int> <- cast<int>(&storage);
+                if (osLpipe2(adr(fds),0x80000) != 0) return errorCode();
+                readFd >> int <- rd(off(fds,0)); writeFd >> int <- rd(off(fds,1));
+                status >> int <- 0;
+                if (inheritRead && osLfcntl(readFd,2,0) != 0) status <- errorCode();
+                if (status == 0 && inheritWrite && osLfcntl(writeFd,2,0) != 0) status <- errorCode();
+                if (status != 0) { osLclose(readFd); osLclose(writeFd); return status; }
+                wr<addr>(data,from<byte>(readFd+1)); wr<addr>(off(data,8),from<byte>(writeFd+1)); return 0;
+            }
+            transfer(native >> addr, buffer >> addr, bytes >> int, writing >> bool) -> int {
+                if (native == null) return -9;
+                fd >> int <- adr(native)-1;
+                if (writing) return writeProtected(fd,buffer,bytes);
+                repeat {
+                    count >> i64 <- osLread(fd,buffer,bytes);
+                    if (count >= 0) return count;
+                    failure >> int <- errorCode(); if (failure != 4) return -failure;
+                } until (false);
+                return -9;
+            }
+    fa: return true;
+}

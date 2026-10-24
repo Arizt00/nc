@@ -1,0 +1,177 @@
+use <project:lexer, source>;
+use <io:output, render>;
+
+nccLexerTests {
+    const:
+        MANY >> int <- 2000;
+
+    fn:
+        private:
+            contextualWords() -> bool {
+                text >> str <- "TyPe type 123";
+                state >> p<byte> <- lexer.nccLexer.openBuffer(cast(text), 13);
+                if (state == null) return false;
+                ok >> bool <- lexer.nccLexer.valid(state) &&
+                    lexer.nccLexer.tokenAsciiWordSame(state, 0, "type") &&
+                    lexer.nccLexer.tokenAsciiWordSame(state, 1, "TYPE") &&
+                    !lexer.nccLexer.tokenSame(state, 0, "type") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(state, 0, "types") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(state, 2, "123") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(state, -1, "type") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(state, 3, "") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(state, 4, "type") &&
+                    !lexer.nccLexer.tokenAsciiWordSame(null, 0, "type");
+                lexer.nccLexer.close(state); return ok;
+            }
+            spans() -> bool {
+                text >> str <- "a /*x*/ \"\\0\"";
+                data >> p<byte> <- cast(text);
+                state >> p<byte> <- lexer.nccLexer.openBuffer(data,12);
+                guard state != null else return false;
+                out >> p<byte> <- cast(alloc(13));
+                guard out != null else { lexer.nccLexer.close(state); return false; }
+                wr(off(out,12),87);
+                ok >> bool <- lexer.nccLexer.valid(state) && lexer.nccLexer.tokenCount(state) == 3 &&
+                    lexer.nccLexer.copySpan(state,0,12,out,11) == -1 &&
+                    lexer.nccLexer.copySpan(state,0,12,out,12) == 12 && rd(off(out,12)) == 87 &&
+                    lexer.nccLexer.copySpan(state,-1,12,out,13) == -1 &&
+                    lexer.nccLexer.copySpan(state,4,3,out,13) == -1 &&
+                    lexer.nccLexer.copySpan(state,0,13,out,13) == -1 &&
+                    lexer.nccLexer.copySpan(state,12,12,null,0) == 0 &&
+                    lexer.nccLexer.copySpan(state,12,12,null,-1) == -1 &&
+                    lexer.nccLexer.copySpan(state,0,1,null,1) == -1 &&
+                    lexer.nccLexer.copyLexeme(state,2,null,0) == 0 &&
+                    lexer.nccLexer.tokenAtByte(state,0) == 0 &&
+                    lexer.nccLexer.tokenAtByte(state,3) == -1 &&
+                    lexer.nccLexer.tokenAtByte(state,11) == 1 &&
+                    lexer.nccLexer.tokenAtByte(state,12) == 2 &&
+                    lexer.nccLexer.tokenAtByte(state,13) == -1;
+                index >> int <- 0;
+                while(index < 12) { ok <- rd(off(out,index)) == rd(off(data,index)) && ok; index += 1; }
+                ok <- lexer.nccLexer.copyLexeme(state,1,out,4) == 4 &&
+                    rd(out) == 34 && rd(off(out,1)) == 92 && rd(off(out,2)) == 48 && rd(off(out,3)) == 34 && ok;
+                free(out); lexer.nccLexer.close(state);
+                return ok && lexer.nccLexer.copySpan(null,0,0,null,0) == -1;
+            }
+
+            payloads() -> bool {
+                text >> str <- "\"\\x41\\0\\u{1F642}\" \"A\\0\\u{1F642}\" '\\xFF' + - \"\"";
+                source >> p<byte> <- cast<byte>(text);
+                bytes >> int <- 0;
+                while (rd<byte>(off(source, bytes)) != 0) { bytes += 1; }
+                state >> p<byte> <- lexer.nccLexer.openBuffer(source, bytes);
+                guard state != null else return false;
+                out >> p<byte> <- cast<byte>(alloc(6));
+                guard out != null else { lexer.nccLexer.close(state); return false; }
+                ok >> bool <- lexer.nccLexer.valid(state) &&
+                    lexer.nccLexer.tokenCount(state) == 7 &&
+                    lexer.nccLexer.tokenEqual(state, 0, 1) &&
+                    !lexer.nccLexer.tokenEqual(state, 3, 4) &&
+                    lexer.nccLexer.tokenSame(state, 5, "") &&
+                    lexer.nccLexer.copyPayload(state, 0, out, 5) == -1 &&
+                    lexer.nccLexer.copyPayload(state, 0, out, 6) == 6 &&
+                    rd<byte>(out) == 65 && rd<byte>(off(out, 1)) == 0 &&
+                    (rd<byte>(off(out, 2)) & 255) == 240 &&
+                    (rd<byte>(off(out, 5)) & 255) == 130 &&
+                    (rd<byte>(lexer.nccLexer.tokenPayloadAt(state, 2)) & 255) == 255 &&
+                    lexer.nccLexer.copyPayload(state, 5, null, 0) == 0 &&
+                    lexer.nccLexer.copyPayload(state, -1, out, 6) == -1;
+                if (!ok) {
+                    print("payload valid/count/equal/empty/copy: ");
+                    print(renderBool(lexer.nccLexer.valid(state))); print(" ");
+                    print(renderInt(lexer.nccLexer.tokenCount(state))); print(" ");
+                    print(renderBool(lexer.nccLexer.tokenEqual(state, 0, 1))); print(" ");
+                    print(renderBool(lexer.nccLexer.tokenSame(state, 5, ""))); print(" ");
+                    println(renderInt(lexer.nccLexer.copyPayload(state, 0, out, 6)));
+                }
+                free(out);
+                lexer.nccLexer.close(state);
+                return ok;
+            }
+
+            growth() -> bool {
+                text >> p<byte> <- cast<byte>(alloc(MANY * 2));
+                guard text != null else return false;
+                at >> int <- 0;
+                while (at < MANY) {
+                    wr<byte>(off(text, at * 2), 97);
+                    wr<byte>(off(text, at * 2 + 1), 32);
+                    at += 1;
+                }
+                state >> p<byte> <- lexer.nccLexer.openBuffer(text, MANY * 2);
+                ok >> bool <- lexer.nccLexer.valid(state);
+                if (ok) {
+                    ok <- lexer.nccLexer.tokenCount(state) == MANY + 1 &&
+                        lexer.nccLexer.tokenStartAt(state, MANY - 1) == (MANY - 1) * 2 &&
+                        lexer.nccLexer.tokenEndAt(state, MANY - 1) == MANY * 2 - 1 &&
+                        lexer.nccLexer.tokenStartAt(state, MANY) == MANY * 2 &&
+                        lexer.nccLexer.reservedRecordBytes(state) < MANY * 2 * 48;
+                }
+                lexer.nccLexer.close(state);
+                wr<byte>(text, 98);
+                ok <- ok && rd<byte>(text) == 98;
+                free(text);
+                return ok;
+            }
+
+            invalidUtf8() -> bool {
+                text >> p<byte> <- cast<byte>(alloc(4));
+                guard text != null else return false;
+                wr<byte>(text, 47);
+                wr<byte>(off(text, 1), 47);
+                wr<byte>(off(text, 2), 255);
+                state >> p<byte> <- lexer.nccLexer.openBuffer(text, 3);
+                ok >> bool <- state != null;
+                if (ok) ok <- !lexer.nccLexer.valid(state) &&
+                    lexer.nccLexer.errorKind(state) == 7 &&
+                    lexer.nccLexer.errorColumn(state) == 3 &&
+                    lexer.nccLexer.errorByte(state) == 2;
+                lexer.nccLexer.close(state);
+                free(text);
+                return ok;
+            }
+
+        public:
+            sizedFile(path >> str) -> bool {
+                count >> int <- source.nccSource.bytes(path);
+                guard count > 0 && count < 2147483646 else return false;
+                data >> p<byte> <- source.nccSource.loadSized(path, count);
+                guard data != null else return false;
+                ok >> bool <- rd<byte>(off(data, count)) == 0;
+                source.nccSource.release(data);
+                shortBuffer >> p<byte> <- source.nccSource.loadSized(path, count - 1);
+                longBuffer >> p<byte> <- source.nccSource.loadSized(path, count + 1);
+                ok <- ok && shortBuffer == null && longBuffer == null;
+                source.nccSource.release(shortBuffer);
+                source.nccSource.release(longBuffer);
+                return ok && source.nccSource.loadSized(path, -1) == null &&
+                    source.nccSource.loadSized(path, 2147483647) == null;
+            }
+
+            selfTest() -> bool {
+                empty >> p<byte> <- lexer.nccLexer.openBuffer(null, 0);
+                ok >> bool <- lexer.nccLexer.valid(empty);
+                if (ok) ok <- lexer.nccLexer.tokenCount(empty) == 1 &&
+                    lexer.nccLexer.tokenStartAt(empty, 0) == 0 &&
+                    lexer.nccLexer.tokenEndAt(empty, 0) == 0;
+                lexer.nccLexer.close(empty);
+                if (!ok) println("lexer test: empty buffer failed");
+                layoutOk >> bool <- lexer.nccLexer.recordLayoutValid();
+                if (!layoutOk) println("lexer test: record layout failed");
+                payloadOk >> bool <- payloads();
+                if (!payloadOk) println("lexer test: decoded payload failed");
+                growthOk >> bool <- growth();
+                if (!growthOk) println("lexer test: token storage growth failed");
+                utf8Ok >> bool <- invalidUtf8();
+                if (!utf8Ok) println("lexer test: invalid UTF-8 failed");
+                spanOk >> bool <- spans();
+                if (!spanOk) println("lexer test: exact source spans failed");
+                return ok && contextualWords() && layoutOk && payloadOk && growthOk && utf8Ok && spanOk &&
+                    !lexer.nccLexer.valid(null) &&
+                    lexer.nccLexer.copyPayload(null, 0, null, 0) == -1 &&
+                    lexer.nccLexer.openBuffer(null, 1) == null &&
+                    lexer.nccLexer.openBuffer(null, -1) == null;
+            }
+    fa:
+        return true;
+}

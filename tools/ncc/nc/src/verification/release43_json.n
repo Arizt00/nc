@@ -1,0 +1,186 @@
+use <data:json>;
+use <project:physical43_json, cert_json>;
+
+release43Json {
+    fn:
+        private:
+            peek(state >> p<byte>) -> int {
+                at >> int <- rd<int>(off<byte>(state,8)); if (at >= rd<int>(off<byte>(state,12))) return -1;
+                bytes >> p<byte> <- cast(rd<addr>(state)); return rd<byte>(off<byte>(bytes,at)) & 255;
+            }
+            advance(state >> p<byte>) -> void { wr<int>(off<byte>(state,8),rd<int>(off<byte>(state,8))+1); }
+            space(state >> p<byte>) -> void { while (peek(state) == 32 || peek(state) == 9 || peek(state) == 10 || peek(state) == 13) { advance(state); } }
+            hex(code >> int) -> bool { return (code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102); }
+            string(state >> p<byte>) -> bool {
+                if (peek(state) != 34) return false; advance(state);
+                while (true) {
+                    code >> int <- peek(state); if (code < 32) return false; advance(state); if (code == 34) return true;
+                    if (code == 92) {
+                        escaped >> int <- peek(state); advance(state);
+                        if (escaped == 117) { count >> int <- 0; while (count < 4) { if (!hex(peek(state))) return false; advance(state); count += 1; } }
+                        else if (escaped != 34 && escaped != 92 && escaped != 47 && escaped != 98 && escaped != 102 && escaped != 110 && escaped != 114 && escaped != 116) return false;
+                    } else if (code >= 128) {
+                        width >> int <- 0; scalar >> int <- 0;
+                        if (code >= 194 && code <= 223) { width <- 2; scalar <- code & 31; }
+                        else if (code >= 224 && code <= 239) { width <- 3; scalar <- code & 15; }
+                        else if (code >= 240 && code <= 244) { width <- 4; scalar <- code & 7; }
+                        else return false;
+                        count >> int <- 1; while (count < width) { next >> int <- peek(state); if (next < 128 || next > 191) return false; scalar <- scalar*64+(next & 63); advance(state); count += 1; }
+                        if ((width == 2 && scalar < 128) || (width == 3 && scalar < 2048) || (width == 4 && scalar < 65536) || scalar > 1114111 || (scalar >= 55296 && scalar <= 57343)) return false;
+                    }
+                }
+                return false;
+            }
+            literal(state >> p<byte>, word >> str) -> bool {
+                index >> int <- 0; bytes >> p<byte> <- cast(word);
+                while (index < strByteLen(word)) { if (peek(state) != (rd<byte>(off<byte>(bytes,index)) & 255)) return false; advance(state); index += 1; } return true;
+            }
+            digits(state >> p<byte>) -> bool { if (peek(state) < 48 || peek(state) > 57) return false; while (peek(state) >= 48 && peek(state) <= 57) { advance(state); } return true; }
+            number(state >> p<byte>) -> bool {
+                if (peek(state) == 45) { advance(state); if (peek(state) == 73) return literal(state,"Infinity"); }
+                if (peek(state) == 48) advance(state); else if (!digits(state)) return false;
+                if (peek(state) == 46) { advance(state); if (!digits(state)) return false; }
+                if (peek(state) == 101 || peek(state) == 69) { advance(state); if (peek(state) == 43 || peek(state) == 45) advance(state); if (!digits(state)) return false; }
+                return true;
+            }
+            skip(state >> p<byte>, depth >> int) -> bool {
+                if (depth > 1000) return false; space(state); code >> int <- peek(state);
+                if (code == 34) return string(state);
+                if (code == 110) return literal(state,"null"); if (code == 116) return literal(state,"true"); if (code == 102) return literal(state,"false");
+                if (code == 78) return literal(state,"NaN"); if (code == 73) return literal(state,"Infinity");
+                if (code != 91 && code != 123) return number(state);
+                object >> bool <- code == 123; closing >> int <- object ? 125 : 93; advance(state); space(state);
+                if (peek(state) == closing) { advance(state); return true; }
+                while (true) {
+                    if (object) { if (!string(state)) return false; space(state); if (peek(state) != 58) return false; advance(state); }
+                    if (!skip(state,depth+1)) return false; space(state);
+                    code <- peek(state); advance(state); if (code == closing) return true; if (code != 44) return false; space(state);
+                }
+                return false;
+            }
+            selected(key >> str, scope >> int) -> bool {
+                if (scope == 1) return key == "forbid_path_tokens";
+                if (scope == 2) return key == "crate_integration_tests" || key == "fixture_build_artifacts";
+                if (scope == 3 || scope == 4) return key == "source" || key == "dest";
+                return key == "schema" || key == "public_name" || key == "dist_root" || key == "public_files" || key == "public_doc_files" || key == "public_tool_files" ||
+                    key == "public_trees" || key == "public_fixture_trees" || key == "public_test_groups" || key == "public_examples" || key == "forbidden_public_roots" ||
+                    key == "public_example_name_policy" || key == "private_roots" || key == "private_segments" || key == "private_file_suffixes" || key == "private_path_fragments" ||
+                    key == "public_package_prune" || key == "fixture_build_artifacts";
+            }
+            // The original consumes this flag with Python truthiness, not bool-only schema validation.
+            truth(text >> str) -> bool {
+                if (text == "false" || text == "null") return false;
+                if (text == "true" || text == "NaN" || text == "Infinity" || text == "-Infinity") return true;
+                bytes >> p<byte> <- cast(text); length >> int <- strByteLen(text); code >> int <- rd<byte>(bytes) & 255;
+                if (code == 34) return length > 2;
+                if (code == 91 || code == 123) {
+                    at >> int <- 1; while (at < length && (rd<byte>(off<byte>(bytes,at)) == 32 || rd<byte>(off<byte>(bytes,at)) == 9 || rd<byte>(off<byte>(bytes,at)) == 10 || rd<byte>(off<byte>(bytes,at)) == 13)) { at += 1; }
+                    return (rd<byte>(off<byte>(bytes,at)) & 255) != (code == 91 ? 93 : 125);
+                }
+                floating >> bool <- false; first >> int <- -1; firstOrder >> i64 <- 0; digits >> i64 <- 0; beforeDot >> i64 <- -1; at >> int <- 0;
+                while (at < length) {
+                    code <- rd<byte>(off<byte>(bytes,at)) & 255;
+                    if (code == 101 || code == 69) { floating <- true; break; }
+                    if (code == 46) { floating <- true; beforeDot <- digits; }
+                    else if (code >= 48 && code <= 57) { if (first < 0 && code > 48) { first <- at; firstOrder <- digits; } digits += 1; }
+                    at += 1;
+                }
+                if (first < 0) return false; if (!floating) return true;
+                if (beforeDot < 0) beforeDot <- digits; mantissaEnd >> int <- at; exponent >> i64 <- 0; negative >> bool <- false;
+                if (at < length) {
+                    at += 1; code <- rd<byte>(off<byte>(bytes,at)) & 255;
+                    if (code == 43 || code == 45) { negative <- code == 45; at += 1; }
+                    while (at < length) {
+                        code <- rd<byte>(off<byte>(bytes,at)) & 255;
+                        if (exponent < 5000000000) exponent <- exponent*10+code-48;
+                        at += 1;
+                    }
+                }
+                magnitude >> i64 <- (negative ? -exponent : exponent)+beforeDot-firstOrder-1;
+                if (magnitude != -324) return magnitude > -324;
+                // 2^-1075 = 5^1075 * 10^-1075. Exact halfway ties round to binary64 zero.
+                cutoff >> str <- "24703282292062327208828439643411068618252990130716238221279284125033775363510437593264991818081799618989828234772285886546332835517796989819938739800539093906315035659515570226392290858392449105184435931802849936536152500319370457678249219365623669863658480757001585769269903706311928279558551332927834338409351978015531246597263579574622766465272827220056374006485499977096599470454020828166226237857393450736339007967761930577506740176324673600968951340535537458516661134223766678604162159680461914467291840300530057530849048765391711386591646239524912623653881879636239373280423891018672348497668235089863388587925628302755995657524455507255189313690836254779186948667994968324049705821028513185451396213837722826145437693412532098591327667236328125";
+                threshold >> p<byte> <- cast(cutoff); count >> int <- strByteLen(cutoff); index >> int <- 0; at <- first;
+                while (at < mantissaEnd || index < count) {
+                    if (at < mantissaEnd && rd<byte>(off<byte>(bytes,at)) == 46) at += 1;
+                    code <- at < mantissaEnd ? (rd<byte>(off<byte>(bytes,at)) & 255) : 48;
+                    expected >> int <- index < count ? (rd<byte>(off<byte>(threshold,index)) & 255) : 48;
+                    if (code != expected) return code > expected; at += 1; index += 1;
+                }
+                return false;
+            }
+            array(text >> str, scope >> int) -> str {
+                state >> p<byte> <- cast(alloc(16)); if (state == null) return "";
+                wr<addr>(state,adr(cast<byte>(text))); wr<int>(off<byte>(state,8),0); wr<int>(off<byte>(state,12),strByteLen(text));
+                space(state); good >> bool <- peek(state) == 91; result >> str <- "["; index >> int <- 0;
+                if (good) {
+                    advance(state); space(state);
+                    if (peek(state) == 93) advance(state);
+                    else {
+                        while (good) {
+                            start >> int <- rd<int>(off<byte>(state,8)); good <- skip(state,1); end >> int <- rd<int>(off<byte>(state,8));
+                            value >> str <- strSubstring(text,start,end-start); projected >> str <- object(value,scope); strRelease(value);
+                            if (projected == "") good <- false;
+                            if (index > 0) result <- cert_json.certJson.append(result,","); result <- cert_json.certJson.append(result,projected); strRelease(projected); index += 1;
+                            space(state); code >> int <- peek(state); advance(state); if (code == 93) break; if (code != 44) good <- false; space(state);
+                        }
+                    }
+                }
+                space(state); if (peek(state) != -1) good <- false; free(state); result <- cert_json.certJson.append(result,"]");
+                if (!good) { strRelease(result); return ""; } return result;
+            }
+            object(text >> str, scope >> int) -> str {
+                state >> p<byte> <- cast(alloc(16)); if (state == null) return "";
+                source >> p<byte> <- cast(text); wr<addr>(state,adr(source)); wr<int>(off<byte>(state,8),0); wr<int>(off<byte>(state,12),strByteLen(text));
+                values >> int <- jsonNewObject(); good >> bool <- true; space(state);
+                if (peek(state) != 123) good <- false;
+                else {
+                    advance(state); space(state);
+                    if (peek(state) == 125) advance(state);
+                    else {
+                        while (good) {
+                            start >> int <- rd<int>(off<byte>(state,8)); if (!string(state)) { good <- false; break; } end >> int <- rd<int>(off<byte>(state,8));
+                            rawKey >> str <- strSubstring(text,start,end-start); keyNode >> int <- physical43_json.physical43Json.parse(rawKey); strRelease(rawKey);
+                            key >> str <- keyNode == 0 ? "" : jsonStringView(keyNode,""); space(state);
+                            if (peek(state) != 58) good <- false;
+                            else {
+                                advance(state); space(state); start <- rd<int>(off<byte>(state,8)); good <- skip(state,1); end <- rd<int>(off<byte>(state,8));
+                                if (good && selected(key,scope)) { rawValue >> str <- strSubstring(text,start,end-start); cert_json.certJson.put(values,key,jsonNewString(rawValue)); strRelease(rawValue); }
+                                space(state); code >> int <- peek(state); advance(state);
+                                if (code == 125) { if (keyNode != 0) jsonRelease(keyNode); break; }
+                                if (code != 44) good <- false; space(state);
+                            }
+                            if (keyNode != 0) jsonRelease(keyNode);
+                        }
+                    }
+                }
+                space(state); if (peek(state) != -1) good <- false; free(state);
+                projected >> str <- "{"; index >> int <- 0;
+                while (index < jsonObjectLen(values) && good) {
+                    key >> str <- jsonObjectKeyAt(values,index); if (index > 0) projected <- cert_json.certJson.append(projected,",");
+                    quoted >> str <- cert_json.certJson.quote(key); projected <- cert_json.certJson.append(projected,quoted); strRelease(quoted);
+                    projected <- cert_json.certJson.append(projected,":"); value >> str <- cert_json.certJson.field(values,key);
+                    if (scope == 0 && (key == "public_example_name_policy" || key == "public_package_prune")) {
+                        narrowed >> str <- object(value,key == "public_example_name_policy" ? 1 : 2); strRelease(value); value <- narrowed; if (value == "") good <- false;
+                    } else if (scope == 0 && (key == "public_fixture_trees" || key == "public_examples")) {
+                        if (key == "public_examples") {
+                            narrowed >> str <- array(value,4); if (narrowed == "") good <- false;
+                            quotedValue >> str <- cert_json.certJson.quote(value); projected <- cert_json.certJson.append(projected,narrowed); strRelease(narrowed);
+                            projected <- cert_json.certJson.append(projected,",\"__release43_public_examples\":"); projected <- cert_json.certJson.append(projected,quotedValue); strRelease(quotedValue); strRelease(value); value <- "";
+                        } else { narrowed >> str <- array(value,3); strRelease(value); value <- narrowed; if (value == "") good <- false; }
+                    } else if (scope == 2) {
+                        enabled >> bool <- truth(value); strRelease(value); value <- enabled ? "true" : "false";
+                    }
+                    projected <- cert_json.certJson.append(projected,value); strRelease(value); free(cast<byte>(key)); index += 1;
+                }
+                projected <- cert_json.certJson.append(projected,"}"); jsonRelease(values);
+                if (!good) { strRelease(projected); return ""; } return projected;
+            }
+        public:
+            // Ignored metadata is validated without decoding; published example metadata stays as JSON source.
+            manifest(text >> str) -> int {
+                projected >> str <- object(text,0); if (projected == "") return 0;
+                result >> int <- physical43_json.physical43Json.parse(projected); strRelease(projected); return result;
+            }
+    fa: return true;
+}

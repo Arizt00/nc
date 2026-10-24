@@ -1,0 +1,100 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:physical43_common, physical43_exact, physical43_deep_json, release43_host, release_io, tool_cli, cert_json>;
+
+physical43ExactPairs {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+        rows >> int <- 0;
+        records >> int <- 0;
+        live >> int <- 0;
+        candidate >> str <- "";
+        scratch >> str <- "";
+        head >> str <- "";
+    fn:
+        private:
+            expect(valid >> bool, name >> str) -> void {
+                checks += 1; if (!valid) { failures += 1; println("FAIL "+name+" "+physical43_common.physical43Common.diagnostic()); }
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"name",jsonNewString(name)); cert_json.certJson.put(row,"passed",jsonNewBool(valid)); cert_json.certJson.push(rows,row);
+            }
+            expand(text >> str, root >> str) -> str {
+                return physical43_common.physical43Common.replace(physical43_common.physical43Common.replace(text,"$ROOT",root),"$HEAD",head);
+            }
+            command(argv >> int, cwd >> str) -> int { return physical43_common.physical43Common.command(argv,cwd,300000); }
+            git(repo >> str, words >> str) -> str {
+                argv >> int <- jsonParse(words); jsonArrayInsert(argv,0,jsonNewString("git")); result >> int <- command(argv,repo); expect(physical43_common.physical43Common.succeeded(result),"controlled Git "+words); text >> str <- physical43_common.physical43Common.stdoutText(result); jsonRelease(result); jsonRelease(argv); return text;
+            }
+            invoke(name >> str, tail >> int, root >> str, key >> str, expectedCode >> int, expected >> int) -> int {
+                physical43_common.physical43Common.reset(); envSet("PHYSICAL43_EXACT_TEST_KEY",key);
+                argv >> int <- jsonNewArray(); cert_json.certJson.push(argv,jsonNewString(candidate)); cert_json.certJson.push(argv,jsonNewString("exact-head-evidence")); at >> int <- 0;
+                while (at < jsonArrayLen(tail)) { item >> int <- jsonArrayBorrow(tail,at); cert_json.certJson.push(argv,jsonNewString(expand(jsonStringView(item,""),root))); jsonRelease(item); at += 1; }
+                result >> int <- command(argv,"."); code >> int <- release_io.releaseIo.number(result,"code",-99); stdout >> str <- physical43_common.physical43Common.field(result,"stdout"); actual >> int <- physical43_deep_json.physical43DeepJson.parse(stdout);
+                sameCode >> bool <- code == expectedCode; expect(sameCode,name+" CLI exit"); sameResult >> bool <- expected == 0 || (jsonKind(expected) == 1 ? actual == 0 : physical43_common.physical43Common.equal(actual,expected));
+                if (expected != 0) expect(sameResult,name+" complete frozen return record");
+                settings >> int <- jsonNewObject(); names >> int <- jsonParse("[\"RUNNER_OS\",\"RUNNER_ARCH\",\"GITHUB_RUN_ID\",\"GITHUB_RUN_ATTEMPT\",\"NCC_CI_EVIDENCE_HMAC_KEY_ID\",\"NCC_PHYSICAL_RUNNER_ID\",\"NCC_PHYSICAL_RUNNER_MODEL\",\"NCC_PHYSICAL_RUNNER_SERIAL\"]"); at <- 0;
+                while (at < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,at); label >> str <- jsonStringView(item,""); cert_json.certJson.put(settings,label,envHas(label) ? jsonNewString(physical43_common.physical43Common.env(label)) : jsonNewNull()); jsonRelease(item); at += 1; } jsonRelease(names);
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"name",jsonNewString(name)); cert_json.certJson.put(row,"passed",jsonNewBool(sameCode && sameResult)); cert_json.certJson.put(row,"argv",argv); cert_json.certJson.put(row,"root",jsonNewString(root)); cert_json.certJson.put(row,"key",jsonNewString(key)); cert_json.certJson.put(row,"environment",settings); cert_json.certJson.put(row,"expected_code",jsonNewInt(expectedCode)); cert_json.certJson.put(row,"actual_code",jsonNewInt(code)); cert_json.certJson.put(row,"actual",actual == 0 ? jsonNewNull() : jsonClone(actual)); cert_json.certJson.put(row,"process",result); cert_json.certJson.push(records,row); strRelease(stdout); return actual;
+            }
+            prepare(plan >> int, root >> str) -> void {
+                files >> int <- jsonObjectBorrow(plan,"files"); at >> int <- 0;
+                while (at < jsonArrayLen(files)) { file >> int <- jsonArrayBorrow(files,at); name >> str <- cert_json.certJson.field(file,"path"); text >> str <- cert_json.certJson.field(file,"text"); expect(physical43_common.physical43Common.write(root+"/"+name,text),"fixture bytes "+name); strRelease(name); strRelease(text); jsonRelease(file); at += 1; } jsonRelease(files);
+                links >> int <- jsonObjectBorrow(plan,"links"); at <- 0;
+                while (at < jsonArrayLen(links)) { link >> int <- jsonArrayBorrow(links,at); target >> str <- cert_json.certJson.field(link,"target"); path >> str <- cert_json.certJson.field(link,"path"); expect(release43_host.release43Host.createSymlink(root+"/"+target,root+"/"+path,false),"actual symbolic link "+path); strRelease(target); strRelease(path); jsonRelease(link); at += 1; } jsonRelease(links);
+            }
+            proveEnvelope(model >> int, schema >> str, key >> str, name >> str) -> void {
+                physical43_common.physical43Common.reset(); expect(physical43_exact.physical43Exact.verifyEnvelope(model,schema,key,key != "") == (key == "" ? 0 : 1),name+" actual payload SHA/HMAC");
+            }
+            liveCommand(name >> str, tailText >> str, root >> str, key >> str, code >> int) -> int {
+                tail >> int <- jsonParse(tailText); model >> int <- invoke(name,tail,root,key,code,0); jsonRelease(tail); return model;
+            }
+            captureLive(name >> str, root >> str, key >> str, golden >> int) -> int {
+                text >> str <- "[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/"+name+"/exact-head.json\",\"--expected-sha\",\"$HEAD\",\"--lane\",\"fixture-only-not-CI\",\"--runner-class\",\"hosted\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]";
+                model >> int <- liveCommand(name,text,root,key,0); proveEnvelope(model,"ncc.ci.exact_head_capture.v1",key,name);
+                payload >> int <- jsonObjectBorrow(model,"payload"); normalized >> int <- jsonClone(payload); cert_json.certJson.put(normalized,"captured_utc",jsonNewString("VOLATILE_UTC")); runner >> int <- jsonObjectBorrow(normalized,"runner"); cert_json.certJson.put(runner,"python",jsonNewNull()); jsonObjectSet(normalized,"runner",runner); jsonRelease(runner);
+                expected >> int <- jsonObjectBorrow(golden,name); if (jsonKind(expected) != 0) expect(physical43_common.physical43Common.equal(normalized,expected),name+" full capture payload except declared UTC/native provenance"); jsonRelease(expected);
+                cert_json.certJson.put(live,name,jsonClone(normalized)); jsonRelease(normalized); jsonRelease(payload); return model;
+            }
+            liveSuite(golden >> int) -> void {
+                repo >> str <- scratch+"/live-repo"; expect(physical43_common.physical43Common.directories(repo),"scratch Git directory");
+                envSet("GIT_AUTHOR_DATE","2026-10-06T00:00:00Z"); envSet("GIT_COMMITTER_DATE","2026-10-06T00:00:00Z"); envSet("GIT_CONFIG_NOSYSTEM","1");
+                git(repo,"[\"init\",\"-q\",\"-b\",\"fixture\"]"); git(repo,"[\"config\",\"user.name\",\"Native fixture only\"]"); git(repo,"[\"config\",\"user.email\",\"fixture@ncc.invalid\"]"); git(repo,"[\"config\",\"core.autocrlf\",\"false\"]");
+                expect(physical43_common.physical43Common.write(repo+"/seed.n","fixture_only { ref main ->> run; fn: public: run() -> int { return 0; } }\n"),"controlled source bytes"); expect(physical43_common.physical43Common.write(repo+"/.gitignore","/evidence/\n"),"ignored evidence only"); git(repo,"[\"add\",\"seed.n\",\".gitignore\"]"); git(repo,"[\"commit\",\"-q\",\"-m\",\"controlled exact-head fixture, not CI\"]"); head <- git(repo,"[\"rev-parse\",\"HEAD\"]"); cert_json.certJson.put(live,"head",jsonNewString(head));
+                envRemove("RUNNER_OS"); envRemove("RUNNER_ARCH"); envRemove("GITHUB_RUN_ID"); envRemove("GITHUB_RUN_ATTEMPT"); envRemove("NCC_PHYSICAL_RUNNER_ID"); envRemove("NCC_PHYSICAL_RUNNER_MODEL"); envRemove("NCC_PHYSICAL_RUNNER_SERIAL"); envSet("NCC_CI_EVIDENCE_HMAC_KEY_ID","fixture-key-not-CI");
+                captured >> int <- captureLive("capture-key",repo,"fixture-key",golden); jsonRelease(captured); captured <- captureLive("capture-no-key",repo,"",golden); jsonRelease(captured);
+                envSet("RUNNER_OS","fixture-os"); envSet("RUNNER_ARCH","fixture-arch"); envSet("GITHUB_RUN_ID","not-a-CI-run"); envSet("GITHUB_RUN_ATTEMPT","fixture-attempt"); captured <- captureLive("capture-env",repo,"fixture-key",golden); jsonRelease(captured);
+                root >> str <- repo+"/evidence/capture-key"; expect(physical43_common.physical43Common.write(root+"/boot.log","FIXTURE_ONLY_NO_HARDWARE\n"),"live log"); expect(physical43_common.physical43Common.write(root+"/kernel.elf","not-a-real-kernel, fixture bytes\n"),"live image role"); expect(physical43_common.physical43Common.write(root+"/kernel.disasm.txt","fixture disassembly role only\n"),"live disassembly role"); expect(physical43_common.physical43Common.write(root+"/nested/config.json","{\"fixture\":true}\n"),"live nested metadata");
+                sealed >> int <- liveCommand("seal-key","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/capture-key\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"fixture-key",0); proveEnvelope(sealed,"ncc.ci.exact_head_evidence_certificate.v1","fixture-key","seal-key"); cert_json.certJson.put(live,"seal-key",sealed);
+                result >> int <- liveCommand("verify-live-key","[\"verify\",\"--root\",\"$ROOT/evidence/capture-key\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\",\"--require-hmac\",\"--require-role\",\"image\",\"--require-role\",\"disassembly\",\"--require-role\",\"log\",\"--require-role\",\"metadata\"]",repo,"fixture-key",0); expected >> int <- jsonObjectBorrow(golden,"verify-live-key"); if (jsonKind(expected) != 0) expect(physical43_common.physical43Common.equal(result,expected),"live full verification record"); jsonRelease(expected); cert_json.certJson.put(live,"verify-live-key",result);
+                sealed <- liveCommand("seal-no-key","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/capture-no-key\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"",0); proveEnvelope(sealed,"ncc.ci.exact_head_evidence_certificate.v1","","seal-no-key"); cert_json.certJson.put(live,"seal-no-key",sealed);
+                result <- liveCommand("verify-live-no-key","[\"verify\",\"--root\",\"$ROOT/evidence/capture-no-key\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"",0); expected <- jsonObjectBorrow(golden,"verify-live-no-key"); if (jsonKind(expected) != 0) expect(physical43_common.physical43Common.equal(result,expected),"live unkeyed complete verification record"); jsonRelease(expected); cert_json.certJson.put(live,"verify-live-no-key",result);
+                result <- liveCommand("physical-missing","[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/rejected.json\",\"--expected-sha\",\"$HEAD\",\"--lane\",\"fixture-only\",\"--runner-class\",\"physical\"]",repo,"",1); jsonRelease(result);
+                markers >> int <- jsonParse("[\"QEMU\",\"tcg\",\"VirtualBox\",\"vmware\",\"emulator\",\"simulator\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(markers)) { marker >> int <- jsonArrayBorrow(markers,at); envSet("NCC_PHYSICAL_RUNNER_ID","fixture-control"); envSet("NCC_PHYSICAL_RUNNER_MODEL",jsonStringView(marker,"")); envSet("NCC_PHYSICAL_RUNNER_SERIAL","not-hardware"); result <- liveCommand("physical-marker-"+renderInt(at),"[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/rejected.json\",\"--expected-sha\",\"$HEAD\",\"--lane\",\"fixture-only\",\"--runner-class\",\"physical\"]",repo,"",1); jsonRelease(result); jsonRelease(marker); at += 1; } jsonRelease(markers);
+                result <- liveCommand("capture-wrong-sha","[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/rejected.json\",\"--expected-sha\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"--lane\",\"fixture-only\",\"--runner-class\",\"hosted\"]",repo,"",1); jsonRelease(result);
+                dirty >> str <- scratch+"/dirty-tracked"; git(scratch,"[\"clone\",\"-q\",\"--no-local\",\"live-repo\",\"dirty-tracked\"]"); physical43_common.physical43Common.write(dirty+"/seed.n","dirty fixture\n"); result <- liveCommand("capture-dirty-tracked","[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/rejected.json\",\"--expected-sha\",\"$HEAD\",\"--lane\",\"fixture-only\",\"--runner-class\",\"hosted\"]",dirty,"",1); jsonRelease(result);
+                dirty <- scratch+"/dirty-untracked"; git(scratch,"[\"clone\",\"-q\",\"--no-local\",\"live-repo\",\"dirty-untracked\"]"); physical43_common.physical43Common.write(dirty+"/unexpected.txt","dirty fixture\n"); result <- liveCommand("capture-dirty-untracked","[\"capture\",\"--repo\",\"$ROOT\",\"--out\",\"$ROOT/evidence/rejected.json\",\"--expected-sha\",\"$HEAD\",\"--lane\",\"fixture-only\",\"--runner-class\",\"hosted\"]",dirty,"",1); jsonRelease(result);
+                result <- liveCommand("seal-live-wrong-key","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/capture-key\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"wrong-key",1); jsonRelease(result);
+                result <- liveCommand("seal-live-wrong-sha","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/capture-key\",\"--expected-sha\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"fixture-key",1); jsonRelease(result);
+                badRoot >> str <- repo+"/evidence/seal-tree-mismatch"; captured <- physical43_common.physical43Common.read(root+"/exact-head.json",false); payload >> int <- jsonObjectGet(captured,"payload"); src >> int <- jsonObjectGet(payload,"source"); cert_json.certJson.put(src,"tree",jsonNewString("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")); jsonObjectSet(payload,"source",src); jsonRelease(src); jsonRelease(captured); captured <- physical43_exact.physical43Exact.envelope("ncc.ci.exact_head_capture.v1",payload,"fixture-key"); jsonRelease(payload); expect(physical43_common.physical43Common.save(badRoot+"/exact-head.json",captured),"complete re-signed tree mismatch fixture"); jsonRelease(captured);
+                result <- liveCommand("seal-live-tree-mismatch","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/seal-tree-mismatch\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"fixture-key",1); jsonRelease(result);
+                badRoot <- repo+"/evidence/seal-symbolic"; physical43_common.physical43Common.directories(badRoot); expect(physical43_common.physical43Common.copy(root+"/exact-head.json",badRoot+"/exact-head.json"),"retained signed capture for link control"); expect(release43_host.release43Host.createSymlink(root+"/boot.log",badRoot+"/linked.log",false),"live seal actual link");
+                result <- liveCommand("seal-live-symbolic","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence/seal-symbolic\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",repo,"fixture-key",1); jsonRelease(result);
+                badRoot <- dirty+"/evidence"; physical43_common.physical43Common.directories(badRoot); expect(physical43_common.physical43Common.copy(root+"/exact-head.json",badRoot+"/exact-head.json"),"retained signed capture for dirty seal");
+                result <- liveCommand("seal-live-dirty","[\"seal\",\"--repo\",\"$ROOT\",\"--root\",\"$ROOT/evidence\",\"--expected-sha\",\"$HEAD\",\"--hmac-key-env\",\"PHYSICAL43_EXACT_TEST_KEY\"]",dirty,"fixture-key",1); jsonRelease(result);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 5 && argsCount(arguments) != 6) return 2;
+                candidate <- physical43_common.physical43Common.absolutePath(argsAt(arguments,1)); scratch <- physical43_common.physical43Common.absolutePath(argsAt(arguments,2)); if (physical43_common.physical43Common.fileType(scratch) != 0) { println("requires fresh isolated scratch"); return 2; }
+                physical43_common.physical43Common.directories(scratch); plans >> int <- physical43_common.physical43Common.read(argsAt(arguments,3),false); golden >> int <- argsCount(arguments) == 6 ? physical43_common.physical43Common.read(argsAt(arguments,5),false) : jsonNewObject(); if (plans == 0 || golden == 0) return 2;
+                rows <- jsonNewArray(); records <- jsonNewArray(); live <- jsonNewObject(); sourceRows >> int <- jsonObjectBorrow(plans,"cases"); expectedRows >> int <- jsonObjectBorrow(golden,"cases"); head <- "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; at >> int <- 0;
+                while (at < jsonArrayLen(sourceRows)) {
+                    plan >> int <- jsonArrayBorrow(sourceRows,at); name >> str <- cert_json.certJson.field(plan,"name"); root >> str <- scratch+"/cases/"+name; prepare(plan,root); tail >> int <- jsonObjectBorrow(plan,"argv"); key >> str <- cert_json.certJson.field(plan,"key"); reference >> int <- jsonObjectBorrow(expectedRows,name); expected >> int <- jsonObjectBorrow(reference,"actual"); code >> int <- release_io.releaseIo.number(reference,"code",release_io.releaseIo.number(plan,"expected_code",1));
+                    model >> int <- invoke(name,tail,root,key,code,expected); jsonRelease(model); jsonRelease(expected); jsonRelease(reference); jsonRelease(tail); jsonRelease(plan); strRelease(name); strRelease(key); strRelease(root); at += 1;
+                } jsonRelease(sourceRows); jsonRelease(expectedRows); liveGolden >> int <- jsonObjectBorrow(golden,"live"); liveSuite(liveGolden); jsonRelease(liveGolden);
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.physical43.exact-pairs.native.v43")); cert_json.certJson.put(report,"host",jsonNewString(envHas("WINDIR") ? "windows" : "linux")); cert_json.certJson.put(report,"passed",jsonNewBool(failures == 0)); cert_json.certJson.put(report,"check_count",jsonNewInt(checks)); cert_json.certJson.put(report,"failures",jsonNewInt(failures)); cert_json.certJson.put(report,"candidate_repository_path",jsonNewString(argsAt(arguments,1))); cert_json.certJson.put(report,"candidate_sha256",jsonNewString(physical43_common.physical43Common.fileHash(candidate))); cert_json.certJson.put(report,"covered_originals",jsonParse("[\"tools/ci/exact_head_evidence.py\"]")); cert_json.certJson.put(report,"fixture_only_not_hardware_or_CI",jsonNewBool(true)); cert_json.certJson.put(report,"checks",rows); cert_json.certJson.put(report,"cases",records); cert_json.certJson.put(report,"live",live); cert_json.certJson.put(report,"python_required",jsonNewBool(false)); cert_json.certJson.put(report,"plan_sha256",jsonNewString(physical43_common.physical43Common.fileHash(argsAt(arguments,3)))); if (argsCount(arguments) == 6) cert_json.certJson.put(report,"oracle_sha256",jsonNewString(physical43_common.physical43Common.fileHash(argsAt(arguments,5)))); saved >> bool <- cert_json.certJson.save(argsAt(arguments,4),report); jsonRelease(report); jsonRelease(plans); jsonRelease(golden); println("exact pairs checks="+renderInt(checks)+" failures="+renderInt(failures)); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+}

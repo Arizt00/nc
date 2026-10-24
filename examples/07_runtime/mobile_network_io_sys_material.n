@@ -1,0 +1,29 @@
+use <io:output>;
+
+mobileNetworkIoSysMaterial {
+    fn:
+        run() -> bool {
+            if (!fswrite("ncc_material.tmp", "uno\ndos")) return false;
+            lines >> array<str> <- fread_lines("ncc_material.tmp");
+            if (lines.len() != 2) return false;
+            if (!rename_file("ncc_material.tmp", "ncc_material.done")) return false;
+            if (!registry_write("ncc_material_example", "material-ok")) return false;
+
+            stored >> str <- registry_read("ncc_material_example");
+            load >> ft64 <- cpu_load();
+            now >> int <- get_current_time();
+            sleep(0);
+            wifi >> bool <- network::isWiFiConnected();
+
+            if (!delete_file("ncc_material.done")) return false;
+            println("backend material: " + stored);
+            return stored == "material-ok" && load >= -1.0 && load <= 100.0 && now > 0 &&
+                (wifi || !wifi);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

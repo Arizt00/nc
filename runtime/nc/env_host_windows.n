@@ -1,0 +1,77 @@
+
+envHost {
+    fn:
+        private:
+            wide(text >> str) -> p<u16> {
+                chars >> int <- osWMultiByteToWideChar(65001,8,adr(text),-1,null,0);
+                if (chars <= 0) return null;
+                result >> p<u16> <- cast<u16>(alloc(chars*2)); if (result == null) { osWSetLastError(12); return null; }
+                if (osWMultiByteToWideChar(65001,8,adr(text),-1,adr(result),chars) != chars) {
+                    status >> int <- osWGetLastError(); free(result); osWSetLastError(status); return null;
+                }
+                return result;
+            }
+            utf8(text >> p<u16>) -> p<byte> {
+                bytes >> int <- osWWideCharToMultiByte(65001,128,adr(text),-1,null,0,null,null);
+                if (bytes <= 0) return null;
+                result >> p<byte> <- cast<byte>(alloc(bytes)); if (result == null) { osWSetLastError(12); return null; }
+                if (osWWideCharToMultiByte(65001,128,adr(text),-1,adr(result),bytes,null,null) != bytes) {
+                    status >> int <- osWGetLastError(); free(result); osWSetLastError(status); return null;
+                }
+                return result;
+            }
+            length(text >> p<byte>) -> int { at >> int <- 0; while (rd(off(text,at)) != 0) { at += 1; } return at; }
+            nextWide(text >> p<u16>) -> p<u16> { at >> int <- 0; while (rd(off(text,at)) != 0) { at += 1; } return off(text,at+1); }
+        public:
+            lastError() -> int { return osWGetLastError(); }
+            setError(code >> int) -> void { osWSetLastError(code); }
+            value(name >> str) -> p<byte> {
+                key >> p<u16> <- wide(name); if (key == null) return null;
+                attempts >> int <- 0;
+                while (attempts < 16) {
+                    osWSetLastError(0); chars >> u32 <- osWGetEnvironmentVariableW(adr(key),null,0); status >> int <- osWGetLastError();
+                    if (chars == 0 && status != 0) { free(key); osWSetLastError(status); return null; }
+                    if (chars == 0) chars <- 1;
+                    buffer >> p<u16> <- cast<u16>(calloc(chars,2));
+                    if (buffer == null) { free(key); osWSetLastError(12); return null; }
+                    osWSetLastError(0); written >> u32 <- osWGetEnvironmentVariableW(adr(key),adr(buffer),chars); status <- osWGetLastError();
+                    if (written == 0 && status != 0) { free(buffer); free(key); osWSetLastError(status); return null; }
+                    if (written >= chars) { free(buffer); attempts += 1; continue; }
+                    result >> p<byte> <- utf8(buffer); status <- result == null ? osWGetLastError() : 0;
+                    free(buffer); free(key); osWSetLastError(status); return result;
+                }
+                free(key); osWSetLastError(234); return null;
+            }
+            set(name >> str, value >> str) -> bool {
+                key >> p<u16> <- wide(name); if (key == null) return false;
+                text >> p<u16> <- wide(value);
+                if (text == null) { status >> int <- osWGetLastError(); free(key); osWSetLastError(status); return false; }
+                result >> int <- osWSetEnvironmentVariableW(adr(key),adr(text)); status >> int <- result == 0 ? osWGetLastError() : 0;
+                free(key); free(text); osWSetLastError(status); return result != 0;
+            }
+            remove(name >> str) -> bool {
+                key >> p<u16> <- wide(name); if (key == null) return false;
+                result >> int <- osWSetEnvironmentVariableW(adr(key),null); status >> int <- result == 0 ? osWGetLastError() : 0;
+                free(key); if (status == 203) status <- 0; osWSetLastError(status); return status == 0;
+            }
+            capture(data >> p<byte>) -> int {
+                block >> addr <- osWGetEnvironmentStringsW(); if (block == null) return osWGetLastError();
+                cursor >> p<u16> <- from<u16>(block); count >> int <- 0;
+                while (rd(cursor) != 0) { count += 1; cursor <- nextWide(cursor); }
+                vector >> p<addr> <- cast<addr>(calloc(count+1,8));
+                if (vector == null) { osWFreeEnvironmentStringsW(block); return 12; }
+                cursor <- from<u16>(block); at >> int <- 0; total >> u64 <- 0; status >> int <- 0;
+                while (at < count) {
+                    text >> p<byte> <- utf8(cursor); if (text == null) { status <- osWGetLastError(); break; }
+                    bytes >> int <- length(text)+1;
+                    if (total+bytes > 2147483647) { free(text); status <- 534; break; }
+                    wr(off(vector,at),adr(text)); total += bytes; at += 1; cursor <- nextWide(cursor);
+                }
+                osWFreeEnvironmentStringsW(block);
+                if (status != 0) {
+                    while (at > 0) { at -= 1; free(from<byte>(rd(off(vector,at)))); } free(vector); return status;
+                }
+                wr<u64>(data,count); wr<addr>(off(data,8),adr(vector)); wr<u64>(off(data,16),total); return 0;
+            }
+    fa: return true;
+}

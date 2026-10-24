@@ -1,0 +1,128 @@
+use <data:json>;
+use <io:output, render>;
+use <project:modules_json, modules_projection, modules_binary, contract_checks, frontend_material, release_io, tool_cli>;
+
+modulesTests {
+    const:
+        TREE >> str <- "{\"schema\":\"nc.parser.ast-material.v1\",\"nodes\":[{\"kind\":\"Program\",\"parent\":-1,\"first_token\":0,\"end_token\":1,\"origin_token\":0,\"start\":0,\"end\":2,\"first_child\":1,\"next_sibling\":-1,\"flags\":0},{\"kind\":\"PackageDecl\",\"parent\":0,\"first_token\":0,\"end_token\":1,\"origin_token\":0,\"start\":0,\"end\":2,\"first_child\":2,\"next_sibling\":-1,\"flags\":0},{\"kind\":\"PackageVersion\",\"parent\":1,\"first_token\":0,\"end_token\":0,\"origin_token\":0,\"start\":0,\"end\":1,\"first_child\":-1,\"next_sibling\":3,\"flags\":1},{\"kind\":\"PackageVersion\",\"parent\":1,\"first_token\":1,\"end_token\":1,\"origin_token\":1,\"start\":1,\"end\":2,\"first_child\":-1,\"next_sibling\":-1,\"flags\":0}],\"tokens\":[{\"kind\":3,\"start\":0,\"end\":1,\"payload\":[97]},{\"kind\":3,\"start\":1,\"end\":2,\"payload\":[98]},{\"kind\":99,\"start\":2,\"end\":2,\"payload\":[]}]}";
+    stc:
+        total >> int;
+        healthy >> bool;
+    fn:
+        private:
+            check(value >> bool, name >> str) -> void {
+                total += 1;
+                if (!value) { healthy <- false; println("FAIL modules self-test: "+name); }
+            }
+            same(a >> int, b >> int, name >> str) -> void {
+                check(a != 0 && b != 0 && contract_checks.contractChecks.equal(a,b),name); jsonRelease(a); jsonRelease(b);
+            }
+            mutation(collection >> str, index >> int, key >> str, value >> int) -> bool {
+                doc >> int <- jsonParse(TREE); values >> int <- jsonObjectGet(doc,collection);
+                node >> int <- jsonArrayGet(values,index); jsonObjectSet(node,key,value);
+                removed >> int <- jsonArrayRemove(values,index); jsonRelease(removed); jsonArrayInsert(values,index,node);
+                jsonObjectSet(doc,collection,values);
+                projected >> int <- modules_projection.modulesProjection.declarations(doc,"ab");
+                valid >> bool <- projected == 0;
+                jsonRelease(projected); jsonRelease(doc); jsonRelease(values); jsonRelease(node); jsonRelease(value); return valid;
+            }
+            wasm() -> void {
+                data >> p<byte> <- cast(calloc(128,1));
+                if (data == null) { check(false,"wasm-allocation"); return; }
+                wr(off(data,1),97); wr(off(data,2),115); wr(off(data,3),109); wr(off(data,4),1);
+                wr(off(data,8),0); wr(off(data,9),39); wr(off(data,10),6);
+                cp(off(data,11),cast<byte>("nC.mct"),6); wr(off(data,17),1);
+                check(modules_binary.modulesBinary.fingerprint(data,49) == 41,"wasm-range");
+                check(modules_binary.modulesBinary.fingerprint(data,48) == -1,"wasm-truncated-section");
+                check(modules_binary.modulesBinary.fingerprint(data,8) == -1,"wasm-missing-custom");
+                wr(off(data,41),255); wr(off(data,42),128); wr(off(data,43),127); wr(off(data,44),1);
+                check(modules_binary.modulesBinary.word(data,41) == 25133311,"little-endian-high-bytes");
+                wr(off(data,17),2); check(modules_binary.modulesBinary.fingerprint(data,49) == -1,"wasm-contract-version"); wr(off(data,17),1);
+                cp(off(data,49),off(data,8),41); check(modules_binary.modulesBinary.fingerprint(data,90) == -1,"wasm-duplicate-mct");
+                wr(off(data,10),7); check(modules_binary.modulesBinary.fingerprint(data,49) == -1,"wasm-wrong-name"); wr(off(data,10),6);
+                wr(off(data,9),38); check(modules_binary.modulesBinary.fingerprint(data,48) == -1,"wasm-short-header");
+                wr(off(data,9),128); wr(off(data,10),128); wr(off(data,11),128); wr(off(data,12),128); wr(off(data,13),16);
+                check(modules_binary.modulesBinary.fingerprint(data,49) == -1,"wasm-u32-overflow");
+                wr(off(data,13),128); check(modules_binary.modulesBinary.fingerprint(data,49) == -1,"wasm-unterminated-leb");
+                wr(off(data,0),1); check(modules_binary.modulesBinary.fingerprint(data,49) == -1,"wasm-magic");
+                free(data);
+            }
+            images(directory >> str) -> void {
+                check(release_io.releaseIo.makeDirectories(directory),"binary-fixture-directory");
+                first >> str <- directory+"/modules_v42_a.wasm"; second >> str <- directory+"/modules_v42_b.wasm";
+                data >> p<byte> <- cast(calloc(50,1));
+                if (data == null) { check(false,"binary-allocation"); return; }
+                wr(off(data,1),97); wr(off(data,2),115); wr(off(data,3),109); wr(off(data,4),1);
+                wr(off(data,9),39); wr(off(data,10),6); cp(off(data,11),cast<byte>("nC.mct"),6); wr(off(data,17),1);
+                wr(off(data,41),42);
+                check(fsWriteFrom(first,data,49,false) == 49 && fsWriteFrom(second,data,49,false) == 49,"binary-fixture-write");
+                row >> int <- modules_binary.modulesBinary.compare(first,second,true,42,42);
+                check(tool_cli.toolCli.hasFlag(row,"valid") && tool_cli.toolCli.hasFlag(row,"identical"),"identical-wasm"); jsonRelease(row);
+                wr(off(data,41),43); fsWriteFrom(second,data,49,false);
+                row <- modules_binary.modulesBinary.compare(first,second,true,42,43);
+                check(tool_cli.toolCli.hasFlag(row,"valid") && !tool_cli.toolCli.hasFlag(row,"identical"),"only-fingerprint-different"); jsonRelease(row);
+                row <- modules_binary.modulesBinary.compare(first,second,true,42,44);
+                check(!tool_cli.toolCli.hasFlag(row,"valid"),"wrong-fingerprint-value"); jsonRelease(row);
+                row <- modules_binary.modulesBinary.compare(first,second,false,0,0);
+                check(!tool_cli.toolCli.hasFlag(row,"valid"),"non-wasm-no-exception"); jsonRelease(row);
+                wr(off(data,40),1); fsWriteFrom(second,data,49,false);
+                row <- modules_binary.modulesBinary.compare(first,second,true,42,43);
+                check(!tool_cli.toolCli.hasFlag(row,"valid"),"change-before-fingerprint"); jsonRelease(row);
+                wr(off(data,40),0); wr(off(data,45),1); fsWriteFrom(second,data,49,false);
+                row <- modules_binary.modulesBinary.compare(first,second,true,42,43);
+                check(!tool_cli.toolCli.hasFlag(row,"valid"),"change-after-fingerprint"); jsonRelease(row);
+                fsWriteFrom(second,data,48,false);
+                row <- modules_binary.modulesBinary.compare(first,second,true,42,43);
+                check(!tool_cli.toolCli.hasFlag(row,"valid"),"different-file-length"); jsonRelease(row);
+                free(data); strRelease(first); strRelease(second);
+            }
+        public:
+            run(directory >> str) -> int {
+                total <- 0; healthy <- true;
+                same(modules_json.modulesJson.decoded("\"A\\u0000\\ud83d\\ude42B\""),jsonParse("[65,0,240,159,153,130,66]"),"nul-surrogate-suffix");
+                same(modules_json.modulesJson.decoded("\"\\b\\f\\n\\r\\t\\/\\\\\\\"\""),jsonParse("[8,12,10,13,9,47,92,34]"),"json-escapes");
+                check(modules_json.modulesJson.decoded("\"\\ud83dX\"") == 0,"unpaired-high");
+                check(modules_json.modulesJson.decoded("\"\\ude42\"") == 0,"unpaired-low");
+                check(modules_json.modulesJson.decoded("\"\\u12zz\"") == 0,"invalid-hex");
+                check(modules_json.modulesJson.decoded("\"\\q\"") == 0,"invalid-escape");
+                check(modules_json.modulesJson.decoded("\"a\nb\"") == 0,"unescaped-control");
+                text >> str <- "{\"ast\":{\"modules\":[],\"packages\":[{\"name\":\"a\",\"version\":\"A\\u0000\\ud83d\\ude42B\",\"profile\":null,\"modules\":[]}]}}";
+                doc >> int <- modules_json.modulesJson.normalize(text);
+                projected >> int <- modules_projection.modulesProjection.expected(doc);
+                expected >> int <- jsonParse("{\"modules\":[],\"packages\":[{\"name\":\"a\",\"version\":[65,0,240,159,153,130,66],\"profile\":null,\"modules\":[]}]}");
+                check(contract_checks.contractChecks.equal(projected,expected),"normalized-projection");
+                encoded >> str <- modules_json.modulesJson.canonical(projected,true);
+                roundDoc >> int <- modules_json.modulesJson.normalize(encoded);
+                check(contract_checks.contractChecks.equal(roundDoc,expected),"canonical-nul-roundtrip");
+                check(strContains(encoded,"\\u0000") && !strContains(encoded,"\\uFFF0"),"canonical-utf8");
+                jsonRelease(roundDoc); strRelease(encoded); jsonRelease(projected); jsonRelease(expected); jsonRelease(doc);
+                same(modules_json.modulesJson.normalize("{\"version\":null,\"x\":\"version\"}"),jsonParse("{\"version\":null,\"x\":\"version\"}"),"null-and-nonkey");
+                same(modules_json.modulesJson.normalize("{\"ver\\u0073ion\":\"a\\u0000b\"}"),jsonParse("{\"version\":[97,0,98]}"),"escaped-version-key");
+                check(modules_json.modulesJson.normalize("{\"version\":\"x}") == 0,"unterminated-string");
+                same(modules_json.modulesJson.material(TREE),jsonParse(TREE),"chunked-material-equivalence");
+                check(modules_json.modulesJson.material("{\"a\":[1,]}") == 0,"chunked-trailing-array-comma");
+                check(modules_json.modulesJson.material("{\"a\":[],}") == 0,"chunked-trailing-object-comma");
+                check(modules_json.modulesJson.material("{\"a\":[{\"x\":1]}]") == 0,"chunked-mismatched-delimiters");
+                check(modules_json.modulesJson.material("{\"a\":1}x") == 0,"chunked-trailing-input");
+                check(modules_json.modulesJson.material("{\"a\":[],\"a\":[]}") == 0,"chunked-duplicate-key");
+                same(modules_json.modulesJson.material("{\"a\":[{\"x\":\"}][\\\"\"},true,null,-2] }"),jsonParse("{\"a\":[{\"x\":\"}][\\\"\"},true,null,-2] }"),"chunked-quoted-delimiters");
+                doc <- jsonParse(TREE); projected <- modules_projection.modulesProjection.declarations(doc,"ab");
+                same(projected,jsonParse("{\"modules\":[],\"packages\":[{\"name\":\"a\",\"version\":[98],\"profile\":null,\"modules\":[]}]}"),"last-version-wins"); jsonRelease(doc);
+                check(mutation("nodes",2,"flags",jsonNewInt(0)),"superseded-marker");
+                check(mutation("nodes",3,"flags",jsonNewInt(1)),"last-marker");
+                check(mutation("nodes",2,"kind",jsonNewString("Alien")),"unexpected-child");
+                check(mutation("nodes",3,"origin_token",jsonNewInt(19)),"origin-bounds");
+                check(mutation("tokens",1,"kind",jsonNewInt(2)),"version-token-kind");
+                check(mutation("tokens",1,"payload",jsonParse("[256]")),"payload-bounds");
+                check(mutation("nodes",3,"next_sibling",jsonNewInt(2)),"sibling-cycle");
+                same(modules_projection.modulesProjection.position("error[E]\n --> C:\\path with spaces\\file.n:12:35\n"),jsonParse("[12,35]"),"windows-position");
+                same(modules_projection.modulesProjection.position("error[E]\n --> /tmp/file.n:2:17\n --> /else:99:88"),jsonParse("[2,17]"),"first-position");
+                check(modules_projection.modulesProjection.position("error[E] no arrow 1:2") == 0,"missing-arrow");
+                check(modules_projection.modulesProjection.position(" --> file:12:x") == 0,"invalid-column");
+                wasm();
+                images(directory);
+                println((healthy ? "PASS" : "FAIL")+": modules-v42 self-tests="+renderInt(total));
+                return healthy ? 0 : 1;
+            }
+    fa: return true;
+}

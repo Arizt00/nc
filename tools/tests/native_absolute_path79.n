@@ -1,0 +1,101 @@
+use <io:output>;
+use <data:json>;
+use <process:args, env>;
+
+nativeAbsolutePath79 {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+    check(ok >> bool) -> void {
+        checks += 1;
+        if (!ok) { failures += 1; print("failed check "); println(checks); }
+    }
+    fill(data >> p<byte>, bytes >> int) -> void {
+        at >> int <- 0;
+        while (at < bytes) { wr(off(data,at),165); at += 1; }
+    }
+    unchanged(data >> p<byte>, bytes >> int) -> bool {
+        at >> int <- 0;
+        while (at < bytes) { if (rd(off(data,at)) != 165) return false; at += 1; }
+        return true;
+    }
+    field(row >> int, key >> str) -> str {
+        value >> int <- jsonObjectBorrow(row,key);
+        text >> str <- jsonStringView(value,""); jsonRelease(value); return text;
+    }
+    vector(path >> str, expected >> str, data >> p<byte>, capacity >> int) -> void {
+        bytes >> int <- strByteLen(expected);
+        fill(data,capacity);
+        written >> int <- absolutePathInto(path,off(data,8),capacity-16);
+        check(written == bytes);
+        check(written >= 0 && strEq(cast<str>(off(data,8)),expected));
+        check(unchanged(data,8) && unchanged(off(data,8+bytes+1),capacity-8-bytes-1));
+        fill(data,capacity);
+        check(absolutePathInto(path,off(data,8),bytes) == -2);
+        check(unchanged(data,capacity));
+        check(absolutePathInto(path,off(data,8),bytes+1) == bytes);
+        check(rd(off(data,8+bytes)) == 0 && unchanged(off(data,8+bytes+1),capacity-8-bytes-1));
+        check(absolutePathInto(path,off(data,8),0xFFFFFFFFFFFFFFFF) == bytes);
+        pathBytes >> int <- strByteLen(path);
+        fill(data,capacity); cp(off(data,8),cast<byte>(path),pathBytes+1);
+        check(absolutePathInto(cast<str>(off(data,8)),off(data,8),capacity-16) == bytes);
+        check(strEq(cast<str>(off(data,8)),expected) && unchanged(data,8));
+        fill(data,capacity); cp(off(data,8),cast<byte>(path),pathBytes+1);
+        check(absolutePathInto(cast<str>(off(data,8)),off(data,10),capacity-18) == bytes);
+        check(strEq(cast<str>(off(data,10)),expected) && unchanged(data,8));
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 3) return 64;
+        model >> int <- jsonParseFile(argsAt(arguments,1));
+        if (model == 0) return 65;
+        data >> p<byte> <- alloc(262144);
+        if (data == null) return 70;
+        fill(data,262144);
+        check(absolutePathInto(null,data,262144) == -1);
+        check(absolutePathInto("",data,262144) == -1);
+        check(absolutePathInto("missing",null,20) == -2);
+        check(absolutePathInto("missing",data,0) == -2);
+        check(unchanged(data,262144));
+        rows >> int <- jsonObjectBorrow(model,"vectors");
+        at >> int <- 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at);
+            vector(field(row,"path"),field(row,"expected"),data,262144);
+            jsonRelease(row); at += 1;
+        }
+        if (envHas("WINDIR")) {
+            invalid >> array<byte,3>;
+            wr(cast<byte>(&invalid),192); wr(off(cast<byte>(&invalid),1),175); wr(off(cast<byte>(&invalid),2),0);
+            fill(data,262144);
+            check(absolutePathInto(cast<str>(&invalid),data,262144) == -1);
+            check(unchanged(data,262144));
+        } else {
+            invalid >> array<byte,4>;
+            wr(cast<byte>(&invalid),47); wr(off(cast<byte>(&invalid),1),192);
+            wr(off(cast<byte>(&invalid),2),175); wr(off(cast<byte>(&invalid),3),0);
+            fill(data,262144);
+            check(absolutePathInto(cast<str>(&invalid),data,262144) == 3);
+            check(rd(data) == 47 && rd(off(data,1)) == 192 && rd(off(data,2)) == 175 &&
+                rd(off(data,3)) == 0 && unchanged(off(data,4),262140));
+        }
+        check(officialPathInto("absent-native-path79-file",data,262144) < 0);
+        check(absolutePathInto("absent-native-path79-file",data,262144) > 0);
+        canonical >> str <- field(model,"canonical_expected");
+        check(officialPathInto(field(model,"canonical_input"),data,262144) == strByteLen(canonical));
+        check(strEq(cast<str>(data),canonical));
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.absolute-path.v79"));
+        jsonObjectSet(report,"checks",jsonNewInt(checks));
+        jsonObjectSet(report,"vectors",jsonNewInt(jsonArrayLen(rows)));
+        jsonObjectSet(report,"failures",jsonNewInt(failures));
+        jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,2),2);
+        jsonRelease(report); jsonRelease(rows); jsonRelease(model);
+        free(data); argsRelease(arguments);
+        if (failures == 0 && saved) { print("native-absolute-path-ok checks="); println(checks); return 0; }
+        return 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

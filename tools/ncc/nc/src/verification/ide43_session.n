@@ -1,0 +1,229 @@
+use <data:json>;
+use <io:output, render>;
+use <process:env>;
+use <fs:dir>;
+use <collections:result>;
+use <project:release_io, tool_cli, cert_json, ide43_core, ide43_process, ide43_host>;
+
+ide43Session {
+    local:
+        root >> str;
+        work >> str;
+        options >> int;
+        commands >> int;
+        oldHome >> str;
+        oldPath >> str;
+        hadHome >> bool;
+        automatic >> bool;
+    fn:
+        public:
+            rootPath() -> str { return root; }
+            bundle(distribution >> bool) -> int {
+                key >> str <- distribution ? "--distribution" : "--bundle";
+                binary >> str <- choice(key,choice("--native-self",""));
+                words >> int <- ide43_core.ide43Core.list(distribution ? "ide43-distribution|--root" : "ide43-bundle|--root");
+                cert_json.certJson.push(words,jsonNewString(root));
+                keys >> int <- ide43_core.ide43Core.list(distribution ? "--zip|--gradle|--npx" : "--zip"); index >> int <- 0;
+                while (index < jsonArrayLen(keys)) {
+                    key >> int <- jsonArrayGet(keys,index); name >> str <- jsonStringView(key,"");
+                    if (jsonObjectHas(options,name)) { cert_json.certJson.push(words,jsonNewString(name)); cert_json.certJson.push(words,jsonObjectGet(options,name)); }
+                    jsonRelease(key); index += 1;
+                }
+                jsonRelease(keys);
+                return invoke(binary,words,root);
+            }
+            workPath() -> str { return work; }
+            hostPath(value >> str) -> str {
+                if (!envHas("WINDIR")) return value;
+                result >> str <- strSubstring(value,0,strByteLen(value)); data >> p<byte> <- cast(result); index >> int <- 0;
+                while (index < strByteLen(result)) { if (rd(off(data,index)) == 47) wr(off(data,index),92); index += 1; }
+                return result;
+            }
+            homePath() -> str { return hostPath(work+"/home"); }
+            commandRows() -> int { return jsonClone(commands); }
+            missingGo() -> void {
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"cmd",jsonNewString("go run tools/nc-sys-lsp/main.go analyze ..."));
+                cert_json.certJson.put(row,"code",jsonNewInt(127));
+                cert_json.certJson.put(row,"stdout",jsonNewString(""));
+                cert_json.certJson.put(row,"stderr",jsonNewString("go command not found"));
+                cert_json.certJson.put(row,"ok",jsonNewBool(false));
+                cert_json.certJson.push(commands,row);
+            }
+            choice(key >> str, fallback >> str) -> str { return tool_cli.toolCli.value(options,key,fallback); }
+            environment(key >> str) -> str {
+                size >> int <- envGet(key,null,0);
+                guard size >= 0 && size < 1048576 else return "";
+                bytes >> p<byte> <- cast(alloc(size+1)); guard bytes != null else return "";
+                count >> int <- envGet(key,adr(bytes),size+1);
+                if (count < 0 || count > size) { free(bytes); return ""; }
+                wr(off(bytes,count),0);
+                view >> str <- cast(bytes); result >> str <- strSubstring(view,0,count);
+                free(bytes); return result;
+            }
+            open(settings >> int) -> bool {
+                options <- settings; root <- tool_cli.toolCli.absolute(choice("--root","."));
+                commands <- jsonNewArray();
+                work <- choice("--work",""); automatic <- work == "";
+                if (automatic) work <- root+"/target/tmp/ide43-"+renderInt(nowMs());
+                work <- tool_cli.toolCli.absolute(work);
+                guard work != "" && release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(work)) else return false;
+                reserved >> Result<bool, FsError> <- createDir(work);
+                guard isOk(reserved) else return false;
+                hadHome <- envHas("NCUP_HOME"); oldHome <- environment("NCUP_HOME"); oldPath <- environment("PATH");
+                return true;
+            }
+            installEnvironment() -> bool { return envSet("NCUP_HOME",homePath()); }
+            globalEnvironment() -> bool {
+                // Preserve the original colon separator, including its Windows failure.
+                return envSet("PATH",homePath()+"/bin:"+oldPath) && installEnvironment();
+            }
+            restoreEnvironment() -> void {
+                envSet("PATH",oldPath);
+                if (hadHome) envSet("NCUP_HOME",oldHome); else envRemove("NCUP_HOME");
+            }
+            removeOwned(path >> str) -> void {
+                if (ide43_host.ide43Host.link(path)) { delete_file(path); return; }
+                if (release_io.releaseIo.fileType(path) == 2) {
+                    names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                    while (index < jsonArrayLen(names)) {
+                        name >> int <- jsonArrayGet(names,index); removeOwned(path+"/"+jsonStringView(name,""));
+                        jsonRelease(name); index += 1;
+                    }
+                    jsonRelease(names); removeDir(path);
+                } else delete_file(path);
+            }
+            close() -> void {
+                restoreEnvironment();
+                // Explicit work directories retain evidence; only atomically reserved automatic work is removed.
+                if (automatic) removeOwned(work);
+                jsonRelease(commands); strRelease(oldHome); strRelease(oldPath);
+            }
+            invoke(executable >> str, tail >> int, cwd >> str) -> int {
+                if (findCommand(executable) == "") ide43_core.ide43Core.fail("executable not found: "+executable);
+                words >> int <- jsonNewArray(); cert_json.certJson.push(words,jsonNewString(executable));
+                display >> str <- executable; index >> int <- 0;
+                while (index < jsonArrayLen(tail)) {
+                    item >> int <- jsonArrayGet(tail,index); display <- display+" "+jsonStringView(item,"");
+                    cert_json.certJson.push(words,item); index += 1;
+                }
+                line >> str <- tool_cli.toolCli.arrayLine(words);
+                capture >> int <- ide43_process.ide43Process.capture(line,cwd,600000,16777216);
+                strRelease(line);
+                jsonRelease(words); jsonRelease(tail);
+                if (!tool_cli.toolCli.hasFlag(capture,"started") || !tool_cli.toolCli.clean(capture))
+                    ide43_core.ide43Core.fail("process could not be captured: "+display);
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"cmd",jsonNewString(display));
+                code >> int <- release_io.releaseIo.number(capture,"code",-1);
+                if (envHas("WINDIR") && code < 0 && tool_cli.toolCli.hasFlag(capture,"started")) code += 4294967296;
+                cert_json.certJson.put(row,"code",jsonNewInt(code));
+                cert_json.certJson.put(row,"stdout",jsonNewString(textStream(release_io.releaseIo.field(capture,"stdout"))));
+                cert_json.certJson.put(row,"stderr",jsonNewString(textStream(release_io.releaseIo.field(capture,"stderr"))));
+                cert_json.certJson.put(row,"ok",jsonNewBool(tool_cli.toolCli.hasFlag(capture,"ok")));
+                cert_json.certJson.push(commands,jsonClone(row)); jsonRelease(capture); return row;
+            }
+            textStream(value >> str) -> str {
+                // Match subprocess text mode: CRLF and bare CR become LF before strip.
+                result >> str <- ""; start >> int <- 0; index >> int <- 0; data >> p<byte> <- cast(value);
+                while (index < strByteLen(value)) {
+                    if (rd(off(data,index)) == 13) {
+                        result <- result+strSubstring(value,start,index-start)+"\n";
+                        index += 1;
+                        if (index < strByteLen(value)) { if (rd(off(data,index)) == 10) index += 1; }
+                        start <- index;
+                    } else index += 1;
+                }
+                return strTrim(result+strSubstring(value,start,strByteLen(value)-start));
+            }
+            run(executable >> str, words >> str) -> int { return invoke(executable,ide43_core.ide43Core.list(words),root); }
+            succeeded(row >> int) -> bool { return tool_cli.toolCli.hasFlag(row,"ok"); }
+            payload(row >> int) -> int {
+                value >> int <- jsonParse(release_io.releaseIo.field(row,"stdout"));
+                if (jsonKind(value) != 6) { ide43_core.ide43Core.fail("invalid subprocess JSON"); jsonRelease(value); return 0; }
+                return value;
+            }
+            candidate() -> str {
+                supplied >> str <- choice("--candidate","");
+                if (supplied != "") return tool_cli.toolCli.absolute(supplied);
+                return root+"/target/debug/ncc"+(envHas("WINDIR") ? ".exe" : "");
+            }
+            ncup() -> str { return choice("--ncup",root+"/target/debug/ncup"+(envHas("WINDIR") ? ".exe" : "")); }
+            build(extra >> bool) -> bool {
+                if (choice("--candidate","") != "") return release_io.releaseIo.fileType(candidate()) == 1;
+                row >> int <- run(choice("--cargo","cargo"),extra ? "build|-p|ncc-cli|--bin|ncc|--bin|ncup|--bin|nclsp" : "build|-p|ncc-cli|--bin|ncc|--bin|ncup");
+                result >> bool <- succeeded(row); jsonRelease(row);
+                if (!result) ide43_core.ide43Core.fail("cargo build failed"); return result;
+            }
+            init(complete >> bool) -> bool {
+                words >> int <- ide43_core.ide43Core.list("ncup|init|--home");
+                cert_json.certJson.push(words,jsonNewString(homePath()));
+                cert_json.certJson.push(words,jsonNewString("--profile"));
+                cert_json.certJson.push(words,jsonNewString(complete ? "complete" : "default"));
+                cert_json.certJson.push(words,jsonNewString("--force"));
+                row >> int <- invoke(candidate(),words,root); result >> bool <- succeeded(row); jsonRelease(row);
+                if (!result) ide43_core.ide43Core.fail("ncup init failed"); return result;
+            }
+            which() -> int {
+                words >> int <- ide43_core.ide43Core.list("ncup|which|ncc|--home");
+                cert_json.certJson.push(words,jsonNewString(homePath())); cert_json.certJson.push(words,jsonNewString("--json"));
+                row >> int <- invoke(candidate(),words,root);
+                result >> int <- 0;
+                if (succeeded(row)) result <- payload(row); else ide43_core.ide43Core.fail("ncup which ncc failed");
+                jsonRelease(row); return result;
+            }
+            route(family >> str, file >> str, profile >> str) -> int {
+                router >> str <- choice("--router",environment("NCC_NATIVE_TOOLS")); if (router == "") router <- "ncc-tools";
+                if (family == "jetbrains") router <- choice("--jetbrains-router",router);
+                words >> int <- ide43_core.ide43Core.list("route-"+family+"|--file");
+                cert_json.certJson.push(words,jsonNewString(file));
+                cert_json.certJson.push(words,jsonNewString("--ncup")); cert_json.certJson.push(words,jsonNewString(ncup()));
+                if (family != "jetbrains") {
+                    cert_json.certJson.push(words,jsonNewString("--profile")); cert_json.certJson.push(words,jsonNewString(profile));
+                }
+                cert_json.certJson.push(words,jsonNewString("--json")); return invoke(router,words,root);
+            }
+            findCommand(name >> str) -> str {
+                if (release_io.releaseIo.fileType(name) == 1) return tool_cli.toolCli.absolute(name);
+                path >> str <- environment("PATH");
+                separator >> int <- envHas("WINDIR") ? 59 : 58;
+                data >> p<byte> <- cast(path); size >> int <- strByteLen(path); first >> int <- 0; index >> int <- 0;
+                while (index <= size) {
+                    if (index == size || rd(off(data,index)) == separator) {
+                        dir >> str <- strSubstring(path,first,index-first);
+                        candidate >> str <- (dir == "" ? "." : dir)+"/"+name;
+                        if (release_io.releaseIo.fileType(candidate) == 1) return tool_cli.toolCli.absolute(candidate);
+                        if (envHas("WINDIR")) {
+                            suffixes >> int <- ide43_core.ide43Core.list(".exe|.com|.bat|.cmd"); at >> int <- 0;
+                            while (at < jsonArrayLen(suffixes)) {
+                                suffix >> int <- jsonArrayGet(suffixes,at);
+                                file >> str <- candidate+jsonStringView(suffix,""); jsonRelease(suffix);
+                                if (release_io.releaseIo.fileType(file) == 1) { jsonRelease(suffixes); return tool_cli.toolCli.absolute(file); }
+                                at += 1;
+                            }
+                            jsonRelease(suffixes);
+                        }
+                        first <- index+1;
+                    }
+                    index += 1;
+                }
+                return "";
+            }
+            node() -> str {
+                explicit >> str <- choice("--node",""); if (explicit != "") return explicit;
+                resolved >> str <- findCommand(environment("NODE")); if (resolved != "") return resolved;
+                resolved <- findCommand(environment("NODE_BINARY")); if (resolved != "") return resolved;
+                resolved <- findCommand("node"); if (resolved != "") return resolved;
+                users >> int <- release_io.releaseIo.names("/mnt/c/Users"); index >> int <- 0;
+                while (index < jsonArrayLen(users)) {
+                    user >> int <- jsonArrayGet(users,index);
+                    path >> str <- "/mnt/c/Users/"+jsonStringView(user,"")+"/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe";
+                    jsonRelease(user);
+                    if (release_io.releaseIo.fileType(path) == 1) { jsonRelease(users); return path; }
+                    index += 1;
+                }
+                jsonRelease(users); return "node";
+            }
+    fa: return true;
+}
+

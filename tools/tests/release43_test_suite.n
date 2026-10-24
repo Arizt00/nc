@@ -1,0 +1,64 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:release43_common, release_io>;
+
+release43TestSuite {
+    fn:
+        private:
+            add(words >> int, value >> str) -> void { release43_common.release43Common.push(words,jsonNewString(value)); }
+            set(model >> int, name >> str, value >> str) -> void { release43_common.release43Common.put(model,name,jsonNewString(value)); }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) != 7) return 2;
+                root >> str <- release43_common.release43Common.absolute(argsAt(args,1));
+                candidate >> str <- release43_common.release43Common.absolute(argsAt(args,2));
+                native >> str <- release43_common.release43Common.absolute(argsAt(args,3));
+                distribution >> str <- release43_common.release43Common.absolute(argsAt(args,4));
+                tests >> str <- release43_common.release43Common.absolute(argsAt(args,5));
+                destination >> str <- release43_common.release43Common.absolute(argsAt(args,6));
+                options >> int <- jsonNewObject(); set(options,"--root",root);
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options);
+                candidateHash >> str <- release43_common.release43Common.hashFile(candidate);
+                nativeHash >> str <- release43_common.release43Common.hashFile(native);
+                if (strByteLen(candidateHash) != 64 || strByteLen(nativeHash) != 64) return 1;
+                names >> int <- jsonParse("[\"unit\",\"json_boundary\",\"json_manifest\",\"public_goldens\",\"unicode_public\",\"metadata_public\",\"prune_truthiness\",\"cli_cases\",\"integrity\",\"regression\"]");
+                cases >> int <- jsonNewArray(); failures >> int <- 0; index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> str <- release43_common.release43Common.stringAt(names,index);
+                    executable >> str <- tests+"/"+name+"/bin/tests"+(envHas("WINDIR") ? ".exe" : "");
+                    if (release43_common.release43Common.fileType(executable) == 0) executable <- tests+"/bin/release43-test-"+name+(envHas("WINDIR") ? ".exe" : "");
+                    words >> int <- jsonNewArray(); add(words,root);
+                    if (name == "public_goldens") { add(words,root+"/bootstrap/release43-public-goldens.json"); add(words,candidate); add(words,native); }
+                    else if (name == "cli_cases") { add(words,native); add(words,candidate); }
+                    else if (name == "integrity") { add(words,distribution); add(words,"phase10-p8-signing-key-v1"); add(words,candidate); add(words,native); }
+                    else if (name == "regression") { add(words,candidate); add(words,native); add(words,distribution); }
+                    else if (name == "prune_truthiness") add(words,native);
+                    row >> int <- release43_common.release43Common.invoke(executable,words);
+                    hash >> str <- release43_common.release43Common.hashFile(executable);
+                    passed >> bool <- release_io.releaseIo.number(row,"code",-1) == 0 && strByteLen(hash) == 64;
+                    set(row,"name",name); set(row,"executable",executable); set(row,"sha256",hash);
+                    release43_common.release43Common.put(row,"passed",jsonNewBool(passed));
+                    println((passed ? "PASS " : "FAIL ")+name);
+                    if (!passed) { failures += 1; println(release43_common.release43Common.field(row,"stdout")); println(release43_common.release43Common.field(row,"stderr")); }
+                    release43_common.release43Common.push(cases,row); index += 1;
+                }
+                jsonRelease(names);
+                report >> int <- jsonNewObject(); set(report,"schema","nc.release43.native.suite.v1");
+                set(report,"candidate_path",native); set(report,"candidate_sha256",nativeHash);
+                set(report,"stage0_path",candidate); set(report,"stage0_sha256",candidateHash);
+                set(report,"native_path",native); set(report,"native_sha256",nativeHash);
+                originals >> int <- jsonParse("[\"tools/release/package_public_beta.py\",\"tools/release/prepare_public_beta_layout.py\",\"tools/release/verify_phase10_cicd_compat_v2_0_0.py\",\"tools/release/verify_phase10_installer_matrix_v2_0_0.py\",\"tools/release/verify_phase10_manifest_format_v2_0_0.py\",\"tools/release/verify_phase10_supply_chain_security_v2_0_0.py\",\"tools/release/verify_phase10_updates_v2_0_0.py\"]");
+                release43_common.release43Common.put(report,"covered_originals",originals);
+                set(report,"distribution_path",distribution); set(report,"suite_path",release43_common.release43Common.absolute(argsAt(args,0)));
+                release43_common.release43Common.put(report,"cases",cases);
+                release43_common.release43Common.put(report,"passed",jsonNewBool(failures == 0));
+                release43_common.release43Common.put(report,"failures",jsonNewInt(failures));
+                release43_common.release43Common.put(report,"python_required",jsonNewBool(false));
+                saved >> bool <- release43_common.release43Common.save(destination,report);
+                println("sealed="+destination+" failures="+renderInt(failures));
+                return failures == 0 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,105 @@
+use <data:json>;
+use <project:cert_json>;
+
+docs43Wrap {
+    fn:
+        private:
+            byteAt(data >> p<byte>, at >> int) -> int { return rd(off(data,at)) & 255; }
+            step(code >> int) -> int { return code < 128 ? 1 : (code < 224 ? 2 : (code < 240 ? 3 : 4)); }
+            space(code >> int) -> bool { return code == 32 || code == 9 || code == 10 || code == 11 || code == 12 || code == 13; }
+            letter(code >> int) -> bool { return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 95 || code >= 128; }
+            word(code >> int) -> bool { return letter(code) || (code >= 48 && code <= 57); }
+            dashes(data >> p<byte>, at >> int, end >> int) -> int {
+                if (at == 0 || byteAt(data,at) != 45) return at;
+                previous >> int <- byteAt(data,at-1);
+                if (!word(previous) && previous != 33 && previous != 34 && previous != 39 && previous != 38 && previous != 46 && previous != 44 && previous != 63) return at;
+                next >> int <- at; while (next < end && byteAt(data,next) == 45) { next += 1; }
+                return next-at >= 2 && next < end && word(byteAt(data,next)) ? next : at;
+            }
+            length(text >> str) -> int {
+                data >> p<byte> <- cast(text); at >> int <- 0; count >> int <- 0;
+                while (at < strByteLen(text)) { at += step(byteAt(data,at)); count += 1; }
+                return count;
+            }
+            splitAt(text >> str, characters >> int) -> int {
+                data >> p<byte> <- cast(text); at >> int <- 0; count >> int <- 0;
+                while (at < strByteLen(text) && count < characters) { at += step(byteAt(data,at)); count += 1; }
+                return at;
+            }
+            tabs(text >> str) -> str {
+                result >> str <- ""; data >> p<byte> <- cast(text); at >> int <- 0; column >> int <- 0;
+                while (at < strByteLen(text)) {
+                    code >> int <- byteAt(data,at);
+                    if (code == 9) {
+                        size >> int <- 8-column%8; i >> int <- 0;
+                        while (i < size) { result <- cert_json.certJson.append(result," "); i += 1; }
+                        column += size; at += 1;
+                    } else {
+                        bytes >> int <- step(code); ch >> str <- strSubstring(text,at,bytes);
+                        result <- cert_json.certJson.append(result,ch); strRelease(ch); at += bytes; column += 1;
+                    }
+                }
+                return result;
+            }
+            chunks(text >> str) -> int {
+                result >> int <- jsonNewArray(); data >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) {
+                    start >> int <- at;
+                    if (space(byteAt(data,at))) {
+                        while (at < strByteLen(text) && space(byteAt(data,at))) { at += 1; }
+                    } else if (dashes(data,at,strByteLen(text)) > at) {
+                        at <- dashes(data,at,strByteLen(text));
+                    } else {
+                        while (at < strByteLen(text) && !space(byteAt(data,at))) {
+                            if (at > start && dashes(data,at,strByteLen(text)) > at) break;
+                            code >> int <- byteAt(data,at); at += step(code);
+                            if (code == 45 && at-start >= 3 && at+1 < strByteLen(text)) {
+                                left >> bool <- letter(byteAt(data,at-2)) && letter(byteAt(data,at-3));
+                                if (at-start >= 4 && byteAt(data,at-3) == 45 && letter(byteAt(data,at-2)) && letter(byteAt(data,at-4))) left <- true;
+                                right >> bool <- letter(byteAt(data,at)); next >> int <- at+step(byteAt(data,at));
+                                if (next < strByteLen(text) && byteAt(data,next) == 45) next += 1;
+                                if (left && right && next < strByteLen(text) && letter(byteAt(data,next))) break;
+                            }
+                        }
+                    }
+                    chunk >> str <- strSubstring(text,start,at-start); cert_json.certJson.push(result,jsonNewString(chunk)); strRelease(chunk);
+                }
+                return result;
+            }
+        public:
+            wrap(line >> str) -> int {
+                expanded >> str <- tabs(line); words >> int <- chunks(expanded); strRelease(expanded);
+                result >> int <- jsonNewArray(); index >> int <- 0; remaining >> str <- ""; lineNumber >> int <- 0;
+                while (index < jsonArrayLen(words) || remaining != "") {
+                    current >> str <- lineNumber > 0 ? "    " : ""; available >> int <- lineNumber > 0 ? 100 : 104;
+                    used >> int <- 0; building >> bool <- true;
+                    while (building && (index < jsonArrayLen(words) || remaining != "")) {
+                        if (remaining == "") {
+                            word >> int <- jsonArrayBorrow(words,index); remaining <- strSubstring(jsonStringView(word,""),0,strByteLen(jsonStringView(word,""))); jsonRelease(word); index += 1;
+                        }
+                        size >> int <- length(remaining);
+                        if (used+size <= available) {
+                            current <- cert_json.certJson.append(current,remaining); strRelease(remaining); remaining <- ""; used += size;
+                        } else {
+                            if (size > available) {
+                                end >> int <- splitAt(remaining,available-used);
+                                data >> p<byte> <- cast(remaining); i >> int <- 0; hyphen >> int <- -1; nonHyphen >> bool <- false;
+                                while (i < end) {
+                                    if (byteAt(data,i) == 45 && i > 0 && nonHyphen) hyphen <- i;
+                                    if (byteAt(data,i) != 45) nonHyphen <- true;
+                                    i += step(byteAt(data,i));
+                                }
+                                if (hyphen > 0) end <- hyphen+1;
+                                prefix >> str <- strSubstring(remaining,0,end); suffix >> str <- strSubstring(remaining,end,strByteLen(remaining)-end);
+                                current <- cert_json.certJson.append(current,prefix); strRelease(prefix); strRelease(remaining); remaining <- suffix;
+                            }
+                            building <- false;
+                        }
+                    }
+                    cert_json.certJson.push(result,jsonNewString(current)); strRelease(current); lineNumber += 1;
+                }
+                if (jsonArrayLen(result) == 0) cert_json.certJson.push(result,jsonNewString(""));
+                strRelease(remaining); jsonRelease(words); return result;
+            }
+    fa: return true;
+}

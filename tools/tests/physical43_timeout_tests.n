@@ -1,0 +1,70 @@
+use foreign { c };
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:physical43_common, physical43_json, physical43_stages>;
+
+physical43TimeoutTests {
+    foreign:
+        c symbol "signal" { abi: C; header: "signal.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr) -> addr; }
+    fn:
+        private:
+            frozenRow(row >> int) -> int {
+                result >> int <- jsonNewObject(); index >> int <- 0;
+                while (index < jsonObjectLen(row)) { key >> str <- jsonObjectKeyAt(row,index); if (key != "elapsed_ns") { value >> int <- jsonObjectBorrow(row,key); physical43_common.physical43Common.put(result,key,value); } strRelease(key); index += 1; }
+                if (jsonObjectHas(result,"argv")) { words >> int <- jsonObjectBorrow(result,"argv"); jsonArrayRemove(words,0); jsonArrayInsert(words,0,jsonNewString("{SELF}")); jsonArrayRemove(words,2); jsonArrayInsert(words,2,jsonNewString("{SERIAL}")); jsonObjectSet(result,"argv",words); jsonRelease(words); }
+                names >> int <- jsonParse("[\"stdout\",\"stderr\",\"serial\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(names)) { key >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(key,""); if (jsonObjectHas(result,name)) { path >> str <- physical43_common.physical43Common.field(result,name); base >> str <- physical43_common.physical43Common.basename(path); physical43_common.physical43Common.put(result,name,jsonNewString(base)); strRelease(path); strRelease(base); } jsonRelease(key); at += 1; }
+                jsonRelease(names); return result;
+            }
+            frozen(report >> int, path >> str) -> bool {
+                model >> int <- physical43_common.physical43Common.read(path,false); if (model == 0) return false; rows >> int <- jsonObjectBorrow(model,"rows"); valid >> bool <- jsonKind(rows) == 6 && jsonObjectLen(rows) == 7; at >> int <- 0;
+                while (at < jsonObjectLen(rows)) { name >> str <- jsonObjectKeyAt(rows,at); expected >> int <- jsonObjectBorrow(rows,name); actual >> int <- jsonObjectBorrow(report,name); normalized >> int <- frozenRow(actual); matched >> bool <- physical43_common.physical43Common.equal(expected,normalized); if (!matched) println("FAIL frozen QEMU row "+name); valid <- valid && matched; jsonRelease(expected); jsonRelease(actual); jsonRelease(normalized); strRelease(name); at += 1; }
+                jsonRelease(rows); jsonRelease(model); return valid;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) < 3) return 2;
+                if (argsAt(arguments,1) == "fixture-byte-child") {
+                    text >> str <- "fixture only, not QEMU or physical evidence\r\nfirst"; tail >> str <- "marker\rsecond"; ending >> str <- "marker\r\n"; length >> int <- strByteLen(text)+1+strByteLen(tail)+2+strByteLen(ending); data >> p<byte> <- cast(alloc(length)); at >> int <- 0;
+                    cp(data,cast<byte>(text),strByteLen(text)); at += strByteLen(text); wr(off(data,at),0); at += 1; cp(off(data,at),cast<byte>(tail),strByteLen(tail)); at += strByteLen(tail); wr(off(data,at),226); wr(off(data,at+1),130); at += 2; cp(off(data,at),cast<byte>(ending),strByteLen(ending)); written >> bool <- physical43_common.physical43Common.writeBytes(argsAt(arguments,2),data,length); free(data); return written ? 0 : 7;
+                }
+                if (argsAt(arguments,1) == "fixture-child") {
+                    if (!envHas("WINDIR")) { ignore >> p<byte> <- cast(1); signal(15,adr(ignore)); }
+                    if (!physical43_common.physical43Common.write(argsAt(arguments,2),"fixture only, not QEMU or physical evidence\nfirst-marker\nsecond-marker\n")) return 7;
+                    println("fixture-stdout"); if (physical43_common.physical43Common.env("NC_NO_COLOR") != "1") return 8;
+                    sleepMs(60000); return 9;
+                }
+                out >> str <- physical43_common.physical43Common.absolutePath(argsAt(arguments,1)); self >> str <- physical43_common.physical43Common.absolutePath(argsAt(arguments,2));
+                if (!physical43_common.physical43Common.directories(out)) return 1;
+                contract >> int <- jsonParse("{\"serial_log\":\"\",\"expected_serial_sequence\":[\"first-marker\",\"second-marker\"],\"timeout_seconds\":1}");
+                physical43_common.physical43Common.put(contract,"serial_log",jsonNewString(out+"/serial.log"));
+                command >> int <- jsonNewArray(); physical43_common.physical43Common.push(command,jsonNewString(self)); physical43_common.physical43Common.push(command,jsonNewString("fixture-child")); physical43_common.physical43Common.push(command,jsonNewString("${SERIAL_LOG}")); physical43_common.physical43Common.put(contract,"command",command);
+                had >> bool <- envHas("NC_NO_COLOR"); previous >> str <- physical43_common.physical43Common.env("NC_NO_COLOR"); envSet("NC_NO_COLOR","parent-value");
+                started >> i64 <- monotonicNs(); row >> int <- physical43_stages.physical43Stages.qemu("native-timeout-fixture",contract,".",out);
+                elapsed >> i64 <- monotonicNs()-started;
+                codeNode >> int <- jsonObjectBorrow(row,"returncode"); code >> int <- jsonGetIntOr(codeNode,999); jsonRelease(codeNode);
+                passed >> bool <- code == (envHas("WINDIR") ? 1 : -9) && elapsed < 10000000000 && elapsed >= 1000000000 && physical43_common.physical43Common.boolAt(row,"/ordered_markers_present") && physical43_common.physical43Common.boolAt(row,"/timed_out_after_oracle_window") && physical43_common.physical43Common.field(row,"status") == "passed" && physical43_common.physical43Common.env("NC_NO_COLOR") == "parent-value";
+                if (had) envSet("NC_NO_COLOR",previous); else envRemove("NC_NO_COLOR");
+                report >> int <- jsonNewObject(); physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.physical43.timeout-tests.v1")); physical43_common.physical43Common.put(report,"scope",jsonNewString("Real child termination and QEMU oracle-window contract; child is labeled native fixture, no QEMU/hardware claim")); physical43_common.physical43Common.put(report,"positive",row);
+                physical43_common.physical43Common.put(contract,"expected_serial_sequence",jsonParse("[\"second-marker\",\"first-marker\"]"));
+                row <- physical43_stages.physical43Stages.qemu("negative-order-fixture",contract,".",out);
+                passed <- passed && physical43_common.physical43Common.field(row,"status") == "failed" && !physical43_common.physical43Common.boolAt(row,"/ordered_markers_present"); physical43_common.physical43Common.put(report,"negative_order",row);
+                physical43_common.physical43Common.put(contract,"timeout_seconds",jsonParse("1.0")); row <- physical43_stages.physical43Stages.qemu("negative-timeout-type",contract,".",out);
+                passed <- passed && physical43_common.physical43Common.field(row,"status") == "failed" && strStartsWith(physical43_common.physical43Common.field(row,"diagnostic"),"E_FINAL_CERT_QEMU_CONTRACT_004"); physical43_common.physical43Common.put(report,"negative_timeout_type",row);
+                physical43_common.physical43Common.put(contract,"timeout_seconds",jsonParse("999999999999999999999999999999999999999")); row <- physical43_stages.physical43Stages.qemu("negative-timeout-overflow",contract,".",out);
+                passed <- passed && strStartsWith(physical43_common.physical43Common.field(row,"diagnostic"),"E_FINAL_CERT_QEMU_CONTRACT_004"); physical43_common.physical43Common.put(report,"negative_timeout_overflow",row);
+                physical43_common.physical43Common.put(contract,"timeout_seconds",jsonNewBool(false)); row <- physical43_stages.physical43Stages.qemu("negative-timeout-false",contract,".",out);
+                passed <- passed && strStartsWith(physical43_common.physical43Common.field(row,"diagnostic"),"E_FINAL_CERT_QEMU_CONTRACT_004"); physical43_common.physical43Common.put(report,"negative_timeout_false",row);
+                physical43_common.physical43Common.put(contract,"timeout_seconds",jsonNewInt(1)); command <- jsonNewArray(); physical43_common.physical43Common.push(command,jsonNewString(self)); physical43_common.physical43Common.push(command,jsonNewString("fixture-byte-child")); physical43_common.physical43Common.push(command,jsonNewString("${SERIAL_LOG}")); physical43_common.physical43Common.put(contract,"command",command);
+                physical43_common.physical43Common.put(contract,"expected_serial_sequence",physical43_json.physical43Json.parseCertification("[\"first\\u0000marker\",\"second\\ufffdmarker\"]")); row <- physical43_stages.physical43Stages.qemu("binary-serial-fixture",contract,".",out);
+                binaryPassed >> bool <- physical43_common.physical43Common.field(row,"status") == "passed" && physical43_common.physical43Common.boolAt(row,"/ordered_markers_present"); passed <- passed && binaryPassed; physical43_common.physical43Common.put(report,"binary_serial",row);
+                physical43_common.physical43Common.put(contract,"timeout_seconds",jsonNewBool(true)); row <- physical43_stages.physical43Stages.qemu("boolean-timeout-fixture",contract,".",out);
+                passed <- passed && physical43_common.physical43Common.field(row,"status") == "passed" && physical43_common.physical43Common.boolAt(row,"/ordered_markers_present"); physical43_common.physical43Common.put(report,"boolean_timeout",row);
+                frozenPath >> str <- argsCount(arguments) > 3 ? argsAt(arguments,3) : (envHas("WINDIR") ? "bootstrap/physical43-qemu-goldens-windows.json" : "bootstrap/physical43-qemu-goldens-linux.json"); matched >> bool <- frozen(report,frozenPath); passed <- passed && matched; physical43_common.physical43Common.put(report,"full_frozen_rows_equal",jsonNewBool(matched));
+                physical43_common.physical43Common.put(report,"passed",jsonNewBool(passed)); saved >> bool <- physical43_common.physical43Common.save(out+"/tests.json",report);
+                println("timeout code="+renderInt(code)+" passed="+renderBool(passed)); return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

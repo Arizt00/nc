@@ -1,0 +1,111 @@
+use <project:source, sha256>;
+
+nccRootLineage {
+    const:
+        SCHEMA >> str <- "nc.lowering.source-root-machine-nbo.v2";
+        NBB_MAGIC_BYTES >> int <- 4;
+
+    type:
+        RootLineage {
+            public:
+                sourceBytes >> int;
+                basalSourceBytes >> int;
+                basalBinaryBytes >> int;
+                machineBytes >> int;
+                backendObjectBytes >> int;
+                sourceHash >> str;
+        }
+
+    stc:
+        verified >> u64 <- 0;
+        rejected >> u64 <- 0;
+
+    local:
+        lastSourceBytes >> int <- 0;
+        lastMachineBytes >> int <- 0;
+
+    fn:
+        private:
+            starts(data >> p<byte>, bytes >> int, prefix >> str) -> bool {
+                prefixBytes >> int <- strByteLen(prefix);
+                guard data != null && bytes >= prefixBytes else return false;
+                at >> int <- 0;
+                while (at < prefixBytes) {
+                    if (rd<byte>(off(data, at)) != rd<byte>(off(cast<byte>(prefix), at))) {
+                        return false;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            contains(data >> p<byte>, bytes >> int, needle >> str) -> bool {
+                needleBytes >> int <- strByteLen(needle);
+                guard data != null && needleBytes > 0 && bytes >= needleBytes else return false;
+                at >> int <- 0;
+                while (at + needleBytes <= bytes) {
+                    inner >> int <- 0;
+                    while (inner < needleBytes &&
+                        rd<byte>(off(data, at + inner)) ==
+                        rd<byte>(off(cast<byte>(needle), inner))) {
+                        inner += 1;
+                    }
+                    if (inner == needleBytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            reject() -> bool {
+                rejected += 1;
+                return false;
+            }
+
+        public:
+            inspect(
+                sourcePath >> str,
+                basalSourcePath >> str,
+                basalBinaryPath >> str,
+                machinePath >> str,
+                backendObjectPath >> str
+            ) -> bool {
+                sourceBytes >> int <- fsSize(sourcePath);
+                basalSourceBytes >> int <- fsSize(basalSourcePath);
+                basalBinaryBytes >> int <- fsSize(basalBinaryPath);
+                machineBytes >> int <- fsSize(machinePath);
+                backendObjectBytes >> int <- fsSize(backendObjectPath);
+                guard sourceBytes >= 0 && basalSourceBytes > 0 &&
+                    basalBinaryBytes >= NBB_MAGIC_BYTES && machineBytes > 0 &&
+                    backendObjectBytes > 0 else return reject();
+
+                basalBinary >> p<byte> <- source.nccSource.load(basalBinaryPath);
+                backendObject >> p<byte> <- source.nccSource.load(backendObjectPath);
+                guard basalBinary != null && backendObject != null else {
+                    source.nccSource.release(basalBinary);
+                    source.nccSource.release(backendObject);
+                    return reject();
+                }
+
+                sourceHash >> str <- sha256.nccSha256.file(sourcePath);
+                valid >> bool <- starts(basalBinary, basalBinaryBytes, "NBB0") &&
+                    contains(backendObject, backendObjectBytes, SCHEMA) &&
+                    contains(backendObject, backendObjectBytes, sourceHash) &&
+                    contains(backendObject, backendObjectBytes, "address-origin=basal.root") &&
+                    contains(backendObject, backendObjectBytes, "address-backing=machine");
+
+                source.nccSource.release(basalBinary);
+                source.nccSource.release(backendObject);
+                if (!valid) return reject();
+                lastSourceBytes <- sourceBytes;
+                lastMachineBytes <- machineBytes;
+                verified += 1;
+                return true;
+            }
+
+            selfTest() -> bool {
+                return strByteLen(SCHEMA) == 38 && NBB_MAGIC_BYTES == 4;
+            }
+
+    fa:
+        return true;
+}

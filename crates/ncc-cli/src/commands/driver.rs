@@ -1,0 +1,185 @@
+use super::super::*;
+
+fn sanitize_driver_identifier(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().max(8));
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if ch == '_' || ch == '-' {
+            out.push('_');
+        }
+    }
+    let mut trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        trimmed = "driver_unit".to_string();
+    }
+    if trimmed
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        trimmed.insert(0, 'd');
+    }
+    trimmed
+}
+
+fn build_driver_runtime_template(container_name: &str) -> String {
+    format!(
+        r#"use nC.runtime.output;
+use nC.runtime.list;
+use nC.runtime.region;
+use nC.runtime.addr;
+use nC.runtime.ptr;
+
+{container_name}[@runtime] {{
+    stc:
+        ring: array<int, 16>;
+        ringIndex: int;
+        packets: list<int>;
+        ioRegion: memRegion<int>;
+        ioBase: addr;
+        ioPtr: ptr<int>;
+        valueOut: int;
+        checksum: int;
+        ok: bool;
+
+    fn:
+        run() -> bool {{
+            public:
+                @ring >> array<int, 16> : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                @ringIndex >> int : 0;
+                @ring[@ringIndex] >> int : 41;
+                @ringIndex >> int : 1;
+                @ring[@ringIndex] >> int : 1;
+
+                @packets >> list<int> : [4, 8, 15, 16, 23, 42];
+                @packets.push(7);
+                @valueOut >> int : @packets.get(1);
+
+                @ioRegion >> memRegion<int> : regionCreate<int>(1);
+                regionWrite<int>(@ioRegion, 0, @valueOut);
+                @checksum >> int : regionRead<int>(@ioRegion, 0);
+
+                @ioBase >> addr : 0x1000;
+                @ioPtr !> ptr<int> : @ioBase;
+
+                print("driver:ring[0]=");
+                println(@ring[0]);
+                print("driver:list[1]=");
+                println(@valueOut);
+                print("driver:checksum=");
+                println(@checksum);
+                print("driver:ioBase=");
+                println(@ioBase);
+
+                @ok >> bool : @checksum >= 0;
+                return @ok;
+        }}
+
+    ref main ->> @fn(run);
+
+    fa:
+        return true;
+}}
+"#
+    )
+}
+
+pub(crate) fn run_driver_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() == 1 && is_help_token(&args[0]) {
+        println!(
+            "{}",
+            command_help("driver").expect("driver help must exist")
+        );
+        return Ok(());
+    }
+    if args.is_empty() {
+        return Err(actionable_command_error(
+            "driver",
+            "driver syntax: driver new <name> [--out <dir>] [--force]",
+        )
+        .into());
+    }
+
+    let action = args[0].as_str();
+    if action != "new" {
+        let suggestion = suggestion_suffix(action, &["new"]);
+        return Err(actionable_command_error(
+            "driver",
+            format!(
+                "driver: unknown action '{}'; expected 'new'{}",
+                action, suggestion
+            ),
+        )
+        .into());
+    }
+
+    let raw_name = args
+        .get(1)
+        .ok_or_else(|| actionable_command_error("driver", "driver new requires <name>"))?;
+    let name = sanitize_driver_identifier(raw_name);
+    let mut out_dir = PathBuf::from("examples/generated/drivers");
+    let mut force = false;
+
+    let mut idx = 2usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--out" => {
+                let value = args.get(idx + 1).ok_or_else(|| {
+                    actionable_command_error("driver", "driver --out requires a path value")
+                })?;
+                out_dir = PathBuf::from(value);
+                idx += 2;
+            }
+            "--force" => {
+                force = true;
+                idx += 1;
+            }
+            "-h" | "--help" | "help" => {
+                println!(
+                    "{}",
+                    command_help("driver").expect("driver help must exist")
+                );
+                return Ok(());
+            }
+            other => {
+                return Err(actionable_command_error(
+                    "driver",
+                    format!("driver: unknown option '{}'", other),
+                )
+                .into());
+            }
+        }
+    }
+
+    let bundle_dir = out_dir.join(&name);
+    fs::create_dir_all(&bundle_dir)?;
+
+    let source_path = bundle_dir.join(format!("{name}.n"));
+    if source_path.exists() && !force {
+        return Err(actionable_command_error(
+            "driver",
+            format!(
+                "driver scaffold already exists at '{}'; rerun with --force to overwrite",
+                source_path.display()
+            ),
+        )
+        .into());
+    }
+
+    let readme_path = bundle_dir.join("README.md");
+    let readme = format!(
+        "# {name}\n\nGenerated by `ncc driver new {name}`.\n\nThis scaffold is runtime-safe and intentionally avoids tooling/system/kernel surfaces.\nIt focuses on arrays/list/indexing/memRegion/ptr/addr contracts.\n"
+    );
+    fs::write(&source_path, build_driver_runtime_template(&name))?;
+    fs::write(&readme_path, readme.as_bytes())?;
+
+    println!(
+        "OK: driver scaffold generated at {}",
+        bundle_dir.to_string_lossy()
+    );
+    println!(" - source: {}", source_path.to_string_lossy());
+    println!(" - readme: {}", readme_path.to_string_lossy());
+    Ok(())
+}

@@ -1,0 +1,26 @@
+manualSharedMemoryLinux {
+    fn:
+        run() -> bool {
+            name >> str <- "/ncc_manual_vm_smoke";
+            page >> int <- vmPageSize();
+            vmSharedUnlink(name);
+            handle >> int <- vmSharedCreate(name, page, 194);
+            guard handle >= 0 else return false;
+
+            view >> p<byte> <- vmSharedMap(handle, null, page, 3, 1, 0);
+            guard view != null else return false;
+            wr(view, 117);
+            guard rd(view) == 117 else return false;
+
+            unmapped >> bool <- vmUnmap(view, page);
+            closed >> bool <- vmSharedClose(handle);
+            unlinked >> bool <- vmSharedUnlink(name);
+            return unmapped && closed && unlinked;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

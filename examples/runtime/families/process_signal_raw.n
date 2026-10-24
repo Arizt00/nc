@@ -1,0 +1,34 @@
+use <io:output>;
+use <process:signal>;
+
+rawProcessSignal :: runtime {
+    fn:
+        run() -> bool {
+            event >> addr <- signalCreateEvent(null, true, false, null);
+            before >> int <- signalWaitOne(event, 0);
+            set >> bool <- signalSetEvent(event);
+            during >> int <- signalWaitOne(event, 0);
+            reset >> bool <- signalResetEvent(event);
+            after >> int <- signalWaitOne(event, 0);
+            closed >> bool <- signalClose(event);
+
+            ok >> bool <-
+                event != null &&
+                before == 258 &&
+                set &&
+                during == 0 &&
+                reset &&
+                after == 258 &&
+                closed;
+
+            print("manual nC process signal backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

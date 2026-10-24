@@ -1,0 +1,1173 @@
+use <io:output, render>;
+use <project:ir, sema, diagnostics, mct, mct_symbol_bundle>;
+
+nccMctLink {
+    const:
+        RELOC_X86_PCREL32 >> int <- 1;
+        RELOC_X86_BRANCH32 >> int <- 2;
+        RELOC_X86_DATA_PCREL32 >> int <- 3;
+        RELOC_AARCH64_CALL26 >> int <- 4;
+        RELOC_AARCH64_BRANCH26 >> int <- 5;
+        RELOC_AARCH64_CONDBR19 >> int <- 6;
+        RELOC_AARCH64_ADR_PREL21 >> int <- 7;
+        RELOC_ARM_CALL >> int <- 8;
+        RELOC_ARM_JUMP24 >> int <- 9;
+        RELOC_ARM_REL32 >> int <- 10;
+        RELOC_RISCV_CALL >> int <- 11;
+        RELOC_RISCV_BRANCH >> int <- 12;
+        RELOC_RISCV_JAL >> int <- 13;
+        RELOC_RISCV_PCREL_HI20 >> int <- 14;
+        RELOC_WASM_FUNCTION_INDEX >> int <- 15;
+        RELOC_WASM_LABEL_INDEX >> int <- 16;
+        RELOC_X86_ABS32 >> int <- 17;
+        RELOC_X86_ABS64 >> int <- 18;
+        RELOC_AARCH64_ADRP_PAGE21 >> int <- 19;
+        RELOC_AARCH64_ADD_LO12 >> int <- 20;
+        RELOC_AARCH64_LDST64_LO12 >> int <- 21;
+        RELOC_ARM_ABS32 >> int <- 22;
+        RELOC_RISCV_PCREL_LO12_I >> int <- 23;
+        RELOC_RISCV_PCREL_LO12_S >> int <- 24;
+        RELOC_RISCV_ABS32 >> int <- 25;
+        RELOC_RISCV_ABS64 >> int <- 26;
+        RELOC_RISCV_RELAX >> int <- 27;
+
+        PLAN_MAGIC >> int <- 1279873870;
+        PLAN_VERSION >> int <- 2;
+        PLAN_BYTES >> int <- 144;
+        PROVIDER_BYTES >> int <- 48;
+
+        P_MAGIC >> int <- 0;
+        P_VERSION >> int <- 4;
+        P_TARGET >> int <- 8;
+        P_FAMILY >> int <- 12;
+        P_IMAGE_BASE >> int <- 16;
+        P_TEXT_OFFSET >> int <- 20;
+        P_TEXT_BYTES >> int <- 24;
+        P_LINKED_BYTES >> int <- 28;
+        P_PROVIDER_OFFSET >> int <- 32;
+        P_PROVIDER_COUNT >> int <- 36;
+        P_PROVIDER_CAPACITY >> int <- 40;
+        P_THUNK_OFFSET >> int <- 44;
+        P_THUNK_STRIDE >> int <- 48;
+        P_SLOT_OFFSET >> int <- 52;
+        P_SLOT_STRIDE >> int <- 56;
+        P_RELOCATIONS >> int <- 60;
+        P_APPLIED >> int <- 64;
+        P_LOCAL >> int <- 68;
+        P_RUNTIME >> int <- 72;
+        P_PROJECT >> int <- 76;
+        P_UNRESOLVED >> int <- 80;
+        P_ENTRY_OFFSET >> int <- 84;
+        P_PROVIDER_MODE >> int <- 88;
+        P_READY >> int <- 92;
+        P_HASH >> int <- 96;
+        P_TOTAL_BYTES >> int <- 100;
+        P_WASM_START >> int <- 104;
+        P_RESERVED >> int <- 108;
+        P_RODATA_OFFSET >> int <- 112;
+        P_RODATA_BYTES >> int <- 116;
+        P_DATA_OFFSET >> int <- 120;
+        P_DATA_BYTES >> int <- 124;
+        P_BSS_OFFSET >> int <- 128;
+        P_BSS_BYTES >> int <- 132;
+        P_STORAGE_END >> int <- 136;
+        P_SEPARATE_STORAGE >> int <- 140;
+
+        V_NODE >> int <- 0;
+        V_HASH_A >> int <- 4;
+        V_HASH_B >> int <- 8;
+        V_NAME_BYTES >> int <- 12;
+        V_OWNER_BYTES >> int <- 16;
+        V_IMPORT_INDEX >> int <- 20;
+        V_THUNK_OFFSET >> int <- 24;
+        V_SLOT_OFFSET >> int <- 28;
+        V_RELOCATION >> int <- 32;
+        V_FLAGS >> int <- 36;
+        V_CALLS >> int <- 40;
+        V_RESERVED >> int <- 44;
+
+        PROVIDER_DYNAMIC >> int <- 1;
+        PROVIDER_STATIC >> int <- 2;
+        PROVIDER_WASM_IMPORT >> int <- 3;
+
+        TARGET_LOCAL_SYMBOL >> int <- 1;
+        TARGET_EXTERNAL_SYMBOL >> int <- 2;
+        TARGET_CONTROL_NODE >> int <- 3;
+        TARGET_UNRESOLVED >> int <- 4;
+        EXTERNAL_INTRINSIC >> int <- 2;
+        EXTERNAL_RUNTIME >> int <- 3;
+
+    type:
+        RelocationContract {
+            public:
+                target >> str;
+                kind >> str;
+                width >> int;
+                pcRelative >> bool;
+                instruction >> bool;
+                applied >> bool;
+        }
+
+        RelocationStats {
+            public:
+                attempted >> u64;
+                applied >> u64;
+                rejected >> u64;
+                bytesPatched >> u64;
+        }
+
+        FinalLinkStats {
+            public:
+                target >> int;
+                providers >> int;
+                relocations >> int;
+                applied >> int;
+                localTargets >> int;
+                runtimeTargets >> int;
+                projectTargets >> int;
+                unresolvedTargets >> int;
+                ready >> bool;
+                hash >> int;
+        }
+
+    stc:
+        attempted >> u64 <- 0;
+        applied >> u64 <- 0;
+        rejected >> u64 <- 0;
+        bytesPatched >> u64 <- 0;
+
+    local:
+        lastTarget >> int <- 0;
+        lastKind >> int <- 0;
+        lastWidth >> int <- 0;
+        lastDelta >> int <- 0;
+
+    fn:
+        private:
+            putU8(out >> p<byte>, at >> int, value >> int) -> void {
+                wr<byte>(off(out, at), value & 255);
+            }
+
+            putU32(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+                putU8(out, at + 2, value >>> 16);
+                putU8(out, at + 3, value >>> 24);
+            }
+
+            putU64(out >> p<byte>, at >> int, value >> u64) -> void {
+                putU32(out, at, value);
+                putU32(out, at + 4, value >>> 32);
+            }
+
+            getU32(out >> p<byte>, at >> int) -> int {
+                return (rd<byte>(off(out, at)) & 255) |
+                    ((rd<byte>(off(out, at + 1)) & 255) << 8) |
+                    ((rd<byte>(off(out, at + 2)) & 255) << 16) |
+                    ((rd<byte>(off(out, at + 3)) & 255) << 24);
+            }
+
+            zero(out >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) { putU8(out, at, 0); at += 1; }
+            }
+
+            aligned(value >> int, boundary >> int) -> bool {
+                return boundary > 0 && value % boundary == 0;
+            }
+
+            signedFit(value >> int, bits >> int) -> bool {
+                limit >> int <- 1 << (bits - 1);
+                return value >= 0 - limit && value < limit;
+            }
+
+            integer(data >> p<byte>, at >> int) -> int {
+                return getU32(data, at);
+            }
+
+            putInteger(data >> p<byte>, at >> int, value >> int) -> void {
+                putU32(data, at, value);
+            }
+
+            alignUp(value >> int, boundary >> int) -> int {
+                guard boundary > 1 else return value;
+                return ((value + boundary - 1) / boundary) * boundary;
+            }
+
+            providerRecord(plan >> p<byte>, index >> int) -> p<byte> {
+                return off(plan, integer(plan, P_PROVIDER_OFFSET) + index * PROVIDER_BYTES);
+            }
+
+            pointerBytes(material >> p<byte>) -> int {
+                return mct.nccMct.artifactPointerBits(material) / 8;
+            }
+
+            thunkStride(material >> p<byte>) -> int {
+                family >> int <- mct.nccMct.artifactFamily(material);
+                return family == 7 ? 0 : 16;
+            }
+
+            slotStride(material >> p<byte>) -> int {
+                return mct.nccMct.artifactFamily(material) == 7 ? 0 :
+                    pointerBytes(material);
+            }
+
+            imageBase(target >> int) -> int {
+                if (target == 1 || target == 2 || target == 5) return 0x00401000;
+                if (target == 3 || target == 6) return 0x00101000;
+                if (target == 4) return 0x08049000;
+                if (target == 7 || target == 8 || target == 9) return 0x00010000;
+                return 0;
+            }
+
+            providerMode(target >> int) -> int {
+                if (target == 10) return PROVIDER_WASM_IMPORT;
+                if (target == 8) return PROVIDER_STATIC;
+                return PROVIDER_DYNAMIC;
+            }
+
+            providerModule(target >> int) -> str {
+                if (target == 2) return "ncruntime.dll";
+                if (target == 3 || target == 6) return "libncruntime.2.dylib";
+                if (target == 8) return "libncruntime-rv32.a";
+                if (target == 10) return "per-family";
+                return "libncruntime.so.2";
+            }
+
+            printProviderModule(material >> p<byte>, plan >> p<byte>, node >> int) -> void {
+                if (integer(plan, P_TARGET) != 10) {
+                    print(providerModule(integer(plan, P_TARGET)));
+                    return;
+                }
+                print("nC.runtime");
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                    material, node);
+                if (ownerBytes > 0) {
+                    print(".");
+                    printBytes(mct.nccMct.artifactRecordTargetOwner(material, node),
+                        ownerBytes);
+                }
+            }
+
+            printProviderSymbol(material >> p<byte>, node >> int) -> void {
+                print("nC.runtime.");
+                ownerBytes >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(
+                    material, node);
+                if (ownerBytes > 0) {
+                    printBytes(mct.nccMct.artifactRecordTargetOwner(material, node),
+                        ownerBytes);
+                    print(".");
+                }
+                printBytes(mct.nccMct.artifactRecordTargetName(material, node),
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node));
+            }
+
+            sameProvider(material >> p<byte>, plan >> p<byte>, index >> int,
+                node >> int) -> bool {
+                previous >> int <- integer(providerRecord(plan, index), V_NODE);
+                return mct_symbol_bundle.nccMctSymbolBundle.sameTarget(
+                    material, previous, node);
+            }
+
+            findProvider(material >> p<byte>, plan >> p<byte>, count >> int,
+                node >> int) -> int {
+                index >> int <- 0;
+                while (index < count) {
+                    if (sameProvider(material, plan, index, node)) return index;
+                    index += 1;
+                }
+                return -1;
+            }
+
+            defineProvider(material >> p<byte>, plan >> p<byte>, index >> int,
+                node >> int) -> void {
+                record >> p<byte> <- providerRecord(plan, index);
+                putInteger(record, V_NODE, node);
+                putInteger(record, V_HASH_A,
+                    mct.nccMct.artifactRecordTargetHashA(material, node));
+                putInteger(record, V_HASH_B,
+                    mct.nccMct.artifactRecordTargetHashB(material, node));
+                putInteger(record, V_NAME_BYTES,
+                    mct.nccMct.artifactRecordTargetNameBytes(material, node));
+                putInteger(record, V_OWNER_BYTES,
+                    mct.nccMct.artifactRecordTargetOwnerBytes(material, node));
+                putInteger(record, V_IMPORT_INDEX, index);
+                putInteger(record, V_RELOCATION,
+                    mct.nccMct.artifactRecordRelocation(material, node));
+                putInteger(record, V_CALLS, 1);
+            }
+
+            collectProviders(material >> p<byte>, plan >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordRelocation(material, node) != 0 &&
+                        mct.nccMct.artifactRecordTargetKind(material, node) ==
+                            TARGET_EXTERNAL_SYMBOL &&
+                        mct.nccMct.artifactRecordTargetClass(material, node) ==
+                            EXTERNAL_RUNTIME) {
+                        index >> int <- findProvider(material, plan, count, node);
+                        if (index < 0) {
+                            defineProvider(material, plan, count, node);
+                            count += 1;
+                        } else {
+                            record >> p<byte> <- providerRecord(plan, index);
+                            putInteger(record, V_CALLS, integer(record, V_CALLS) + 1);
+                        }
+                    }
+                    node += 1;
+                }
+                putInteger(plan, P_PROVIDER_COUNT, count);
+                return count;
+            }
+
+            definedOrdinal(material >> p<byte>, node >> int) -> int {
+                wanted >> int <- mct_symbol_bundle.nccMctSymbolBundle.targetOrdinal(
+                    material, node);
+                guard wanted >= 0 else return -1;
+                ordinal >> int <- 0;
+                defined >> int <- 0;
+                while (ordinal < wanted) {
+                    previous >> int <- mct_symbol_bundle.nccMctSymbolBundle.targetNode(
+                        material, ordinal);
+                    if (mct_symbol_bundle.nccMctSymbolBundle.isDefinedTarget(
+                        material, previous)) defined += 1;
+                    ordinal += 1;
+                }
+                return defined;
+            }
+
+            emitThunk(material >> p<byte>, plan >> p<byte>, index >> int) -> bool {
+                family >> int <- mct.nccMct.artifactFamily(material);
+                if (family == 7) {
+                    putInteger(providerRecord(plan, index), V_THUNK_OFFSET, -1);
+                    putInteger(providerRecord(plan, index), V_SLOT_OFFSET, -1);
+                    return true;
+                }
+                thunkAt >> int <- integer(plan, P_THUNK_OFFSET) +
+                    index * integer(plan, P_THUNK_STRIDE);
+                slotAt >> int <- integer(plan, P_SLOT_OFFSET) +
+                    index * integer(plan, P_SLOT_STRIDE);
+                textAt >> int <- integer(plan, P_TEXT_OFFSET);
+                base >> int <- integer(plan, P_IMAGE_BASE);
+                thunkAddress >> int <- base + thunkAt - textAt;
+                slotAddress >> int <- base + slotAt - textAt;
+                record >> p<byte> <- providerRecord(plan, index);
+                putInteger(record, V_THUNK_OFFSET, thunkAt - textAt);
+                putInteger(record, V_SLOT_OFFSET, slotAt - textAt);
+                if (family == 1) {
+                    putU8(plan, thunkAt, 0xFF); putU8(plan, thunkAt + 1, 0x25);
+                    putU32(plan, thunkAt + 2, slotAddress - (thunkAddress + 6));
+                    putU8(plan, thunkAt + 6, 0x66); putU8(plan, thunkAt + 7, 0x90);
+                    return true;
+                }
+                if (family == 2) {
+                    putU8(plan, thunkAt, 0xFF); putU8(plan, thunkAt + 1, 0x25);
+                    putU32(plan, thunkAt + 2, slotAddress);
+                    putU8(plan, thunkAt + 6, 0x66); putU8(plan, thunkAt + 7, 0x90);
+                    return true;
+                }
+                if (family == 3) {
+                    putU32(plan, thunkAt, 0x90000010);
+                    putU32(plan, thunkAt + 4, 0xF9400210);
+                    putU32(plan, thunkAt + 8, 0xD61F0200);
+                    return applyAarch64(plan, thunkAt, RELOC_AARCH64_ADRP_PAGE21,
+                            slotAddress, thunkAddress, 0) &&
+                        applyAarch64(plan, thunkAt + 4, RELOC_AARCH64_LDST64_LO12,
+                            slotAddress, thunkAddress + 4, 0);
+                }
+                if (family == 4) {
+                    putU32(plan, thunkAt, 0xE59FC000);
+                    putU32(plan, thunkAt + 4, 0xE59CF000);
+                    putU32(plan, thunkAt + 8, slotAddress);
+                    return true;
+                }
+                if (family == 5 || family == 6) {
+                    putU32(plan, thunkAt, 0x00000297);
+                    putU32(plan, thunkAt + 4,
+                        family == 6 ? 0x0002B303 : 0x0002A303);
+                    putU32(plan, thunkAt + 8, 0x00030067);
+                    return applyRiscv(plan, thunkAt, RELOC_RISCV_PCREL_HI20,
+                            slotAddress, thunkAddress, 0) &&
+                        applyRiscv(plan, thunkAt + 4, RELOC_RISCV_PCREL_LO12_I,
+                            slotAddress, thunkAddress, 0);
+                }
+                return false;
+            }
+
+            emitThunks(material >> p<byte>, plan >> p<byte>) -> bool {
+                index >> int <- 0;
+                while (index < integer(plan, P_PROVIDER_COUNT)) {
+                    if (!emitThunk(material, plan, index)) return false;
+                    index += 1;
+                }
+                return true;
+            }
+
+            patchRelocations(material >> p<byte>, plan >> p<byte>) -> void {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                base >> int <- integer(plan, P_IMAGE_BASE);
+                textAt >> int <- integer(plan, P_TEXT_OFFSET);
+                textData >> p<byte> <- off(plan, textAt);
+                providers >> int <- integer(plan, P_PROVIDER_COUNT);
+                node >> int <- 0;
+                localCount >> int <- 0;
+                runtimeCount >> int <- 0;
+                projectCount >> int <- 0;
+                unresolvedCount >> int <- 0;
+                appliedCount >> int <- 0;
+                relocationCount >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    relocation >> int <- mct.nccMct.artifactRecordRelocation(material, node);
+                    if (relocation != 0) {
+                        relocationCount += 1;
+                        kind >> int <- mct.nccMct.artifactRecordTargetKind(material, node);
+                        at >> int <- mct.nccMct.artifactRecordRelocationOffset(material, node)+
+                            sectionOffset(plan,mct.nccMct.artifactRecordSection(material,node));
+                        addend >> int <- mct.nccMct.artifactRecordAddend(material, node);
+                        symbol >> int <- 0;
+                        patch >> bool <- false;
+                        if (kind == TARGET_LOCAL_SYMBOL || kind == TARGET_CONTROL_NODE) {
+                            if (target == 10 && relocation == RELOC_WASM_LABEL_INDEX) {
+                                // Structured branch destinations are encoded as label depths,
+                                // not as function ordinals. The current emission tree places the
+                                // branch in its immediately enclosing construct.
+                                symbol <- 0;
+                                patch <- true;
+                                localCount += 1;
+                            } else {
+                                symbol <- target == 10 ?
+                                    providers + definedOrdinal(material, node) :
+                                    base + mct_symbol_bundle.nccMctSymbolBundle.targetTextOffset(
+                                        material, node)+sectionOffset(plan,mct_symbol_bundle.nccMctSymbolBundle.targetSection(material,node));
+                                patch <- symbol >= 0;
+                                localCount += 1;
+                            }
+                        } else if (kind == TARGET_EXTERNAL_SYMBOL &&
+                            mct.nccMct.artifactRecordTargetClass(material, node) ==
+                                EXTERNAL_RUNTIME) {
+                            provider >> int <- findProvider(material, plan, providers, node);
+                            if (provider >= 0) {
+                                symbol <- target == 10 ? provider : base +
+                                    integer(providerRecord(plan, provider), V_THUNK_OFFSET);
+                                patch <- true;
+                                runtimeCount += 1;
+                            } else unresolvedCount += 1;
+                        } else if (kind == TARGET_EXTERNAL_SYMBOL &&
+                            mct.nccMct.artifactRecordTargetClass(material, node) ==
+                            EXTERNAL_INTRINSIC) {
+                            unresolvedCount += 1;
+                        } else if (kind == TARGET_EXTERNAL_SYMBOL) {
+                            definitionOffset >> int <- mct_symbol_bundle.nccMctSymbolBundle.externalDefinitionTextOffset(material, node);
+                            if (definitionOffset >= 0) {
+                                symbol <- target == 10 ?
+                                    providers + definedOrdinal(material, node) :
+                                    base + definitionOffset;
+                                patch <- true;
+                                localCount += 1;
+                            } else {
+                                print("error[E_MCT_RELOCATION_001]: unresolved project symbol owner=");
+                                printBytes(mct.nccMct.artifactRecordTargetOwner(material, node),
+                                    mct.nccMct.artifactRecordTargetOwnerBytes(material, node));
+                                print(" name=");
+                                printBytes(mct.nccMct.artifactRecordTargetName(material, node),
+                                    mct.nccMct.artifactRecordTargetNameBytes(material, node));
+                                println("");
+                                projectCount += 1;
+                            }
+                        } else unresolvedCount += 1;
+                        if (patch) {
+                            place >> int <- target == 10 ? 0 : base + at;
+                            if (relocation == RELOC_X86_PCREL32 ||
+                                relocation == RELOC_X86_BRANCH32 ||
+                                relocation == RELOC_X86_DATA_PCREL32) place += 4;
+                            if (relocation == RELOC_X86_ABS64) {
+                                value >> u64 <- 0;
+                                part >> int <- 0;
+                                while (part < 8) {
+                                    piece >> u64 <- rd<byte>(off(textData,at+part)) & 255;
+                                    value <- value | (piece << (part*8)); part += 1;
+                                }
+                                baseValue >> u64 <- symbol;
+                                value += baseValue;
+                                part <- 0;
+                                while (part < 8) { wr<byte>(off(textData,at+part),cast<byte>(value >> (part*8))); part += 1; }
+                                appliedCount += 1;
+                            }
+                            else if (applyRaw(target, relocation, textData, at, symbol,
+                                place, addend)) appliedCount += 1;
+                            else unresolvedCount += 1;
+                        }
+                    }
+                    node += 1;
+                }
+                putInteger(plan, P_RELOCATIONS, relocationCount);
+                putInteger(plan, P_APPLIED, appliedCount);
+                putInteger(plan, P_LOCAL, localCount);
+                putInteger(plan, P_RUNTIME, runtimeCount);
+                putInteger(plan, P_PROJECT, projectCount);
+                putInteger(plan, P_UNRESOLVED, unresolvedCount);
+                putInteger(plan, P_READY,
+                    projectCount == 0 && unresolvedCount == 0 &&
+                    appliedCount == relocationCount ? 1 : 0);
+            }
+
+            planHash(plan >> p<byte>) -> int {
+                total >> int <- integer(plan, P_TOTAL_BYTES);
+                value >> int <- 216613626;
+                at >> int <- 0;
+                while (at < total) {
+                    if (at < P_HASH || at >= P_HASH + 4)
+                        value <- ((value ^ (rd<byte>(off(plan, at)) & 255)) * 16777619) &
+                            0x7FFFFFFF;
+                    at += 1;
+                }
+                return value;
+            }
+
+            buildPlan(material >> p<byte>) -> p<byte> {
+                guard material != null else return null;
+                capacity >> int <- mct.nccMct.artifactRuntimeTargets(material);
+                providersAt >> int <- PLAN_BYTES;
+                textAt >> int <- alignUp(providersAt + capacity * PROVIDER_BYTES, 16);
+                textBytes >> int <- mct.nccMct.artifactTextBytes(material);
+                thunksAt >> int <- alignUp(textAt + textBytes, 16);
+                stride >> int <- thunkStride(material);
+                slotBytes >> int <- slotStride(material);
+                slotsAt >> int <- alignUp(thunksAt + capacity * stride,
+                    pointerBytes(material));
+                separate >> bool <- mct.nccMct.artifactTarget(material) == 1 || mct.nccMct.artifactTarget(material) == 2;
+                rodataAt >> int <- 0;
+                dataAt >> int <- 0;
+                bssAt >> int <- 0;
+                rodataBytes >> int <- mct.nccMct.artifactSectionBytes(material,4);
+                dataBytes >> int <- mct.nccMct.artifactSectionBytes(material,2);
+                bssBytes >> int <- mct.nccMct.artifactSectionBytes(material,3);
+                if (separate) {
+                    storageAlignment >> int <- mct.nccMct.artifactStorageAlignment(material);
+                    base >> int <- imageBase(mct.nccMct.artifactTarget(material));
+                    boundary >> int <- storageAlignment > 4096 ? storageAlignment : 4096;
+                    rodataAt <- textAt+alignUp(thunksAt-textAt+capacity*stride+128,4096);
+                    dataAt <- textAt+alignUp(base+rodataAt-textAt+rodataBytes+(rodataBytes == 0 ? 1 : 0),boundary)-base;
+                    bssAt <- textAt+alignUp(base+dataAt-textAt+dataBytes,storageAlignment)-base;
+                    slotsAt <- alignUp(bssAt+bssBytes,8);
+                }
+                // PE retains a separate terminating pair for the system ExitProcess IAT.
+                extraSlots >> int <- mct.nccMct.artifactTarget(material) == 2 ? 3 : 1;
+                total >> int <- slotsAt + (capacity+extraSlots) * slotBytes;
+                plan >> p<byte> <- cast<byte>(alloc(total));
+                guard plan != null else return null;
+                zero(plan, total);
+                putInteger(plan, P_MAGIC, PLAN_MAGIC);
+                putInteger(plan, P_VERSION, PLAN_VERSION);
+                putInteger(plan, P_TARGET, mct.nccMct.artifactTarget(material));
+                putInteger(plan, P_FAMILY, mct.nccMct.artifactFamily(material));
+                putInteger(plan, P_IMAGE_BASE,
+                    imageBase(mct.nccMct.artifactTarget(material)));
+                putInteger(plan, P_TEXT_OFFSET, textAt);
+                putInteger(plan, P_TEXT_BYTES, textBytes);
+                putInteger(plan, P_PROVIDER_OFFSET, providersAt);
+                putInteger(plan, P_PROVIDER_CAPACITY, capacity);
+                putInteger(plan, P_THUNK_OFFSET, thunksAt);
+                putInteger(plan, P_THUNK_STRIDE, stride);
+                putInteger(plan, P_SLOT_OFFSET, slotsAt);
+                putInteger(plan, P_SLOT_STRIDE, slotBytes);
+                putInteger(plan, P_PROVIDER_MODE,
+                    providerMode(mct.nccMct.artifactTarget(material)));
+                putInteger(plan, P_TOTAL_BYTES, total);
+                putInteger(plan,P_SEPARATE_STORAGE,separate ? 1 : 0);
+                putInteger(plan,P_RODATA_OFFSET,rodataAt-textAt); putInteger(plan,P_RODATA_BYTES,rodataBytes);
+                putInteger(plan,P_DATA_OFFSET,dataAt-textAt); putInteger(plan,P_DATA_BYTES,dataBytes);
+                putInteger(plan,P_BSS_OFFSET,bssAt-textAt); putInteger(plan,P_BSS_BYTES,bssBytes);
+                putInteger(plan,P_STORAGE_END,total-textAt);
+                cp(off(plan, textAt), mct.nccMct.artifactText(material), textBytes);
+                if (separate) {
+                    cp(off(plan,rodataAt),mct.nccMct.artifactSectionData(material,4),rodataBytes);
+                    cp(off(plan,dataAt),mct.nccMct.artifactSectionData(material,2),dataBytes);
+                }
+                collectProviders(material, plan);
+                if (!emitThunks(material, plan)) { free(plan); return null; }
+                patchRelocations(material, plan);
+                linkedEnd >> int <- integer(plan, P_THUNK_OFFSET) +
+                    integer(plan, P_PROVIDER_COUNT) * integer(plan, P_THUNK_STRIDE);
+                slotEnd >> int <- integer(plan, P_SLOT_OFFSET) +
+                    integer(plan, P_PROVIDER_COUNT) * integer(plan, P_SLOT_STRIDE);
+                if (!separate && slotEnd > linkedEnd) linkedEnd <- slotEnd;
+                putInteger(plan, P_LINKED_BYTES, linkedEnd - textAt);
+                entry >> int <- mct_symbol_bundle.nccMctSymbolBundle.entryTargetNode(material);
+                putInteger(plan, P_ENTRY_OFFSET, entry >= 0 ?
+                    mct.nccMct.artifactRecordTextOffset(material, entry) : -1);
+                putInteger(plan, P_WASM_START,
+                    mct.nccMct.artifactTarget(material) == 10 && entry >= 0 ?
+                    integer(plan, P_PROVIDER_COUNT) + definedOrdinal(material, entry) : -1);
+                putInteger(plan, P_HASH, planHash(plan));
+                return plan;
+            }
+
+            printBytes(data >> p<byte>, count >> int) -> void {
+                text >> p<byte> <- cast<byte>(alloc(count + 1));
+                guard text != null else return;
+                if (count > 0) cp(text, data, count);
+                wr<byte>(off(text, count), 0);
+                print(cast<str>(text));
+                free(text);
+            }
+
+            emitPlan(material >> p<byte>, plan >> p<byte>, json >> bool) -> void {
+                if (!json) {
+                    print("link-plan target="); print(ir.nccIr.targetName(
+                        integer(plan, P_TARGET)));
+                    print(" providers="); print(renderInt(integer(plan, P_PROVIDER_COUNT)));
+                    print(" relocations="); print(renderInt(integer(plan, P_RELOCATIONS)));
+                    print(" applied="); print(renderInt(integer(plan, P_APPLIED)));
+                    print(" ready="); println(integer(plan, P_READY) != 0 ? "true" : "false");
+                    return;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.final-link-plan.v1\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(integer(plan, P_TARGET)));
+                print("\",\"provider_module\":\""); print(providerModule(integer(plan, P_TARGET)));
+                print("\",\"provider_mode\":"); print(renderInt(integer(plan, P_PROVIDER_MODE)));
+                print(",\"providers\":"); print(renderInt(integer(plan, P_PROVIDER_COUNT)));
+                print(",\"relocations\":"); print(renderInt(integer(plan, P_RELOCATIONS)));
+                print(",\"applied\":"); print(renderInt(integer(plan, P_APPLIED)));
+                print(",\"local_targets\":"); print(renderInt(integer(plan, P_LOCAL)));
+                print(",\"runtime_targets\":"); print(renderInt(integer(plan, P_RUNTIME)));
+                print(",\"project_targets\":"); print(renderInt(integer(plan, P_PROJECT)));
+                print(",\"unresolved_targets\":"); print(renderInt(integer(plan, P_UNRESOLVED)));
+                print(",\"text_bytes\":"); print(renderInt(integer(plan, P_TEXT_BYTES)));
+                print(",\"linked_bytes\":"); print(renderInt(integer(plan, P_LINKED_BYTES)));
+                print(",\"entry_offset\":"); print(renderInt(integer(plan, P_ENTRY_OFFSET)));
+                print(",\"wasm_start_index\":"); print(renderInt(integer(plan, P_WASM_START)));
+                print(",\"ready\":"); print(integer(plan, P_READY) != 0 ? "true" : "false");
+                print(",\"hash\":"); print(renderInt(integer(plan, P_HASH)));
+                print(",\"bindings\":[");
+                index >> int <- 0;
+                while (index < integer(plan, P_PROVIDER_COUNT)) {
+                    if (index > 0) print(",");
+                    record >> p<byte> <- providerRecord(plan, index);
+                    node >> int <- integer(record, V_NODE);
+                    print("{\"index\":"); print(renderInt(index));
+                    print(",\"module\":\""); printProviderModule(material, plan, node);
+                    print("\",\"symbol\":\"");
+                    printProviderSymbol(material, node);
+                    print("\",\"calls\":"); print(renderInt(integer(record, V_CALLS)));
+                    print(",\"thunk_offset\":"); print(renderInt(integer(record, V_THUNK_OFFSET)));
+                    print(",\"slot_offset\":"); print(renderInt(integer(record, V_SLOT_OFFSET)));
+                    print("}");
+                    index += 1;
+                }
+                println("]}");
+            }
+
+            kindCode(name >> str) -> int {
+                if (name == "x86-pcrel32") return RELOC_X86_PCREL32;
+                if (name == "x86-branch32") return RELOC_X86_BRANCH32;
+                if (name == "x86-data-pcrel32") return RELOC_X86_DATA_PCREL32;
+                if (name == "x86-abs32") return RELOC_X86_ABS32;
+                if (name == "x86-abs64") return RELOC_X86_ABS64;
+                if (name == "aarch64-call26") return RELOC_AARCH64_CALL26;
+                if (name == "aarch64-branch26") return RELOC_AARCH64_BRANCH26;
+                if (name == "aarch64-condbr19") return RELOC_AARCH64_CONDBR19;
+                if (name == "aarch64-adr-prel21") return RELOC_AARCH64_ADR_PREL21;
+                if (name == "aarch64-adrp-page21") return RELOC_AARCH64_ADRP_PAGE21;
+                if (name == "aarch64-add-lo12") return RELOC_AARCH64_ADD_LO12;
+                if (name == "aarch64-ldst64-lo12") return RELOC_AARCH64_LDST64_LO12;
+                if (name == "arm-call") return RELOC_ARM_CALL;
+                if (name == "arm-jump24") return RELOC_ARM_JUMP24;
+                if (name == "arm-rel32") return RELOC_ARM_REL32;
+                if (name == "arm-abs32") return RELOC_ARM_ABS32;
+                if (name == "riscv-call") return RELOC_RISCV_CALL;
+                if (name == "riscv-branch") return RELOC_RISCV_BRANCH;
+                if (name == "riscv-jal") return RELOC_RISCV_JAL;
+                if (name == "riscv-pcrel-hi20") return RELOC_RISCV_PCREL_HI20;
+                if (name == "riscv-pcrel-lo12-i") return RELOC_RISCV_PCREL_LO12_I;
+                if (name == "riscv-pcrel-lo12-s") return RELOC_RISCV_PCREL_LO12_S;
+                if (name == "riscv-abs32") return RELOC_RISCV_ABS32;
+                if (name == "riscv-abs64") return RELOC_RISCV_ABS64;
+                if (name == "riscv-relax") return RELOC_RISCV_RELAX;
+                if (name == "wasm-function-index") return RELOC_WASM_FUNCTION_INDEX;
+                if (name == "wasm-label-index") return RELOC_WASM_LABEL_INDEX;
+                return 0;
+            }
+
+            width(kind >> int) -> int {
+                if (kind == RELOC_X86_ABS64 || kind == RELOC_RISCV_ABS64 ||
+                    kind == RELOC_RISCV_CALL) return 8;
+                if (kind == RELOC_WASM_FUNCTION_INDEX || kind == RELOC_WASM_LABEL_INDEX) return 5;
+                if (kind == RELOC_RISCV_RELAX) return 0;
+                return 4;
+            }
+
+            pcRelative(kind >> int) -> bool {
+                return kind == RELOC_X86_PCREL32 || kind == RELOC_X86_BRANCH32 ||
+                    kind == RELOC_X86_DATA_PCREL32 ||
+                    (kind >= RELOC_AARCH64_CALL26 && kind <= RELOC_ARM_REL32) ||
+                    (kind >= RELOC_RISCV_CALL && kind <= RELOC_RISCV_PCREL_HI20) ||
+                    kind == RELOC_RISCV_PCREL_LO12_I || kind == RELOC_RISCV_PCREL_LO12_S;
+            }
+
+            instruction(kind >> int) -> bool {
+                return (kind >= RELOC_AARCH64_CALL26 && kind <= RELOC_AARCH64_LDST64_LO12) ||
+                    kind == RELOC_ARM_CALL || kind == RELOC_ARM_JUMP24 ||
+                    (kind >= RELOC_RISCV_CALL && kind <= RELOC_RISCV_PCREL_LO12_S) ||
+                    kind == RELOC_RISCV_RELAX;
+            }
+
+            initialize(out >> p<byte>, kind >> int) -> void {
+                if (kind == RELOC_AARCH64_CALL26) putU32(out, 0, 0x94000000);
+                else if (kind == RELOC_AARCH64_BRANCH26) putU32(out, 0, 0x14000000);
+                else if (kind == RELOC_AARCH64_CONDBR19) putU32(out, 0, 0x54000000);
+                else if (kind == RELOC_AARCH64_ADR_PREL21) putU32(out, 0, 0x10000000);
+                else if (kind == RELOC_AARCH64_ADRP_PAGE21) putU32(out, 0, 0x90000000);
+                else if (kind == RELOC_AARCH64_ADD_LO12) putU32(out, 0, 0x91000000);
+                else if (kind == RELOC_AARCH64_LDST64_LO12) putU32(out, 0, 0xF9400000);
+                else if (kind == RELOC_ARM_CALL) putU32(out, 0, 0xEB000000);
+                else if (kind == RELOC_ARM_JUMP24) putU32(out, 0, 0xEA000000);
+                else if (kind == RELOC_RISCV_CALL) {
+                    putU32(out, 0, 0x00000017); putU32(out, 4, 0x000080E7);
+                }
+                else if (kind == RELOC_RISCV_BRANCH) putU32(out, 0, 0x00000063);
+                else if (kind == RELOC_RISCV_JAL) putU32(out, 0, 0x0000006F);
+                else if (kind == RELOC_RISCV_PCREL_HI20) putU32(out, 0, 0x00000017);
+                else if (kind == RELOC_RISCV_PCREL_LO12_I) putU32(out, 0, 0x00000013);
+                else if (kind == RELOC_RISCV_PCREL_LO12_S) putU32(out, 0, 0x00000023);
+            }
+
+            applyX86(out >> p<byte>, at >> int, kind >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                value >> int <- symbol + addend;
+                if (kind == RELOC_X86_PCREL32 || kind == RELOC_X86_BRANCH32 ||
+                    kind == RELOC_X86_DATA_PCREL32) value <- value - place;
+                if (kind == RELOC_X86_ABS64) putU64(out, at, value);
+                else putU32(out, at, value);
+                return true;
+            }
+
+            applyAarch64(out >> p<byte>, at >> int, kind >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                value >> int <- symbol + addend;
+                delta >> int <- value - place;
+                word >> int <- getU32(out, at);
+                if (kind == RELOC_AARCH64_CALL26 || kind == RELOC_AARCH64_BRANCH26) {
+                    guard aligned(delta, 4) && signedFit(delta / 4, 26) else return false;
+                    putU32(out, at, (word & 0xFC000000) | ((delta / 4) & 0x03FFFFFF));
+                    return true;
+                }
+                if (kind == RELOC_AARCH64_CONDBR19) {
+                    guard aligned(delta, 4) && signedFit(delta / 4, 19) else return false;
+                    putU32(out, at, (word & 0xFF00001F) | (((delta / 4) & 0x7FFFF) << 5));
+                    return true;
+                }
+                if (kind == RELOC_AARCH64_ADR_PREL21) {
+                    guard signedFit(delta, 21) else return false;
+                    putU32(out, at, (word & 0x9F00001F) | ((delta & 3) << 29) |
+                        (((delta >>> 2) & 0x7FFFF) << 5));
+                    return true;
+                }
+                if (kind == RELOC_AARCH64_ADRP_PAGE21) {
+                    pages >> int <- (value >>> 12) - (place >>> 12);
+                    guard signedFit(pages, 21) else return false;
+                    putU32(out, at, (word & 0x9F00001F) | ((pages & 3) << 29) |
+                        (((pages >>> 2) & 0x7FFFF) << 5));
+                    return true;
+                }
+                if (kind == RELOC_AARCH64_ADD_LO12) {
+                    putU32(out, at, (word & 0xFFC003FF) | ((value & 0xFFF) << 10));
+                    return true;
+                }
+                if (kind == RELOC_AARCH64_LDST64_LO12) {
+                    guard aligned(value, 8) else return false;
+                    putU32(out, at, (word & 0xFFC003FF) | (((value & 0xFFF) >>> 3) << 10));
+                    return true;
+                }
+                return false;
+            }
+
+            applyArm(out >> p<byte>, at >> int, kind >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                value >> int <- symbol + addend;
+                if (kind == RELOC_ARM_ABS32) { putU32(out, at, value); return true; }
+                delta >> int <- value - place;
+                if (kind == RELOC_ARM_REL32) { putU32(out, at, delta); return true; }
+                guard aligned(delta, 4) && signedFit(delta / 4, 24) else return false;
+                word >> int <- getU32(out, at);
+                putU32(out, at, (word & 0xFF000000) | ((delta / 4) & 0x00FFFFFF));
+                return true;
+            }
+
+            applyRiscv(out >> p<byte>, at >> int, kind >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                value >> int <- symbol + addend;
+                if (kind == RELOC_RISCV_ABS32) { putU32(out, at, value); return true; }
+                if (kind == RELOC_RISCV_ABS64) { putU64(out, at, value); return true; }
+                if (kind == RELOC_RISCV_RELAX) return true;
+                delta >> int <- value - place;
+                if (kind == RELOC_RISCV_CALL) {
+                    high >> int <- (delta + 0x800) >> 12;
+                    low >> int <- delta - (high << 12);
+                    putU32(out, at, (getU32(out, at) & 0xFFF) | ((high & 0xFFFFF) << 12));
+                    putU32(out, at + 4, (getU32(out, at + 4) & 0x000FFFFF) |
+                        ((low & 0xFFF) << 20));
+                    return true;
+                }
+                if (kind == RELOC_RISCV_BRANCH) {
+                    guard aligned(delta, 2) && signedFit(delta, 13) else return false;
+                    word >> int <- getU32(out, at) & 0x01FFF07F;
+                    word <- word | (((delta >>> 12) & 1) << 31) |
+                        (((delta >>> 5) & 0x3F) << 25) |
+                        (((delta >>> 1) & 0xF) << 8) |
+                        (((delta >>> 11) & 1) << 7);
+                    putU32(out, at, word);
+                    return true;
+                }
+                if (kind == RELOC_RISCV_JAL) {
+                    guard aligned(delta, 2) && signedFit(delta, 21) else return false;
+                    word >> int <- getU32(out, at) & 0xFFF;
+                    word <- word | (((delta >>> 20) & 1) << 31) |
+                        (((delta >>> 1) & 0x3FF) << 21) |
+                        (((delta >>> 11) & 1) << 20) |
+                        (((delta >>> 12) & 0xFF) << 12);
+                    putU32(out, at, word);
+                    return true;
+                }
+                if (kind == RELOC_RISCV_PCREL_HI20) {
+                    high >> int <- (delta + 0x800) >> 12;
+                    putU32(out, at, (getU32(out, at) & 0xFFF) | ((high & 0xFFFFF) << 12));
+                    return true;
+                }
+                if (kind == RELOC_RISCV_PCREL_LO12_I) {
+                    high >> int <- (delta + 0x800) >> 12;
+                    low >> int <- delta - (high << 12);
+                    putU32(out, at, (getU32(out, at) & 0x000FFFFF) | ((low & 0xFFF) << 20));
+                    return true;
+                }
+                if (kind == RELOC_RISCV_PCREL_LO12_S) {
+                    high >> int <- (delta + 0x800) >> 12;
+                    low >> int <- delta - (high << 12);
+                    word >> int <- getU32(out, at) & 0x01FFF07F;
+                    putU32(out, at, word | (((low >>> 5) & 0x7F) << 25) |
+                        ((low & 0x1F) << 7));
+                    return true;
+                }
+                return false;
+            }
+
+            applyWasm(out >> p<byte>, at >> int, value >> int) -> bool {
+                guard value >= 0 else return false;
+                rest >> int <- value;
+                index >> int <- 0;
+                while (index < 4) {
+                    putU8(out, at + index, (rest & 0x7F) | 0x80);
+                    rest <- rest >>> 7;
+                    index += 1;
+                }
+                guard rest <= 15 else return false;
+                putU8(out, at + 4, rest & 0x7F);
+                return true;
+            }
+
+            applyRaw(target >> int, kind >> int, out >> p<byte>, at >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                if (target >= 1 && target <= 4 &&
+                    ((kind >= RELOC_X86_PCREL32 && kind <= RELOC_X86_DATA_PCREL32) ||
+                     kind == RELOC_X86_ABS32 || kind == RELOC_X86_ABS64))
+                    return applyX86(out, at, kind, symbol, place, addend);
+                if ((target == 5 || target == 6) &&
+                    ((kind >= RELOC_AARCH64_CALL26 && kind <= RELOC_AARCH64_ADR_PREL21) ||
+                     (kind >= RELOC_AARCH64_ADRP_PAGE21 && kind <= RELOC_AARCH64_LDST64_LO12)))
+                    return applyAarch64(out, at, kind, symbol, place, addend);
+                if (target == 7 && ((kind >= RELOC_ARM_CALL && kind <= RELOC_ARM_REL32) ||
+                    kind == RELOC_ARM_ABS32))
+                    return applyArm(out, at, kind, symbol, place, addend);
+                if ((target == 8 || target == 9) &&
+                    ((kind >= RELOC_RISCV_CALL && kind <= RELOC_RISCV_PCREL_HI20) ||
+                     (kind >= RELOC_RISCV_PCREL_LO12_I && kind <= RELOC_RISCV_RELAX)))
+                    return applyRiscv(out, at, kind, symbol, place, addend);
+                if (target == 10 && (kind == RELOC_WASM_FUNCTION_INDEX ||
+                    kind == RELOC_WASM_LABEL_INDEX)) return applyWasm(out, at, symbol + addend);
+                return false;
+            }
+
+            verify(target >> int, kind >> int, symbol >> int, place >> int,
+                addend >> int, expectedLow >> int, expectedHigh >> int) -> bool {
+                bytes >> p<byte> <- cast<byte>(alloc(16));
+                guard bytes != null else return false;
+                zero(bytes, 16);
+                initialize(bytes, kind);
+                ok >> bool <- applyRaw(target, kind, bytes, 0, symbol, place, addend) &&
+                    getU32(bytes, 0) == expectedLow && getU32(bytes, 4) == expectedHigh;
+                free(bytes);
+                return ok;
+            }
+
+        internal:
+            sectionOffset(plan >> p<byte>, section >> int) -> int {
+                if (section == 2) return integer(plan,P_DATA_OFFSET);
+                if (section == 3) return integer(plan,P_BSS_OFFSET);
+                if (section == 4) return integer(plan,P_RODATA_OFFSET);
+                return 0;
+            }
+            finalPlanStorageEnd(plan >> p<byte>) -> int { return integer(plan,P_STORAGE_END); }
+            finalPlanSectionBytes(plan >> p<byte>, section >> int) -> int {
+                if (section == 2) return integer(plan,P_DATA_BYTES);
+                if (section == 3) return integer(plan,P_BSS_BYTES);
+                if (section == 4) return integer(plan,P_RODATA_BYTES);
+                return 0;
+            }
+            apply(target >> int, kind >> int, out >> p<byte>, at >> int,
+                symbol >> int, place >> int, addend >> int) -> bool {
+                attempted += 1;
+                ok >> bool <- applyRaw(target, kind, out, at, symbol, place, addend);
+                if (ok) { applied += 1; bytesPatched += width(kind); }
+                else rejected += 1;
+                lastTarget <- target;
+                lastKind <- kind;
+                lastWidth <- width(kind);
+                lastDelta <- symbol + addend - place;
+                return ok;
+            }
+
+            relocationCode(name >> str) -> int {
+                return kindCode(name);
+            }
+
+            finalPlanFromArtifact(material >> p<byte>) -> p<byte> {
+                return buildPlan(material);
+            }
+
+            finalPlanData(plan >> p<byte>) -> p<byte> {
+                return plan == null ? null : off(plan, integer(plan, P_TEXT_OFFSET));
+            }
+
+            finalPlanBytes(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_LINKED_BYTES);
+            }
+
+            finalPlanTextBytes(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_TEXT_BYTES);
+            }
+
+            finalPlanThunkStride(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_THUNK_STRIDE);
+            }
+
+            finalPlanSlotStride(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_SLOT_STRIDE);
+            }
+
+            finalPlanTarget(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_TARGET);
+            }
+
+            finalPlanFamily(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_FAMILY);
+            }
+
+            finalPlanImageBase(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_IMAGE_BASE);
+            }
+
+            finalPlanEntryOffset(plan >> p<byte>) -> int {
+                return plan == null ? -1 : integer(plan, P_ENTRY_OFFSET);
+            }
+
+            finalPlanProviderCount(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_PROVIDER_COUNT);
+            }
+
+            finalPlanRelocationCount(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_RELOCATIONS);
+            }
+
+            finalPlanAppliedCount(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_APPLIED);
+            }
+
+            finalPlanProjectTargetCount(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_PROJECT);
+            }
+
+            finalPlanUnresolvedCount(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_UNRESOLVED);
+            }
+
+            finalPlanProviderMode(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_PROVIDER_MODE);
+            }
+
+            finalPlanWasmStart(plan >> p<byte>) -> int {
+                return plan == null ? -1 : integer(plan, P_WASM_START);
+            }
+
+            finalPlanProviderNode(plan >> p<byte>, index >> int) -> int {
+                guard plan != null && index >= 0 &&
+                    index < integer(plan, P_PROVIDER_COUNT) else return -1;
+                return integer(providerRecord(plan, index), V_NODE);
+            }
+
+            finalPlanProviderThunkOffset(plan >> p<byte>, index >> int) -> int {
+                guard plan != null && index >= 0 &&
+                    index < integer(plan, P_PROVIDER_COUNT) else return -1;
+                return integer(providerRecord(plan, index), V_THUNK_OFFSET);
+            }
+
+            finalPlanProviderSlotOffset(plan >> p<byte>, index >> int) -> int {
+                guard plan != null && index >= 0 &&
+                    index < integer(plan, P_PROVIDER_COUNT) else return -1;
+                return integer(providerRecord(plan, index), V_SLOT_OFFSET);
+            }
+
+            finalPlanReady(plan >> p<byte>) -> bool {
+                return plan != null && integer(plan, P_READY) != 0;
+            }
+
+            finalPlanHash(plan >> p<byte>) -> int {
+                return plan == null ? 0 : integer(plan, P_HASH);
+            }
+
+            releaseFinalPlan(plan >> p<byte>) -> void {
+                if (plan != null) free(plan);
+            }
+
+        public:
+            linkPlan(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                plan >> p<byte> <- buildPlan(material);
+                guard plan != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctRelocation("final-link-plan");
+                }
+                if (output != "" && fsWriteFrom(output, plan,
+                    integer(plan, P_TOTAL_BYTES), false) != integer(plan, P_TOTAL_BYTES)) {
+                    free(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitPlan(material, plan, json);
+                free(plan);
+                mct.nccMct.releaseArtifact(material);
+                return 0;
+            }
+
+            checkPlan(path >> str, targetName >> str, expectedProviders >> int,
+                expectedRelocations >> int, expectedApplied >> int,
+                expectedProject >> int, expectedUnresolved >> int,
+                expectedReady >> bool, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                plan >> p<byte> <- buildPlan(material);
+                guard plan != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctRelocation("final-link-plan");
+                }
+                ok >> bool <- integer(plan, P_PROVIDER_COUNT) == expectedProviders &&
+                    integer(plan, P_RELOCATIONS) == expectedRelocations &&
+                    integer(plan, P_APPLIED) == expectedApplied &&
+                    integer(plan, P_PROJECT) == expectedProject &&
+                    integer(plan, P_UNRESOLVED) == expectedUnresolved &&
+                    (integer(plan, P_READY) != 0) == expectedReady &&
+                    integer(plan, P_HASH) == expectedHash;
+                free(plan);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctRelocation("final-link-plan");
+            }
+
+            finalStats(material >> p<byte>) -> FinalLinkStats {
+                plan >> p<byte> <- buildPlan(material);
+                guard plan != null else return FinalLinkStats(target: 0, providers: 0,
+                    relocations: 0, applied: 0, localTargets: 0, runtimeTargets: 0,
+                    projectTargets: 0, unresolvedTargets: 1, ready: false, hash: 0);
+                stats >> FinalLinkStats <- FinalLinkStats(
+                    target: integer(plan, P_TARGET),
+                    providers: integer(plan, P_PROVIDER_COUNT),
+                    relocations: integer(plan, P_RELOCATIONS),
+                    applied: integer(plan, P_APPLIED),
+                    localTargets: integer(plan, P_LOCAL),
+                    runtimeTargets: integer(plan, P_RUNTIME),
+                    projectTargets: integer(plan, P_PROJECT),
+                    unresolvedTargets: integer(plan, P_UNRESOLVED),
+                    ready: integer(plan, P_READY) != 0,
+                    hash: integer(plan, P_HASH));
+                free(plan);
+                return stats;
+            }
+
+            check(targetName >> str, kindName >> str, symbol >> int,
+                place >> int, addend >> int, expectedLow >> int, expectedHigh >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                kind >> int <- kindCode(kindName);
+                guard target != 0 && kind != 0 else
+                    return diagnostics.nccDiagnostics.emitMctRelocation(kindName);
+                bytes >> p<byte> <- cast<byte>(alloc(16));
+                guard bytes != null else return diagnostics.nccDiagnostics.emitMctRelocation(kindName);
+                zero(bytes, 16);
+                initialize(bytes, kind);
+                ok >> bool <- apply(target, kind, bytes, 0, symbol, place, addend) &&
+                    getU32(bytes, 0) == expectedLow && getU32(bytes, 4) == expectedHigh;
+                free(bytes);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctRelocation(kindName);
+            }
+
+            contract(targetName >> str, kindName >> str) -> RelocationContract {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                kind >> int <- kindCode(kindName);
+                return RelocationContract(target: targetName, kind: kindName,
+                    width: width(kind), pcRelative: pcRelative(kind),
+                    instruction: instruction(kind), applied: target != 0 && kind != 0);
+            }
+
+            stats() -> RelocationStats {
+                return RelocationStats(attempted: attempted, applied: applied,
+                    rejected: rejected, bytesPatched: bytesPatched);
+            }
+
+            selfTest() -> bool {
+                return verify(1, RELOC_X86_PCREL32, 4608, 4097, -4, 507, 0) &&
+                    verify(2, RELOC_X86_BRANCH32, 8192, 4096, -4, 4092, 0) &&
+                    verify(3, RELOC_X86_DATA_PCREL32, 5000, 4000, 0, 1000, 0) &&
+                    verify(4, RELOC_X86_ABS32, 270544960, 0, 4, 270544964, 0) &&
+                    verify(1, RELOC_X86_ABS64, 305419896, 0, 16, 305419912, 0) &&
+                    verify(5, RELOC_AARCH64_CALL26, 4352, 4096, 0, -1811939264, 0) &&
+                    verify(6, RELOC_AARCH64_BRANCH26, 4352, 4096, 0, 335544384, 0) &&
+                    verify(5, RELOC_AARCH64_CONDBR19, 4352, 4096, 0, 1409288192, 0) &&
+                    verify(5, RELOC_AARCH64_ADR_PREL21, 4387, 4096, 0, 1879050496, 0) &&
+                    verify(6, RELOC_AARCH64_ADRP_PAGE21, 305418240, 301989888, 0,
+                        -1342170592, 0) &&
+                    verify(5, RELOC_AARCH64_ADD_LO12, 74565, 0, 0, -1861413888, 0) &&
+                    verify(5, RELOC_AARCH64_LDST64_LO12, 74560, 0, 0, -113139712, 0) &&
+                    verify(7, RELOC_ARM_CALL, 4352, 4096, 0, -352321472, 0) &&
+                    verify(7, RELOC_ARM_JUMP24, 4352, 4096, 0, -369098688, 0) &&
+                    verify(7, RELOC_ARM_REL32, 4352, 4096, 0, 256, 0) &&
+                    verify(7, RELOC_ARM_ABS32, 270544960, 0, 0, 270544960, 0) &&
+                    verify(9, RELOC_RISCV_CALL, 8756, 4096, 0, 4119, 591429863) &&
+                    verify(8, RELOC_RISCV_BRANCH, 4352, 4096, 0, 268435555, 0) &&
+                    verify(8, RELOC_RISCV_JAL, 4352, 4096, 0, 268435567, 0) &&
+                    verify(9, RELOC_RISCV_PCREL_HI20, 8756, 4096, 0, 4119, 0) &&
+                    verify(9, RELOC_RISCV_PCREL_LO12_I, 8756, 4096, 0, 591396883, 0) &&
+                    verify(9, RELOC_RISCV_PCREL_LO12_S, 8756, 4096, 0, 570427939, 0) &&
+                    verify(8, RELOC_RISCV_ABS32, 270544960, 0, 0, 270544960, 0) &&
+                    verify(9, RELOC_RISCV_ABS64, 305419896, 0, 16, 305419912, 0) &&
+                    verify(9, RELOC_RISCV_RELAX, 0, 0, 0, 0, 0) &&
+                    verify(10, RELOC_WASM_FUNCTION_INDEX, 300, 0, 0, -2139061588, 0) &&
+                    verify(10, RELOC_WASM_LABEL_INDEX, 127, 0, 0, -2139062017, 0) &&
+                    !verify(1, RELOC_AARCH64_CALL26, 4352, 4096, 0, -1811939264, 0) &&
+                    width(RELOC_RISCV_CALL) == 8 && width(RELOC_WASM_LABEL_INDEX) == 5 &&
+                    PLAN_BYTES == 144 && PROVIDER_BYTES == 48 &&
+                    providerMode(2) == PROVIDER_DYNAMIC &&
+                    providerMode(8) == PROVIDER_STATIC &&
+                    providerMode(10) == PROVIDER_WASM_IMPORT;
+            }
+
+    fa:
+        return true;
+}

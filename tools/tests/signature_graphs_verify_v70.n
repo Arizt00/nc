@@ -1,0 +1,79 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <text:parse>;
+
+signatureGraphsVerify70 {
+    const:
+        SUCCESS >> int <- 230;
+    number(object >> int, key >> str) -> int {
+        value >> int <- jsonObjectBorrow(object,key);
+        result >> int <- jsonGetIntOr(value,-1);
+        jsonRelease(value);
+        return result;
+    }
+    validIndex(array >> int, index >> int, count >> int) -> bool {
+        value >> int <- jsonArrayBorrow(array,index);
+        referenced >> int <- jsonGetIntOr(value,-1);
+        jsonRelease(value);
+        return referenced >= 0 && referenced < count;
+    }
+    validShape(shape >> int, target >> int) -> bool {
+        if (number(shape,"valid") != 1 || number(shape,"target") != target) return false;
+        types >> int <- jsonObjectBorrow(shape,"types");
+        count >> int <- jsonArrayLen(types);
+        result >> int <- number(shape,"result");
+        ok >> bool <- count > 0 && result >= -1 && result < count;
+        parameters >> int <- jsonObjectBorrow(shape,"parameters");
+        at >> int <- 0;
+        while (ok && at < jsonArrayLen(parameters)) {
+            ok <- validIndex(parameters,at,count);
+            at += 1;
+        }
+        jsonRelease(parameters);
+        at <- 0;
+        while (ok && at < count) {
+            node >> int <- jsonArrayBorrow(types,at);
+            kind >> int <- number(node,"kind");
+            if (kind == 20 || kind == 23) ok <- number(node,"bytes") == 8 && number(node,"align") == 8;
+            if (kind == 13) ok <- number(node,"layout_valid") == 1 && number(node,"bytes") > 0 && number(node,"align") > 0;
+            children >> int <- jsonObjectBorrow(node,"children");
+            child >> int <- 0;
+            while (ok && child < jsonArrayLen(children)) {
+                ok <- validIndex(children,child,count);
+                child += 1;
+            }
+            jsonRelease(children);
+            jsonRelease(node);
+            at += 1;
+        }
+        jsonRelease(types);
+        return ok;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3) { argsRelease(arguments); return 64; }
+        report >> int <- jsonParseFile(argsAt(arguments,1));
+        target >> int <- parseInt(argsAt(arguments,2));
+        argsRelease(arguments);
+        if (report == 0) return 65;
+        bindings >> int <- jsonObjectBorrow(report,"bindings");
+        ok >> bool <- number(report,"unresolved_count") == 0 && jsonArrayLen(bindings) == 34;
+        at >> int <- 0;
+        while (ok && at < jsonArrayLen(bindings)) {
+            binding >> int <- jsonArrayBorrow(bindings,at);
+            shape >> int <- jsonObjectBorrow(binding,"type_signature");
+            ok <- validShape(shape,target);
+            jsonRelease(shape);
+            jsonRelease(binding);
+            at += 1;
+        }
+        jsonRelease(bindings);
+        jsonRelease(report);
+        if (!ok) return 66;
+        println("signature-graphs-ok");
+        return SUCCESS;
+    }
+    ref main ->> run;
+    fa: return true;
+}

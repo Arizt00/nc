@@ -1,0 +1,187 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, tool_cli, sha256, editor_json>;
+
+existing43Replay {
+    local:
+        variables >> int;
+        output >> str;
+    fn:
+        private:
+            trace(message >> str) -> void { if (envHas("EXISTING43_REPLAY_TRACE")) println("TRACE "+message); }
+            replace(text >> str, token >> str, value >> str) -> str {
+                result >> str <- ""; rest >> str <- text;
+                at >> int <- strIndexOf(rest,token);
+                while (at >= 0) {
+                    result <- result+strSubstring(rest,0,at)+value;
+                    rest <- strSubstring(rest,at+strLen(token),strLen(rest)-at-strLen(token));
+                    at <- strIndexOf(rest,token);
+                }
+                return result+rest;
+            }
+            expand(value >> str) -> str {
+                result >> str <- value; index >> int <- 0;
+                while (index < jsonObjectLen(variables)) {
+                    key >> str <- jsonObjectKeyAt(variables,index);
+                    result <- replace(result,"{"+key+"}",release_io.releaseIo.field(variables,key));
+                    free(cast<byte>(key)); index += 1;
+                }
+                return result;
+            }
+            environment(key >> str) -> str {
+                count >> int <- envGet(key,null,0);
+                if (count < 0 || count > 1048576) return "";
+                bytes >> p<byte> <- cast(alloc(count+1));
+                if (bytes == null) return "";
+                got >> int <- envGet(key,adr(bytes),count+1);
+                if (got < 0 || got > count) { free(bytes); return ""; }
+                wr(off(bytes,got),0); return cast(bytes);
+            }
+            invoke(words >> int, cwd >> str) -> int {
+                command >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    word >> int <- jsonArrayGet(words,index);
+                    tool_cli.toolCli.append(command,expand(jsonStringView(word,"")));
+                    jsonRelease(word); index += 1;
+                }
+                row >> int <- tool_cli.toolCli.execute(command,cwd,900000);
+                jsonObjectSet(row,"argv",command); jsonRelease(command); return row;
+            }
+            read(path >> str) -> int {
+                text >> str <- release_io.releaseIo.text(path);
+                doc >> int <- editor_json.editorJson.parse(text);
+                if (text != "") free(cast<byte>(text)); return doc;
+            }
+            equal(old >> int, current >> int) -> bool {
+                if (jsonKind(old) == 0 || jsonKind(current) == 0) return false;
+                if (jsonKind(old) != jsonKind(current)) return false;
+                if (jsonKind(old) == 6) {
+                    index >> int <- 0;
+                    while (index < jsonObjectLen(old)) {
+                        key >> str <- jsonObjectKeyAt(old,index);
+                        if (key != "generated_at_utc" && key != "generated_at" && key != "duration_sec" && key != "list_duration_sec") {
+                            a >> int <- jsonObjectGet(old,key); b >> int <- jsonObjectGet(current,key);
+                            same >> bool <- jsonObjectHas(current,key) && equal(a,b);
+                            jsonRelease(a); jsonRelease(b);
+                            if (!same) { free(cast<byte>(key)); return false; }
+                        }
+                        free(cast<byte>(key)); index += 1;
+                    }
+                    return true;
+                }
+                if (jsonKind(old) == 5) {
+                    if (jsonArrayLen(old) != jsonArrayLen(current)) return false;
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(old)) {
+                        a >> int <- jsonArrayGet(old,index); b >> int <- jsonArrayGet(current,index);
+                        same >> bool <- equal(a,b); jsonRelease(a); jsonRelease(b);
+                        if (!same) return false; index += 1;
+                    }
+                    return true;
+                }
+                return jsonEquals(old,current);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--catalog|--variables|--out|--only|","");
+                if (options == 0) { argsRelease(arguments); return 2; }
+                variables <- read(tool_cli.toolCli.value(options,"--variables",""));
+                catalog >> int <- read(tool_cli.toolCli.value(options,"--catalog",""));
+                catalogHash >> str <- sha256.nccSha256.file(tool_cli.toolCli.value(options,"--catalog",""));
+                cases >> int <- jsonObjectGet(catalog,"cases");
+                output <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--out",""));
+                only >> str <- tool_cli.toolCli.value(options,"--only","");
+                if (jsonKind(variables) != 6 || jsonArrayLen(cases) == 0 || output == "") return 2;
+                jsonObjectSet(variables,"out",jsonNewString(output));
+                rows >> int <- jsonNewArray(); failures >> int <- 0; index >> int <- 0;
+                while (index < jsonArrayLen(cases)) {
+                    entry >> int <- jsonArrayGet(cases,index); index += 1;
+                    name >> str <- release_io.releaseIo.field(entry,"name");
+                    if (only != "" && !strStartsWith(name,only)) { jsonRelease(entry); continue; }
+                    settings >> int <- jsonObjectGet(entry,"env"); saved >> int <- jsonNewObject(); existed >> int <- jsonNewObject(); at >> int <- 0;
+                    while (at < jsonObjectLen(settings)) {
+                        key >> str <- jsonObjectKeyAt(settings,at); before >> str <- environment(key);
+                        jsonObjectSet(existed,key,jsonNewBool(envHas(key))); jsonObjectSet(saved,key,jsonNewString(before));
+                        if (before != "") free(cast<byte>(before)); envSet(key,expand(release_io.releaseIo.field(settings,key)));
+                        free(cast<byte>(key)); at += 1;
+                    }
+                    cwd >> str <- expand(tool_cli.toolCli.value(entry,"cwd","{root}"));
+                    trace(name+" native-start");
+                    words >> int <- jsonObjectGet(entry,"command"); row >> int <- invoke(words,cwd); jsonRelease(words);
+                    trace(name+" native-complete");
+                    good >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",999) == release_io.releaseIo.number(entry,"exit",0);
+                    path >> str <- expand(release_io.releaseIo.field(entry,"report"));
+                    if (path != "") {
+                        trace(name+" native-report-read");
+                        doc >> int <- read(path); expected >> int <- jsonObjectGet(entry,"expect");
+                        trace(name+" native-report-compare");
+                        good <- jsonKind(doc) == 6 && equal(expected,doc) && good;
+                        trace(name+" native-report-compared");
+                        jsonRelease(doc); jsonRelease(expected);
+                        jsonObjectSet(row,"report_sha256",jsonNewString(sha256.nccSha256.file(path)));
+                    }
+                    oracleWords >> int <- jsonObjectGet(entry,"oracle");
+                    if (jsonArrayLen(oracleWords) > 0) {
+                        oldPath >> str <- expand(release_io.releaseIo.field(entry,"oracle_report"));
+                        if (oldPath != "" && exists(oldPath)) {
+                            safe >> str <- release_io.releaseIo.forwardPath(oldPath);
+                            guard strContains(safe,"/target/tmp/") else { println("refusing to replace a non-fixture oracle report"); return 2; }
+                            guard delete_file(oldPath) else { println("cannot clear oracle fixture report"); return 1; }
+                        }
+                        oracle >> int <- invoke(oracleWords,cwd);
+                        trace(name+" oracle-complete");
+                        good <- tool_cli.toolCli.clean(oracle) && release_io.releaseIo.number(oracle,"code",998) == release_io.releaseIo.number(entry,"oracle_exit",0) && good;
+                        absent >> bool <- tool_cli.toolCli.hasFlag(entry,"oracle_report_absent");
+                        if (absent) {
+                            missing >> bool <- oldPath != "" && !exists(oldPath);
+                            jsonObjectSet(row,"oracle_report_written",jsonNewBool(!missing));
+                            jsonObjectSet(row,"equivalence",jsonNewString("rejection-only-original-throws-without-report")); good <- missing && good;
+                        } else if (oldPath != "") {
+                            trace(name+" report-pair-read");
+                            old >> int <- read(oldPath); current >> int <- read(path); fields >> int <- jsonObjectGet(entry,"compare_fields");
+                            trace(name+" report-pair-compare");
+                            same >> bool <- jsonKind(old) == 6 && jsonKind(current) == 6;
+                            if (same && jsonArrayLen(fields) == 0) same <- equal(old,current);
+                            else if (same) {
+                                at <- 0;
+                                while (at < jsonArrayLen(fields)) {
+                                    field >> int <- jsonArrayGet(fields,at); key >> str <- jsonStringView(field,"");
+                                    a >> int <- jsonObjectGet(old,key); b >> int <- jsonObjectGet(current,key);
+                                    same <- jsonObjectHas(old,key) && jsonObjectHas(current,key) && equal(a,b) && same;
+                                    jsonRelease(a); jsonRelease(b); jsonRelease(field); at += 1;
+                                }
+                            }
+                            jsonObjectSet(row,"reports_equal",jsonNewBool(same)); good <- same && good;
+                            jsonRelease(old); jsonRelease(current); jsonRelease(fields);
+                        }
+                        jsonObjectSet(row,"oracle_capture",oracle); jsonRelease(oracle);
+                    }
+                    jsonRelease(oracleWords);
+                    at <- 0;
+                    while (at < jsonObjectLen(settings)) {
+                        key >> str <- jsonObjectKeyAt(settings,at);
+                        if (tool_cli.toolCli.hasFlag(existed,key)) envSet(key,release_io.releaseIo.field(saved,key)); else envRemove(key);
+                        free(cast<byte>(key)); at += 1;
+                    }
+                    jsonRelease(settings); jsonRelease(saved); jsonRelease(existed);
+                    jsonObjectSet(row,"name",jsonNewString(name)); jsonObjectSet(row,"passed",jsonNewBool(good));
+                    release_io.releaseIo.save(output+"/logs/"+name+".json",row);
+                    jsonArrayPush(rows,row); jsonRelease(row);
+                    if (!good) failures += 1;
+                    println((good ? "PASS " : "FAIL ")+name); jsonRelease(entry);
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.replay.v43"));
+                jsonObjectSet(report,"passed",jsonNewBool(failures == 0 && jsonArrayLen(rows) > 0));
+                jsonObjectSet(report,"failures",jsonNewInt(failures)); jsonObjectSet(report,"cases",rows);
+                jsonObjectSet(report,"catalog_sha256",jsonNewString(catalogHash)); strRelease(catalogHash);
+                selected >> int <- jsonArrayLen(rows);
+                written >> bool <- release_io.releaseIo.save(output+"/report.json",report);
+                jsonRelease(rows); jsonRelease(report); jsonRelease(cases); jsonRelease(catalog); jsonRelease(variables); jsonRelease(options); argsRelease(arguments);
+                return failures == 0 && selected > 0 && written ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

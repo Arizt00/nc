@@ -1,0 +1,80 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_common, physical43_stages>;
+
+physical43FinalPairTests {
+    stc:
+        checkedFiles >> int <- 0;
+        varyingFiles >> int <- 0;
+    fn:
+        private:
+            field(model >> int, name >> str) -> str { return physical43_common.physical43Common.field(model,name); }
+            normalized(model >> int) -> int {
+                kind >> int <- jsonKind(model);
+                if (kind == 5) {
+                    result >> int <- jsonNewArray(); at >> int <- 0;
+                    while (at < jsonArrayLen(model)) { child >> int <- jsonArrayBorrow(model,at); physical43_common.physical43Common.push(result,normalized(child)); jsonRelease(child); at += 1; }
+                    return result;
+                }
+                if (kind == 6) {
+                    result >> int <- jsonNewObject(); at >> int <- 0;
+                    while (at < jsonObjectLen(model)) {
+                        name >> str <- jsonObjectKeyAt(model,at);
+                        if (name != "elapsed_ns" && name != "generated_unix_ns") { child >> int <- jsonObjectBorrow(model,name); physical43_common.physical43Common.put(result,name,normalized(child)); jsonRelease(child); }
+                        strRelease(name); at += 1;
+                    }
+                    return result;
+                }
+                return jsonClone(model);
+            }
+            inventory(model >> int, root >> str) -> bool {
+                rows >> int <- jsonObjectBorrow(model,"artifacts"); valid >> bool <- jsonKind(rows) == 5; at >> int <- 0; sums >> str <- "";
+                while (valid && at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,at); path >> str <- field(row,"path"); hash >> str <- field(row,"sha256"); actualPath >> str <- physical43_common.physical43Common.joinPath(root,path); size >> int <- jsonObjectBorrow(row,"bytes");
+                    valid <- physical43_common.physical43Common.fileType(actualPath) == 1 && physical43_common.physical43Common.fileHash(actualPath) == hash && physical43_common.physical43Common.integerEqual(size,physical43_common.physical43Common.fileSize(actualPath));
+                    if (!valid) println("INVALID inventory "+path);
+                    sums <- sums+hash+"  "+path+"\n"; checkedFiles += 1; strRelease(path); strRelease(hash); strRelease(actualPath); jsonRelease(size); jsonRelease(row); at += 1;
+                }
+                if (sums == "") sums <- "\n";
+                valid <- valid && physical43_stages.physical43Stages.exactText(root+"/SHA256SUMS",sums); strRelease(sums); jsonRelease(rows); return valid;
+            }
+            compare(oracle >> int, repeated >> int, candidate >> int) -> bool {
+                left >> int <- normalized(oracle); baseline >> int <- normalized(repeated); right >> int <- normalized(candidate);
+                a >> int <- jsonObjectBorrow(left,"artifacts"); b >> int <- jsonObjectBorrow(baseline,"artifacts"); c >> int <- jsonObjectBorrow(right,"artifacts");
+                valid >> bool <- jsonArrayLen(a) == jsonArrayLen(b) && jsonArrayLen(a) == jsonArrayLen(c); at >> int <- 0; shared >> int <- jsonNewArray();
+                while (valid && at < jsonArrayLen(a)) {
+                    first >> int <- jsonArrayBorrow(a,at); second >> int <- jsonArrayBorrow(b,at); native >> int <- jsonArrayBorrow(c,at);
+                    valid <- field(first,"path") == field(second,"path") && field(first,"path") == field(native,"path") && field(first,"role") == field(second,"role") && field(first,"role") == field(native,"role");
+                    firstShape >> int <- jsonClone(first); secondShape >> int <- jsonClone(second); nativeShape >> int <- jsonClone(native);
+                    removed >> int <- jsonObjectRemove(firstShape,"sha256"); jsonRelease(removed); removed <- jsonObjectRemove(firstShape,"bytes"); jsonRelease(removed); removed <- jsonObjectRemove(secondShape,"sha256"); jsonRelease(removed); removed <- jsonObjectRemove(secondShape,"bytes"); jsonRelease(removed); removed <- jsonObjectRemove(nativeShape,"sha256"); jsonRelease(removed); removed <- jsonObjectRemove(nativeShape,"bytes"); jsonRelease(removed);
+                    valid <- valid && physical43_common.physical43Common.equal(firstShape,secondShape) && physical43_common.physical43Common.equal(firstShape,nativeShape); jsonRelease(firstShape); jsonRelease(secondShape); jsonRelease(nativeShape);
+                    // Byte identities vary only for artifacts whose repeated original build also varied.
+                    if (!physical43_common.physical43Common.equal(first,native)) {
+                        originalHash >> str <- field(first,"sha256"); repeatHash >> str <- field(second,"sha256"); valid <- valid && originalHash != repeatHash;
+                        if (!valid) println("UNEXPLAINED artifact variation "+field(first,"path"));
+                        strRelease(originalHash); strRelease(repeatHash); varyingFiles += 1;
+                    }
+                    physical43_common.physical43Common.push(shared,jsonClone(first)); jsonRelease(first); jsonRelease(second); jsonRelease(native); at += 1;
+                }
+                jsonRelease(a); jsonRelease(b); jsonRelease(c); jsonObjectSet(left,"artifacts",shared); jsonObjectSet(baseline,"artifacts",shared); jsonObjectSet(right,"artifacts",shared);
+                valid <- valid && physical43_common.physical43Common.equal(left,baseline) && physical43_common.physical43Common.equal(left,right);
+                jsonRelease(shared); jsonRelease(left); jsonRelease(baseline); jsonRelease(right); return valid;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 6) return 2;
+                firstRoot >> str <- argsAt(arguments,1); secondRoot >> str <- argsAt(arguments,2); nativeRoot >> str <- argsAt(arguments,3); candidatePath >> str <- argsAt(arguments,4);
+                oracle >> int <- physical43_common.physical43Common.read(firstRoot+"/report.json",false); repeated >> int <- physical43_common.physical43Common.read(secondRoot+"/report.json",false); native >> int <- physical43_common.physical43Common.read(nativeRoot+"/report.json",false);
+                if (oracle == 0 || repeated == 0 || native == 0) return 1;
+                inventories >> bool <- inventory(oracle,firstRoot) && inventory(repeated,secondRoot) && inventory(native,nativeRoot);
+                fields >> bool <- compare(oracle,repeated,native); markdown >> bool <- physical43_common.physical43Common.fileHash(firstRoot+"/report.md") == physical43_common.physical43Common.fileHash(nativeRoot+"/report.md") && physical43_common.physical43Common.fileHash(firstRoot+"/report.md") == physical43_common.physical43Common.fileHash(secondRoot+"/report.md");
+                mutated >> int <- jsonClone(native); changedStatus >> str <- field(native,"software_status") == "failed" ? "passed" : "failed"; physical43_common.physical43Common.put(mutated,"software_status",jsonNewString(changedStatus)); rejectsChangedStatus >> bool <- !compare(oracle,repeated,mutated); jsonRelease(mutated);
+                mutated <- jsonClone(native); rows >> int <- jsonObjectGet(mutated,"artifacts"); row >> int <- jsonArrayGet(rows,0); physical43_common.physical43Common.put(row,"sha256",jsonNewString("0000000000000000000000000000000000000000000000000000000000000000")); removedRow >> int <- jsonArrayRemove(rows,0); jsonRelease(removedRow); jsonArrayInsert(rows,0,row); jsonObjectSet(mutated,"artifacts",rows); rejectsForgedHash >> bool <- !inventory(mutated,nativeRoot); jsonRelease(row); jsonRelease(rows); jsonRelease(mutated);
+                passed >> bool <- inventories && fields && markdown && rejectsChangedStatus && rejectsForgedHash;
+                report >> int <- jsonNewObject(); physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.physical43.final-full-comparison.v1")); physical43_common.physical43Common.put(report,"passed",jsonNewBool(passed)); physical43_common.physical43Common.put(report,"full_nonvolatile_fields_equal",jsonNewBool(fields)); physical43_common.physical43Common.put(report,"all_inventory_hashes_and_sizes_verified",jsonNewBool(inventories)); physical43_common.physical43Common.put(report,"markdown_bytes_equal",jsonNewBool(markdown)); physical43_common.physical43Common.put(report,"changed_status_rejected",jsonNewBool(rejectsChangedStatus)); physical43_common.physical43Common.put(report,"forged_inventory_hash_rejected",jsonNewBool(rejectsForgedHash)); physical43_common.physical43Common.put(report,"checked_files_including_negative_control",jsonNewInt(checkedFiles)); physical43_common.physical43Common.put(report,"artifact_variations_including_negative_control",jsonNewInt(varyingFiles)); physical43_common.physical43Common.put(report,"candidate_path",jsonNewString(candidatePath)); physical43_common.physical43Common.put(report,"candidate_sha256",jsonNewString(physical43_common.physical43Common.fileHash(candidatePath))); physical43_common.physical43Common.put(report,"oracle_report_sha256",jsonNewString(physical43_common.physical43Common.fileHash(firstRoot+"/report.json"))); physical43_common.physical43Common.put(report,"repeat_report_sha256",jsonNewString(physical43_common.physical43Common.fileHash(secondRoot+"/report.json"))); physical43_common.physical43Common.put(report,"native_report_sha256",jsonNewString(physical43_common.physical43Common.fileHash(nativeRoot+"/report.json"))); physical43_common.physical43Common.put(report,"variance_policy",jsonNewString("Only elapsed_ns/generated_unix_ns and byte identities of actual Stage0 artifacts also varying in a repeated original build; each inventory size/hash and SHA256SUMS is independently checked. No physical or CI claim."));
+                saved >> bool <- physical43_common.physical43Common.save(argsAt(arguments,5),report); println("final full fields="+renderBool(fields)+" inventory="+renderBool(inventories)+" markdown="+renderBool(markdown)+" passed="+renderBool(passed)); return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

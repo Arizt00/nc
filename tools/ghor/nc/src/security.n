@@ -1,0 +1,260 @@
+use <process:args>;
+use <project:text, package_graph>;
+
+security {
+    fn:
+        private:
+            dependencyFamilyCount() -> int {
+                return 13;
+            }
+
+            dependencyFamily(at >> int) -> str {
+                if (at == 0) return "dependencies";
+                if (at == 1) return "dev_dependencies";
+                if (at == 2) return "build_dependencies";
+                if (at == 3) return "target_dependencies";
+                if (at == 4) return "rust_dependencies";
+                if (at == 5) return "c_dependencies";
+                if (at == 6) return "cpp_dependencies";
+                if (at == 7) return "asm_dependencies";
+                if (at == 8) return "basal_dependencies";
+                if (at == 9) return "native_dependencies";
+                if (at == 10) return "workspace_dependencies";
+                if (at == 11) return "patch_overrides";
+                return "replace_overrides";
+            }
+
+            manifestModel(handle >> addr) -> int {
+                return package_graph.ghorPackageGraph.effectiveManifest(handle);
+            }
+
+            manifestIsCargo(root >> int) -> bool {
+                path >> str <- jsonGetStringOr(jsonObjectGet(root, "path"), "");
+                return strEndsWith(path, "Cargo.toml");
+            }
+
+            dependencyNeedsChecksum(entry >> int, family >> str, cargo >> bool) -> bool {
+                if (cargo || family == "native_dependencies") return false;
+                if (jsonGetBoolOr(jsonObjectGet(entry, "workspace_inherited"), false)) return false;
+                source >> str <- jsonGetStringOr(jsonObjectGet(entry, "source"), "registry");
+                if (source == "path" || source == "git") return false;
+                if (jsonGetStringOr(jsonObjectGet(entry, "path"), "") != "") return false;
+                if (jsonGetStringOr(jsonObjectGet(entry, "git"), "") != "") return false;
+                return jsonGetStringOr(jsonObjectGet(entry, "checksum"), "") == "";
+            }
+
+            checksumDiagnostic(entry >> int, family >> str, path >> str) -> int {
+                name >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "<unnamed>");
+                diagnostic >> int <- jsonNewObject();
+                jsonObjectSet(diagnostic, "code", jsonNewString("E_GHOR_CHECKSUM_001"));
+                jsonObjectSet(diagnostic, "severity", jsonNewString("error"));
+                jsonObjectSet(diagnostic, "phase", jsonNewString("ghor.audit"));
+                jsonObjectSet(diagnostic, "file", jsonNewString(path));
+                jsonObjectSet(diagnostic, "dependency", jsonNewString(name));
+                jsonObjectSet(diagnostic, "family", jsonNewString(family));
+                jsonObjectSet(diagnostic, "message", jsonNewString(
+                    "dependency '" + name + "' is not a local path or Git dependency and must declare checksum"));
+                return diagnostic;
+            }
+
+            appendManifestDiagnostics(root >> int, diagnostics >> int) -> int {
+                source >> int <- jsonObjectGet(root, "diagnostics");
+                added >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    diagnostic >> int <- jsonArrayGet(source, at);
+                    if (jsonGetStringOr(jsonObjectGet(diagnostic, "code"), "") ==
+                        "E_GHOR_CHECKSUM_001") {
+                        jsonArrayPush(diagnostics, jsonClone(diagnostic));
+                        added += 1;
+                    }
+                    at += 1;
+                }
+                return added;
+            }
+
+            appendFamily(
+                root >> int,
+                family >> str,
+                components >> int,
+                diagnostics >> int,
+                cargo >> bool
+            ) -> int {
+                entries >> int <- jsonObjectGet(root, family);
+                path >> str <- jsonGetStringOr(jsonObjectGet(root, "path"), "");
+                count >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    component >> int <- jsonClone(entry);
+                    jsonObjectSet(component, "family", jsonNewString(family));
+                    jsonArrayPush(components, component);
+                    if (dependencyNeedsChecksum(entry, family, cargo)) {
+                        jsonArrayPush(diagnostics, checksumDiagnostic(entry, family, path));
+                    }
+                    count += 1;
+                    at += 1;
+                }
+                return count;
+            }
+
+            collectDependencies(root >> int, components >> int, diagnostics >> int) -> int {
+                cargo >> bool <- manifestIsCargo(root);
+                total >> int <- 0;
+                familyAt >> int <- 0;
+                while (familyAt < dependencyFamilyCount()) {
+                    family >> str <- dependencyFamily(familyAt);
+                    total += appendFamily(root, family, components, diagnostics, cargo);
+                    familyAt += 1;
+                }
+                return total;
+            }
+
+            checksModel() -> int {
+                checks >> int <- jsonNewArray();
+                jsonArrayPush(checks, jsonNewString("checksums"));
+                jsonArrayPush(checks, jsonNewString("registry_trust"));
+                jsonArrayPush(checks, jsonNewString("capability_policy"));
+                jsonArrayPush(checks, jsonNewString("mode_policy"));
+                return checks;
+            }
+
+            auditModel(handle >> addr) -> int {
+                root >> int <- manifestModel(handle);
+                guard root != 0 else return 0;
+                diagnostics >> int <- jsonNewArray();
+                components >> int <- jsonNewArray();
+                inherited >> int <- appendManifestDiagnostics(root, diagnostics);
+                dependencyCount >> int <- collectDependencies(root, components, diagnostics);
+                errorCount >> int <- jsonArrayLen(diagnostics);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.audit.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(errorCount > 0 ? "error" : "ok"));
+                jsonObjectSet(report, "checks", checksModel());
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                summary >> int <- jsonNewObject();
+                jsonObjectSet(summary, "dependency_count", jsonNewInt(dependencyCount));
+                jsonObjectSet(summary, "checksum_errors", jsonNewInt(errorCount));
+                jsonObjectSet(summary, "inherited_checksum_diagnostics", jsonNewInt(inherited));
+                jsonObjectSet(summary, "cargo_compatibility", jsonNewBool(manifestIsCargo(root)));
+                jsonObjectSet(report, "summary", summary);
+                jsonRelease(components);
+                jsonRelease(root);
+                return report;
+            }
+
+            sbomModel(handle >> addr) -> int {
+                root >> int <- manifestModel(handle);
+                guard root != 0 else return 0;
+                components >> int <- jsonNewArray();
+                diagnostics >> int <- jsonNewArray();
+                dependencyCount >> int <- collectDependencies(root, components, diagnostics);
+                package >> int <- jsonObjectGet(root, "package");
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.sbom.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "package", jsonClone(jsonObjectGet(package, "name")));
+                jsonObjectSet(report, "version", jsonClone(jsonObjectGet(package, "version")));
+                jsonObjectSet(report, "dependencies", components);
+                jsonObjectSet(report, "dependency_count", jsonNewInt(dependencyCount));
+                jsonObjectSet(report, "checksum_diagnostics", diagnostics);
+                jsonRelease(root);
+                return report;
+            }
+
+            licenseModel(handle >> addr) -> int {
+                root >> int <- manifestModel(handle);
+                guard root != 0 else return 0;
+                package >> int <- jsonObjectGet(root, "package");
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.license.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString("ok"));
+                if (jsonObjectHas(package, "license")) {
+                    jsonObjectSet(report, "license", jsonClone(jsonObjectGet(package, "license")));
+                }
+                else jsonObjectSet(report, "license", jsonNewNull());
+                jsonRelease(root);
+                return report;
+            }
+
+            capabilityModel(handle >> addr) -> int {
+                root >> int <- manifestModel(handle);
+                guard root != 0 else return 0;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.capability-audit.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString("ok"));
+                jsonObjectSet(report, "machine", jsonClone(jsonObjectGet(root, "machine")));
+                jsonObjectSet(report, "basal", jsonClone(jsonObjectGet(root, "basal")));
+                jsonObjectSet(report, "primitive", jsonClone(jsonObjectGet(root, "primitive")));
+                jsonObjectSet(report, "runtime", jsonClone(jsonObjectGet(root, "runtime")));
+                jsonObjectSet(report, "compiler", jsonClone(jsonObjectGet(root, "compiler")));
+                jsonObjectSet(report, "capabilities", jsonClone(jsonObjectGet(root, "capabilities")));
+                jsonRelease(root);
+                return report;
+            }
+
+            supplyAction(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if ((current == "--manifest" || current == "--manifest-path" ||
+                        current == "--path") && at + 1 < count) at += 2;
+                    else if (rd(cast(current)) == 45) at += 1;
+                    else return current;
+                }
+                return "verify";
+            }
+
+            printModel(model >> int, failOnError >> bool) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be read");
+                    return 2;
+                }
+                failed >> bool <- failOnError &&
+                    jsonGetStringOr(jsonObjectGet(model, "status"), "ok") == "error";
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return failed ? 1 : 0;
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "audit" || command == "sbom" || command == "license" ||
+                    command == "supply-chain" || command == "capability-audit";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "audit") return printModel(auditModel(handle), true);
+                if (command == "sbom") return printModel(sbomModel(handle), false);
+                if (command == "license") return printModel(licenseModel(handle), false);
+                if (command == "capability-audit") return printModel(capabilityModel(handle), false);
+                action >> str <- supplyAction(handle);
+                guard action == "verify" else {
+                    println("error[E_GHOR_SUPPLY_CHAIN_001]: unsupported supply-chain action '" + action + "'");
+                    return 2;
+                }
+                return printModel(auditModel(handle), true);
+            }
+
+            selfTest() -> bool {
+                sample >> int <- jsonNewObject();
+                jsonObjectSet(sample, "source", jsonNewString("registry"));
+                required >> bool <- dependencyNeedsChecksum(sample, "dependencies", false);
+                jsonObjectSet(sample, "checksum", jsonNewString("abc"));
+                accepted >> bool <- !dependencyNeedsChecksum(sample, "dependencies", false);
+                jsonRelease(sample);
+                return dependencyFamilyCount() == 13 && required && accepted;
+            }
+
+    fa:
+        return true;
+}

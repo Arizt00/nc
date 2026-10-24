@@ -1,0 +1,76 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:binary64>;
+
+nativeBinary64Vectors77 {
+    field(row >> int, key >> str) -> str {
+        node >> int <- jsonObjectBorrow(row,key); value >> str <- jsonStringView(node,"");
+        jsonRelease(node); return value;
+    }
+    fromHex(value >> str) -> u64 {
+        out >> u64 <- 0; at >> int <- 0;
+        while (at < 16) {
+            code >> byte <- rd(off(cast<byte>(value),at));
+            out <- (out << 4) | cast<u64>(code <= 57 ? code-48 : code-87); at += 1;
+        }
+        return out;
+    }
+    hex(value >> u64) -> str {
+        out >> p<byte> <- alloc(17); at >> int <- 0;
+        if (out == null) return null;
+        while (at < 16) {
+            nibble >> int <- (value >> ((15-at)*4)) & 15;
+            wr(off(out,at),nibble < 10 ? 48+nibble : 87+nibble); at += 1;
+        }
+        wr(off(out,16),0); return cast<str>(out);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3) return 64;
+        input >> int <- jsonParseFile(argsAt(arguments,1));
+        if (input == 0) return 65;
+        rows >> int <- jsonObjectBorrow(input,"cases");
+        output >> int <- jsonNewArray(); valid >> bool <- jsonArrayLen(rows) > 0; at >> int <- 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at);
+            textNode >> int <- jsonObjectBorrow(row,"text"); expectedNode >> int <- jsonObjectBorrow(row,"bits");
+            text >> str <- jsonStringView(textNode,""); expected >> str <- jsonStringView(expectedNode,"");
+            value >> u64 <- binary64.nccBinary64.parse(cast<byte>(text),strByteLen(text),false);
+            observed >> str <- hex(value);
+            formatted >> str <- "";
+            if (binary64.nccBinary64.finite(value)) formatted <- binary64.nccBinary64.format(value);
+            matched >> bool <- observed != null && observed == expected;
+            result >> int <- jsonNewObject();
+            jsonObjectSet(result,"bits",jsonNewString(observed));
+            jsonObjectSet(result,"formatted",jsonNewString(formatted == null ? "" : formatted));
+            jsonObjectSet(result,"passed",jsonNewBool(matched)); jsonArrayPush(output,result);
+            jsonRelease(result); jsonRelease(expectedNode); jsonRelease(textNode); jsonRelease(row);
+            free(cast<byte>(observed)); if (formatted != "") free(cast<byte>(formatted));
+            valid <- valid && matched; at += 1;
+        }
+        operations >> int <- jsonObjectBorrow(input,"operations"); operationResults >> int <- jsonNewArray(); at <- 0;
+        while (at < jsonArrayLen(operations)) {
+            row >> int <- jsonArrayBorrow(operations,at);
+            kind >> int <- jsonObjectBorrow(row,"operation"); code >> int <- jsonGetInt(kind); jsonRelease(kind);
+            value >> u64 <- binary64.nccBinary64.operate(fromHex(field(row,"left")),fromHex(field(row,"right")),code);
+            observed >> str <- hex(value); expected >> str <- field(row,"bits");
+            matched >> bool <- observed == expected;
+            if (expected == "nan") matched <- (value & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000;
+            result >> int <- jsonNewObject(); jsonObjectSet(result,"bits",jsonNewString(observed));
+            jsonObjectSet(result,"passed",jsonNewBool(matched)); jsonArrayPush(operationResults,result);
+            jsonRelease(result); free(cast<byte>(observed)); jsonRelease(row);
+            valid <- valid && matched; at += 1;
+        }
+        jsonRelease(operations);
+        report >> int <- jsonNewObject(); jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"arithmetic",operationResults); jsonRelease(operationResults);
+        jsonObjectSet(report,"cases",output); jsonRelease(output);
+        valid <- jsonSaveFile(report,argsAt(arguments,2),0) && valid;
+        jsonRelease(report); jsonRelease(rows); jsonRelease(input); argsRelease(arguments);
+        println(valid ? "native-binary64-vectors-ok" : "native-binary64-vectors-failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

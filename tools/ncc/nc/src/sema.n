@@ -1,0 +1,1887 @@
+use <io:output, render>;
+use <project:parser_ast, import_catalog, runtime_authority, runtime_signatures, generic_abi, pattern_async_resource, diagnostics, type_contract_sema, intrinsics, heap_abi, memory_abi, string_abi, fs_abi, time_abi, binary_layout>;
+
+nccSema {
+    const:
+        AST_PROGRAM >> int <- 1;
+        AST_USE_GROUP >> int <- 2;
+        AST_CONTAINER >> int <- 3;
+        AST_VALUE_DECL >> int <- 12;
+        AST_TYPE_DECL >> int <- 13;
+        AST_FIELD_DECL >> int <- 14;
+        AST_FUNCTION_DECL >> int <- 15;
+        AST_PARAMETER_DECL >> int <- 16;
+        AST_ENTRY_REF >> int <- 17;
+        AST_TYPE_NAME >> int <- 18;
+        AST_TYPE_APPLY >> int <- 19;
+        AST_TYPE_POINTER >> int <- 20;
+        AST_TYPE_ARRAY >> int <- 21;
+        AST_TYPE_UNION >> int <- 22;
+        AST_TYPE_FUNCTION >> int <- 23;
+        AST_TYPE_CONST >> int <- 24;
+        AST_EXPR_LITERAL >> int <- 25;
+        AST_EXPR_NAME >> int <- 26;
+        AST_EXPR_UNARY >> int <- 27;
+        AST_EXPR_BINARY >> int <- 28;
+        AST_EXPR_CALL >> int <- 29;
+        AST_EXPR_MEMBER >> int <- 30;
+        AST_EXPR_INDEX >> int <- 31;
+        AST_EXPR_TERNARY >> int <- 32;
+        AST_EXPR_ARRAY >> int <- 33;
+        AST_BLOCK >> int <- 34;
+        AST_STMT_ASSIGN >> int <- 36;
+        AST_STMT_RETURN >> int <- 37;
+        AST_STMT_IF >> int <- 38;
+        AST_STMT_WHILE >> int <- 39;
+        AST_STMT_FOR >> int <- 40;
+        AST_STMT_GUARD >> int <- 41;
+        AST_STMT_BREAK >> int <- 43;
+        AST_STMT_CONTINUE >> int <- 44;
+        AST_EXPR_STRUCT >> int <- 45;
+        AST_EXPR_FIELD >> int <- 46;
+        AST_EXPR_CLOSURE >> int <- 47;
+        AST_EXPR_TRY >> int <- 48;
+        AST_EXPR_PREFIX >> int <- 49;
+        AST_EXPR_IF >> int <- 50;
+        AST_MATCH_ARM >> int <- 52;
+        AST_STMT_FOR_IN >> int <- 53;
+        AST_STMT_FOR_RANGE >> int <- 54;
+        AST_STMT_LOOP >> int <- 55;
+        AST_STMT_REPEAT >> int <- 56;
+        AST_STMT_DO_WHILE >> int <- 57;
+        AST_STMT_UNLESS >> int <- 58;
+        AST_STMT_YIELD >> int <- 59;
+        AST_PATTERN_BINDING >> int <- 62;
+        AST_CLOSURE_PARAMETER >> int <- 69;
+        AST_CLOSURE_CAPTURE >> int <- 70;
+
+        T_NUMBER >> int <- 2;
+        T_STRING >> int <- 3;
+        T_CHAR >> int <- 4;
+        T_IDENTIFIER >> int <- 1;
+        T_COLON >> int <- 13;
+        T_SEMICOLON >> int <- 14;
+        T_COMMA >> int <- 15;
+        T_DOT >> int <- 16;
+        T_STAR >> int <- 18;
+        T_PIPE >> int <- 25;
+        T_GREATER >> int <- 26;
+        T_LESS >> int <- 27;
+        T_GREATER_EQ >> int <- 28;
+        T_LESS_EQ >> int <- 29;
+        T_EQ_EQ >> int <- 31;
+        T_NOT_EQ >> int <- 32;
+        T_BANG >> int <- 33;
+        T_PLUS >> int <- 35;
+        T_MINUS >> int <- 38;
+        T_SLASH >> int <- 41;
+        T_PERCENT >> int <- 42;
+        T_AMP >> int <- 43;
+        T_CARET >> int <- 44;
+        T_SHIFT_LEFT >> int <- 46;
+        T_SHIFT_RIGHT >> int <- 21;
+        T_SHIFT_LOGICAL >> int <- 22;
+        T_AND_AND >> int <- 48;
+        T_OR_OR >> int <- 49;
+        T_KEYWORD_TRUE >> int <- 76;
+        T_KEYWORD_FALSE >> int <- 77;
+
+        TY_UNKNOWN >> int <- 0;
+        TY_VOID >> int <- 1;
+        TY_BOOL >> int <- 2;
+        TY_INTEGER >> int <- 3;
+        TY_FLOAT >> int <- 4;
+        TY_STRING >> int <- 5;
+        TY_CHAR >> int <- 6;
+        TY_POINTER >> int <- 7;
+        TY_ARRAY >> int <- 8;
+        TY_FUNCTION >> int <- 9;
+        TY_NOMINAL >> int <- 10;
+        TY_NULL >> int <- 11;
+        TY_ADDRESS >> int <- 12;
+        TY_FS_BOOL_RESULT >> int <- 13;
+
+        SYM_VALUE >> int <- 1;
+        SYM_TYPE >> int <- 2;
+        SYM_FUNCTION >> int <- 3;
+        SYM_PARAMETER >> int <- 4;
+        SYM_FIELD >> int <- 5;
+        SYM_PATTERN >> int <- 6;
+        SYM_CAPTURE >> int <- 7;
+
+        SCOPE_PROGRAM >> int <- 1;
+        SCOPE_CONTAINER >> int <- 2;
+        SCOPE_TYPE >> int <- 3;
+        SCOPE_FUNCTION >> int <- 4;
+        SCOPE_BLOCK >> int <- 5;
+        SCOPE_CLOSURE >> int <- 6;
+        SCOPE_ARM >> int <- 7;
+
+        CONTEXT_BYTES >> int <- 160;
+        C_SESSION >> int <- 0;
+        C_SCOPES >> int <- 8;
+        C_NODE_SCOPES >> int <- 16;
+        C_SYMBOLS >> int <- 24;
+        C_NODE_TYPES >> int <- 32;
+        C_SCOPE_COUNT >> int <- 40;
+        C_SYMBOL_COUNT >> int <- 44;
+        C_NODE_COUNT >> int <- 48;
+        C_ERROR >> int <- 52;
+        C_ERROR_NODE >> int <- 56;
+        C_RESOLVED >> int <- 60;
+        C_TYPES >> int <- 64;
+        C_CALLS >> int <- 68;
+        C_CONDITIONS >> int <- 72;
+        C_RETURNS >> int <- 76;
+        C_ENTRIES >> int <- 80;
+        C_ERROR_TOKEN >> int <- 84;
+        C_IMPORTS >> int <- 88;
+        C_IMPORT_COUNT >> int <- 96;
+        C_IMPORT_GROUPS >> int <- 100;
+        C_RUNTIME_CALLS >> int <- 104;
+        C_MODAL_CHECKS >> int <- 108;
+        C_TOKEN_COUNT >> int <- 112;
+        C_CAPABILITY_CHECKS >> int <- 116;
+        C_POLICY_CHECKS >> int <- 120;
+        C_CONTEXT_CHECKS >> int <- 124;
+        C_AUTHORITY_FINGERPRINT >> int <- 128;
+        C_CONTAINER_CONTEXTS >> int <- 132;
+        C_SIGNATURE_DESCRIPTOR >> int <- 136;
+        C_SIGNATURE_CHECKS >> int <- 144;
+        C_SIGNATURE_FINGERPRINT >> int <- 148;
+
+        SCOPE_BYTES >> int <- 16;
+        Q_PARENT >> int <- 0;
+        Q_OWNER >> int <- 4;
+        Q_KIND >> int <- 8;
+
+        SYMBOL_BYTES >> int <- 40;
+        S_NAME_HASH >> int <- 0;
+        S_NAME_TOKEN >> int <- 4;
+        S_SCOPE >> int <- 8;
+        S_KIND >> int <- 12;
+        S_TYPE_HASH >> int <- 16;
+        S_TYPE_CLASS >> int <- 20;
+        S_ARITY >> int <- 24;
+        S_NODE >> int <- 28;
+        S_FLAGS >> int <- 32;
+
+        IMPORT_BYTES >> int <- 24;
+        I_DOMAIN >> int <- 0;
+        I_FAMILY_TOKEN >> int <- 4;
+        I_ITEM_TOKEN >> int <- 8;
+        I_NODE >> int <- 12;
+
+        RUNTIME_OWNER_BYTES >> int <- 16;
+        O_DATA >> int <- 0;
+        O_BYTES >> int <- 8;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            session(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_SESSION)));
+            }
+
+            scopes(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_SCOPES)));
+            }
+
+            nodeScopes(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_NODE_SCOPES)));
+            }
+
+            symbols(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_SYMBOLS)));
+            }
+
+            nodeTypes(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_NODE_TYPES)));
+            }
+
+            imports(context >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(context, C_IMPORTS)));
+            }
+
+            signatureDescriptor(context >> p<byte>) -> p<int> {
+                return from<int>(rd<addr>(off(context, C_SIGNATURE_DESCRIPTOR)));
+            }
+
+            scopeAt(context >> p<byte>, index >> int) -> p<byte> {
+                return off(scopes(context), index * SCOPE_BYTES);
+            }
+
+            symbolAt(context >> p<byte>, index >> int) -> p<byte> {
+                return off(symbols(context), index * SYMBOL_BYTES);
+            }
+
+            importAt(context >> p<byte>, index >> int) -> p<byte> {
+                return off(imports(context), index * IMPORT_BYTES);
+            }
+
+            nodeScope(context >> p<byte>, index >> int) -> int {
+                return rd<int>(off(nodeScopes(context), index * 4));
+            }
+
+            putNodeScope(context >> p<byte>, index >> int, value >> int) -> void {
+                wr<int>(off(nodeScopes(context), index * 4), value);
+            }
+
+            nodeType(context >> p<byte>, index >> int) -> int {
+                return rd<int>(off(nodeTypes(context), index * 4));
+            }
+
+            putNodeType(context >> p<byte>, index >> int, value >> int) -> void {
+                wr<int>(off(nodeTypes(context), index * 4), value);
+            }
+
+            setError(context >> p<byte>, kind >> int, node >> int) -> bool {
+                if (integer(context, C_ERROR) == 0) {
+                    putInteger(context, C_ERROR, kind);
+                    putInteger(context, C_ERROR_NODE, node);
+                    putInteger(context, C_ERROR_TOKEN, -1);
+                }
+                return false;
+            }
+
+            setTokenError(context >> p<byte>, kind >> int, node >> int, token >> int) -> bool {
+                if (integer(context, C_ERROR) == 0) {
+                    putInteger(context, C_ERROR, kind);
+                    putInteger(context, C_ERROR_NODE, node);
+                    putInteger(context, C_ERROR_TOKEN, token);
+                }
+                return false;
+            }
+
+            makeContext(material >> p<byte>) -> p<byte> {
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(material);
+                context >> p<byte> <- cast<byte>(alloc(CONTEXT_BYTES));
+                guard context != null else return null;
+                scopeData >> p<byte> <- cast<byte>(alloc((count + 8) * SCOPE_BYTES));
+                nodeScopeData >> p<byte> <- cast<byte>(alloc((count + 8) * 4));
+                symbolData >> p<byte> <- cast<byte>(alloc((count + 64) * SYMBOL_BYTES));
+                nodeTypeData >> p<byte> <- cast<byte>(alloc((count + 8) * 4));
+                tokenCount >> int <- parser_ast.nccParserAst.materialTokenCount(material);
+                importData >> p<byte> <- cast<byte>(alloc((tokenCount + 8) * IMPORT_BYTES));
+                signatureData >> p<int> <- cast<int>(alloc(
+                    runtime_signatures.nccRuntimeSignatures.descriptorBytes()));
+                guard scopeData != null && nodeScopeData != null &&
+                    symbolData != null && nodeTypeData != null && importData != null &&
+                    signatureData != null else {
+                    if (scopeData != null) free(scopeData);
+                    if (nodeScopeData != null) free(nodeScopeData);
+                    if (symbolData != null) free(symbolData);
+                    if (nodeTypeData != null) free(nodeTypeData);
+                    if (importData != null) free(importData);
+                    if (signatureData != null) free(signatureData);
+                    free(context);
+                    return null;
+                }
+                at >> int <- 0;
+                while (at < CONTEXT_BYTES) { wr<byte>(off(context, at), 0); at += 1; }
+                wr<addr>(off(context, C_SESSION), adr(material));
+                wr<addr>(off(context, C_SCOPES), adr(scopeData));
+                wr<addr>(off(context, C_NODE_SCOPES), adr(nodeScopeData));
+                wr<addr>(off(context, C_SYMBOLS), adr(symbolData));
+                wr<addr>(off(context, C_NODE_TYPES), adr(nodeTypeData));
+                wr<addr>(off(context, C_IMPORTS), adr(importData));
+                wr<addr>(off(context, C_SIGNATURE_DESCRIPTOR), adr(signatureData));
+                putInteger(context, C_NODE_COUNT, count);
+                putInteger(context, C_ERROR_NODE, -1);
+                putInteger(context, C_ERROR_TOKEN, -1);
+                putInteger(context, C_TOKEN_COUNT, tokenCount);
+                at <- 0;
+                while (at < count) {
+                    putNodeScope(context, at, -1);
+                    putNodeType(context, at, -1);
+                    at += 1;
+                }
+                return context;
+            }
+
+            releaseContext(context >> p<byte>) -> bool {
+                guard context != null else return true;
+                free(scopes(context));
+                free(nodeScopes(context));
+                free(symbols(context));
+                free(nodeTypes(context));
+                free(imports(context));
+                free(signatureDescriptor(context));
+                free(context);
+                return true;
+            }
+
+            addImport(context >> p<byte>, domain >> int, family >> int,
+                item >> int, node >> int) -> bool {
+                index >> int <- integer(context, C_IMPORT_COUNT);
+                row >> p<byte> <- importAt(context, index);
+                putInteger(row, I_DOMAIN, domain);
+                putInteger(row, I_FAMILY_TOKEN, family);
+                putInteger(row, I_ITEM_TOKEN, item);
+                putInteger(row, I_NODE, node);
+                putInteger(context, C_IMPORT_COUNT, index + 1);
+                return true;
+            }
+
+            useSegment(material >> p<byte>, token >> int) -> bool {
+                kind >> int <- parser_ast.nccParserAst.materialTokenKind(material, token);
+                return kind == T_IDENTIFIER || (kind >= 50 && kind <= 100);
+            }
+
+            validateImportGroup(context >> p<byte>, node >> int) -> bool {
+                material >> p<byte> <- session(context);
+                end >> int <- parser_ast.nccParserAst.materialNodeEndToken(material, node);
+                at >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, node) + 1;
+                if (parser_ast.nccParserAst.materialTokenKind(material, at) != T_LESS) {
+                    return setTokenError(context, 11, node, at);
+                }
+                at += 1;
+                modules >> int <- 0;
+                while (at < end && parser_ast.nccParserAst.materialTokenKind(material, at) != T_GREATER) {
+                    moduleToken >> int <- at;
+                    if (!useSegment(material, moduleToken)) {
+                        return setTokenError(context, 11, node, moduleToken);
+                    }
+                    domain >> int <- import_catalog.nccImportCatalog.defaultDomain();
+                    family >> int <- moduleToken;
+                    at += 1;
+                    if (parser_ast.nccParserAst.materialTokenKind(material, at) == T_DOT) {
+                        domain <- import_catalog.nccImportCatalog.classifyDomain(material, moduleToken);
+                        if (domain == 0) return setTokenError(context, 12, node, moduleToken);
+                        at += 1;
+                        family <- at;
+                        if (!useSegment(material, family)) {
+                            return setTokenError(context, 11, node, family);
+                        }
+                        at += 1;
+                    } else if (import_catalog.nccImportCatalog.classifyDomain(material,
+                        moduleToken) == import_catalog.nccImportCatalog.projectDomain()) {
+                        domain <- import_catalog.nccImportCatalog.projectDomain();
+                    }
+                    if (parser_ast.nccParserAst.materialTokenKind(material, at) != T_COLON) {
+                        return setTokenError(context, 11, node, at);
+                    }
+                    if (domain == import_catalog.nccImportCatalog.defaultDomain() &&
+                        parser_ast.nccParserAst.materialTokenSame(material, family, "system")) {
+                        return setTokenError(context, 21, node, family);
+                    }
+                    if (!import_catalog.nccImportCatalog.knownFamily(material, domain, family)) {
+                        return setTokenError(context, 13, node, family);
+                    }
+                    at += 1;
+                    itemCount >> int <- 0;
+                    while (at < end && parser_ast.nccParserAst.materialTokenKind(material, at) != T_PIPE &&
+                        parser_ast.nccParserAst.materialTokenKind(material, at) != T_GREATER) {
+                        item >> int <- at;
+                        if (parser_ast.nccParserAst.materialTokenKind(material, item) == T_STAR) {
+                            return setTokenError(context, 15, node, item);
+                        }
+                        if (!useSegment(material, item)) {
+                            return setTokenError(context, 14, node, item);
+                        }
+                        if (!import_catalog.nccImportCatalog.knownItem(material, domain, family, item)) {
+                            return setTokenError(context, 14, node, item);
+                        }
+                        addImport(context, domain, family, item, node);
+                        itemCount += 1;
+                        at += 1;
+                        if (parser_ast.nccParserAst.materialTokenKind(material, at) == T_COMMA) {
+                            at += 1;
+                        } else if (parser_ast.nccParserAst.materialTokenKind(material, at) != T_PIPE &&
+                            parser_ast.nccParserAst.materialTokenKind(material, at) != T_GREATER) {
+                            return setTokenError(context, 11, node, at);
+                        }
+                    }
+                    if (itemCount == 0) return setTokenError(context, 14, node, at);
+                    modules += 1;
+                    if (parser_ast.nccParserAst.materialTokenKind(material, at) == T_PIPE) at += 1;
+                }
+                if (modules == 0 || parser_ast.nccParserAst.materialTokenKind(material, at) != T_GREATER ||
+                    parser_ast.nccParserAst.materialTokenKind(material, at + 1) != T_SEMICOLON) {
+                    return setTokenError(context, 11, node, at);
+                }
+                putInteger(context, C_IMPORT_GROUPS, integer(context, C_IMPORT_GROUPS) + 1);
+                return true;
+            }
+
+            modalGate(context >> p<byte>) -> bool {
+                guard integer(context, C_IMPORT_GROUPS) > 0 else return true;
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                at >> int <- 0;
+                while (at < count) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    if (kind == AST_CONTAINER) {
+                        role >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, at) + 3;
+                        contextKind >> int <- runtime_authority.nccRuntimeAuthority.context(
+                            material, role);
+                        putInteger(context, C_MODAL_CHECKS, integer(context, C_MODAL_CHECKS) + 1);
+                        putInteger(context, C_CONTAINER_CONTEXTS,
+                            integer(context, C_CONTAINER_CONTEXTS) + 1);
+                        imported >> int <- 0;
+                        while (imported < integer(context, C_IMPORT_COUNT)) {
+                            row >> p<byte> <- importAt(context, imported);
+                            domain >> int <- integer(row, I_DOMAIN);
+                            family >> int <- integer(row, I_FAMILY_TOKEN);
+                            item >> int <- integer(row, I_ITEM_TOKEN);
+                            cap >> int <- runtime_authority.nccRuntimeAuthority.capability(
+                                material, domain, family, item);
+                            policy >> int <- runtime_authority.nccRuntimeAuthority.policy(
+                                material, domain, family, item);
+                            risk >> int <- runtime_authority.nccRuntimeAuthority.risk(
+                                material, domain, family, item);
+                            putInteger(context, C_CONTEXT_CHECKS,
+                                integer(context, C_CONTEXT_CHECKS) + 1);
+                            if (cap != 0) putInteger(context, C_CAPABILITY_CHECKS,
+                                integer(context, C_CAPABILITY_CHECKS) + 1);
+                            if (policy != 0) putInteger(context, C_POLICY_CHECKS,
+                                integer(context, C_POLICY_CHECKS) + 1);
+                            putInteger(context, C_AUTHORITY_FINGERPRINT,
+                                integer(context, C_AUTHORITY_FINGERPRINT) +
+                                runtime_authority.nccRuntimeAuthority.fingerprint(
+                                    domain, cap, policy, risk, contextKind));
+                            if (!runtime_authority.nccRuntimeAuthority.allowed(
+                                material, domain, family, item, contextKind)) {
+                                return setTokenError(context,
+                                    runtime_authority.nccRuntimeAuthority.denial(contextKind),
+                                    integer(row, I_NODE), item);
+                            }
+                            imported += 1;
+                        }
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            validateImports(context >> p<byte>) -> bool {
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                at >> int <- 0;
+                while (at < count && integer(context, C_ERROR) == 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, at) == AST_USE_GROUP) {
+                        validateImportGroup(context, at);
+                    }
+                    at += 1;
+                }
+                if (integer(context, C_ERROR) == 0) modalGate(context);
+                return integer(context, C_ERROR) == 0;
+            }
+
+            hasRuntimeImport(context >> p<byte>, requirement >> int) -> bool {
+                material >> p<byte> <- session(context);
+                at >> int <- 0;
+                while (at < integer(context, C_IMPORT_COUNT)) {
+                    row >> p<byte> <- importAt(context, at);
+                    if (integer(row, I_DOMAIN) == import_catalog.nccImportCatalog.defaultDomain() &&
+                        import_catalog.nccImportCatalog.importSatisfies(material, requirement,
+                            integer(row, I_FAMILY_TOKEN), integer(row, I_ITEM_TOKEN))) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            resolveImportedSignature(context >> p<byte>, functionToken >> int,
+                arguments >> int) -> int {
+                material >> p<byte> <- session(context);
+                status >> int <- 0;
+                at >> int <- 0;
+                while (at < integer(context, C_IMPORT_COUNT)) {
+                    row >> p<byte> <- importAt(context, at);
+                    if (integer(row, I_DOMAIN) != import_catalog.nccImportCatalog.projectDomain()) {
+                        resolved >> int <- runtime_signatures.nccRuntimeSignatures.resolve(
+                            material, integer(row, I_FAMILY_TOKEN), integer(row, I_ITEM_TOKEN),
+                            functionToken, arguments, signatureDescriptor(context));
+                        if (resolved > 0) {
+                            putInteger(context, C_SIGNATURE_CHECKS,
+                                integer(context, C_SIGNATURE_CHECKS) + 1);
+                            putInteger(context, C_SIGNATURE_FINGERPRINT,
+                                integer(context, C_SIGNATURE_FINGERPRINT) +
+                                runtime_signatures.nccRuntimeSignatures.signatureFingerprint(
+                                    signatureDescriptor(context)));
+                            return 1;
+                        }
+                        if (resolved < 0) status <- -1;
+                    }
+                    at += 1;
+                }
+                return status;
+            }
+
+            runtimeOwnerRow(table >> p<byte>, node >> int) -> p<byte> {
+                return off(table, node * RUNTIME_OWNER_BYTES);
+            }
+
+            putRuntimeOwner(table >> p<byte>, node >> int,
+                data >> p<byte>, bytes >> int) -> void {
+                guard node >= 0 && data != null && bytes > 0 else return;
+                row >> p<byte> <- runtimeOwnerRow(table, node);
+                wr<addr>(off(row, O_DATA), adr(data));
+                putInteger(row, O_BYTES, bytes);
+            }
+
+            resolveLegacyRuntimeOwner(context >> p<byte>, functionToken >> int,
+                table >> p<byte>, callee >> int) -> bool {
+                material >> p<byte> <- session(context);
+                heap >> int <- heap_abi.nccHeapAbi.resolve(
+                    parser_ast.nccParserAst.materialTokenData(material,functionToken),
+                    parser_ast.nccParserAst.materialTokenBytes(material,functionToken));
+                if (heap > 0) {
+                    putRuntimeOwner(table,callee,heap_abi.nccHeapAbi.ownerData(),heap_abi.nccHeapAbi.ownerBytes());
+                    return true;
+                }
+                memory >> int <- memory_abi.nccMemoryAbi.resolve(
+                    parser_ast.nccParserAst.materialTokenData(material,functionToken),
+                    parser_ast.nccParserAst.materialTokenBytes(material,functionToken));
+                if (memory > 0) {
+                    putRuntimeOwner(table,callee,memory_abi.nccMemoryAbi.ownerData(memory),memory_abi.nccMemoryAbi.ownerBytes(memory));
+                    return true;
+                }
+                string >> int <- string_abi.nccStringAbi.resolve(
+                    parser_ast.nccParserAst.materialIdentityData(material,functionToken),
+                    parser_ast.nccParserAst.materialIdentityBytes(material,functionToken));
+                if (string > 0) {
+                    putRuntimeOwner(table,callee,string_abi.nccStringAbi.ownerData(string),string_abi.nccStringAbi.ownerBytes(string));
+                    return true;
+                }
+                filesystem >> int <- fs_abi.nccFsAbi.resolve(
+                    parser_ast.nccParserAst.materialIdentityData(material,functionToken),
+                    parser_ast.nccParserAst.materialIdentityBytes(material,functionToken));
+                if (filesystem > 0) {
+                    putRuntimeOwner(table,callee,fs_abi.nccFsAbi.ownerData(filesystem),fs_abi.nccFsAbi.ownerBytes(filesystem));
+                    return true;
+                }
+                requirement >> int <- import_catalog.nccImportCatalog.runtimeRequirement(
+                    material, functionToken);
+                timer >> int <- time_abi.nccTimeAbi.resolve(
+                    parser_ast.nccParserAst.materialIdentityData(material,functionToken),
+                    parser_ast.nccParserAst.materialIdentityBytes(material,functionToken));
+                if (timer > 0) {
+                    putRuntimeOwner(table,callee,time_abi.nccTimeAbi.ownerData(timer),time_abi.nccTimeAbi.ownerBytes(timer));
+                    return true;
+                }
+                guard requirement != 0 else return false;
+                at >> int <- 0;
+                while (at < integer(context, C_IMPORT_COUNT)) {
+                    row >> p<byte> <- importAt(context, at);
+                    item >> int <- integer(row, I_ITEM_TOKEN);
+                    if (integer(row, I_DOMAIN) == import_catalog.nccImportCatalog.defaultDomain() &&
+                        import_catalog.nccImportCatalog.importSatisfies(material, requirement,
+                            integer(row, I_FAMILY_TOKEN), item)) {
+                        putRuntimeOwner(table, callee,
+                            parser_ast.nccParserAst.materialTokenData(material, item),
+                            parser_ast.nccParserAst.materialTokenBytes(material, item));
+                        return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            fillRuntimeOwners(context >> p<byte>, table >> p<byte>) -> void {
+                material >> p<byte> <- session(context);
+                at >> int <- 0;
+                while (at < integer(context, C_NODE_COUNT)) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,at);
+                    op >> int <- parser_ast.nccParserAst.materialNodeRoleHash(material,at);
+                    if ((kind == AST_EXPR_BINARY && op == T_PLUS) || (kind == AST_STMT_ASSIGN && op == 37)) {
+                        left >> int <- firstExpression(context,at);
+                        right >> int <- nextExpression(context,left);
+                        if (infer(context,left) == TY_STRING && infer(context,right) == TY_STRING)
+                            putRuntimeOwner(table,at,cast<byte>("concat"),6);
+                    }
+                    if (parser_ast.nccParserAst.materialNodeKind(material, at) == AST_EXPR_CALL) {
+                        callee >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,at);
+                        if (callee >= 0 && parser_ast.nccParserAst.materialNodeKind(material,callee) == 74)
+                            callee <- parser_ast.nccParserAst.materialNodeFirstChild(material,callee);
+                        if (callee >= 0) {
+                            token >> int <- parser_ast.nccParserAst.materialNodeOrigin(
+                                material, callee);
+                            found >> int <- findSymbol(context, nodeScope(context, at), token);
+                            if (found < 0) {
+                                arguments >> int <- 0;
+                                argument >> int <- nextExpression(context, callee);
+                                while (argument >= 0) {
+                                    arguments += 1;
+                                    argument <- nextExpression(context, argument);
+                                }
+                                resolved >> int <- resolveImportedSignature(
+                                    context, token, arguments);
+                                if (resolved > 0) {
+                                    descriptor >> p<int> <- signatureDescriptor(context);
+                                    putRuntimeOwner(table, callee,
+                                        runtime_signatures.nccRuntimeSignatures.familyData(descriptor),
+                                        runtime_signatures.nccRuntimeSignatures.familyBytes(descriptor));
+                                } else {
+                                    resolveLegacyRuntimeOwner(context, token, table, callee);
+                                }
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+            }
+
+            validateSignatureArguments(context >> p<byte>, callee >> int) -> bool {
+                // Nested calls resolve into the context scratch descriptor. Preserve this call's signature.
+                descriptor >> p<int> <- cast<int>(alloc(runtime_signatures.nccRuntimeSignatures.descriptorBytes()));
+                if (descriptor == null) return setError(context,1,callee);
+                cp(descriptor,signatureDescriptor(context),runtime_signatures.nccRuntimeSignatures.descriptorBytes());
+                argument >> int <- nextExpression(context, callee);
+                index >> int <- 0;
+                while (argument >= 0) {
+                    expected >> int <- runtime_signatures.nccRuntimeSignatures.argumentClass(
+                        descriptor, index);
+                    actual >> int <- infer(context, argument);
+                    if (expected != TY_UNKNOWN && !compatible(expected, actual)) {
+                        free(descriptor);
+                        return setError(context, 5, argument);
+                    }
+                    index += 1;
+                    argument <- nextExpression(context, argument);
+                }
+                free(descriptor); return true;
+            }
+
+            newScope(context >> p<byte>, parent >> int, owner >> int, kind >> int) -> int {
+                index >> int <- integer(context, C_SCOPE_COUNT);
+                row >> p<byte> <- scopeAt(context, index);
+                putInteger(row, Q_PARENT, parent);
+                putInteger(row, Q_OWNER, owner);
+                putInteger(row, Q_KIND, kind);
+                putInteger(context, C_SCOPE_COUNT, index + 1);
+                return index;
+            }
+
+            nearestScope(context >> p<byte>, node >> int) -> int {
+                material >> p<byte> <- session(context);
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                while (parent >= 0) {
+                    found >> int <- nodeScope(context, parent);
+                    if (found >= 0) return found;
+                    parent <- parser_ast.nccParserAst.materialNodeParent(material, parent);
+                }
+                return 0;
+            }
+
+            ownsScope(kind >> int) -> int {
+                if (kind == AST_CONTAINER) return SCOPE_CONTAINER;
+                if (kind == AST_TYPE_DECL) return SCOPE_TYPE;
+                if (kind == AST_FUNCTION_DECL) return SCOPE_FUNCTION;
+                if (kind == AST_BLOCK) return SCOPE_BLOCK;
+                if (kind == AST_EXPR_CLOSURE) return SCOPE_CLOSURE;
+                if (kind == AST_MATCH_ARM) return SCOPE_ARM;
+                return 0;
+            }
+
+            buildScopes(context >> p<byte>) -> bool {
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                root >> int <- newScope(context, -1, 0, SCOPE_PROGRAM);
+                putNodeScope(context, 0, root);
+                at >> int <- 1;
+                while (at < count) {
+                    parent >> int <- nearestScope(context, at);
+                    scopeKind >> int <- ownsScope(
+                        parser_ast.nccParserAst.materialNodeKind(material, at));
+                    assigned >> int <- parent;
+                    if (scopeKind != 0) assigned <- newScope(context, parent, at, scopeKind);
+                    putNodeScope(context, at, assigned);
+                    at += 1;
+                }
+                return true;
+            }
+
+            directTypeNode(context >> p<byte>, owner >> int) -> int {
+                if (owner < 0) return -1;
+                material >> p<byte> <- session(context);
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, owner);
+                while (child >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, child);
+                    if (kind >= AST_TYPE_NAME && kind <= AST_TYPE_CONST) return child;
+                    child <- parser_ast.nccParserAst.materialNodeNextSibling(material, child);
+                }
+                return -1;
+            }
+
+            integerType(material >> p<byte>, token >> int) -> bool {
+                return parser_ast.nccParserAst.materialTokenSame(material, token, "int") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "word") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "sword") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "dword") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "sdword") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "sqword") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "byte") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "i8") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "u8") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "i16") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "u16") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "i32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "u32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "i64") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "u64") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "isize") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "usize") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "addr") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "qword");
+            }
+
+            typeClass(context >> p<byte>, typeNode >> int) -> int {
+                guard typeNode >= 0 else return TY_UNKNOWN;
+                material >> p<byte> <- session(context);
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, typeNode);
+                if (kind == AST_TYPE_POINTER) return TY_POINTER;
+                if (kind == AST_TYPE_ARRAY) return TY_ARRAY;
+                if (kind == AST_TYPE_FUNCTION) return TY_FUNCTION;
+                token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, typeNode);
+                if (kind == AST_TYPE_APPLY && parser_ast.nccParserAst.materialTokenSame(material,token,"Result")) {
+                    payload >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,typeNode);
+                    error >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material,payload);
+                    if (payload >= 0 && error >= 0 &&
+                        parser_ast.nccParserAst.materialTokenSame(material,parser_ast.nccParserAst.materialNodeFirstToken(material,payload),"bool") &&
+                        parser_ast.nccParserAst.materialTokenSame(material,parser_ast.nccParserAst.materialNodeFirstToken(material,error),"FsError") &&
+                        parser_ast.nccParserAst.materialNodeNextSibling(material,error) < 0) return TY_FS_BOOL_RESULT;
+                }
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "void")) return TY_VOID;
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "bool")) return TY_BOOL;
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "addr")) return TY_ADDRESS;
+                if (integerType(material, token)) return TY_INTEGER;
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "ft32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "ft64") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "f32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "f64")) return TY_FLOAT;
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "str") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "string") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "text")) return TY_STRING;
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "char")) return TY_CHAR;
+                return TY_NOMINAL;
+            }
+
+            builtinType(material >> p<byte>, token >> int) -> bool {
+                return integerType(material, token) ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "void") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "bool") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "ft32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "ft64") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "f32") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "f64") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "str") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "string") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "text") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "char") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "array") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "list") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "queue") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "vector") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "Option") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "Result") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "FsError") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "Future") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "Stream") ||
+                    parser_ast.nccParserAst.materialTokenSame(material, token, "AsyncStream");
+            }
+
+            functionArity(context >> p<byte>, node >> int) -> int {
+                material >> p<byte> <- session(context);
+                count >> int <- 0;
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, node);
+                while (child >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, child) ==
+                        AST_PARAMETER_DECL) count += 1;
+                    child <- parser_ast.nccParserAst.materialNodeNextSibling(material, child);
+                }
+                return count;
+            }
+
+            sameSymbol(context >> p<byte>, row >> p<byte>, scope >> int,
+                hash >> int, token >> int) -> bool {
+                if (integer(row, S_SCOPE) != scope || integer(row, S_NAME_HASH) != hash) {
+                    return false;
+                }
+                return parser_ast.nccParserAst.materialIdentitiesEqual(session(context),
+                    integer(row, S_NAME_TOKEN), token);
+            }
+
+            addSymbol(context >> p<byte>, scope >> int, symbolKind >> int,
+                node >> int, token >> int, class >> int, arity >> int) -> bool {
+                material >> p<byte> <- session(context);
+                hash >> int <- parser_ast.nccParserAst.materialIdentityHash(material, token);
+                at >> int <- 0;
+                while (at < integer(context, C_SYMBOL_COUNT)) {
+                    if (sameSymbol(context, symbolAt(context, at), scope, hash, token)) {
+                        return setError(context, 1, node);
+                    }
+                    at += 1;
+                }
+                index >> int <- integer(context, C_SYMBOL_COUNT);
+                row >> p<byte> <- symbolAt(context, index);
+                putInteger(row, S_NAME_HASH, hash);
+                putInteger(row, S_NAME_TOKEN, token);
+                putInteger(row, S_SCOPE, scope);
+                putInteger(row, S_KIND, symbolKind);
+                putInteger(row, S_TYPE_HASH,
+                    parser_ast.nccParserAst.materialNodeTypeHash(material, node));
+                putInteger(row, S_TYPE_CLASS, class);
+                putInteger(row, S_ARITY, arity);
+                putInteger(row, S_NODE, node);
+                putInteger(row, S_FLAGS,
+                    parser_ast.nccParserAst.materialNodeFlags(material, node));
+                putInteger(context, C_SYMBOL_COUNT, index + 1);
+                return true;
+            }
+
+            findSymbol(context >> p<byte>, startScope >> int, token >> int) -> int {
+                material >> p<byte> <- session(context);
+                hash >> int <- parser_ast.nccParserAst.materialIdentityHash(material, token);
+                scope >> int <- startScope;
+                while (scope >= 0) {
+                    at >> int <- integer(context, C_SYMBOL_COUNT) - 1;
+                    while (at >= 0) {
+                        if (sameSymbol(context, symbolAt(context, at), scope, hash, token)) {
+                            return at;
+                        }
+                        at -= 1;
+                    }
+                    scope <- integer(scopeAt(context, scope), Q_PARENT);
+                }
+                return -1;
+            }
+
+            collectSymbols(context >> p<byte>) -> bool {
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                at >> int <- 1;
+                while (at < count && integer(context, C_ERROR) == 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, at);
+                    declarationScope >> int <- nearestScope(context, at);
+                    ownScope >> int <- nodeScope(context, at);
+                    if (kind == AST_TYPE_DECL) {
+                        addSymbol(context, declarationScope, SYM_TYPE, at, token,
+                            TY_NOMINAL, 0);
+                    } else if (kind == AST_FUNCTION_DECL) {
+                        addSymbol(context, declarationScope, SYM_FUNCTION, at, token,
+                            typeClass(context, directTypeNode(context, at)),
+                            functionArity(context, at));
+                    } else if (kind == AST_VALUE_DECL || kind == 10) {
+                        addSymbol(context, declarationScope, SYM_VALUE, at, token,
+                            typeClass(context, directTypeNode(context, at)), 0);
+                    } else if (kind == AST_PARAMETER_DECL ||
+                        kind == AST_CLOSURE_PARAMETER) {
+                        addSymbol(context, ownScope, SYM_PARAMETER, at, token,
+                            typeClass(context, directTypeNode(context, at)), 0);
+                    } else if (kind == 89) {
+                        addSymbol(context, ownScope, SYM_TYPE, at, token, TY_NOMINAL, 0);
+                    } else if (kind == AST_FIELD_DECL) {
+                        addSymbol(context, ownScope, SYM_FIELD, at, token,
+                            typeClass(context, directTypeNode(context, at)), 0);
+                    } else if (kind == AST_PATTERN_BINDING) {
+                        addSymbol(context, ownScope, SYM_PATTERN, at, token, TY_UNKNOWN, 0);
+                    } else if (kind == AST_CLOSURE_CAPTURE) {
+                        outer >> int <- integer(scopeAt(context, ownScope), Q_PARENT);
+                        found >> int <- findSymbol(context, outer, token);
+                        if (found < 0) setError(context, 2, at);
+                        else addSymbol(context, ownScope, SYM_CAPTURE, at, token,
+                            integer(symbolAt(context, found), S_TYPE_CLASS), 0);
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            validateTypes(context >> p<byte>) -> bool {
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                at >> int <- 0;
+                while (at < count && integer(context, C_ERROR) == 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, at) == AST_TYPE_NAME) {
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, at);
+                        if (!builtinType(material, token) &&
+                            findSymbol(context, nodeScope(context, at), token) < 0) {
+                            setError(context, 3, at);
+                        }
+                        putInteger(context, C_TYPES, integer(context, C_TYPES) + 1);
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            expression(kind >> int) -> bool {
+                return (kind >= AST_EXPR_LITERAL && kind <= AST_EXPR_ARRAY) ||
+                    (kind >= AST_EXPR_STRUCT && kind <= AST_EXPR_IF);
+            }
+
+            firstExpression(context >> p<byte>, owner >> int) -> int {
+                material >> p<byte> <- session(context);
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, owner);
+                while (child >= 0) {
+                    if (expression(parser_ast.nccParserAst.materialNodeKind(material, child))) {
+                        return child;
+                    }
+                    child <- parser_ast.nccParserAst.materialNodeNextSibling(material, child);
+                }
+                return -1;
+            }
+
+            nextExpression(context >> p<byte>, node >> int) -> int {
+                material >> p<byte> <- session(context);
+                next >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material, node);
+                while (next >= 0) {
+                    if (expression(parser_ast.nccParserAst.materialNodeKind(material, next))) {
+                        return next;
+                    }
+                    next <- parser_ast.nccParserAst.materialNodeNextSibling(material, next);
+                }
+                return -1;
+            }
+
+            rawAddressClass(type >> int) -> bool {
+                return type == TY_POINTER || type == TY_ADDRESS || type == TY_NULL || type == TY_FUNCTION;
+            }
+            compatible(expected >> int, actual >> int) -> bool {
+                if (expected == TY_UNKNOWN || actual == TY_UNKNOWN) return true;
+                if (expected == actual) return true;
+                if (expected == TY_FLOAT && actual == TY_INTEGER) return true;
+                if (expected == TY_ADDRESS && (actual == TY_INTEGER || rawAddressClass(actual))) return true;
+                if (expected == TY_POINTER && actual == TY_FUNCTION) return true;
+                if (actual == TY_ADDRESS && (expected == TY_INTEGER || expected == TY_POINTER)) return true;
+                if (actual == TY_NULL && (expected == TY_POINTER || expected == TY_FUNCTION || expected == TY_STRING)) {
+                    return true;
+                }
+                return false;
+            }
+
+            literalType(context >> p<byte>, node >> int) -> int {
+                material >> p<byte> <- session(context);
+                role >> int <- parser_ast.nccParserAst.materialNodeRoleHash(material, node);
+                if (role == T_NUMBER) {
+                    token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,node);
+                    data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(material,token);
+                    bytes >> int <- parser_ast.nccParserAst.materialTokenBytes(material,token);
+                    decimal >> bool <- bytes < 2 || rd(data) != 48 ||
+                        (rd(off(data,1)) != 120 && rd(off(data,1)) != 88 &&
+                         rd(off(data,1)) != 98 && rd(off(data,1)) != 66 &&
+                         rd(off(data,1)) != 111 && rd(off(data,1)) != 79);
+                    at >> int <- 0;
+                    while (decimal && at < bytes) {
+                        code >> byte <- rd(off(data,at));
+                        if (code == 46 || code == 101 || code == 69) return TY_FLOAT;
+                        at += 1;
+                    }
+                    return TY_INTEGER;
+                }
+                if (role == T_STRING) return TY_STRING;
+                if (role == T_CHAR) return TY_CHAR;
+                if (role == T_KEYWORD_TRUE || role == T_KEYWORD_FALSE) return TY_BOOL;
+                token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, node);
+                if (parser_ast.nccParserAst.materialTokenSame(material, token, "null")) return TY_NULL;
+                return TY_UNKNOWN;
+            }
+
+            memberField(context >> p<byte>, node >> int) -> bool {
+                material >> p<byte> <- session(context);
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                guard parent >= 0 && parser_ast.nccParserAst.materialNodeKind(material, parent) ==
+                    AST_EXPR_MEMBER else return false;
+                return parser_ast.nccParserAst.materialNodeFirstChild(material, parent) != node;
+            }
+            recordType(context >> p<byte>, type >> int) -> int {
+                guard type >= 0 else return -1;
+                material >> p<byte> <- session(context);
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,type);
+                if (kind == 11 || kind == 13) return type;
+                if (kind == AST_TYPE_POINTER) type <- parser_ast.nccParserAst.materialNodeFirstChild(material,type);
+                token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,type);
+                found >> int <- findSymbol(context,nodeScope(context,type),token);
+                return found >= 0 && integer(symbolAt(context,found),S_KIND) == SYM_TYPE ? integer(symbolAt(context,found),S_NODE) : -1;
+            }
+            valueType(context >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 128 else return -1;
+                material >> p<byte> <- session(context);
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,node);
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,node);
+                if (kind == AST_EXPR_STRUCT) return recordType(context,child);
+                if (kind == AST_EXPR_INDEX) {
+                    base >> int <- valueType(context,child,depth+1);
+                    baseKind >> int <- parser_ast.nccParserAst.materialNodeKind(material,base);
+                    if (baseKind == AST_TYPE_ARRAY || baseKind == AST_TYPE_POINTER)
+                        return parser_ast.nccParserAst.materialNodeFirstChild(material,base);
+                }
+                if (kind == AST_EXPR_MEMBER) return directTypeNode(context,recordMember(context,node,depth+1));
+                if (kind == AST_EXPR_TERNARY) return valueType(context,nextExpression(context,child),depth+1);
+                if (kind == AST_EXPR_CALL) {
+                    name >> int <- child;
+                    if (parser_ast.nccParserAst.materialNodeKind(material,name) == 74)
+                        name <- parser_ast.nccParserAst.materialNodeFirstChild(material,name);
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,name);
+                    found >> int <- findSymbol(context,nodeScope(context,node),token);
+                    if (found >= 0 && integer(symbolAt(context,found),S_KIND) == SYM_FUNCTION)
+                        return directTypeNode(context,integer(symbolAt(context,found),S_NODE));
+                    calleeType >> int <- valueType(context,child,depth+1);
+                    if (parser_ast.nccParserAst.materialNodeKind(material,calleeType) == AST_TYPE_FUNCTION) {
+                        result >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,calleeType);
+                        while (result >= 0) {
+                            following >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material,result);
+                            if (following < 0) return result;
+                            result <- following;
+                        }
+                    }
+                }
+                if (kind == AST_EXPR_NAME || kind == AST_EXPR_CALL) {
+                    name >> int <- kind == AST_EXPR_CALL ? child : node;
+                    if (parser_ast.nccParserAst.materialNodeKind(material,name) == 74) name <- parser_ast.nccParserAst.materialNodeFirstChild(material,name);
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,name);
+                    found >> int <- findSymbol(context,nodeScope(context,node),token);
+                    return found >= 0 ? directTypeNode(context,integer(symbolAt(context,found),S_NODE)) : -1;
+                }
+                return -1;
+            }
+            namedField(context >> p<byte>, declaration >> int, node >> int) -> int {
+                if (declaration < 0) return -1;
+                material >> p<byte> <- session(context);
+                token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,node);
+                if (parser_ast.nccParserAst.materialNodeKind(material,node) == AST_EXPR_MEMBER) {
+                    token <- parser_ast.nccParserAst.materialNodeOrigin(material,
+                        parser_ast.nccParserAst.materialNodeNextSibling(material,parser_ast.nccParserAst.materialNodeFirstChild(material,node)));
+                }
+                found >> int <- findSymbol(context,nodeScope(context,declaration),token);
+                return found >= 0 && integer(symbolAt(context,found),S_KIND) == SYM_FIELD ? integer(symbolAt(context,found),S_NODE) : -1;
+            }
+            recordMember(context >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 128 else return -1;
+                base >> int <- parser_ast.nccParserAst.materialNodeFirstChild(session(context),node);
+                return namedField(context,recordType(context,valueType(context,base,depth+1)),node);
+            }
+
+            pointerElement(context >> p<byte>, node >> int, depth >> int) -> int {
+                guard node >= 0 && depth < 256 else return -1;
+                material >> p<byte> <- session(context);
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,node);
+                first >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,node);
+                type >> int <- valueType(context,node,depth+1);
+                if (parser_ast.nccParserAst.materialNodeKind(material,type) == AST_TYPE_POINTER)
+                    return parser_ast.nccParserAst.materialNodeFirstChild(material,type);
+                if (kind == AST_EXPR_UNARY && parser_ast.nccParserAst.materialNodeRoleHash(material,node) == 43) {
+                    return valueType(context,first,depth+1);
+                }
+                if (kind == AST_EXPR_CALL) {
+                    name >> int <- first;
+                    if (parser_ast.nccParserAst.materialNodeKind(material,first) == 74)
+                        name <- parser_ast.nccParserAst.materialNodeFirstChild(material,first);
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,name);
+                    found >> int <- findSymbol(context,nodeScope(context,node),token);
+                    if (found >= 0) {
+                        type >> int <- directTypeNode(context,integer(symbolAt(context,found),S_NODE));
+                        guard type >= 0 && parser_ast.nccParserAst.materialNodeKind(material,type) == AST_TYPE_POINTER else return -1;
+                        return parser_ast.nccParserAst.materialNodeFirstChild(material,type);
+                    }
+                    rawId >> int <- intrinsics.nccIntrinsics.resolve(
+                        parser_ast.nccParserAst.materialTokenData(material,token),
+                        parser_ast.nccParserAst.materialTokenBytes(material,token));
+                    if ((rawId == 6 || rawId == 7) && name != first)
+                        return parser_ast.nccParserAst.materialNodeNextSibling(material,name);
+                    if (rawId == 3 || rawId == 7)
+                        return pointerElement(context,nextExpression(context,first),depth+1);
+                }
+                return -1;
+            }
+
+            inferFunctionArguments(context >> p<byte>, callee >> int, signature >> int) -> int {
+                material >> p<byte> <- session(context);
+                parameter >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,signature);
+                argument >> int <- nextExpression(context,callee); result >> int <- TY_UNKNOWN;
+                while (parameter >= 0) {
+                    following >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material,parameter);
+                    if (following < 0) result <- typeClass(context,parameter);
+                    else {
+                        if (argument < 0) { setError(context,7,callee); return TY_UNKNOWN; }
+                        if (!compatible(typeClass(context,parameter),infer(context,argument))) {
+                            setError(context,5,argument); return TY_UNKNOWN;
+                        }
+                        argument <- nextExpression(context,argument);
+                    }
+                    parameter <- following;
+                }
+                if (argument >= 0) { setError(context,7,callee); return TY_UNKNOWN; }
+                return result;
+            }
+            infer(context >> p<byte>, node >> int) -> int {
+                guard node >= 0 else return TY_UNKNOWN;
+                cached >> int <- nodeType(context, node);
+                if (cached >= 0) return cached;
+                material >> p<byte> <- session(context);
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, node);
+                result >> int <- TY_UNKNOWN;
+                putNodeType(context, node, TY_UNKNOWN);
+                if (kind == AST_EXPR_LITERAL) {
+                    result <- literalType(context, node);
+                } else if (kind == AST_EXPR_NAME) {
+                    if (memberField(context, node)) return TY_UNKNOWN;
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material, node);
+                    if (parser_ast.nccParserAst.materialTokenSame(material,token,"null")) {
+                        putNodeType(context,node,TY_NULL); return TY_NULL;
+                    }
+                    found >> int <- findSymbol(context, nodeScope(context, node), token);
+                    if (found < 0) {
+                        setError(context, 2, node);
+                        return TY_UNKNOWN;
+                    }
+                    result <- integer(symbolAt(context, found), S_TYPE_CLASS);
+                    putInteger(context, C_RESOLVED, integer(context, C_RESOLVED) + 1);
+                } else if (kind == AST_EXPR_CALL) {
+                    callee >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,node);
+                    guard callee >= 0 else return TY_UNKNOWN;
+                    name >> int <- callee;
+                    if (parser_ast.nccParserAst.materialNodeKind(material,callee) == 74)
+                        name <- parser_ast.nccParserAst.materialNodeFirstChild(material,callee);
+                    token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material, name);
+                    found >> int <- findSymbol(context, nodeScope(context, node), token);
+                    rawId >> int <- intrinsics.nccIntrinsics.resolve(
+                        parser_ast.nccParserAst.materialTokenData(material,token),
+                        parser_ast.nccParserAst.materialTokenBytes(material,token));
+                    arguments >> int <- 0;
+                    argument >> int <- nextExpression(context, callee);
+                    while (argument >= 0) {
+                        if (found >= 0 || !intrinsics.nccIntrinsics.isLayoutQuery(rawId)) infer(context, argument);
+                        arguments += 1;
+                        argument <- nextExpression(context, argument);
+                    }
+                    calleeKind >> int <- parser_ast.nccParserAst.materialNodeKind(material,callee);
+                    if (calleeKind == AST_EXPR_MEMBER || calleeKind == AST_EXPR_INDEX || calleeKind == AST_EXPR_CALL) {
+                        signature >> int <- valueType(context,callee,0);
+                        if (parser_ast.nccParserAst.materialNodeKind(material,signature) == AST_TYPE_FUNCTION) {
+                            infer(context,callee);
+                            result <- inferFunctionArguments(context,callee,signature);
+                            putNodeType(context,node,result);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return result;
+                        }
+                    }
+                    if (found < 0 && intrinsics.nccIntrinsics.selected(rawId)) {
+                        if (rawId == 90) {
+                            if (arguments != 7) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            while (argument >= 0) {
+                                actual >> int <- infer(context,argument);
+                                if (actual != TY_INTEGER && !rawAddressClass(actual)) {
+                                    setError(context,5,argument); return TY_UNKNOWN;
+                                }
+                                argument <- nextExpression(context,argument);
+                            }
+                            putNodeType(context,node,TY_INTEGER);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return TY_INTEGER;
+                        }
+                        expected >> int <- intrinsics.nccIntrinsics.isWrite(rawId) || rawId == 20 ? 3 :
+                            (rawId == 3 || rawId == 4 ? 2 : 1);
+                        if (intrinsics.nccIntrinsics.isWrite(rawId)) expected <- 2;
+                        if (intrinsics.nccIntrinsics.isLayoutQuery(rawId))
+                            expected <- (name != callee ? 0 : 1)+(rawId == 26 ? 1 : 0);
+                        if (arguments != expected) { setError(context,7,node); return TY_UNKNOWN; }
+                        if (intrinsics.nccIntrinsics.isLayoutQuery(rawId)) {
+                            if (!binary_layout.nccBinaryLayout.validQuery(material,node,rawId)) {
+                                setError(context,5,node); return TY_UNKNOWN;
+                            }
+                            putNodeType(context,node,TY_INTEGER);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return TY_INTEGER;
+                        }
+                        argument <- nextExpression(context,callee);
+                        firstType >> int <- rawId == 24 ? TY_UNKNOWN : infer(context,argument);
+                        if ((intrinsics.nccIntrinsics.isRead(rawId) || intrinsics.nccIntrinsics.isWrite(rawId) || rawId == 3 || rawId == 4 || rawId == 5 || rawId == 8 || rawId == 20) &&
+                            !rawAddressClass(firstType) &&
+                            !(rawId == 8 && firstType == TY_STRING)) {
+                            setError(context,5,argument); return TY_UNKNOWN;
+                        }
+                        result <- intrinsics.nccIntrinsics.isWrite(rawId) || rawId == 20 ? TY_VOID :
+                            (rawId == 5 ? TY_BOOL : (rawId == 8 ? TY_ADDRESS : (rawId == 4 || rawId == 24 ? TY_INTEGER : TY_POINTER)));
+                        if (rawId == 7) {
+                            if (name != callee) {
+                                target >> int <- typeClass(context,
+                                    parser_ast.nccParserAst.materialNodeNextSibling(material,name));
+                                if (target == TY_STRING || target == TY_FUNCTION ||
+                                    ((firstType == TY_INTEGER || firstType == TY_FLOAT || firstType == TY_BOOL) &&
+                                     (target == TY_FLOAT || target == TY_INTEGER || target == TY_BOOL))) result <- target;
+                            }
+                            if (name == callee) {
+                                owner >> int <- parser_ast.nccParserAst.materialNodeParent(material,node);
+                                if (parser_ast.nccParserAst.materialNodeKind(material,owner) == AST_VALUE_DECL) {
+                                    target >> int <- typeClass(context,directTypeNode(context,owner));
+                                    if (target == TY_STRING || target == TY_FUNCTION || target == TY_FLOAT) result <- target;
+                                }
+                                if (parser_ast.nccParserAst.materialNodeKind(material,owner) == AST_STMT_RETURN) {
+                                    while (owner >= 0 && parser_ast.nccParserAst.materialNodeKind(material,owner) != AST_FUNCTION_DECL) {
+                                        owner <- parser_ast.nccParserAst.materialNodeParent(material,owner);
+                                    }
+                                    target >> int <- typeClass(context,directTypeNode(context,owner));
+                                    if (target == TY_STRING || target == TY_FUNCTION || target == TY_FLOAT) result <- target;
+                                }
+                            }
+                        }
+                        if (intrinsics.nccIntrinsics.isRead(rawId)) {
+                            element >> int <- name != callee ?
+                                parser_ast.nccParserAst.materialNodeNextSibling(material,name) :
+                                pointerElement(context,argument,0);
+                            result <- typeClass(context,element);
+                        }
+                        if (rawId == 3 && infer(context,nextExpression(context,argument)) != TY_INTEGER) {
+                            setError(context,5,node); return TY_UNKNOWN;
+                        }
+                        putNodeType(context,node,result);
+                        putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                        return result;
+                    }
+                    if (found < 0) {
+                        heap >> int <- heap_abi.nccHeapAbi.resolve(
+                            parser_ast.nccParserAst.materialTokenData(material,token),
+                            parser_ast.nccParserAst.materialTokenBytes(material,token));
+                        if (heap > 0) {
+                            if (arguments != heap_abi.nccHeapAbi.arity(heap)) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            index >> int <- 0;
+                            while (argument >= 0) {
+                                actual >> int <- infer(context,argument);
+                                pointer >> bool <- heap_abi.nccHeapAbi.pointerArgument(heap,index);
+                                if ((pointer && !rawAddressClass(actual)) || (!pointer && actual != TY_INTEGER)) {
+                                    setError(context,5,argument); return TY_UNKNOWN;
+                                }
+                                argument <- nextExpression(context,argument); index += 1;
+                            }
+                            result <- heap == 4 ? TY_BOOL : TY_POINTER;
+                            putNodeType(context,node,result);
+                            putInteger(context,C_RUNTIME_CALLS,integer(context,C_RUNTIME_CALLS)+1);
+                            return result;
+                        }
+                        memory >> int <- memory_abi.nccMemoryAbi.resolve(
+                            parser_ast.nccParserAst.materialTokenData(material,token),
+                            parser_ast.nccParserAst.materialTokenBytes(material,token));
+                        if (memory > 0) {
+                            if (arguments != memory_abi.nccMemoryAbi.arity(memory)) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            index >> int <- 0;
+                            while (argument >= 0) {
+                                actual >> int <- infer(context,argument);
+                                pointer >> bool <- memory_abi.nccMemoryAbi.pointerArgument(memory,index);
+                                addressBits >> bool <- actual == TY_ADDRESS &&
+                                    memory_abi.nccMemoryAbi.argumentCode(memory,index) == 8;
+                                if ((pointer && !rawAddressClass(actual)) ||
+                                    (!pointer && actual != TY_INTEGER && !addressBits)) { setError(context,5,argument); return TY_UNKNOWN; }
+                                argument <- nextExpression(context,argument); index += 1;
+                            }
+                            code >> int <- memory_abi.nccMemoryAbi.resultCode(memory);
+                            result <- code == 0 ? TY_VOID : (code == 33 ? TY_BOOL :
+                                (memory_abi.nccMemoryAbi.pointerResult(memory) ? TY_POINTER : TY_INTEGER));
+                            putNodeType(context,node,result);
+                            putInteger(context,C_RUNTIME_CALLS,integer(context,C_RUNTIME_CALLS)+1);
+                            return result;
+                        }
+                        string >> int <- string_abi.nccStringAbi.resolve(
+                            parser_ast.nccParserAst.materialIdentityData(material,token),
+                            parser_ast.nccParserAst.materialIdentityBytes(material,token));
+                        if (string > 0) {
+                            if (arguments != string_abi.nccStringAbi.arity(string)) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            index >> int <- 0;
+                            while (argument >= 0) {
+                                actual >> int <- infer(context,argument);
+                                expected >> int <- string_abi.nccStringAbi.argumentCode(string,index);
+                                if ((expected == 34 && actual != TY_STRING && actual != TY_NULL) ||
+                                      (expected == 20 && actual != TY_INTEGER) ||
+                                      (expected == 35 && actual != TY_CHAR && actual != TY_INTEGER) ||
+                                      (expected == 33 && actual != TY_BOOL) ||
+                                      (expected == 8 && !rawAddressClass(actual))) { setError(context,5,argument); return TY_UNKNOWN; }
+                                argument <- nextExpression(context,argument); index += 1;
+                            }
+                            code >> int <- string_abi.nccStringAbi.resultCode(string);
+                            result <- code == 34 ? TY_STRING : (code == 33 ? TY_BOOL : (code == 35 ? TY_CHAR : TY_INTEGER));
+                            putNodeType(context,node,result);
+                            putInteger(context,C_RUNTIME_CALLS,integer(context,C_RUNTIME_CALLS)+1);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return result;
+                        }
+                        filesystem >> int <- fs_abi.nccFsAbi.resolve(
+                            parser_ast.nccParserAst.materialIdentityData(material,token),
+                            parser_ast.nccParserAst.materialIdentityBytes(material,token));
+                        if (filesystem > 0) {
+                            if (arguments != fs_abi.nccFsAbi.arity(filesystem)) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            index >> int <- 0;
+                            while (argument >= 0) {
+                                actual >> int <- infer(context,argument);
+                                expected >> int <- fs_abi.nccFsAbi.argumentSemanticCode(filesystem,index);
+                                valid >> bool <- expected == 34 ? actual == TY_STRING || actual == TY_NULL :
+                                    (expected == 33 ? actual == TY_BOOL :
+                                    (filesystem == 3 || filesystem == 4 ? actual == TY_FS_BOOL_RESULT :
+                                    (expected == 8 ? rawAddressClass(actual) : actual == TY_INTEGER)));
+                                if (!valid) { setError(context,5,argument); return TY_UNKNOWN; }
+                                argument <- nextExpression(context,argument); index += 1;
+                            }
+                            result <- filesystem == 2 || filesystem == 8 ? TY_FS_BOOL_RESULT :
+                                (fs_abi.nccFsAbi.resultCode(filesystem) == 20 ? TY_INTEGER : TY_BOOL);
+                            putNodeType(context,node,result);
+                            putInteger(context,C_RUNTIME_CALLS,integer(context,C_RUNTIME_CALLS)+1);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return result;
+                        }
+                        timer >> int <- time_abi.nccTimeAbi.resolve(
+                            parser_ast.nccParserAst.materialIdentityData(material,token),
+                            parser_ast.nccParserAst.materialIdentityBytes(material,token));
+                        if (timer > 0) {
+                            if (arguments != time_abi.nccTimeAbi.arity(timer)) { setError(context,7,node); return TY_UNKNOWN; }
+                            argument <- nextExpression(context,callee);
+                            if (timer == 1 && infer(context,argument) != TY_INTEGER) { setError(context,5,argument); return TY_UNKNOWN; }
+                            result <- timer == 1 ? TY_VOID : TY_INTEGER;
+                            putNodeType(context,node,result);
+                            putInteger(context,C_RUNTIME_CALLS,integer(context,C_RUNTIME_CALLS)+1);
+                            putInteger(context,C_CALLS,integer(context,C_CALLS)+1);
+                            return result;
+                        }
+                        signatureStatus >> int <- resolveImportedSignature(context, token, arguments);
+                        if (signatureStatus < 0) {
+                            setError(context, 7, node);
+                            return TY_UNKNOWN;
+                        }
+                        if (signatureStatus > 0) {
+                            result <- runtime_signatures.nccRuntimeSignatures.returnClass(
+                                signatureDescriptor(context));
+                            if (!validateSignatureArguments(context, callee)) return TY_UNKNOWN;
+                            putInteger(context, C_RUNTIME_CALLS,
+                                integer(context, C_RUNTIME_CALLS) + 1);
+                        } else {
+                            requirement >> int <- import_catalog.nccImportCatalog.runtimeRequirement(
+                                material, token);
+                            if (requirement == 0) {
+                                if (runtime_signatures.nccRuntimeSignatures.known(material, token)) {
+                                    setError(context, 20, callee);
+                                } else {
+                                    setError(context, 2, callee);
+                                }
+                                return TY_UNKNOWN;
+                            }
+                            if (!hasRuntimeImport(context, requirement)) {
+                                setError(context, 20, callee);
+                                return TY_UNKNOWN;
+                            }
+                            if (arguments != import_catalog.nccImportCatalog.runtimeArity(
+                                material, token)) {
+                                setError(context, 7, node);
+                                return TY_UNKNOWN;
+                            }
+                            result <- import_catalog.nccImportCatalog.runtimeReturnClass(
+                                material, token);
+                            putInteger(context, C_RUNTIME_CALLS,
+                                integer(context, C_RUNTIME_CALLS) + 1);
+                        }
+                    } else {
+                        row >> p<byte> <- symbolAt(context, found);
+                        if (integer(row, S_KIND) == SYM_FUNCTION &&
+                            arguments != integer(row, S_ARITY)) {
+                            setError(context, 7, node);
+                            return TY_UNKNOWN;
+                        }
+                        result <- integer(row, S_TYPE_CLASS);
+                        if (integer(row,S_KIND) != SYM_FUNCTION && result == TY_FUNCTION) {
+                            signature >> int <- directTypeNode(context,integer(row,S_NODE));
+                            result <- inferFunctionArguments(context,callee,signature);
+                        }
+                    }
+                    putInteger(context, C_CALLS, integer(context, C_CALLS) + 1);
+                } else if (kind == AST_EXPR_UNARY || kind == AST_EXPR_TRY ||
+                    kind == AST_EXPR_PREFIX) {
+                    value >> int <- firstExpression(context, node);
+                    result <- infer(context, value);
+                    if (parser_ast.nccParserAst.materialNodeRoleHash(material,node) == 43) {
+                        result <- TY_POINTER;
+                        if (parser_ast.nccParserAst.materialNodeKind(material,value) == AST_EXPR_NAME) {
+                            token >> int <- parser_ast.nccParserAst.materialNodeOrigin(material,value);
+                            found >> int <- findSymbol(context,nodeScope(context,value),token);
+                            if (found >= 0 && integer(symbolAt(context,found),S_KIND) == SYM_FUNCTION) result <- TY_FUNCTION;
+                        }
+                        if (parser_ast.nccParserAst.materialNodeKind(material,value) == AST_EXPR_MEMBER) {
+                            first >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,value);
+                            end >> int <- parser_ast.nccParserAst.materialNodeEndToken(material,value);
+                            index >> int <- 0;
+                            while (end == first+4 && index < integer(context,C_IMPORT_COUNT)) {
+                                row >> p<byte> <- importAt(context,index);
+                                if (integer(row,I_DOMAIN) == import_catalog.nccImportCatalog.projectDomain() &&
+                                    parser_ast.nccParserAst.materialIdentitiesEqual(material,first,integer(row,I_ITEM_TOKEN))) result <- TY_FUNCTION;
+                                index += 1;
+                            }
+                        }
+                    }
+                    if (parser_ast.nccParserAst.materialNodeRoleHash(material, node) == T_BANG) {
+                        if (result != TY_BOOL) setError(context, 4, node);
+                        result <- TY_BOOL;
+                    }
+                } else if (kind == AST_EXPR_BINARY) {
+                    left >> int <- firstExpression(context, node);
+                    right >> int <- nextExpression(context, left);
+                    leftType >> int <- infer(context, left);
+                    rightType >> int <- infer(context, right);
+                    operation >> int <- parser_ast.nccParserAst.materialNodeRoleHash(material, node);
+                    comparison >> bool <- operation == T_GREATER || operation == T_LESS ||
+                        operation == T_GREATER_EQ || operation == T_LESS_EQ ||
+                        operation == T_EQ_EQ || operation == T_NOT_EQ;
+                    logical >> bool <- operation == T_AND_AND || operation == T_OR_OR;
+                    arithmetic >> bool <- operation == T_PLUS || operation == T_MINUS ||
+                        operation == T_STAR || operation == T_SLASH || operation == T_PERCENT;
+                    bitwise >> bool <- operation == T_PIPE || operation == T_AMP || operation == T_CARET ||
+                        operation == T_SHIFT_LEFT || operation == T_SHIFT_RIGHT || operation == T_SHIFT_LOGICAL;
+                    if (logical) {
+                        if (leftType != TY_BOOL || rightType != TY_BOOL) setError(context, 4, node);
+                        result <- TY_BOOL;
+                    } else if (comparison) {
+                        equality >> bool <- operation == T_EQ_EQ || operation == T_NOT_EQ;
+                        if (!((leftType == TY_FLOAT && rightType == TY_INTEGER) || (rightType == TY_FLOAT && leftType == TY_INTEGER)) && !compatible(leftType, rightType) &&
+                            !(equality && compatible(rightType,leftType))) setError(context, 5, node);
+                        result <- TY_BOOL;
+                    } else if (operation == T_PLUS && leftType == TY_STRING && rightType == TY_STRING) {
+                        result <- TY_STRING;
+                    } else if (bitwise) {
+                        if ((leftType != TY_INTEGER && leftType != TY_ADDRESS) ||
+                            (rightType != TY_INTEGER && rightType != TY_ADDRESS)) setError(context,5,node);
+                        result <- TY_INTEGER;
+                    } else if (arithmetic) {
+                        if ((leftType != TY_INTEGER && leftType != TY_ADDRESS && leftType != TY_FLOAT) ||
+                            (rightType != TY_INTEGER && rightType != TY_ADDRESS && rightType != TY_FLOAT) ||
+                            (operation == T_PERCENT && (leftType == TY_FLOAT || rightType == TY_FLOAT))) {
+                            setError(context, 5, node);
+                        }
+                        result <- leftType == TY_FLOAT || rightType == TY_FLOAT ? TY_FLOAT : leftType;
+                    }
+                } else if (kind == AST_EXPR_TERNARY || kind == AST_EXPR_IF) {
+                    condition >> int <- firstExpression(context, node);
+                    whenTrue >> int <- nextExpression(context, condition);
+                    whenFalse >> int <- nextExpression(context, whenTrue);
+                    if (infer(context, condition) != TY_BOOL) setError(context, 4, condition);
+                    trueType >> int <- infer(context, whenTrue);
+                    falseType >> int <- infer(context, whenFalse);
+                    numericFloat >> bool <- (trueType == TY_FLOAT && falseType == TY_INTEGER) ||
+                        (falseType == TY_FLOAT && trueType == TY_INTEGER);
+                    if (!numericFloat && !compatible(trueType, falseType)) setError(context, 5, node);
+                    result <- numericFloat ? TY_FLOAT : trueType;
+                } else if (kind == AST_EXPR_INDEX || kind == AST_EXPR_MEMBER) {
+                    base >> int <- firstExpression(context, node);
+                    infer(context, base);
+                    result <- TY_UNKNOWN;
+                    if (kind == AST_EXPR_MEMBER) {
+                        selected >> int <- recordMember(context,node,0);
+                        if (selected >= 0) result <- typeClass(context,directTypeNode(context,selected));
+                        else if (recordType(context,valueType(context,base,0)) >= 0) setError(context,2,node);
+                    } else {
+                        subscript >> int <- nextExpression(context,base);
+                        if (infer(context,subscript) != TY_INTEGER) setError(context,5,subscript);
+                        selected >> int <- valueType(context,node,0);
+                        if (selected >= 0) result <- typeClass(context,selected);
+                    }
+                } else if (kind == AST_EXPR_ARRAY) {
+                    child >> int <- firstExpression(context, node);
+                    while (child >= 0) {
+                        infer(context, child);
+                        child <- nextExpression(context, child);
+                    }
+                    result <- TY_ARRAY;
+                } else if (kind == AST_EXPR_STRUCT) {
+                    typeName >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,node);
+                    if (typeName >= 0) {
+                        // Imported identities are checked against the bound layout by project sema.
+                        if (parser_ast.nccParserAst.materialNodeKind(material,typeName) == AST_TYPE_NAME &&
+                            parser_ast.nccParserAst.materialNodeEndToken(material,typeName) >
+                                parser_ast.nccParserAst.materialNodeFirstToken(material,typeName)) {
+                            fieldNode >> int <- nextExpression(context,typeName);
+                            while (fieldNode >= 0) {
+                                infer(context,firstExpression(context,fieldNode));
+                                fieldNode <- nextExpression(context,fieldNode);
+                            }
+                            putNodeType(context,node,TY_NOMINAL); return TY_NOMINAL;
+                        }
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, typeName);
+                        found >> int <- findSymbol(context, nodeScope(context, node), token);
+                        if (found < 0 || integer(symbolAt(context, found), S_KIND) != SYM_TYPE) {
+                            setError(context, 3, typeName);
+                        } else {
+                            declaration >> int <- integer(symbolAt(context,found),S_NODE);
+                            fieldNode >> int <- nextExpression(context,typeName);
+                            while (fieldNode >= 0) {
+                                selected >> int <- namedField(context,declaration,fieldNode);
+                                if (selected < 0) { setError(context,2,fieldNode); break; }
+                                value >> int <- firstExpression(context,fieldNode);
+                                if (!compatible(typeClass(context,directTypeNode(context,selected)),infer(context,value))) {
+                                    setError(context,5,value); break;
+                                }
+                                previous >> int <- nextExpression(context,typeName);
+                                while (previous >= 0 && previous != fieldNode) {
+                                    if (namedField(context,declaration,previous) == selected) setError(context,5,fieldNode);
+                                    previous <- nextExpression(context,previous);
+                                }
+                                fieldNode <- nextExpression(context,fieldNode);
+                            }
+                        }
+                    }
+                    result <- TY_NOMINAL;
+                } else if (kind == AST_EXPR_CLOSURE) {
+                    result <- TY_FUNCTION;
+                }
+                putNodeType(context, node, result);
+                return result;
+            }
+
+            enclosing(context >> p<byte>, node >> int, wanted >> int) -> int {
+                material >> p<byte> <- session(context);
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                while (parent >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, parent) == wanted) {
+                        return parent;
+                    }
+                    parent <- parser_ast.nccParserAst.materialNodeParent(material, parent);
+                }
+                return -1;
+            }
+
+            enclosingLoop(context >> p<byte>, node >> int) -> bool {
+                material >> p<byte> <- session(context);
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                while (parent >= 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, parent);
+                    if (kind == AST_STMT_WHILE || kind == AST_STMT_FOR ||
+                        kind == AST_STMT_FOR_IN || kind == AST_STMT_FOR_RANGE ||
+                        kind == AST_STMT_LOOP || kind == AST_STMT_REPEAT ||
+                        kind == AST_STMT_DO_WHILE) return true;
+                    parent <- parser_ast.nccParserAst.materialNodeParent(material, parent);
+                }
+                return false;
+            }
+
+            checkCondition(context >> p<byte>, node >> int) -> bool {
+                condition >> int <- firstExpression(context, node);
+                if (condition >= 0) {
+                    putInteger(context, C_CONDITIONS, integer(context, C_CONDITIONS) + 1);
+                    if (infer(context, condition) != TY_BOOL) return setError(context, 4, condition);
+                }
+                return true;
+            }
+
+            checkReturn(context >> p<byte>, node >> int) -> bool {
+                function >> int <- enclosing(context, node, AST_FUNCTION_DECL);
+                guard function >= 0 else return setError(context, 6, node);
+                expected >> int <- typeClass(context, directTypeNode(context, function));
+                if ((parser_ast.nccParserAst.materialNodeFlags(session(context), function) & 128) != 0)
+                    expected <- TY_VOID;
+                value >> int <- firstExpression(context, node);
+                actual >> int <- value < 0 ? TY_VOID : infer(context, value);
+                putInteger(context, C_RETURNS, integer(context, C_RETURNS) + 1);
+                if (!compatible(expected, actual)) return setError(context, 6, node);
+                return true;
+            }
+
+            checkArrayLiteral(context >> p<byte>, type >> int, value >> int, depth >> int) -> bool {
+                material >> p<byte> <- session(context);
+                if (depth > 128) return setError(context,5,value);
+                if (parser_ast.nccParserAst.materialNodeKind(material,value) != AST_EXPR_ARRAY)
+                    return compatible(typeClass(context,type),infer(context,value));
+                if (parser_ast.nccParserAst.materialNodeKind(material,type) != AST_TYPE_ARRAY)
+                    return setError(context,5,value);
+                element >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,type);
+                child >> int <- firstExpression(context,value);
+                while (child >= 0) {
+                    if (!checkArrayLiteral(context,element,child,depth+1)) return setError(context,5,child);
+                    child <- nextExpression(context,child);
+                }
+                return true;
+            }
+            checkAssignment(context >> p<byte>, node >> int) -> bool {
+                target >> int <- firstExpression(context, node);
+                value >> int <- nextExpression(context, target);
+                expected >> int <- infer(context, target);
+                actual >> int <- infer(context, value);
+                if (!compatible(expected, actual)) return setError(context, 5, node);
+                return true;
+            }
+
+            validateEntry(context >> p<byte>, node >> int) -> bool {
+                material >> p<byte> <- session(context);
+                targetToken >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, node) + 3;
+                if ((parser_ast.nccParserAst.materialNodeFlags(material, node) & 128) != 0)
+                    targetToken <- parser_ast.nccParserAst.materialNodeFirstToken(material, node);
+                found >> int <- findSymbol(context, nearestScope(context, node), targetToken);
+                putInteger(context, C_ENTRIES, integer(context, C_ENTRIES) + 1);
+                if (found < 0 || integer(symbolAt(context, found), S_KIND) != SYM_FUNCTION) {
+                    return setError(context, 8, node);
+                }
+                return true;
+            }
+
+            analyzeNodes(context >> p<byte>) -> bool {
+                material >> p<byte> <- session(context);
+                count >> int <- integer(context, C_NODE_COUNT);
+                at >> int <- 0;
+                while (at < count && integer(context, C_ERROR) == 0) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    if (kind == AST_VALUE_DECL) {
+                        value >> int <- firstExpression(context, at);
+                        if (value >= 0) {
+                            expected >> int <- typeClass(context, directTypeNode(context, at));
+                            actual >> int <- infer(context, value);
+                            if (!compatible(expected, actual)) setError(context, 5, at);
+                            if (expected == TY_ARRAY && !checkArrayLiteral(context,directTypeNode(context,at),value,0)) setError(context,5,value);
+                        }
+                    } else if (kind == AST_STMT_ASSIGN) {
+                        checkAssignment(context, at);
+                    } else if (kind == AST_STMT_RETURN) {
+                        checkReturn(context, at);
+                    } else if (kind == AST_STMT_IF || kind == AST_STMT_WHILE ||
+                        kind == AST_STMT_GUARD || kind == AST_STMT_UNLESS ||
+                        kind == AST_STMT_DO_WHILE || (kind == AST_STMT_REPEAT &&
+                            parser_ast.nccParserAst.materialNodeRoleHash(material,at) == 0)) {
+                        checkCondition(context, at);
+                    } else if (kind == AST_STMT_BREAK && !enclosingLoop(context, at)) {
+                        setError(context, 9, at);
+                    } else if (kind == AST_STMT_CONTINUE && !enclosingLoop(context, at)) {
+                        setError(context, 10, at);
+                    } else if (kind == AST_ENTRY_REF) {
+                        validateEntry(context, at);
+                    } else if (kind == AST_EXPR_CALL || kind == AST_EXPR_BINARY ||
+                        kind == AST_EXPR_UNARY || kind == AST_EXPR_TERNARY ||
+                        kind == AST_EXPR_IF || kind == AST_EXPR_STRUCT) {
+                        infer(context, at);
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            emitSummary(context >> p<byte>) -> bool {
+                println("{\"schema\":\"nc.bootstrap.sema.core.v1\",");
+                print("\"node_count\":"); print(renderInt(integer(context, C_NODE_COUNT)));
+                print(",\"scopes\":"); print(renderInt(integer(context, C_SCOPE_COUNT)));
+                print(",\"symbols\":"); print(renderInt(integer(context, C_SYMBOL_COUNT)));
+                print(",\"resolved_names\":"); print(renderInt(integer(context, C_RESOLVED)));
+                print(",\"types_checked\":"); print(renderInt(integer(context, C_TYPES)));
+                print(",\"calls_checked\":"); print(renderInt(integer(context, C_CALLS)));
+                print(",\"conditions_checked\":"); print(renderInt(integer(context, C_CONDITIONS)));
+                print(",\"returns_checked\":"); print(renderInt(integer(context, C_RETURNS)));
+                print(",\"entries_checked\":"); print(renderInt(integer(context, C_ENTRIES)));
+                println("}");
+                return true;
+            }
+
+            emitImportSummary(context >> p<byte>) -> bool {
+                println("{\"schema\":\"nc.bootstrap.sema.import-runtime-signatures.v3\",");
+                print("\"import_groups\":"); print(renderInt(integer(context, C_IMPORT_GROUPS)));
+                print(",\"import_items\":"); print(renderInt(integer(context, C_IMPORT_COUNT)));
+                print(",\"runtime_calls\":"); print(renderInt(integer(context, C_RUNTIME_CALLS)));
+                print(",\"modal_checks\":"); print(renderInt(integer(context, C_MODAL_CHECKS)));
+                print(",\"capability_checks\":");
+                print(renderInt(integer(context, C_CAPABILITY_CHECKS)));
+                print(",\"policy_checks\":");
+                print(renderInt(integer(context, C_POLICY_CHECKS)));
+                print(",\"context_checks\":");
+                print(renderInt(integer(context, C_CONTEXT_CHECKS)));
+                print(",\"authority_fingerprint\":");
+                print(renderInt(integer(context, C_AUTHORITY_FINGERPRINT)));
+                print(",\"container_contexts\":");
+                print(renderInt(integer(context, C_CONTAINER_CONTEXTS)));
+                print(",\"signature_checks\":");
+                print(renderInt(integer(context, C_SIGNATURE_CHECKS)));
+                print(",\"signature_fingerprint\":");
+                print(renderInt(integer(context, C_SIGNATURE_FINGERPRINT)));
+                print(",\"catalog_families\":");
+                print(renderInt(runtime_signatures.nccRuntimeSignatures.familyCount()));
+                print(",\"catalog_signatures\":");
+                print(renderInt(runtime_signatures.nccRuntimeSignatures.signatureCount()));
+                print(",\"calls_checked\":"); print(renderInt(integer(context, C_CALLS)));
+                println("}");
+                return true;
+            }
+
+            execute(path >> str, json >> bool, quiet >> bool,
+                expectedScopes >> int, expectedSymbols >> int,
+                expectedResolved >> int, expectedCalls >> int, verify >> bool,
+                importReport >> bool, expectedGroups >> int, expectedItems >> int,
+                expectedRuntimeCalls >> int, expectedModalChecks >> int) -> int {
+                material >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard material != null else {
+                    println("error[E_NCC_BOOTSTRAP_SOURCE_001]: source cannot be read");
+                    return 66;
+                }
+                lexerError >> int <- parser_ast.nccParserAst.materialLexerError(material);
+                if (lexerError != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitDiagnostic(lexerError,
+                        parser_ast.nccParserAst.materialErrorLine(material),
+                        parser_ast.nccParserAst.materialErrorColumn(material), path);
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return code;
+                }
+                parserError >> int <- parser_ast.nccParserAst.materialParserError(material);
+                if (parserError != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitParser(parserError,
+                        parser_ast.nccParserAst.materialErrorLine(material),
+                        parser_ast.nccParserAst.materialErrorColumn(material), path);
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return code;
+                }
+                guard parser_ast.nccParserAst.materialReady(material) else {
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return 70;
+                }
+                contractCode >> int <- type_contract_sema.nccTypeContractSema.analyzeMaterial(material,path,false,true);
+                if (contractCode != 0) { parser_ast.nccParserAst.closeMaterial(material); return contractCode; }
+                if (!verify && !importReport && pattern_async_resource.nccPatternAsyncResource.contains(material)) {
+                    code >> int <- pattern_async_resource.nccPatternAsyncResource.analyzeMaterial(
+                        material, path, json, quiet);
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return code;
+                }
+                if (!verify && !importReport && generic_abi.nccGenericAbi.contains(material)) {
+                    code >> int <- generic_abi.nccGenericAbi.analyzeMaterial(
+                        material, path, json, quiet);
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return code;
+                }
+                context >> p<byte> <- makeContext(material);
+                guard context != null else {
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return 70;
+                }
+                buildScopes(context);
+                validateImports(context);
+                if (integer(context, C_ERROR) == 0) collectSymbols(context);
+                if (integer(context, C_ERROR) == 0) validateTypes(context);
+                if (integer(context, C_ERROR) == 0) analyzeNodes(context);
+                code >> int <- 0;
+                if (integer(context, C_ERROR) != 0) {
+                    failed >> int <- integer(context, C_ERROR_NODE);
+                    failedToken >> int <- integer(context, C_ERROR_TOKEN);
+                    line >> int <- failedToken >= 0 ?
+                        parser_ast.nccParserAst.materialTokenLine(material, failedToken) :
+                        parser_ast.nccParserAst.materialNodeLine(material, failed);
+                    column >> int <- failedToken >= 0 ?
+                        parser_ast.nccParserAst.materialTokenColumn(material, failedToken) :
+                        parser_ast.nccParserAst.materialNodeColumn(material, failed);
+                    code <- diagnostics.nccDiagnostics.emitSema(
+                        integer(context, C_ERROR), line, column, path);
+                } else if (verify && (integer(context, C_SCOPE_COUNT) != expectedScopes ||
+                    integer(context, C_SYMBOL_COUNT) != expectedSymbols ||
+                    integer(context, C_RESOLVED) != expectedResolved ||
+                    integer(context, C_CALLS) != expectedCalls)) {
+                    code <- diagnostics.nccDiagnostics.emitSemaShape(path);
+                } else if (importReport && expectedGroups >= 0 &&
+                    (integer(context, C_IMPORT_GROUPS) != expectedGroups ||
+                    integer(context, C_IMPORT_COUNT) != expectedItems ||
+                    integer(context, C_RUNTIME_CALLS) != expectedRuntimeCalls ||
+                    integer(context, C_MODAL_CHECKS) != expectedModalChecks)) {
+                    code <- diagnostics.nccDiagnostics.emitImportShape(path);
+                } else if (!quiet && importReport) {
+                    emitImportSummary(context);
+                } else if (!quiet) {
+                    emitSummary(context);
+                }
+                releaseContext(context);
+                parser_ast.nccParserAst.closeMaterial(material);
+                return code;
+            }
+
+        public:
+            runtimeOwnerTable(material >> p<byte>) -> p<byte> {
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(material);
+                table >> p<byte> <- cast<byte>(alloc((count + 1) * RUNTIME_OWNER_BYTES));
+                guard table != null else return null;
+                at >> int <- 0;
+                while (at < (count + 1) * RUNTIME_OWNER_BYTES) {
+                    wr<byte>(off(table, at), 0);
+                    at += 1;
+                }
+                context >> p<byte> <- makeContext(material);
+                guard context != null else { free(table); return null; }
+                buildScopes(context);
+                validateImports(context);
+                if (integer(context, C_ERROR) == 0) collectSymbols(context);
+                if (integer(context, C_ERROR) == 0) fillRuntimeOwners(context, table);
+                releaseContext(context);
+                return table;
+            }
+
+            runtimeOwnerData(table >> p<byte>, node >> int) -> p<byte> {
+                guard table != null && node >= 0 else return null;
+                return from<byte>(rd<addr>(off(runtimeOwnerRow(table, node), O_DATA)));
+            }
+
+            runtimeOwnerBytes(table >> p<byte>, node >> int) -> int {
+                guard table != null && node >= 0 else return 0;
+                return integer(runtimeOwnerRow(table, node), O_BYTES);
+            }
+
+            releaseRuntimeOwnerTable(table >> p<byte>) -> bool {
+                if (table != null) free(table);
+                return true;
+            }
+
+            analyzeFile(path >> str, json >> bool, quiet >> bool) -> int {
+                return execute(path, json, quiet, 0, 0, 0, 0, false,
+                    false, 0, 0, 0, 0);
+            }
+
+            checkCore(path >> str, expectedScopes >> int, expectedSymbols >> int,
+                expectedResolved >> int, expectedCalls >> int) -> int {
+                return execute(path, false, true, expectedScopes, expectedSymbols,
+                    expectedResolved, expectedCalls, true, false, 0, 0, 0, 0);
+            }
+
+            analyzeImports(path >> str, json >> bool, quiet >> bool) -> int {
+                return execute(path, json, quiet, 0, 0, 0, 0, false,
+                    true, -1, -1, -1, -1);
+            }
+
+            checkImports(path >> str, expectedGroups >> int, expectedItems >> int,
+                expectedRuntimeCalls >> int, expectedModalChecks >> int) -> int {
+                return execute(path, false, true, 0, 0, 0, 0, false,
+                    true, expectedGroups, expectedItems, expectedRuntimeCalls,
+                    expectedModalChecks);
+            }
+
+            checkAuthority(path >> str, expectedCapabilities >> int,
+                expectedPolicies >> int, expectedContexts >> int,
+                expectedFingerprint >> int, expectedContainers >> int) -> int {
+                material >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard material != null else return 66;
+                context >> p<byte> <- makeContext(material);
+                guard context != null else {
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return 70;
+                }
+                validateImports(context);
+                code >> int <- 0;
+                if (integer(context, C_ERROR) != 0) {
+                    failed >> int <- integer(context, C_ERROR_NODE);
+                    failedToken >> int <- integer(context, C_ERROR_TOKEN);
+                    line >> int <- failedToken >= 0 ?
+                        parser_ast.nccParserAst.materialTokenLine(material, failedToken) :
+                        parser_ast.nccParserAst.materialNodeLine(material, failed);
+                    column >> int <- failedToken >= 0 ?
+                        parser_ast.nccParserAst.materialTokenColumn(material, failedToken) :
+                        parser_ast.nccParserAst.materialNodeColumn(material, failed);
+                    code <- diagnostics.nccDiagnostics.emitSema(
+                        integer(context, C_ERROR), line, column, path);
+                } else if (integer(context, C_CAPABILITY_CHECKS) != expectedCapabilities ||
+                    integer(context, C_POLICY_CHECKS) != expectedPolicies ||
+                    integer(context, C_CONTEXT_CHECKS) != expectedContexts ||
+                    integer(context, C_AUTHORITY_FINGERPRINT) != expectedFingerprint ||
+                    integer(context, C_CONTAINER_CONTEXTS) != expectedContainers) {
+                    code <- diagnostics.nccDiagnostics.emitAuthorityShape(path);
+                }
+                releaseContext(context);
+                parser_ast.nccParserAst.closeMaterial(material);
+                return code;
+            }
+
+    fa:
+        return true;
+}

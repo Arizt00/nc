@@ -1,0 +1,136 @@
+use <text:string>;
+use <project:machine_authority>;
+
+nccNideAuthority {
+    const:
+        FAMILY_SOURCE >> str <- "source";
+        FAMILY_MACHINE >> str <- "machine";
+        FAMILY_BASAL >> str <- "basal";
+        FAMILY_PRIMITIVE >> str <- "primitive";
+        FAMILY_HARDWARE >> str <- "hardware";
+        ROLE_IO >> str <- "ioFunction";
+        ROLE_POINTER >> str <- "pointerFunction";
+        ROLE_CONTROL >> str <- "controlFlow";
+        ROLE_LOOP >> str <- "loopControl";
+        ROLE_COLOR >> str <- "colorFunction";
+        ROLE_IMPORT >> str <- "importKeyword";
+        ROLE_VISIBILITY >> str <- "visibilityKeyword";
+        ROLE_SECTION >> str <- "section";
+        ROLE_TYPE >> str <- "basicType";
+        ROLE_BOOL >> str <- "boolLiteral";
+        ROLE_KERNEL_ADDRESS >> str <- "kernelAddressKeyword";
+        ROLE_KERNEL_MMIO8 >> str <- "kernelMmio8";
+        ROLE_KERNEL_MMIO16 >> str <- "kernelMmio16";
+        ROLE_KERNEL_MMIO32 >> str <- "kernelMmio32";
+        ROLE_KERNEL_MMIO64 >> str <- "kernelMmio64";
+        ROLE_KERNEL_MMIO128 >> str <- "kernelMmio128";
+        ROLE_KERNEL_MMIO256 >> str <- "kernelMmio256";
+        ROLE_KERNEL_MMIO512 >> str <- "kernelMmio512";
+        ROLE_MACHINE_REGISTER >> str <- "machineRegister";
+        ROLE_MACHINE_INSTRUCTION >> str <- "machineInstruction";
+        ROLE_BASAL_ENTITY >> str <- "basalEntity";
+        ROLE_PRIMITIVE_ENTITY >> str <- "primitiveEntity";
+        ROLE_HARDWARE_ENTITY >> str <- "hardwareEntity";
+
+        MACHINE_REGISTERS >> str <- "|rax|rbx|rcx|rdx|rsi|rdi|rsp|rbp|rip|eax|ebx|ecx|edx|esi|edi|esp|ebp|eip|x0|x1|x2|x3|x4|x5|x6|x7|x8|x9|x10|x11|x12|x13|x14|x15|x16|x17|x18|x19|x20|x21|x22|x23|x24|x25|x26|x27|x28|x29|x30|w0|w1|w2|w3|w4|w5|w6|w7|sp|lr|pc|cpsr|spsr|ra|gp|tp|t0|t1|t2|t3|t4|t5|t6|s0|s1|s2|s3|s4|s5|s6|s7|s8|s9|s10|s11|a0|a1|a2|a3|a4|a5|a6|a7|f0|f1|f2|f3|";
+        BASAL_ENTITIES >> str <- "|root|binary|target|const|site|bind|routine|verify|report|seal|identity|version|profile|authority|evidence|lowering|kind|size|align|permissions|symbol|status|emit|require|hash|memory_anchor|evidence_anchor|source_hash|";
+        PRIMITIVE_ENTITIES >> str <- "|allow|deny|read|write|rw|route|stable|valid|line_ready|line_ack|await|barrier|ioaddr|timeout|cycles|capability|operation|port|anchor|slot|pattern|mask|window|signal|bus|state|timing|emit|sample|latch|assert|rupture|bridge|seal|";
+        HARDWARE_ENTITIES >> str <- "|voltage|current|clock|edge|latency|metastability|noise|temperature|power|thermalState|throttleState|cacheState|tlbState|pipelineState|branchPredictorState|reorderState|outOfOrder|powerGate|dmaChannel|interruptLine|watchdog|firmwareRegion|bootRom|biosRegion|uefiHandoff|resetVector|firmwareTable|deviceTree|acpiTable|microcode|isa|protocol|controller|peripheral|phy|lane|channel|registerWindow|mmioWindow|portWindow|physicalEvent|physicalFault|physicalFailure|physicalViolation|";
+
+    stc:
+        classified >> u64 <- 0;
+
+    fn:
+        private:
+            member(catalog >> str, symbol >> str) -> bool {
+                return strContains(catalog, "|" + symbol + "|");
+            }
+
+        public:
+            family(path >> str) -> str {
+                if (strEndsWith(path, ".nm")) return FAMILY_MACHINE;
+                if (strEndsWith(path, ".nb")) return FAMILY_BASAL;
+                if (strEndsWith(path, ".nbb")) return FAMILY_PRIMITIVE;
+                if (strEndsWith(path, ".ncp")) return FAMILY_HARDWARE;
+                if (strEndsWith(path, ".n")) return FAMILY_SOURCE;
+                return "";
+            }
+
+            manual(path >> str) -> bool {
+                current >> str <- family(path);
+                return current == FAMILY_MACHINE || current == FAMILY_BASAL ||
+                    current == FAMILY_PRIMITIVE || current == FAMILY_HARDWARE;
+            }
+
+            completionAllowed(path >> str) -> bool { return !manual(path); }
+
+            roleIn(path >> str, domain >> str, symbol >> str) -> str {
+                classified += 1;
+                current >> str <- family(path);
+                if (current == FAMILY_MACHINE) {
+                    if (member(MACHINE_REGISTERS, symbol)) return ROLE_MACHINE_REGISTER;
+                    if (machine_authority.nccMachineAuthority.supportsAny(symbol)) {
+                        return ROLE_MACHINE_INSTRUCTION;
+                    }
+                    return "";
+                }
+                if (current == FAMILY_BASAL) {
+                    return member(BASAL_ENTITIES, symbol) ? ROLE_BASAL_ENTITY : "";
+                }
+                if (current == FAMILY_PRIMITIVE) {
+                    return member(PRIMITIVE_ENTITIES, symbol) ? ROLE_PRIMITIVE_ENTITY : "";
+                }
+                if (current == FAMILY_HARDWARE) {
+                    return member(HARDWARE_ENTITIES, symbol) ? ROLE_HARDWARE_ENTITY : "";
+                }
+                if (member("|use|import|", symbol)) return ROLE_IMPORT;
+                if (member("|public|internal|private|", symbol)) return ROLE_VISIBILITY;
+                if (member("|stc|type|local|const|fn|fa|", symbol)) return ROLE_SECTION;
+                if (member("|int|u64|byte|bool|str|text|char|ft32|ft64|word|dword|qword|void|addr|", symbol)) {
+                    return ROLE_TYPE;
+                }
+                if (member("|true|false|", symbol)) return ROLE_BOOL;
+                if (member("|print|println|", symbol)) return ROLE_IO;
+                if (member("|p|ptr|rd|wr|off|adr|cast|alloc|realloc|free|map|protect|", symbol)) {
+                    return ROLE_POINTER;
+                }
+                if (member("|if|else|guard|match|return|", symbol)) return ROLE_CONTROL;
+                if (member("|while|for|loop|break|continue|", symbol)) return ROLE_LOOP;
+                if (member("|color|colorBold|bgColor|style|", symbol)) return ROLE_COLOR;
+                kernelSystem >> bool <- domain == "kernel" || domain == "system";
+                if (kernelSystem && symbol == "at") return ROLE_KERNEL_ADDRESS;
+                if (kernelSystem && member("|*8|load8|store8|", symbol)) return ROLE_KERNEL_MMIO8;
+                if (kernelSystem && member("|*16|load16|store16|", symbol)) return ROLE_KERNEL_MMIO16;
+                if (kernelSystem && member("|*32|load32|store32|", symbol)) return ROLE_KERNEL_MMIO32;
+                if (kernelSystem && member("|*64|load64|store64|", symbol)) return ROLE_KERNEL_MMIO64;
+                if (kernelSystem && member("|*128|load128|store128|", symbol)) return ROLE_KERNEL_MMIO128;
+                if (kernelSystem && member("|*256|load256|store256|", symbol)) return ROLE_KERNEL_MMIO256;
+                if (kernelSystem && member("|*512|load512|store512|", symbol)) return ROLE_KERNEL_MMIO512;
+                return "";
+            }
+
+            role(path >> str, symbol >> str) -> str { return roleIn(path, "", symbol); }
+
+            selfTest() -> bool {
+                return family("main.n") == FAMILY_SOURCE && family("entry.nm") == FAMILY_MACHINE &&
+                    family("root.nb") == FAMILY_BASAL && family("core.nbb") == FAMILY_PRIMITIVE &&
+                    family("board.ncp") == FAMILY_HARDWARE &&
+                    role("entry.nm", "endbr64") == ROLE_MACHINE_INSTRUCTION &&
+                    role("entry.nm", "rax") == ROLE_MACHINE_REGISTER &&
+                    role("root.nb", "root") == ROLE_BASAL_ENTITY &&
+                    role("root.nb", "println") == "" &&
+                    role("core.nbb", "barrier") == ROLE_PRIMITIVE_ENTITY &&
+                    role("board.ncp", "mmioWindow") == ROLE_HARDWARE_ENTITY &&
+                    role("main.n", "println") == ROLE_IO && role("main.n", "wr") == ROLE_POINTER &&
+                    roleIn("kernel.n", "kernel", "at") == ROLE_KERNEL_ADDRESS &&
+                    roleIn("kernel.n", "kernel", "*128") == ROLE_KERNEL_MMIO128 &&
+                    roleIn("system.n", "system", "store512") == ROLE_KERNEL_MMIO512 &&
+                    roleIn("main.n", "program", "at") == "" &&
+                    !completionAllowed("entry.nm") && !completionAllowed("root.nb") &&
+                    !completionAllowed("core.nbb") && !completionAllowed("board.ncp") &&
+                    completionAllowed("main.n");
+            }
+
+    fa:
+        return true;
+}

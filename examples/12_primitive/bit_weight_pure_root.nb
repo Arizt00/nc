@@ -1,0 +1,137 @@
+bitWeightPureRoot [@] {
+    stc:
+        strictly machineWidth >> int : 32;
+
+        strictly sampleA >> int : 11;
+        strictly sampleB >> int : -1;
+        strictly sampleC >> int : 0;
+
+        inputAddrA   >> addr : 0x1000;
+        inputAddrB   >> addr : 0x1004;
+        inputAddrC   >> addr : 0x1008;
+
+        outputAddrA1 >> addr : 0x2000;
+        outputAddrA2 >> addr : 0x2004;
+
+        outputAddrB1 >> addr : 0x2008;
+        outputAddrB2 >> addr : 0x200C;
+
+        outputAddrC1 >> addr : 0x2010;
+        outputAddrC2 >> addr : 0x2014;
+
+    binary:
+        wordWidth >> byte : 32;
+        oneMask   >> dword : 0b00000000000000000000000000000001;
+        nullWord  >> dword : 0b00000000000000000000000000000000;
+
+    bind:
+        mem[@inputAddrA]   >> int : @sampleA;
+        mem[@inputAddrB]   >> int : @sampleB;
+        mem[@inputAddrC]   >> int : @sampleC;
+
+    fn:
+        hammingShiftFromMemory(src:addr, dst:addr) -> bool {
+            value >> int : 0;
+            count >> int : 0;
+            bit   >> int : 0;
+
+            raw {
+                value >> int : mem[@src];
+                count >> int : 0;
+
+                while (@value != 0) {
+                    bit   >> int : @value & @oneMask;
+                    count >> int : @count + @bit;
+                    value >> int : @value >>> 1;
+                }
+
+                mem[@dst] >> int : @count;
+            }
+
+            return true;
+        }
+
+        hammingFoldFromMemory(src:addr, dst:addr) -> bool {
+            value >> int : 0;
+            count >> int : 0;
+
+            raw {
+                value >> int : mem[@src];
+                count >> int : 0;
+
+                while (@value != 0) {
+                    value >> int : @value & (@value - 1);
+                    count >> int : @count + 1;
+                }
+
+                mem[@dst] >> int : @count;
+            }
+
+            return true;
+        }
+
+        validateStoredWeight(dst:addr) -> bool {
+            weight >> int : mem[@dst];
+
+            if (@weight < 0) {
+                dev(irregular);
+            }
+
+            if (@weight > @machineWidth) {
+                dev(MemoryOverflow);
+            }
+
+            return true;
+        }
+
+    probe:
+        if (!@fn(hammingShiftFromMemory, @inputAddrA, @outputAddrA1)) { dev(CompilerFault); }
+        if (!@fn(hammingFoldFromMemory,  @inputAddrA, @outputAddrA2)) { dev(CompilerFault); }
+
+        if (!@fn(hammingShiftFromMemory, @inputAddrB, @outputAddrB1)) { dev(CompilerFault); }
+        if (!@fn(hammingFoldFromMemory,  @inputAddrB, @outputAddrB2)) { dev(CompilerFault); }
+
+        if (!@fn(hammingShiftFromMemory, @inputAddrC, @outputAddrC1)) { dev(CompilerFault); }
+        if (!@fn(hammingFoldFromMemory,  @inputAddrC, @outputAddrC2)) { dev(CompilerFault); }
+
+        if (mem[@outputAddrA1] != 3)  { dev(CompilerFault); }
+        if (mem[@outputAddrA2] != 3)  { dev(CompilerFault); }
+
+        if (mem[@outputAddrB1] != 32) { dev(CompilerFault); }
+        if (mem[@outputAddrB2] != 32) { dev(CompilerFault); }
+
+        if (mem[@outputAddrC1] != 0)  { dev(CompilerFault); }
+        if (mem[@outputAddrC2] != 0)  { dev(CompilerFault); }
+
+        if (!@fn(validateStoredWeight, @outputAddrA1)) { dev(irregular); }
+        if (!@fn(validateStoredWeight, @outputAddrA2)) { dev(irregular); }
+        if (!@fn(validateStoredWeight, @outputAddrB1)) { dev(irregular); }
+        if (!@fn(validateStoredWeight, @outputAddrB2)) { dev(irregular); }
+        if (!@fn(validateStoredWeight, @outputAddrC1)) { dev(irregular); }
+        if (!@fn(validateStoredWeight, @outputAddrC2)) { dev(irregular); }
+
+    final:
+        println("bitWeightPureRoot::validated");
+
+        print("11 shift @0x2000 -> ");
+        println(mem[@outputAddrA1]);
+
+        print("11 fold  @0x2004 -> ");
+        println(mem[@outputAddrA2]);
+
+        print("-1 shift @0x2008 -> ");
+        println(mem[@outputAddrB1]);
+
+        print("-1 fold  @0x200C -> ");
+        println(mem[@outputAddrB2]);
+
+        print("0 shift  @0x2010 -> ");
+        println(mem[@outputAddrC1]);
+
+        print("0 fold   @0x2014 -> ");
+        println(mem[@outputAddrC2]);
+
+        return true;
+
+    ref main ->>@fn();
+}

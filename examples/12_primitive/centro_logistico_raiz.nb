@@ -1,0 +1,339 @@
+centroLogisticoRaiz[@] {
+    stc:
+        stockCpu: int;
+        stockGpu: int;
+        stockRam: int;
+
+        pedidosOk: int;
+        pedidosReject: int;
+        alertas: int;
+
+        ingresos: int;
+        coste: int;
+        saldo: int;
+
+        ciclo: int;
+        subtotal: int;
+        buffer: int;
+        checksum: int;
+
+        energia: int;
+        cargaRed: int;
+
+        auditoria: bool;
+        nombreNodo: str;
+        ultimoEstado: str;
+        ultimoPedido: int;
+        ultimoRiesgo: int;
+
+        limiteRiesgo: int;
+        prioridadGlobal: int;
+
+    fn:
+        public reiniciar() -> bool {
+            @stockCpu >> int : 40;
+            @stockGpu >> int : 18;
+            @stockRam >> int : 120;
+
+            @pedidosOk >> int : 0;
+            @pedidosReject >> int : 0;
+            @alertas >> int : 0;
+
+            @ingresos >> int : 0;
+            @coste >> int : 0;
+            @saldo >> int : 0;
+
+            @ciclo >> int : 0;
+            @subtotal >> int : 0;
+            @buffer >> int : 0;
+            @checksum >> int : 0;
+
+            @energia >> int : 100;
+            @cargaRed >> int : 15;
+
+            @auditoria >> bool : true;
+            @nombreNodo >> str : "atlas.root.01";
+            @ultimoEstado >> str : "cold";
+            @ultimoPedido >> int : 0;
+            @ultimoRiesgo >> int : 0;
+
+            @limiteRiesgo >> int : 8;
+            @prioridadGlobal >> int : 5;
+
+            return true;
+        }
+
+        public precioCpu(prioridad: int) -> int {
+            if (@prioridad >= 8) {
+                return 170;
+            }
+
+            if (@prioridad >= 5) {
+                return 150;
+            }
+
+            return 130;
+        }
+
+        public precioGpu(prioridad: int) -> int {
+            if (@prioridad >= 8) {
+                return 420;
+            }
+
+            if (@prioridad >= 5) {
+                return 390;
+            }
+
+            return 350;
+        }
+
+        public precioRam(prioridad: int) -> int {
+            if (@prioridad >= 8) {
+                return 26;
+            }
+
+            if (@prioridad >= 5) {
+                return 22;
+            }
+
+            return 18;
+        }
+
+        public estimarCosto(cpu: int, gpu: int, ram: int, prioridad: int) -> int {
+            @subtotal >> int : 0;
+
+            @ciclo >> int : 0;
+            while (@ciclo < @cpu) {
+                @subtotal >> int : @subtotal + precioCpu(@prioridad);
+                @ciclo >> int : @ciclo + 1;
+            }
+
+            @ciclo >> int : 0;
+            while (@ciclo < @gpu) {
+                @subtotal >> int : @subtotal + precioGpu(@prioridad);
+                @ciclo >> int : @ciclo + 1;
+            }
+
+            @ciclo >> int : 0;
+            while (@ciclo < @ram) {
+                @subtotal >> int : @subtotal + precioRam(@prioridad);
+                @ciclo >> int : @ciclo + 1;
+            }
+
+            return @subtotal;
+        }
+
+        public validarPedido(cpu: int, gpu: int, ram: int, credito: int, riesgo: int) -> bool {
+            if (@cpu < 0) {
+                return false;
+            }
+
+            if (@gpu < 0) {
+                return false;
+            }
+
+            if (@ram < 0) {
+                return false;
+            }
+
+            if (@credito <= 0) {
+                return false;
+            }
+
+            if (@riesgo < 0) {
+                return false;
+            }
+
+            if (@riesgo > @limiteRiesgo) {
+                return false;
+            }
+
+            if (@stockCpu < @cpu) {
+                return false;
+            }
+
+            if (@stockGpu < @gpu) {
+                return false;
+            }
+
+            if (@stockRam < @ram) {
+                return false;
+            }
+
+            @buffer >> int : estimarCosto(@cpu, @gpu, @ram, @riesgo);
+
+            if (@credito < @buffer) {
+                return false;
+            }
+
+            return true;
+        }
+
+        public aplicarPedido(id: int, cpu: int, gpu: int, ram: int, credito: int, riesgo: int) -> int {
+            @ultimoPedido >> int : @id;
+            @ultimoRiesgo >> int : @riesgo;
+            @auditoria >> bool : validarPedido(@cpu, @gpu, @ram, @credito, @riesgo);
+
+            if (@auditoria == false) {
+                @pedidosReject >> int : @pedidosReject + 1;
+                @ultimoEstado >> str : "reject";
+
+                println("pedido.rechazado");
+                println(@id);
+                println(@riesgo);
+
+                return -1;
+            }
+
+            @subtotal >> int : estimarCosto(@cpu, @gpu, @ram, @riesgo);
+
+            @stockCpu >> int : @stockCpu - @cpu;
+            @stockGpu >> int : @stockGpu - @gpu;
+            @stockRam >> int : @stockRam - @ram;
+
+            @pedidosOk >> int : @pedidosOk + 1;
+            @ingresos >> int : @ingresos + @subtotal;
+            @coste >> int : @coste + ((@cpu * 90) + (@gpu * 250) + (@ram * 10));
+            @saldo >> int : @ingresos - @coste;
+
+            @energia >> int : @energia - ((@cpu * 2) + (@gpu * 5) + (@ram / 4));
+            @cargaRed >> int : @cargaRed + (@cpu + @gpu + (@ram / 8));
+
+            if (@riesgo >= 7) {
+                @alertas >> int : @alertas + 1;
+                println("pedido.riesgo.alto");
+                println(@id);
+            }
+
+            if (@energia < 20) {
+                @alertas >> int : @alertas + 1;
+                println("energia.baja");
+                println(@energia);
+            }
+
+            if (@cargaRed > 80) {
+                @alertas >> int : @alertas + 1;
+                println("carga.red.alta");
+                println(@cargaRed);
+            }
+
+            @checksum >> int : (@stockCpu * 3) + (@stockGpu * 5) + (@stockRam * 7) + @pedidosOk + @pedidosReject;
+            @ultimoEstado >> str : "ok";
+
+            print("pedido.ok#");
+            println(@id);
+            print("subtotal=");
+            println(@subtotal);
+            print("checksum=");
+            println(@checksum);
+
+            return @subtotal;
+        }
+
+        public cierreAuditoria() -> bool {
+            if (@stockCpu < 0) {
+                return false;
+            }
+
+            if (@stockGpu < 0) {
+                return false;
+            }
+
+            if (@stockRam < 0) {
+                return false;
+            }
+
+            if (@pedidosOk < 0) {
+                return false;
+            }
+
+            if (@pedidosReject < 0) {
+                return false;
+            }
+
+            if (@saldo != (@ingresos - @coste)) {
+                return false;
+            }
+
+            if (@energia < 0) {
+                return false;
+            }
+
+            if (@alertas > (@pedidosOk + @pedidosReject + 5)) {
+                return false;
+            }
+
+            return true;
+        }
+
+        public resumen() -> int {
+            println();
+            println("centroLogisticoRaiz.resumen");
+            print("nodo=");
+            println(@nombreNodo);
+
+            print("stockCpu=");
+            println(@stockCpu);
+            print("stockGpu=");
+            println(@stockGpu);
+            print("stockRam=");
+            println(@stockRam);
+
+            print("pedidosOk=");
+            println(@pedidosOk);
+            print("pedidosReject=");
+            println(@pedidosReject);
+            print("alertas=");
+            println(@alertas);
+
+            print("ingresos=");
+            println(@ingresos);
+            print("coste=");
+            println(@coste);
+            print("saldo=");
+            println(@saldo);
+
+            print("energia=");
+            println(@energia);
+            print("cargaRed=");
+            println(@cargaRed);
+
+            print("ultimoPedido=");
+            println(@ultimoPedido);
+            print("ultimoRiesgo=");
+            println(@ultimoRiesgo);
+            print("ultimoEstado=");
+            println(@ultimoEstado);
+
+            return @saldo;
+        }
+
+        public boot() -> int {
+            reiniciar();
+
+            println("centroLogisticoRaiz.boot");
+            print("nodo=");
+            println(@nombreNodo);
+
+            aplicarPedido(1001, 3, 1, 12, 2000, 4);
+            aplicarPedido(1002, 2, 2, 16, 2600, 7);
+            aplicarPedido(1003, 8, 4, 40, 900, 9);
+            aplicarPedido(1004, 1, 0, 8, 400, 3);
+            aplicarPedido(1005, 5, 1, 24, 2400, 6);
+
+            @auditoria >> bool : cierreAuditoria();
+
+            if (@auditoria == true) {
+                println("auditoria.ok");
+            } else {
+                println("auditoria.fail");
+            }
+
+            return resumen();
+        }
+
+    ref main ->> @fn(boot);
+
+    fa:
+        return true;
+}

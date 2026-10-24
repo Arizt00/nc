@@ -1,0 +1,50 @@
+nativeWasmStorage68 {
+    type:
+        Packet { public: tag >> int; flags >> byte; }
+        Envelope { public: packet >> Packet; count >> int; }
+    stc:
+        selections >> int <- 0;
+    choose() -> int {
+        selections += 1;
+        return 2;
+    }
+    factorial(n >> int) -> int {
+        if (n <= 1) return 1;
+        return n * factorial(n - 1);
+    }
+    frameIdentity() -> addr {
+        marker >> int <- 7;
+        return adr(&marker);
+    }
+    run() -> int {
+        cells >> array<int, 3> <- [2, 5, 9];
+        p >> p<int> <- off(&cells[0], 1);
+        if (rd(off(p, -1)) != 2) return 1;
+        wr(p, rd(p) + 6);
+        cells[choose()] += 4;
+        if (selections != 1) return 8;
+        if (cells[1] != 11 || cells[2] != 13) return 2;
+        grid >> array<array<int, 2>, 2> <- [[1, 2], [3, 4]];
+        grid[1][0] = 17;
+        if (grid[1][0] != 17 || grid[0][1] != 2) return 3;
+        packet >> Packet <- Packet(tag: 42, flags: 3);
+        packet.tag += 1;
+        envelope >> Envelope <- Envelope(packet: packet, count: 2);
+        if (envelope.packet.tag != 43 || envelope.packet.flags != 3 || envelope.count != 2) return 4;
+        first >> str <- "same";
+        second >> str <- "same";
+        if (first != second || first == "other") return 5;
+        if (first != ("nested" == "nested" ? second : "other")) return 9;
+        unsigned >> u32 <- 0xFFFFFFFF;
+        if (unsigned < 1 || unsigned / 2 != 2147483647 || unsigned >>> 31 != 1) return 6;
+        initial >> addr <- frameIdentity();
+        count >> int <- 0;
+        while (count < 10000) {
+            if (factorial(10) != 3628800 || frameIdentity() != initial) return 7;
+            count += 1;
+        }
+        return 220;
+    }
+    ref main ->> run;
+    fa: return true;
+}

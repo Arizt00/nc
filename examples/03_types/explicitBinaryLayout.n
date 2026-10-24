@@ -1,0 +1,153 @@
+explicitBinaryLayout {
+    type:
+        Header {
+            public:
+                flags >> dword;
+                mode >> dword;
+                code >> byte;
+                tail >> array<byte, 0>;
+            layout:
+                repr(C);
+                packed;
+                align(8);
+                endian(little);
+                bitfield(mode, flags, 1, 3);
+                flexible(tail);
+        }
+
+        Value union {
+            public:
+                word >> dword;
+                wide >> qword;
+            layout:
+                repr(C);
+                endian(little);
+        }
+
+        Wire {
+            public:
+                value >> dword;
+            layout:
+                repr(C);
+                endian(big);
+        }
+
+        CacheLine {
+            public:
+                key >> qword;
+            layout:
+                repr(C);
+                align(16);
+                size(32);
+        }
+
+        Pair {
+            public:
+                left >> word;
+                right >> word;
+            layout:
+                repr(C);
+                endian(little);
+        }
+
+        Frame {
+            public:
+                pair >> Pair;
+                lanes >> array<word, 2>;
+            layout:
+                repr(C);
+                endian(little);
+        }
+
+        Cell {
+            public:
+                mark >> word;
+            layout:
+                repr(C);
+                endian(little);
+        }
+
+        Grid {
+            public:
+                cells >> array<Cell, 2>;
+            layout:
+                repr(C);
+        }
+
+        Matrix {
+            public:
+                values >> array<word, 2, 2>;
+            layout:
+                repr(C);
+                endian(little);
+        }
+
+    stc:
+        header >> Header;
+        value >> Value;
+        wire >> Wire;
+        frame >> Frame;
+        grid >> Grid;
+        matrix >> Matrix;
+
+    fn:
+        run() -> bool {
+            headerSize >> int <- sizeOf(Header);
+            headerAlign >> int <- alignOf(Header);
+            codeOffset >> int <- offsetOf<Header>(code);
+            unionSize >> int <- sizeOf(Value);
+            cacheSize >> int <- sizeOf(CacheLine);
+            layoutOk >> bool <- headerSize == 8 && headerAlign == 8;
+            offsetOk >> bool <- codeOffset == 4 && unionSize == 8 && cacheSize == 32;
+            header.flags <- 240;
+            header.mode <- 5;
+            bitfieldOk >> bool <- header.mode == 5 && header.flags == 250;
+            value.wide <- 4294967298;
+            unionOk >> bool <- value.word == 2;
+            wire.value <- 16909060;
+            endianOk >> bool <- wire.value == 16909060;
+            frame.pair.left <- 513;
+            frame.pair.right <- 1027;
+            frame.lanes <- [7, 11];
+            frame.lanes[1] <- 13;
+            nestedOk >> bool <- frame.pair.left == 513
+                && frame.pair.right == 1027
+                && frame.lanes[0] == 7
+                && frame.lanes[1] == 13;
+            grid.cells[0].mark <- 21;
+            grid.cells[1].mark <- 34;
+            gridOk >> bool <- grid.cells[0].mark == 21
+                && grid.cells[1].mark == 34;
+            matrix.values[0, 0] <- 1;
+            matrix.values[1, 1] <- 4;
+            matrixOk >> bool <- matrix.values[0, 0] == 1
+                && matrix.values[1, 1] == 4;
+            staticAssert(
+                sizeOf(Header) == 8
+                && alignOf(Header) == 8
+                && offsetOf<Header>(code) == 4
+                && sizeOf(Value) == 8
+                && sizeOf(CacheLine) == 32
+                && alignOf(CacheLine) == 16
+                && sizeOf(Frame) == 8
+                && offsetOf<Frame>(lanes) == 4
+                && sizeOf(Grid) == 4
+                && sizeOf(Matrix) == 8,
+                "binary layout contract drift"
+            );
+            return layoutOk
+                && offsetOk
+                && bitfieldOk
+                && unionOk
+                && endianOk
+                && nestedOk
+                && gridOk
+                && matrixOk;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

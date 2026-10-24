@@ -1,0 +1,55 @@
+kernelOperational95 :: kernel {
+    fn:
+        run() -> bool {
+            zero         at 0;
+            frameBase    at 0x100000;
+            virtualPage  at 0x200000;
+            physicalPage at 0x300000;
+            handler      at 0x1000;
+
+            guard frameInit(frameBase, 65536) else return false;
+
+            frame <- frameAlloc(2);
+            guard frame != zero else return false;
+
+            guard pageMap(virtualPage, physicalPage, 3) &&
+                  pageTranslate(virtualPage) == physicalPage &&
+                  pageProtect(virtualPage, 1) else return false;
+
+            guard taskRegister(1, "idle") &&
+                  taskSpawn(2, 8, frame) &&
+                  taskBlock(2) &&
+                  taskWake(2) else return false;
+
+            guard schedulerOpen() &&
+                  schedulerNext() &&
+                  schedulerTick() == 1 &&
+                  schedulerYield() == 1 else return false;
+
+            guard irqRegister(32, handler) &&
+                  irqEnable(32) &&
+                  irqIsEnabled(32) &&
+                  irqDisable(32) &&
+                  irqEoi(32) else return false;
+
+            guard syscallRegister(1, handler) &&
+                  syscallAvailable(1) else return false;
+
+            guard driverRegister(1, virtualPage, 32) &&
+                  driverStart(1) &&
+                  driverStatus(1) == 2 &&
+                  driverStop(1) &&
+                  driverStatus(1) == 3 else return false;
+
+            guard copyFromUser(frame, frame, 0) &&
+                  copyToUser(frame, frame, 0) &&
+                  taskExit(2, 0) else return false;
+
+            return pageUnmap(virtualPage) &&
+                   frameFree(frame, 2) &&
+                   kernelBootInfo() != zero &&
+                   !kernelPanicState();
+        }
+
+    ref main ->> run;
+}

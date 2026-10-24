@@ -1,0 +1,146 @@
+use <data:json>;
+use <io:render>;
+use <process:command, env>;
+use <project:capture_host>;
+
+processCapture {
+    stc:
+        directory >> str;
+        sequence >> int <- 0;
+        busy >> bool <- false;
+
+    fn:
+      public:
+    configured(path >> str) -> bool {
+        if (busy || path == "" || !exists(path)) return false;
+        directory <- path;
+        return true;
+    }
+    quoted(value >> str) -> str {
+        count >> int <- strByteLen(value);
+        if (count > 1073741820) return "";
+        data >> p<byte> <- alloc(count*2+3);
+        if (data == null) return "";
+        wr(data,34);
+        cursor >> int <- 1;
+        at >> int <- 0;
+        windows >> bool <- envHas("WINDIR");
+        while (at < count) {
+            code >> int <- rd(off(cast<byte>(value),at));
+            if (windows && code == 92) {
+                slashes >> int <- 0;
+                while (at < count && rd(off(cast<byte>(value),at)) == 92) { slashes += 1; at += 1; }
+                emitted >> int <- slashes;
+                if (at == count || rd(off(cast<byte>(value),at)) == 34) emitted *= 2;
+                while (emitted > 0) { wr(off(data,cursor),92); cursor += 1; emitted -= 1; }
+                continue;
+            }
+            if (code == 34 || code == 92) { wr(off(data,cursor),92); cursor += 1; }
+            wr(off(data,cursor),code); cursor += 1; at += 1;
+        }
+        wr(off(data,cursor),34); wr(off(data,cursor+1),0);
+        result >> str <- strSubstring(cast<str>(data),0,cursor+1);
+        free(data);
+        return result;
+    }
+    textual(data >> p<byte>, count >> int) -> bool {
+        at >> int <- 0;
+        while (at < count) {
+            first >> int <- rd(off(data,at)); at += 1;
+            if (first == 0) return false;
+            if (first < 128) continue;
+            value >> int <- 0; extra >> int <- 0; minimum >> int <- 0;
+            if (first >= 0xC2 && first <= 0xDF) { value <- first & 31; extra <- 1; minimum <- 128; }
+            else if (first >= 0xE0 && first <= 0xEF) { value <- first & 15; extra <- 2; minimum <- 2048; }
+            else if (first >= 0xF0 && first <= 0xF4) { value <- first & 7; extra <- 3; minimum <- 65536; }
+            else return false;
+            if (at+extra > count) return false;
+            while (extra > 0) {
+                next >> int <- rd(off(data,at)); at += 1; extra -= 1;
+                if (next < 128 || next > 191) return false;
+                value <- (value << 6) | (next & 63);
+            }
+            if (value < minimum || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return false;
+        }
+        return true;
+    }
+    stream(report >> int, key >> str, path >> str, limit >> int) -> bool {
+        total >> int <- fsSize(path);
+        count >> int <- total > limit ? limit : total;
+        if (count < 0) return false;
+        data >> p<byte> <- alloc(count+1);
+        if (data == null) return false;
+        if (fsReadInto(path,data,count) != count) { free(data); return false; }
+        wr(off(data,count),0);
+        isText >> bool <- textual(data,count);
+        jsonObjectSet(report,key,jsonNewString(isText ? cast<str>(data) : ""));
+        jsonObjectSet(report,key+"_encoding",jsonNewString(isText ? "utf-8" : "hex"));
+        jsonObjectSet(report,key+"_bytes",jsonNewInt(count));
+        jsonObjectSet(report,key+"_total",jsonNewInt(total));
+        jsonObjectSet(report,key+"_file",jsonNewString(path));
+        if (!isText) {
+            hex >> p<byte> <- alloc(count*2+1);
+            diagnostic >> p<byte> <- alloc(count+1);
+            if (hex == null || diagnostic == null) { free(hex); free(diagnostic); free(data); return false; }
+            digits >> p<byte> <- cast<byte>("0123456789abcdef");
+            at >> int <- 0;
+            while (at < count) {
+                code >> int <- rd(off(data,at));
+                wr(off(hex,at*2),rd(off(digits,code/16)));
+                wr(off(hex,at*2+1),rd(off(digits,code%16)));
+                wr(off(diagnostic,at),(code >= 32 && code <= 126) || code == 9 || code == 10 || code == 13 ? code : 46);
+                at += 1;
+            }
+            wr(off(hex,count*2),0); wr(off(diagnostic,count),0);
+            jsonObjectSet(report,key+"_hex",jsonNewString(cast<str>(hex)));
+            jsonObjectSet(report,key+"_diagnostic",jsonNewString(cast<str>(diagnostic)));
+            free(hex); free(diagnostic);
+        }
+        free(data);
+        return true;
+    }
+    capture(line >> str, cwd >> str, timeoutMs >> int, limit >> int) -> int {
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"cmd",jsonNewString(line));
+        jsonObjectSet(report,"code",jsonNewInt(-1));
+        jsonObjectSet(report,"ok",jsonNewBool(false));
+        jsonObjectSet(report,"started",jsonNewBool(false));
+        jsonObjectSet(report,"timed_out",jsonNewBool(false));
+        jsonObjectSet(report,"truncated",jsonNewBool(false));
+        jsonObjectSet(report,"capture_ok",jsonNewBool(false));
+        jsonObjectSet(report,"stdout",jsonNewString(""));
+        jsonObjectSet(report,"stderr",jsonNewString(""));
+        if (busy || directory == null || timeoutMs <= 0 || limit <= 0 || limit > 134217728 || sequence == 2147483647) return report;
+        busy <- true; sequence += 1;
+        prefix >> str <- directory+"/"+renderInt(sequence);
+        outputPath >> str <- prefix+".stdout";
+        errorPath >> str <- prefix+".stderr";
+        output >> addr <- capture_host.captureHost78.open(outputPath);
+        error >> addr <- capture_host.captureHost78.open(errorPath);
+        child >> addr <- null;
+        if (output != null && error != null) child <- commandOpen(line,cwd,null,output,error,0);
+        if (output != null) capture_host.captureHost78.close(output);
+        if (error != null) capture_host.captureHost78.close(error);
+        if (child != null && commandStarted(child)) {
+            jsonObjectSet(report,"started",jsonNewBool(true));
+            waited >> int <- commandWait(child,timeoutMs);
+            if (waited != 0) {
+                jsonObjectSet(report,"timed_out",jsonNewBool(waited == 258));
+                commandTerminate(child,15); commandWait(child,3000);
+            }
+            code >> int <- commandExitCode(child);
+            outOk >> bool <- stream(report,"stdout",outputPath,limit);
+            errOk >> bool <- stream(report,"stderr",errorPath,limit);
+            overflow >> bool <- fsSize(outputPath) > limit || fsSize(errorPath) > limit;
+            jsonObjectSet(report,"code",jsonNewInt(code));
+            jsonObjectSet(report,"truncated",jsonNewBool(overflow));
+            jsonObjectSet(report,"capture_ok",jsonNewBool(waited == 0 && outOk && errOk && !overflow));
+            jsonObjectSet(report,"ok",jsonNewBool(waited == 0 && code == 0 && outOk && errOk && !overflow));
+        }
+        if (child != null) commandRelease(child);
+        strRelease(prefix); strRelease(outputPath); strRelease(errorPath);
+        busy <- false;
+        return report;
+    }
+    fa: return true;
+}

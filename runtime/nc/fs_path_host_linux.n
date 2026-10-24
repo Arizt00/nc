@@ -1,0 +1,41 @@
+fsPathHost {
+    fn:
+        public:
+    absolute(path >> str, out >> p<byte>, capacity >> u64) -> int {
+        source >> p<byte> <- cast<byte>(path);
+        bytes >> int <- 0;
+        while (rd(off(source,bytes)) != 0) {
+            if (bytes == 2147483646) return -4;
+            bytes += 1;
+        }
+        cwd >> p<byte> <- null;
+        prefix >> int <- 0;
+        if (rd(source) != 47) {
+            reserve >> int <- 4096;
+            while (true) {
+                cwd = alloc(reserve);
+                if (cwd == null) return -4;
+                if (osLgetcwd(adr(cwd),reserve) != null) break;
+                error >> i32 <- rd<i32>(from<i32>(osL__errno_location()));
+                free(cwd); cwd = null;
+                if (error != 34) return error == 12 ? -4 : -3;
+                if (reserve > 1073741823) return -4;
+                reserve *= 2;
+            }
+            while (rd(off(cwd,prefix)) != 0) prefix += 1;
+        }
+        separator >> int <- prefix > 0 && rd(off(cwd,prefix-1)) != 47 ? 1 : 0;
+        if (prefix > 2147483646-bytes-separator) { free(cwd); return -4; }
+        written >> int <- prefix+separator+bytes;
+        if (capacity <= written) { free(cwd); return -2; }
+        // Materialize first so input/output overlap cannot corrupt the source.
+        text >> p<byte> <- alloc(written+1);
+        if (text == null) { free(cwd); return -4; }
+        if (prefix > 0) cp(text,cwd,prefix);
+        if (separator != 0) wr(off(text,prefix),47);
+        cp(off(text,prefix+separator),source,bytes+1);
+        cp(out,text,written+1);
+        free(text); free(cwd); return written;
+    }
+    fa: return true;
+}

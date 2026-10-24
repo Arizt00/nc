@@ -1,0 +1,193 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, erroroutput>;
+use <project:physical43_common, physical43_unicode, physical43_json, release43_host, release_io, tool_cli, sha256>;
+
+physical43Primitive {
+    const:
+        MAX_SERIAL >> int <- 134217728;
+    fn:
+        private:
+            whitespace(code >> int) -> bool {
+                return (code >= 9 && code <= 13) || (code >= 28 && code <= 32) || code == 133 || code == 160 ||
+                    code == 5760 || (code >= 8192 && code <= 8202) || code == 8232 || code == 8233 || code == 8239 || code == 8287 || code == 12288;
+            }
+            lineEnd(code >> int) -> bool { return code == 10 || code == 13 || code == 11 || code == 12 || (code >= 28 && code <= 30) || code == 133 || code == 8232 || code == 8233; }
+            trimmed(data >> p<byte>, start >> int, end >> int, width >> p<byte>) -> int {
+                first >> int <- start; last >> int <- start; at >> int <- start; leading >> bool <- true;
+                while (at < end) {
+                    code >> int <- physical43_unicode.physical43Unicode.decode(data,end,at,width); count >> int <- rd<int>(width);
+                    if (code < 0) { physical43_common.physical43Common.fail("invalid UTF-8 in primitive evidence"); return 0; }
+                    if (!whitespace(code)) { if (leading) first <- at; leading <- false; last <- at+count; }
+                    at += count;
+                }
+                return physical43_json.physical43Json.newStringBytes(off(data,first),last-first);
+            }
+            kvLine(model >> int, data >> p<byte>, start >> int, end >> int, width >> p<byte>) -> bool {
+                at >> int <- start;
+                while (at < end && rd(off(data,at)) != 61) { at += 1; }
+                if (at == end) return true;
+                key >> int <- trimmed(data,start,at,width); value >> int <- trimmed(data,at+1,end,width);
+                if (key == 0 || value == 0) { if (key > 0) jsonRelease(key); if (value > 0) jsonRelease(value); return false; }
+                physical43_common.physical43Common.put(model,jsonStringView(key,""),value); jsonRelease(key); return true;
+            }
+            literal(model >> int, name >> str, expected >> str) -> bool {
+                child >> int <- jsonObjectBorrow(model,name); if (child == 0) return false;
+                valid >> bool <- jsonKind(child) == 4;
+                if (valid) {
+                    text >> str <- jsonStringView(child,""); size >> int <- physical43_json.physical43Json.rawLength(text);
+                    valid <- size == strByteLen(expected); bytes >> p<byte> <- physical43_json.physical43Json.rawData(text); want >> p<byte> <- cast(expected); at >> int <- 0;
+                    while (valid && at < size) { valid <- rd(off(bytes,at)) == rd(off(want,at)); at += 1; }
+                }
+                jsonRelease(child); return valid;
+            }
+            requiredGate(contract >> int) -> bool {
+                gates >> int <- jsonObjectBorrow(contract,"required_gates"); if (gates == 0) return false;
+                kind >> int <- jsonKind(gates); valid >> bool <- false;
+                if (kind == 6) valid <- jsonObjectHas(gates,"release_primitive_material_gate_tests");
+                else if (kind == 5) valid <- release_io.releaseIo.contains(gates,"release_primitive_material_gate_tests");
+                else if (kind == 4) {
+                    text >> str <- jsonStringView(gates,""); bytes >> p<byte> <- physical43_json.physical43Json.rawData(text); size >> int <- physical43_json.physical43Json.rawLength(text);
+                    want >> str <- "release_primitive_material_gate_tests"; desired >> p<byte> <- cast(want); length >> int <- strByteLen(want); at >> int <- 0;
+                    while (!valid && at+length <= size) { index >> int <- 0; same >> bool <- true; while (same && index < length) { same <- rd(off(bytes,at+index)) == rd(off(desired,index)); index += 1; } valid <- same; at += 1; }
+                }
+                jsonRelease(gates); return valid;
+            }
+            commandStream(captured >> int, name >> str) -> int {
+                child >> int <- jsonObjectBorrow(captured,name); if (child == 0) return jsonNewString("");
+                text >> str <- jsonStringView(child,""); width >> p<byte> <- cast(alloc(sizeOf(int)));
+                if (width == null) { jsonRelease(child); return 0; }
+                value >> int <- trimmed(physical43_json.physical43Json.rawData(text),0,physical43_json.physical43Json.rawLength(text),width);
+                free(width); jsonRelease(child); return value;
+            }
+            tarTool() -> str { return envHas("WINDIR") && physical43_common.physical43Common.fileType("C:/msys64/usr/bin/tar.exe") == 1 ? "C:/msys64/usr/bin/tar.exe" : "tar"; }
+            archiveMember(tar >> str, archive >> str, staging >> str, member >> str, create >> bool) -> bool {
+                words >> int <- jsonNewArray(); physical43_common.physical43Common.push(words,jsonNewString(tar));
+                physical43_common.physical43Common.push(words,jsonNewString("--force-local"));
+                physical43_common.physical43Common.push(words,jsonNewString("--format=pax")); physical43_common.physical43Common.push(words,jsonNewString(create ? "-cf" : "-rf"));
+                physical43_common.physical43Common.push(words,jsonNewString(release_io.releaseIo.forwardPath(archive))); physical43_common.physical43Common.push(words,jsonNewString("--no-recursion"));
+                physical43_common.physical43Common.push(words,jsonNewString("--owner=0")); physical43_common.physical43Common.push(words,jsonNewString("--group=0")); physical43_common.physical43Common.push(words,jsonNewString("--numeric-owner"));
+                mode >> int <- physical43_common.physical43Common.fileType(staging+"/"+member) == 2 ? 511 : release43_host.release43Host.mode(staging+"/"+member);
+                physical43_common.physical43Common.push(words,jsonNewString(mode == 511 ? "--mode=0777" : (mode == 292 ? "--mode=0444" : "--mode=0666")));
+                physical43_common.physical43Common.push(words,jsonNewString("-C")); physical43_common.physical43Common.push(words,jsonNewString(release_io.releaseIo.forwardPath(staging))); physical43_common.physical43Common.push(words,jsonNewString(member));
+                row >> int <- physical43_common.physical43Common.command(words,staging,300000); jsonRelease(words); valid >> bool <- physical43_common.physical43Common.succeeded(row);
+                if (!valid) physical43_common.physical43Common.fail("primitive tar packaging failed: "+physical43_common.physical43Common.field(row,"stderr")); jsonRelease(row); return valid;
+            }
+            appendMembers(tar >> str, archive >> str, staging >> str, member >> str, depth >> int) -> bool {
+                if (depth > 64) return physical43_common.physical43Common.fail("primitive archive directory nesting exceeds limit");
+                names >> int <- physical43_common.physical43Common.names(staging+"/"+member); if (names == 0) return false; valid >> bool <- true; at >> int <- 0;
+                while (valid && at < jsonArrayLen(names)) {
+                    child >> int <- jsonArrayBorrow(names,at); name >> str <- member+"/"+jsonStringView(child,"");
+                    valid <- archiveMember(tar,archive,staging,name,false);
+                    if (valid && physical43_common.physical43Common.fileType(staging+"/"+name) == 2 && !release43_host.release43Host.link(staging+"/"+name)) valid <- appendMembers(tar,archive,staging,name,depth+1);
+                    jsonRelease(child); at += 1;
+                }
+                jsonRelease(names); return valid;
+            }
+            buildPackage(staging >> str, path >> str) -> bool {
+                tar >> str <- tarTool(); row >> int <- 0; words >> int <- jsonNewArray(); valid >> bool <- false;
+                if (envHas("WINDIR")) {
+                    // Python's Windows stat supplies uid/gid=0, blank names and 0666/0444 files.
+                    plain >> str <- path+".tar"; valid <- archiveMember(tar,plain,staging,"primitive-material-v2.0.0",true);
+                    if (valid) valid <- appendMembers(tar,plain,staging,"primitive-material-v2.0.0",0);
+                    if (!valid) { jsonRelease(words); return false; }
+                    // gzip the existing tar without re-reading/re-encoding its headers.
+                    jsonRelease(words); words <- jsonParse("[\"C:/msys64/usr/bin/gzip.exe\",\"-f\",\"--\"]"); physical43_common.physical43Common.push(words,jsonNewString(release_io.releaseIo.forwardPath(plain)));
+                    row <- physical43_common.physical43Common.command(words,staging,300000); valid <- physical43_common.physical43Common.succeeded(row);
+                    if (valid) valid <- physical43_common.physical43Common.copy(plain+".gz",path);
+                    physical43_common.physical43Common.deleteFile(plain+".gz"); strRelease(plain);
+                } else {
+                    physical43_common.physical43Common.push(words,jsonNewString(tar)); physical43_common.physical43Common.push(words,jsonNewString("--format=pax")); physical43_common.physical43Common.push(words,jsonNewString("--sort=name"));
+                    physical43_common.physical43Common.push(words,jsonNewString("--force-local"));
+                    physical43_common.physical43Common.push(words,jsonNewString("-czf")); physical43_common.physical43Common.push(words,jsonNewString(path)); physical43_common.physical43Common.push(words,jsonNewString("-C")); physical43_common.physical43Common.push(words,jsonNewString(staging)); physical43_common.physical43Common.push(words,jsonNewString("primitive-material-v2.0.0"));
+                    row <- physical43_common.physical43Common.command(words,staging,300000); valid <- physical43_common.physical43Common.succeeded(row);
+                }
+                if (!valid) physical43_common.physical43Common.fail("primitive tar packaging failed: "+physical43_common.physical43Common.field(row,"stderr")); jsonRelease(row); jsonRelease(words); return valid;
+            }
+        public:
+            kv(path >> str) -> int {
+                amount >> i64 <- physical43_common.physical43Common.fileSize(path); if (amount < 0 || amount > MAX_SERIAL) { physical43_common.physical43Common.fail("cannot read primitive evidence: "+path); return 0; }
+                size >> int <- amount; data >> p<byte> <- cast(alloc(size+1)); width >> p<byte> <- cast(alloc(sizeOf(int))); if (data == null || width == null) { free(data); free(width); return 0; }
+                if (physical43_common.physical43Common.readBytes(path,data,size) != size) { free(data); free(width); return 0; }
+                result >> int <- jsonNewObject(); at >> int <- 0; start >> int <- 0; valid >> bool <- true;
+                while (at < size && valid) {
+                    code >> int <- physical43_unicode.physical43Unicode.decode(data,size,at,width); count >> int <- rd<int>(width);
+                    if (code < 0) { physical43_common.physical43Common.fail("invalid UTF-8 in primitive evidence"); valid <- false; break; }
+                    if (lineEnd(code)) {
+                        valid <- kvLine(result,data,start,at,width);
+                        if (code == 13 && at+count < size && rd(off(data,at+count)) == 10) count += 1;
+                        start <- at+count;
+                    }
+                    at += count;
+                }
+                if (valid) valid <- kvLine(result,data,start,size,width); free(width); free(data);
+                if (!valid) { jsonRelease(result); return 0; } return result;
+            }
+            serialAlive(path >> str) -> bool {
+                wideSize >> i64 <- physical43_common.physical43Common.fileSize(path); if (wideSize < 0 || wideSize > MAX_SERIAL) return false; size >> int <- wideSize;
+                data >> p<byte> <- cast(alloc(size+1)); guard data != null else return false;
+                if (physical43_common.physical43Common.readBytes(path,data,size) != size) { free(data); return false; }
+                normalized >> p<byte> <- cast(alloc(size+1)); guard normalized != null else { free(data); return false; }
+                at >> int <- 0; count >> int <- 0; width >> int <- 1;
+                widthData >> p<byte> <- cast(alloc(sizeOf(int))); guard widthData != null else { free(normalized); free(data); return false; }
+                while (at < size) {
+                    code >> int <- physical43_unicode.physical43Unicode.decode(data,size,at,widthData); width <- rd<int>(widthData);
+                    if (physical43_unicode.physical43Unicode.alnum(code)) { cp(off(normalized,count),off(data,at),width); count += width; }
+                    at += width;
+                }
+                wr(off(normalized,count),0); value >> str <- cast(normalized); result >> bool <- strContains(value,"nCprimitivealive"); free(widthData); free(normalized); free(data); return result;
+            }
+            fields(evidence >> int, log >> str) -> bool {
+                if (evidence == 0) return false;
+                return literal(evidence,"primitive-image-size","512") && literal(evidence,"primitive-boot-signature","55aa") && literal(evidence,"primitive-opcodes","ba,ee,ec,a8,f4") && literal(evidence,"primitive-elf-magic","7f454c46") && serialAlive(log);
+            }
+            runCommand(words >> int, root >> str) -> int {
+                captured >> int <- physical43_common.physical43Common.command(words,root,1800000); row >> int <- jsonNewObject();
+                commandText >> str <- ""; at >> int <- 0; while (at < jsonArrayLen(words)) { item >> int <- jsonArrayBorrow(words,at); commandText <- commandText+(at == 0 ? "" : " ")+jsonStringView(item,""); jsonRelease(item); at += 1; }
+                physical43_common.physical43Common.put(row,"cmd",jsonNewString(commandText)); physical43_common.physical43Common.put(row,"code",jsonObjectBorrow(captured,"code")); physical43_common.physical43Common.put(row,"ok",jsonNewBool(physical43_common.physical43Common.succeeded(captured))); physical43_common.physical43Common.put(row,"stdout",commandStream(captured,"stdout")); physical43_common.physical43Common.put(row,"stderr",commandStream(captured,"stderr")); jsonRelease(captured); return row;
+            }
+            verify(root >> str) -> int {
+                checks >> int <- jsonParse("{\"artifacts_present\":false,\"contract_consistent\":false,\"qemu_dependency_present\":false,\"qemu_smoke_passed\":false,\"evidence_fields_valid\":false,\"packaging_layout_ok\":false,\"checksums_written\":false,\"report_written\":false}"); commands >> int <- jsonNewArray();
+                required >> int <- jsonParse("[\"docs/spec/release/v2_0_0_primitive_release_evidence_spec.md\",\"docs/spec/release/v2_0_0_primitive_release_evidence_compatibility_spec.md\",\"docs/spec/release/v2_0_0_primitive_release_evidence_contract.json\",\"docs/status/STATUS_PRIMITIVE_release_evidence_v2_0_0.md\",\"tools/ncc/nc/src/verification/physical43_primitive.n\",\"tools/release/qa_primitive_release_evidence_v2_0_0.sh\",\"tools/scripts/run_primitive_qemu_smoke.sh\",\"targets/x86_64-unknown-none.nctarget\",\"link/x86_64_baremetal.ld\",\"examples/primitive/boot_serial_hello.ncp\"]"); valid >> bool <- true; at >> int <- 0;
+                while (at < jsonArrayLen(required)) { item >> int <- jsonArrayBorrow(required,at); rel >> str <- jsonStringView(item,""); path >> str <- root+"/"+rel; if (physical43_common.physical43Common.fileType(path) == 0 && strStartsWith(rel,"examples/")) path <- root+"/_archive/old_examples/"+strSubstring(rel,9,strByteLen(rel)-9); valid <- physical43_common.physical43Common.fileType(path) == 1 && physical43_common.physical43Common.fileSize(path) > 0 && valid; jsonRelease(item); at += 1; }
+                jsonRelease(required); physical43_common.physical43Common.put(checks,"artifacts_present",jsonNewBool(valid)); if (!valid) { physical43_common.physical43Common.fail("primitive release evidence artifacts missing"); return 0; }
+                contract >> int <- physical43_common.physical43Common.read(root+"/docs/spec/release/v2_0_0_primitive_release_evidence_contract.json",false);
+                if (contract == 0) { physical43_common.physical43Common.fail("invalid primitive release contract JSON"); return 0; }
+                if (jsonKind(contract) != 6) { jsonRelease(contract); physical43_common.physical43Common.fail("primitive release contract must be an object"); return 0; }
+                valid <- literal(contract,"schema","nc.primitive.release.evidence.contract.v1") && literal(contract,"version","2.0.0") && literal(contract,"state","frozen") && requiredGate(contract); jsonRelease(contract); physical43_common.physical43Common.put(checks,"contract_consistent",jsonNewBool(valid));
+                bash >> str <- envHas("WINDIR") && physical43_common.physical43Common.fileType("C:/msys64/usr/bin/bash.exe") == 1 ? "C:/msys64/usr/bin/bash.exe" : "bash";
+                words >> int <- jsonParse("[\"-lc\",\"command -v qemu-system-x86_64 >/dev/null 2>&1\"]"); jsonArrayInsert(words,0,jsonNewString(bash)); row >> int <- runCommand(words,root); jsonRelease(words); dep >> bool <- physical43_common.physical43Common.boolAt(row,"/ok"); physical43_common.physical43Common.push(commands,row);
+                words <- jsonParse("[\"tools/scripts/run_primitive_qemu_smoke.sh\"]"); jsonArrayInsert(words,0,jsonNewString(bash)); row <- runCommand(words,root); jsonRelease(words); smoke >> bool <- physical43_common.physical43Common.boolAt(row,"/ok"); physical43_common.physical43Common.push(commands,row);
+                physical43_common.physical43Common.put(checks,"qemu_dependency_present",jsonNewBool(dep || smoke)); physical43_common.physical43Common.put(checks,"qemu_smoke_passed",jsonNewBool(smoke));
+                smokeRoot >> str <- root+"/var/primitive/qemu-smoke"; evidence >> int <- 0;
+                if (physical43_common.physical43Common.fileType(smokeRoot+"/material_evidence.txt") != 0) { evidence <- kv(smokeRoot+"/material_evidence.txt"); if (evidence == 0) return 0; }
+                valid <- physical43_common.physical43Common.fileType(smokeRoot+"/material_evidence.txt") == 1 && physical43_common.physical43Common.fileType(smokeRoot+"/qemu_serial.log") == 1 && fields(evidence,smokeRoot+"/qemu_serial.log"); physical43_common.physical43Common.put(checks,"evidence_fields_valid",jsonNewBool(valid));
+                dist >> str <- root+"/var/releases/v2_0_0/primitive_material_dist"; staging >> str <- dist+"/staging/primitive-material-v2.0.0"; physical43_common.physical43Common.directories(staging); physical43_common.physical43Common.directories(dist+"/packages"); physical43_common.physical43Common.directories(dist+"/integrity"); physical43_common.physical43Common.directories(dist+"/manifests");
+                files >> int <- jsonParse("[\"boot_serial_hello.sov\",\"boot_serial_hello.elf\",\"material_evidence.txt\",\"qemu_serial.log\",\"x86_64-unknown-none.nctarget\",\"x86_64_baremetal.ld\"]"); at <- 0;
+                while (at < 6) { item >> int <- jsonArrayBorrow(files,at); name >> str <- jsonStringView(item,""); src >> str <- at < 4 ? smokeRoot+"/"+name : root+(at == 4 ? "/targets/" : "/link/")+name; if (!physical43_common.physical43Common.copy(src,staging+"/"+name)) { physical43_common.physical43Common.fail("cannot copy primitive artifact: "+src); return 0; } jsonRelease(item); at += 1; }
+                package >> str <- dist+"/packages/primitive-material-x86_64-unknown-none-v2.0.0.tar.gz";
+                if (!buildPackage(dist+"/staging",package)) return 0;
+                manifest >> int <- jsonParse("{\"schema\":\"nc.primitive.release.manifest.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"target\":\"x86_64-unknown-none\",\"profile\":\"primitive\",\"artifacts\":{\"boot_image\":\"staging/primitive-material-v2.0.0/boot_serial_hello.sov\",\"elf\":\"staging/primitive-material-v2.0.0/boot_serial_hello.elf\",\"evidence\":\"staging/primitive-material-v2.0.0/material_evidence.txt\",\"qemu_log\":\"staging/primitive-material-v2.0.0/qemu_serial.log\",\"package\":\"packages/primitive-material-x86_64-unknown-none-v2.0.0.tar.gz\"}}");
+                if (!physical43_common.physical43Common.save(dist+"/manifests/primitive-release-manifest.json",manifest)) return 0; jsonRelease(manifest);
+                sumNames >> int <- jsonParse("[\"packages/primitive-material-x86_64-unknown-none-v2.0.0.tar.gz\",\"staging/primitive-material-v2.0.0/boot_serial_hello.elf\",\"staging/primitive-material-v2.0.0/boot_serial_hello.sov\",\"staging/primitive-material-v2.0.0/material_evidence.txt\",\"staging/primitive-material-v2.0.0/qemu_serial.log\"]"); sums >> str <- ""; at <- 0;
+                while (at < 5) { item >> int <- jsonArrayBorrow(sumNames,at); name >> str <- jsonStringView(item,""); hash >> str <- physical43_common.physical43Common.fileHash(dist+"/"+name); if (!physical43_common.physical43Common.hex(hash,64,64)) return 0; sums <- sums+hash+"  "+name+"\n"; jsonRelease(item); at += 1; }
+                valid <- physical43_common.physical43Common.write(dist+"/integrity/SHA256SUMS",sums) && physical43_common.physical43Common.fileSize(package) > 0 && physical43_common.physical43Common.fileSize(dist+"/manifests/primitive-release-manifest.json") > 0 && physical43_common.physical43Common.fileSize(dist+"/integrity/SHA256SUMS") > 0;
+                physical43_common.physical43Common.put(checks,"packaging_layout_ok",jsonNewBool(valid)); physical43_common.physical43Common.put(checks,"checksums_written",jsonNewBool(valid));
+                report >> int <- jsonParse("{\"schema\":\"nc.primitive.release.evidence.report.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"status\":\"error\"}"); physical43_common.physical43Common.put(report,"generated_at",jsonNewString(release_io.releaseIo.utc(timestamp()))); jsonObjectSet(report,"checks",checks); physical43_common.physical43Common.put(report,"commands",commands);
+                if (evidence == 0) physical43_common.physical43Common.put(report,"qemu_mode",jsonNewString("unknown"));
+                else if (jsonObjectHas(evidence,"qemu-mode")) physical43_common.physical43Common.put(report,"qemu_mode",jsonObjectBorrow(evidence,"qemu-mode"));
+                else physical43_common.physical43Common.put(report,"qemu_mode",jsonNewString("native-qemu"));
+                physical43_common.physical43Common.put(report,"dist_root",jsonNewString(physical43_common.physical43Common.nativePath(dist)));
+                reportPath >> str <- root+"/docs/status/PRIMITIVE_release_evidence_report_v2_0_0.json"; if (!physical43_common.physical43Common.save(reportPath,report)) return 0;
+                physical43_common.physical43Common.put(checks,"report_written",jsonNewBool(true)); jsonObjectSet(report,"checks",checks); physical43_common.physical43Common.put(report,"status",jsonNewString(release_io.releaseIo.allTrue(checks) ? "ok" : "error")); if (!physical43_common.physical43Common.save(reportPath,report)) return 0;
+                jsonRelease(checks); jsonRelease(evidence); jsonRelease(files); jsonRelease(sumNames); return report;
+            }
+            execute(arguments >> addr) -> int {
+                if (physical43_common.physical43Common.help(arguments)) { println("primitive-release-evidence [--repo REPO]"); return 0; }
+                options >> int <- physical43_common.physical43Common.parse(arguments,2,"|--repo|","",""); if (options == 0) { eprintln("invalid primitive evidence options"); return 2; }
+                root >> str <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--repo",".")); jsonRelease(options); report >> int <- verify(root);
+                if (report == 0) { eprintln(physical43_common.physical43Common.diagnostic()); return 1; }
+                valid >> bool <- physical43_common.physical43Common.field(report,"status") == "ok"; println("OK: primitive release evidence report "+root+"/docs/status/PRIMITIVE_release_evidence_report_v2_0_0.json"); jsonRelease(report); return valid ? 0 : 1;
+            }
+    fa: return true;
+}

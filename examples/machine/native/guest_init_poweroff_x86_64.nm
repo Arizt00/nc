@@ -1,0 +1,343 @@
+guestInitPoweroffX86_64[@machine] {
+    target:
+        arch: x86_64;
+        abi: sysv64;
+        object: elf64;
+        endian: little;
+        pointerWidth: 64;
+        profile: userland;
+
+    symbol:
+        guestInit:
+            section: .text;
+            binding: global;
+            type: routine;
+
+    entry:
+        guestInit;
+
+    proc:
+        guestInit:
+
+    instr:
+        mov rax, 83;
+        lea rdi, [rel dev_dir];
+        mov rsi, 0x1ed;
+        syscall;
+
+        mov rax, 165;
+        lea rdi, [rel devtmpfs];
+        lea rsi, [rel dev_dir];
+        lea rdx, [rel devtmpfs];
+        xor r10, r10;
+        xor r8, r8;
+        syscall;
+
+        mov r15, 0xffffffffffffffff;
+        mov rbx, 0xffffffffffffffff;
+        mov rax, 2;
+        lea rdi, [rel module_virtio_mmio];
+        xor rsi, rsi;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        js load_virtio_blk;
+        mov r14, rax;
+        mov rdi, rax;
+        mov rax, 313;
+        lea rsi, [rel empty_string];
+        xor rdx, rdx;
+        syscall;
+        mov r15, rax;
+        mov rax, 3;
+        mov rdi, r14;
+        syscall;
+
+        label load_virtio_blk;
+        mov rax, 2;
+        lea rdi, [rel module_virtio_blk];
+        xor rsi, rsi;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        js open_console;
+        mov r14, rax;
+        mov rdi, rax;
+        mov rax, 313;
+        lea rsi, [rel empty_string];
+        xor rdx, rdx;
+        syscall;
+        mov rbx, rax;
+        mov rax, 3;
+        mov rdi, r14;
+        syscall;
+
+        label open_console;
+        mov rax, 2;
+        lea rdi, [rel dev_serial];
+        mov rsi, 0x902;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        jns console_opened;
+
+        mov rax, 2;
+        lea rdi, [rel dev_console];
+        mov rsi, 2;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        js write_marker;
+
+        label console_opened;
+        mov r12, rax;
+
+        mov rax, 33;
+        mov rdi, r12;
+        mov rsi, 1;
+        syscall;
+        mov rax, 33;
+        mov rdi, r12;
+        mov rsi, 2;
+        syscall;
+
+        label write_marker;
+        test r15, r15;
+        js report_mmio_error;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel mmio_load_ok];
+        mov rdx, 17;
+        syscall;
+        jmp report_blk_status;
+
+        label report_mmio_error;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel mmio_load_error];
+        mov rdx, 18;
+        syscall;
+
+        label report_blk_status;
+        test rbx, rbx;
+        js report_blk_error;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel blk_load_ok];
+        mov rdx, 16;
+        syscall;
+        jmp report_guest_marker;
+
+        label report_blk_error;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel blk_load_error];
+        mov rdx, 17;
+        syscall;
+
+        label report_guest_marker;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel message];
+        mov rdx, 18;
+        syscall;
+
+        mov rax, 2;
+        lea rdi, [rel dev_kmsg];
+        mov rsi, 0x801;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        js read_disk_without_kmsg;
+        mov r13, rax;
+        mov rdi, rax;
+        mov rax, 1;
+        lea rsi, [rel message];
+        mov rdx, 18;
+        syscall;
+        test r15, r15;
+        js kmsg_mmio_error;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel mmio_load_ok];
+        mov rdx, 17;
+        syscall;
+        jmp kmsg_blk_status;
+
+        label kmsg_mmio_error;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel mmio_load_error];
+        mov rdx, 18;
+        syscall;
+
+        label kmsg_blk_status;
+        test rbx, rbx;
+        js kmsg_blk_error;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel blk_load_ok];
+        mov rdx, 16;
+        syscall;
+        jmp read_disk;
+
+        label kmsg_blk_error;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel blk_load_error];
+        mov rdx, 17;
+        syscall;
+        jmp read_disk;
+
+        label read_disk_without_kmsg;
+        xor r13, r13;
+
+        label read_disk;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel disk_read_begin];
+        mov rdx, 20;
+        syscall;
+        test r13, r13;
+        jz open_disk;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel disk_read_begin];
+        mov rdx, 20;
+        syscall;
+        label open_disk;
+        mov rax, 2;
+        lea rdi, [rel dev_disk];
+        xor rsi, rsi;
+        xor rdx, rdx;
+        syscall;
+        test rax, rax;
+        js sync_guest;
+        mov rdi, rax;
+        xor rax, rax;
+        lea rsi, [rel disk_buffer];
+        mov rdx, 19;
+        syscall;
+        mov r14, rax;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel disk_read_done];
+        mov rdx, 19;
+        syscall;
+        test r13, r13;
+        jz test_disk_read;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel disk_read_done];
+        mov rdx, 19;
+        syscall;
+        label test_disk_read;
+        mov rax, r14;
+        test rax, rax;
+        jle sync_guest;
+        mov rdx, rax;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel disk_buffer];
+        syscall;
+        test r13, r13;
+        jz sync_guest;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel disk_buffer];
+        mov rdx, 19;
+        syscall;
+
+        label sync_guest;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel sync_begin];
+        mov rdx, 15;
+        syscall;
+        test r13, r13;
+        jz call_sync;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel sync_begin];
+        mov rdx, 15;
+        syscall;
+        label call_sync;
+        mov rax, 162;
+        syscall;
+        mov rax, 1;
+        mov rdi, 1;
+        lea rsi, [rel sync_done];
+        mov rdx, 14;
+        syscall;
+        test r13, r13;
+        jz poweroff_guest;
+        mov rax, 1;
+        mov rdi, r13;
+        lea rsi, [rel sync_done];
+        mov rdx, 14;
+        syscall;
+
+        label poweroff_guest;
+        mov rax, 169;
+        mov rdi, 0xfee1dead;
+        mov rsi, 0x28121969;
+        mov rdx, 0x4321fedc;
+        xor r10, r10;
+        syscall;
+
+        label halted;
+        mov rax, 34;
+        syscall;
+        jmp halted;
+
+    data:
+        dev_dir:
+            asciz "/dev";
+        dev_serial:
+            asciz "/dev/ttyS0";
+        dev_console:
+            asciz "/dev/console";
+        dev_kmsg:
+            asciz "/dev/kmsg";
+        dev_disk:
+            asciz "/dev/vda";
+        module_virtio_mmio:
+            asciz "/virtio_mmio.ko";
+        module_virtio_blk:
+            asciz "/virtio_blk.ko";
+        empty_string:
+            asciz "";
+        mmio_load_ok:
+            ascii "NCC_MMIO_LOAD_OK\n";
+        mmio_load_error:
+            ascii "NCC_MMIO_LOAD_ERR\n";
+        blk_load_ok:
+            ascii "NCC_BLK_LOAD_OK\n";
+        blk_load_error:
+            ascii "NCC_BLK_LOAD_ERR\n";
+        devtmpfs:
+            asciz "devtmpfs";
+        message:
+            ascii "NCC_GUEST_BOOT_OK\n";
+        disk_read_begin:
+            ascii "NCC_DISK_READ_BEGIN\n";
+        disk_read_done:
+            ascii "NCC_DISK_READ_DONE\n";
+        sync_begin:
+            ascii "NCC_SYNC_BEGIN\n";
+        sync_done:
+            ascii "NCC_SYNC_DONE\n";
+
+    bss:
+        disk_buffer:
+            resb 64;
+
+    verify:
+        sections;
+        symbols;
+        encoding;
+
+    seal:
+        artifact: executable;
+        require: verified;
+}

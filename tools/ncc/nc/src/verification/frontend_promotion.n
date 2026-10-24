@@ -1,0 +1,57 @@
+use <data:json>;
+use <project:release_io>;
+
+frontendPromotion {
+    fn:
+        private:
+            proven(evidence >> int, key >> str) -> bool {
+                value >> int <- jsonObjectGet(evidence, key);
+                valid >> bool <- jsonKind(value) == 2 && jsonGetBoolOr(value, false);
+                jsonRelease(value); return valid;
+            }
+        public:
+            canPromote(evidence >> int) -> bool {
+                if (jsonKind(evidence) != 6) return false;
+                schema >> str <- release_io.releaseIo.field(evidence, "schema");
+                valid >> bool <- schema == "nc.bootstrap.promotion-evidence.v1";
+                strRelease(schema);
+                if (!valid) return false;
+                count >> int <- jsonObjectGet(evidence, "unqualified_units");
+                if (jsonKind(count) != 3) { jsonRelease(count); return false; }
+                encoded >> str <- jsonStringify(count);
+                zero >> bool <- encoded == "0";
+                strRelease(encoded);
+                jsonRelease(count);
+                return zero && proven(evidence, "lexer_complete") && proven(evidence, "parser_complete") &&
+                    proven(evidence, "ast_complete") && proven(evidence, "sema_complete") &&
+                    proven(evidence, "ir_mct_complete") && proven(evidence, "backends_complete") &&
+                    proven(evidence, "source_identity") && proven(evidence, "corpus_equivalent") &&
+                    proven(evidence, "normalized_artifacts_equivalent") && proven(evidence, "windows_execution") &&
+                    proven(evidence, "linux_execution") && proven(evidence, "stage2_self_build") &&
+                    proven(evidence, "stage0_recovery_verified");
+            }
+            selfTest() -> bool {
+                evidence >> int <- jsonParse("{\"schema\":\"nc.bootstrap.promotion-evidence.v1\",\"unqualified_units\":0,\"lexer_complete\":true,\"parser_complete\":true,\"ast_complete\":true,\"sema_complete\":true,\"ir_mct_complete\":true,\"backends_complete\":true,\"source_identity\":true,\"corpus_equivalent\":true,\"normalized_artifacts_equivalent\":true,\"windows_execution\":true,\"linux_execution\":true,\"stage2_self_build\":true,\"stage0_recovery_verified\":true}");
+                ok >> bool <- canPromote(evidence) && !canPromote(0);
+                keys >> int <- jsonParse("[\"lexer_complete\",\"parser_complete\",\"ast_complete\",\"sema_complete\",\"ir_mct_complete\",\"backends_complete\",\"source_identity\",\"corpus_equivalent\",\"normalized_artifacts_equivalent\",\"windows_execution\",\"linux_execution\",\"stage2_self_build\",\"stage0_recovery_verified\"]");
+                at >> int <- 0;
+                while (at < jsonArrayLen(keys)) {
+                    keyValue >> int <- jsonArrayGet(keys, at);
+                    key >> str <- jsonGetString(keyValue);
+                    altered >> int <- jsonClone(evidence);
+                    jsonObjectSet(altered, key, jsonNewBool(false)); ok <- !canPromote(altered) && ok;
+                    jsonObjectSet(altered, key, jsonNewInt(1)); ok <- !canPromote(altered) && ok;
+                    jsonObjectSet(altered, key, jsonNewNull()); ok <- !canPromote(altered) && ok;
+                    jsonRelease(altered); jsonRelease(keyValue); strRelease(key); at += 1;
+                }
+                jsonObjectSet(evidence, "unqualified_units", jsonNewInt(1)); ok <- !canPromote(evidence) && ok;
+                jsonObjectSet(evidence, "unqualified_units", jsonNewFloat(0.5)); ok <- !canPromote(evidence) && ok;
+                jsonObjectSet(evidence, "unqualified_units", jsonParse("18446744073709551616"));
+                ok <- !canPromote(evidence) && ok;
+                jsonObjectSet(evidence, "unqualified_units", jsonParse("-18446744073709551616"));
+                ok <- !canPromote(evidence) && ok;
+                jsonObjectSet(evidence, "unqualified_units", jsonNewNull()); ok <- !canPromote(evidence) && ok;
+                jsonRelease(keys); jsonRelease(evidence); return ok;
+            }
+    fa: return true;
+}

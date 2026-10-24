@@ -1,0 +1,147 @@
+use <data:json>;
+use <project:frontend_material, modules_json, release_io>;
+
+modulesProjection {
+    fn:
+        private:
+            spelling(nodes >> int, tokens >> int, source >> str, index >> int) -> str {
+                origin >> int <- frontend_material.frontendMaterial.fieldAt(nodes,index,"origin_token");
+                start >> int <- frontend_material.frontendMaterial.fieldAt(tokens,origin,"start");
+                end >> int <- frontend_material.frontendMaterial.fieldAt(tokens,origin,"end");
+                return modules_json.modulesJson.slice(source,start,end-start);
+            }
+            path(nodes >> int, tokens >> int, source >> str, index >> int) -> int {
+                parts >> int <- frontend_material.frontendMaterial.children(nodes,index);
+                if (jsonArrayLen(parts) == 0) { jsonRelease(parts); return 0; }
+                result >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(parts)) {
+                    child >> int <- frontend_material.frontendMaterial.indexAt(parts,at);
+                    kind >> str <- frontend_material.frontendMaterial.kindAt(nodes,child);
+                    valid >> bool <- kind == "PathSegment"; strRelease(kind);
+                    if (!valid) { jsonRelease(parts); jsonRelease(result); return 0; }
+                    word >> str <- spelling(nodes,tokens,source,child);
+                    jsonArrayPush(result,jsonNewString(word)); strRelease(word); at += 1;
+                }
+                jsonRelease(parts); return result;
+            }
+            package(nodes >> int, tokens >> int, source >> str, index >> int) -> int {
+                result >> int <- jsonNewObject();
+                name >> str <- spelling(nodes,tokens,source,index);
+                jsonObjectSet(result,"name",jsonNewString(name)); strRelease(name);
+                jsonObjectSet(result,"version",jsonNewNull()); jsonObjectSet(result,"profile",jsonNewNull());
+                modules >> int <- jsonNewArray();
+                items >> int <- frontend_material.frontendMaterial.children(nodes,index);
+                previousVersion >> int <- -1;
+                previousProfile >> int <- -1;
+                ok >> bool <- items != 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(items) && ok) {
+                    item >> int <- frontend_material.frontendMaterial.indexAt(items,at);
+                    kind >> str <- frontend_material.frontendMaterial.kindAt(nodes,item);
+                    if (kind == "ModuleDecl") {
+                        value >> int <- path(nodes,tokens,source,item);
+                        ok <- value != 0; jsonArrayPush(modules,value); jsonRelease(value);
+                    } else if (kind == "PackageVersion" || kind == "PackageProfile") {
+                        version >> bool <- kind == "PackageVersion";
+                        previous >> int <- version ? previousVersion : previousProfile;
+                        if (previous >= 0) ok <- frontend_material.frontendMaterial.fieldAt(nodes,previous,"flags") == 1;
+                        if (version) {
+                            previousVersion <- item;
+                            origin >> int <- frontend_material.frontendMaterial.fieldAt(nodes,item,"origin_token");
+                            if (frontend_material.frontendMaterial.fieldAt(tokens,origin,"kind") != 3) ok <- false;
+                            token >> int <- jsonArrayGet(tokens,origin);
+                            payload >> int <- jsonObjectGet(token,"payload");
+                            jsonObjectSet(result,"version",payload); jsonRelease(payload); jsonRelease(token);
+                        } else {
+                            previousProfile <- item;
+                            word >> str <- spelling(nodes,tokens,source,item);
+                            jsonObjectSet(result,"profile",jsonNewString(word)); strRelease(word);
+                        }
+                    } else ok <- false;
+                    strRelease(kind); at += 1;
+                }
+                if (previousVersion >= 0 && frontend_material.frontendMaterial.fieldAt(nodes,previousVersion,"flags") != 0) ok <- false;
+                if (previousProfile >= 0 && frontend_material.frontendMaterial.fieldAt(nodes,previousProfile,"flags") != 0) ok <- false;
+                jsonObjectSet(result,"modules",modules); jsonRelease(modules); jsonRelease(items);
+                if (!ok) { jsonRelease(result); return 0; }
+                return result;
+            }
+        public:
+            declarations(doc >> int, source >> str) -> int {
+                if (!frontend_material.frontendMaterial.validate(doc,strByteLen(source))) return 0;
+                nodes >> int <- jsonObjectGet(doc,"nodes");
+                tokens >> int <- jsonObjectGet(doc,"tokens");
+                items >> int <- frontend_material.frontendMaterial.children(nodes,0);
+                modules >> int <- jsonNewArray(); packages >> int <- jsonNewArray();
+                result >> int <- jsonNewObject();
+                ok >> bool <- items != 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(items) && ok) {
+                    index >> int <- frontend_material.frontendMaterial.indexAt(items,at);
+                    kind >> str <- frontend_material.frontendMaterial.kindAt(nodes,index);
+                    if (kind == "ModuleDecl") {
+                        value >> int <- path(nodes,tokens,source,index);
+                        ok <- value != 0;
+                        row >> int <- jsonNewObject(); jsonObjectSet(row,"path",value); jsonObjectSet(row,"package",jsonNewNull());
+                        jsonArrayPush(modules,row); jsonRelease(row); jsonRelease(value);
+                    } else if (kind == "PackageDecl") {
+                        value >> int <- package(nodes,tokens,source,index);
+                        ok <- value != 0; jsonArrayPush(packages,value); jsonRelease(value);
+                    }
+                    strRelease(kind); at += 1;
+                }
+                jsonObjectSet(result,"modules",modules); jsonObjectSet(result,"packages",packages);
+                jsonRelease(modules); jsonRelease(packages); jsonRelease(items); jsonRelease(nodes); jsonRelease(tokens);
+                if (!ok) { jsonRelease(result); return 0; }
+                return result;
+            }
+            expected(doc >> int) -> int {
+                ast >> int <- jsonObjectGet(doc,"ast");
+                modules >> int <- jsonObjectGet(ast,"modules"); packages >> int <- jsonObjectGet(ast,"packages");
+                if (jsonKind(modules) != 5 || jsonKind(packages) != 5) {
+                    jsonRelease(ast); jsonRelease(modules); jsonRelease(packages); return 0;
+                }
+                result >> int <- jsonNewObject(); jsonObjectSet(result,"modules",modules); jsonObjectSet(result,"packages",packages);
+                jsonRelease(ast); jsonRelease(modules); jsonRelease(packages); return result;
+            }
+            position(text >> str) -> int {
+                // Match the first diagnostic arrow and the greedy path before :line:column.
+                bytes >> p<byte> <- cast(text);
+                count >> int <- strByteLen(text);
+                at >> int <- 0;
+                while (at+5 < count) {
+                    if (rd(off(bytes,at)) == 32 && rd(off(bytes,at+1)) == 45 && rd(off(bytes,at+2)) == 45 &&
+                        rd(off(bytes,at+3)) == 62 && rd(off(bytes,at+4)) == 32) {
+                        end >> int <- at+5;
+                        while (end < count) { if (rd(off(bytes,end)) == 10 || rd(off(bytes,end)) == 13) break; end += 1; }
+                        cursor >> int <- end-1;
+                        while (cursor >= at+5) {
+                            if (rd(off(bytes,cursor)) == 58) {
+                                first >> int <- cursor+1; line >> int <- 0;
+                                while (first < end) {
+                                    code >> int <- rd(off(bytes,first)); if (code < 48 || code > 57) break;
+                                    if (line > 214748364) return 0;
+                                    line <- line*10+code-48; first += 1;
+                                }
+                                if (first > cursor+1 && first < end && rd(off(bytes,first)) == 58) {
+                                    next >> int <- first+1; column >> int <- 0;
+                                    while (next < end) {
+                                        code >> int <- rd(off(bytes,next)); if (code < 48 || code > 57) break;
+                                        if (column > 214748364) return 0;
+                                        column <- column*10+code-48; next += 1;
+                                    }
+                                    if (next > first+1) {
+                                        result >> int <- jsonNewArray(); jsonArrayPush(result,jsonNewInt(line)); jsonArrayPush(result,jsonNewInt(column)); return result;
+                                    }
+                                }
+                            }
+                            cursor -= 1;
+                        }
+                        at <- end;
+                    } else at += 1;
+                }
+                return 0;
+            }
+    fa: return true;
+}

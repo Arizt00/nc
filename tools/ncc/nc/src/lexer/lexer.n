@@ -1,0 +1,1220 @@
+use <io:output, render>;
+use <project:source, diagnostics>;
+
+nccLexer {
+    const:
+        STATE_BYTES >> int <- 128;
+        RECORD_BYTES >> int <- 48;
+        INITIAL_RECORDS >> int <- 256;
+        MAX_RECORDS >> int <- 44739242;
+        S_DATA >> int <- 0;
+        S_BYTES >> int <- 8;
+        S_POS >> int <- 16;
+        S_LINE >> int <- 24;
+        S_COLUMN >> int <- 32;
+        S_RECORDS >> int <- 40;
+        S_COUNT >> int <- 48;
+        S_ERROR >> int <- 56;
+        S_ERROR_LINE >> int <- 64;
+        S_ERROR_COLUMN >> int <- 72;
+        S_OWNS_DATA >> int <- 80;
+        S_DECODED >> int <- 88;
+        S_DECODED_COUNT >> int <- 96;
+        S_CAPACITY >> int <- 104;
+        S_ERROR_BYTE >> int <- 112;
+
+        R_KIND >> int <- 0;
+        R_LINE >> int <- 4;
+        R_COLUMN >> int <- 8;
+        R_HASH >> int <- 16;
+        R_LENGTH >> int <- 24;
+        R_START >> int <- 28;
+        R_END >> int <- 32;
+        R_PAYLOAD >> int <- 36;
+
+        T_IDENTIFIER >> int <- 1;
+        T_NUMBER >> int <- 2;
+        T_STRING >> int <- 3;
+        T_CHAR >> int <- 4;
+        T_LBRACE >> int <- 5;
+        T_RBRACE >> int <- 6;
+        T_LPAREN >> int <- 7;
+        T_RPAREN >> int <- 8;
+        T_LBRACKET >> int <- 9;
+        T_RBRACKET >> int <- 10;
+        T_LT >> int <- 11;
+        T_GT >> int <- 12;
+        T_COLON >> int <- 13;
+        T_SEMICOLON >> int <- 14;
+        T_COMMA >> int <- 15;
+        T_DOT >> int <- 16;
+        T_AT >> int <- 17;
+        T_STAR >> int <- 18;
+        T_ARROW >> int <- 19;
+        T_ARROW2 >> int <- 20;
+        T_SHIFT2 >> int <- 21;
+        T_SHIFT3 >> int <- 22;
+        T_BANG_SHIFT >> int <- 23;
+        T_LESS_DASH >> int <- 24;
+        T_PIPE >> int <- 25;
+        T_GREATER >> int <- 26;
+        T_LESS >> int <- 27;
+        T_GREATER_EQ >> int <- 28;
+        T_LESS_EQ >> int <- 29;
+        T_EQ >> int <- 30;
+        T_EQ_EQ >> int <- 31;
+        T_NOT_EQ >> int <- 32;
+        T_BANG >> int <- 33;
+        T_TILDE >> int <- 34;
+        T_PLUS >> int <- 35;
+        T_PLUS_PLUS >> int <- 36;
+        T_PLUS_EQ >> int <- 37;
+        T_MINUS >> int <- 38;
+        T_MINUS_MINUS >> int <- 39;
+        T_MINUS_EQ >> int <- 40;
+        T_SLASH >> int <- 41;
+        T_PERCENT >> int <- 42;
+        T_AMP >> int <- 43;
+        T_CARET >> int <- 44;
+        T_QUESTION >> int <- 45;
+        T_SHIFT_LEFT >> int <- 46;
+        T_STAR_EQ >> int <- 47;
+        T_AND_AND >> int <- 48;
+        T_OR_OR >> int <- 49;
+        T_KEYWORD_USE >> int <- 50;
+        T_KEYWORD_IMPORT >> int <- 51;
+        T_KEYWORD_STC >> int <- 52;
+        T_KEYWORD_LOCAL >> int <- 53;
+        T_KEYWORD_FN >> int <- 54;
+        T_KEYWORD_MOVE >> int <- 55;
+        T_KEYWORD_PROBE >> int <- 56;
+        T_KEYWORD_BIND >> int <- 57;
+        T_KEYWORD_BINARY >> int <- 58;
+        T_KEYWORD_RAW >> int <- 59;
+        T_KEYWORD_STRUCTURE >> int <- 60;
+        T_KEYWORD_STR >> int <- 61;
+        T_KEYWORD_FINAL >> int <- 62;
+        T_KEYWORD_FA >> int <- 63;
+        T_KEYWORD_PUBLIC >> int <- 64;
+        T_KEYWORD_PRIVATE >> int <- 65;
+        T_KEYWORD_INTERNAL >> int <- 66;
+        T_KEYWORD_STRICTLY >> int <- 67;
+        T_KEYWORD_RETURN >> int <- 68;
+        T_KEYWORD_DEV >> int <- 69;
+        T_KEYWORD_IF >> int <- 70;
+        T_KEYWORD_ELSE >> int <- 71;
+        T_KEYWORD_WHILE >> int <- 72;
+        T_KEYWORD_REF >> int <- 73;
+        T_KEYWORD_MAIN >> int <- 74;
+        T_KEYWORD_SKK_MAIN >> int <- 75;
+        T_KEYWORD_TRUE >> int <- 76;
+        T_KEYWORD_FALSE >> int <- 77;
+        T_KEYWORD_LY >> int <- 78;
+        T_KEYWORD_CNT >> int <- 79;
+        T_KEYWORD_CUT >> int <- 80;
+        T_KEYWORD_ANCHOR >> int <- 81;
+        T_KEYWORD_SLOT >> int <- 82;
+        T_KEYWORD_PATTERN >> int <- 83;
+        T_KEYWORD_MASK >> int <- 84;
+        T_KEYWORD_WINDOW >> int <- 85;
+        T_KEYWORD_SIGNAL >> int <- 86;
+        T_KEYWORD_BUS >> int <- 87;
+        T_KEYWORD_STATE >> int <- 88;
+        T_KEYWORD_TIMING >> int <- 89;
+        T_KEYWORD_EMIT >> int <- 90;
+        T_KEYWORD_SAMPLE >> int <- 91;
+        T_KEYWORD_LATCH >> int <- 92;
+        T_KEYWORD_ASSERT >> int <- 93;
+        T_KEYWORD_RUPTURE >> int <- 94;
+        T_KEYWORD_BRIDGE >> int <- 95;
+        T_KEYWORD_SEAL >> int <- 96;
+        T_KEYWORD_REG >> int <- 97;
+        T_KEYWORD_FLAG >> int <- 98;
+        T_KEYWORD_LABEL >> int <- 99;
+        T_KEYWORD_INST >> int <- 100;
+        T_EOF >> int <- 101;
+
+
+    type:
+        TokenRecord {
+            public:
+                kind >> int;
+                line >> int;
+                column >> int;
+                reserved >> int;
+                payloadHash >> int;
+                hashPadding >> int;
+                payloadBytes >> int;
+                start >> int;
+                end >> int;
+                payload >> int;
+                padding >> u64;
+            layout:
+                repr(C);
+                align(8);
+        }
+
+    fn:
+        private:
+            integer(state >> p<byte>, field >> int) -> int {
+                return rd<int>(off(state, field));
+            }
+
+            putInteger(state >> p<byte>, field >> int, value >> int) -> void {
+                wr<int>(off(state, field), value);
+            }
+
+            data(state >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(state, S_DATA)));
+            }
+
+            records(state >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(state, S_RECORDS)));
+            }
+
+            rawByte(value >> p<byte>, at >> int) -> int {
+                return rd(off(value, at)) & 255;
+            }
+
+            peek(state >> p<byte>, distance >> int) -> int {
+                at >> int <- integer(state, S_POS) + distance;
+                if (at < 0 || at >= integer(state, S_BYTES)) return -1;
+                return rawByte(data(state), at);
+            }
+
+            asciiSpace(value >> int) -> bool {
+                return value == 32 || (value >= 9 && value <= 13);
+            }
+
+            continuation(value >> int) -> bool {
+                return value >= 0x80 && value <= 0xBF;
+            }
+
+            utf8Width(state >> p<byte>) -> int {
+                first >> int <- peek(state, 0);
+                if (first >= 0 && first <= 0x7F) return 1;
+                if (first >= 0xC2 && first <= 0xDF && continuation(peek(state, 1))) return 2;
+                if (first >= 0xE0 && first <= 0xEF &&
+                    continuation(peek(state, 1)) && continuation(peek(state, 2))) {
+                    second >> int <- peek(state, 1);
+                    if (first == 0xE0 && second < 0xA0) return 0;
+                    if (first == 0xED && second > 0x9F) return 0;
+                    return 3;
+                }
+                if (first >= 0xF0 && first <= 0xF4 &&
+                    continuation(peek(state, 1)) && continuation(peek(state, 2)) &&
+                    continuation(peek(state, 3))) {
+                    second >> int <- peek(state, 1);
+                    if (first == 0xF0 && second < 0x90) return 0;
+                    if (first == 0xF4 && second > 0x8F) return 0;
+                    return 4;
+                }
+                return 0;
+            }
+
+            scalar(state >> p<byte>) -> int {
+                width >> int <- utf8Width(state);
+                if (width == 1) return peek(state, 0);
+                if (width == 2) return ((peek(state, 0) & 0x1F) << 6) |
+                    (peek(state, 1) & 0x3F);
+                if (width == 3) return ((peek(state, 0) & 0x0F) << 12) |
+                    ((peek(state, 1) & 0x3F) << 6) | (peek(state, 2) & 0x3F);
+                if (width == 4) return ((peek(state, 0) & 0x07) << 18) |
+                    ((peek(state, 1) & 0x3F) << 12) |
+                    ((peek(state, 2) & 0x3F) << 6) | (peek(state, 3) & 0x3F);
+                return -1;
+            }
+
+            advance(state >> p<byte>) -> bool {
+                width >> int <- utf8Width(state);
+                guard width > 0 else return false;
+                point >> int <- scalar(state);
+                putInteger(state, S_POS, integer(state, S_POS) + width);
+                if (point == 10) {
+                    putInteger(state, S_LINE, integer(state, S_LINE) + 1);
+                    putInteger(state, S_COLUMN, 1);
+                } else {
+                    putInteger(state, S_COLUMN, integer(state, S_COLUMN) + 1);
+                }
+                return true;
+            }
+
+            unicodeSpace(point >> int) -> bool {
+                return point == 0x85 || point == 0xA0 || point == 0x1680 ||
+                    (point >= 0x2000 && point <= 0x200A) || point == 0x2028 ||
+                    point == 0x2029 || point == 0x202F || point == 0x205F ||
+                    point == 0x3000;
+            }
+
+            setError(state >> p<byte>, kind >> int, line >> int, column >> int) -> bool {
+                putInteger(state, S_ERROR, kind);
+                putInteger(state, S_ERROR_LINE, line);
+                putInteger(state, S_ERROR_COLUMN, column);
+                putInteger(state, S_ERROR_BYTE, integer(state, S_POS));
+                return false;
+            }
+
+            decoded(state >> p<byte>) -> p<byte> {
+                return from<byte>(rd<addr>(off(state, S_DECODED)));
+            }
+
+            appendByte(state >> p<byte>, value >> int) -> void {
+                at >> int <- integer(state, S_DECODED_COUNT);
+                wr<byte>(off(decoded(state), at), value);
+                putInteger(state, S_DECODED_COUNT, at + 1);
+            }
+
+            appendScalar(state >> p<byte>, point >> int) -> void {
+                if (point <= 0x7F) appendByte(state, point);
+                else if (point <= 0x7FF) {
+                    appendByte(state, 0xC0 | (point >> 6));
+                    appendByte(state, 0x80 | (point & 0x3F));
+                } else if (point <= 0xFFFF) {
+                    appendByte(state, 0xE0 | (point >> 12));
+                    appendByte(state, 0x80 | ((point >> 6) & 0x3F));
+                    appendByte(state, 0x80 | (point & 0x3F));
+                } else {
+                    appendByte(state, 0xF0 | (point >> 18));
+                    appendByte(state, 0x80 | ((point >> 12) & 0x3F));
+                    appendByte(state, 0x80 | ((point >> 6) & 0x3F));
+                    appendByte(state, 0x80 | (point & 0x3F));
+                }
+            }
+
+            reserveRecord(state >> p<byte>) -> bool {
+                capacity >> int <- integer(state, S_CAPACITY);
+                if (integer(state, S_COUNT) < capacity) return true;
+                if (capacity >= MAX_RECORDS) return setError(state, 8,
+                    integer(state, S_LINE), integer(state, S_COLUMN));
+                grown >> int <- capacity > MAX_RECORDS / 2 ? MAX_RECORDS : capacity * 2;
+                memory >> p<byte> <- cast<byte>(alloc(grown * RECORD_BYTES));
+                if (memory == null) return setError(state, 8,
+                    integer(state, S_LINE), integer(state, S_COLUMN));
+                previous >> p<byte> <- records(state);
+                cp(memory, previous, integer(state, S_COUNT) * RECORD_BYTES);
+                wr<addr>(off(state, S_RECORDS), adr(memory));
+                putInteger(state, S_CAPACITY, grown);
+                free(previous);
+                return true;
+            }
+
+            hashByte(hash >> int, value >> int) -> int {
+                return (hash * 33 + value + 1) % 16777213;
+            }
+
+            hashScalar(hash >> int, point >> int) -> int {
+                if (point <= 0x7F) return hashByte(hash, point);
+                if (point <= 0x7FF) {
+                    hash <- hashByte(hash, 0xC0 | (point >> 6));
+                    return hashByte(hash, 0x80 | (point & 0x3F));
+                }
+                if (point <= 0xFFFF) {
+                    hash <- hashByte(hash, 0xE0 | (point >> 12));
+                    hash <- hashByte(hash, 0x80 | ((point >> 6) & 0x3F));
+                    return hashByte(hash, 0x80 | (point & 0x3F));
+                }
+                hash <- hashByte(hash, 0xF0 | (point >> 18));
+                hash <- hashByte(hash, 0x80 | ((point >> 12) & 0x3F));
+                hash <- hashByte(hash, 0x80 | ((point >> 6) & 0x3F));
+                return hashByte(hash, 0x80 | (point & 0x3F));
+            }
+
+            scalarBytes(point >> int) -> int {
+                if (point <= 0x7F) return 1;
+                if (point <= 0x7FF) return 2;
+                if (point <= 0xFFFF) return 3;
+                return 4;
+            }
+
+            hashSlice(source >> p<byte>, start >> int, count >> int) -> int {
+                hash >> int <- 5381;
+                at >> int <- 0;
+                while (at < count) {
+                    hash <- hashByte(hash, rawByte(source, start + at));
+                    at += 1;
+                }
+                return hash;
+            }
+
+            textLength(value >> str) -> int {
+                source >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (rawByte(source, at) != 0) { at += 1; }
+                return at;
+            }
+
+            sliceSame(source >> p<byte>, start >> int, count >> int, value >> str) -> bool {
+                guard textLength(value) == count else return false;
+                wanted >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (at < count) {
+                    if (rawByte(source, start + at) != rawByte(wanted, at)) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            keywordKind(source >> p<byte>, start >> int, count >> int) -> int {
+                if (sliceSame(source, start, count, "use")) return T_KEYWORD_USE;
+                if (sliceSame(source, start, count, "import")) return T_KEYWORD_IMPORT;
+                if (sliceSame(source, start, count, "stc")) return T_KEYWORD_STC;
+                if (sliceSame(source, start, count, "local")) return T_KEYWORD_LOCAL;
+                if (sliceSame(source, start, count, "fn")) return T_KEYWORD_FN;
+                if (sliceSame(source, start, count, "move")) return T_KEYWORD_MOVE;
+                if (sliceSame(source, start, count, "probe")) return T_KEYWORD_PROBE;
+                if (sliceSame(source, start, count, "bind")) return T_KEYWORD_BIND;
+                if (sliceSame(source, start, count, "binary")) return T_KEYWORD_BINARY;
+                if (sliceSame(source, start, count, "raw")) return T_KEYWORD_RAW;
+                if (sliceSame(source, start, count, "structure")) return T_KEYWORD_STRUCTURE;
+                if (sliceSame(source, start, count, "str")) return T_KEYWORD_STR;
+                if (sliceSame(source, start, count, "final")) return T_KEYWORD_FINAL;
+                if (sliceSame(source, start, count, "fa")) return T_KEYWORD_FA;
+                if (sliceSame(source, start, count, "public")) return T_KEYWORD_PUBLIC;
+                if (sliceSame(source, start, count, "private")) return T_KEYWORD_PRIVATE;
+                if (sliceSame(source, start, count, "internal")) return T_KEYWORD_INTERNAL;
+                if (sliceSame(source, start, count, "strictly")) return T_KEYWORD_STRICTLY;
+                if (sliceSame(source, start, count, "return")) return T_KEYWORD_RETURN;
+                if (sliceSame(source, start, count, "dev")) return T_KEYWORD_DEV;
+                if (sliceSame(source, start, count, "if")) return T_KEYWORD_IF;
+                if (sliceSame(source, start, count, "else")) return T_KEYWORD_ELSE;
+                if (sliceSame(source, start, count, "while")) return T_KEYWORD_WHILE;
+                if (sliceSame(source, start, count, "ref")) return T_KEYWORD_REF;
+                if (sliceSame(source, start, count, "main")) return T_KEYWORD_MAIN;
+                if (sliceSame(source, start, count, "skkMain")) return T_KEYWORD_SKK_MAIN;
+                if (sliceSame(source, start, count, "true")) return T_KEYWORD_TRUE;
+                if (sliceSame(source, start, count, "false")) return T_KEYWORD_FALSE;
+                if (sliceSame(source, start, count, "ly")) return T_KEYWORD_LY;
+                if (sliceSame(source, start, count, "cnt")) return T_KEYWORD_CNT;
+                if (sliceSame(source, start, count, "cut")) return T_KEYWORD_CUT;
+                if (sliceSame(source, start, count, "anchor")) return T_KEYWORD_ANCHOR;
+                if (sliceSame(source, start, count, "slot")) return T_KEYWORD_SLOT;
+                if (sliceSame(source, start, count, "pattern")) return T_KEYWORD_PATTERN;
+                if (sliceSame(source, start, count, "mask")) return T_KEYWORD_MASK;
+                if (sliceSame(source, start, count, "window")) return T_KEYWORD_WINDOW;
+                if (sliceSame(source, start, count, "signal")) return T_KEYWORD_SIGNAL;
+                if (sliceSame(source, start, count, "bus")) return T_KEYWORD_BUS;
+                if (sliceSame(source, start, count, "state")) return T_KEYWORD_STATE;
+                if (sliceSame(source, start, count, "timing")) return T_KEYWORD_TIMING;
+                if (sliceSame(source, start, count, "emit")) return T_KEYWORD_EMIT;
+                if (sliceSame(source, start, count, "sample")) return T_KEYWORD_SAMPLE;
+                if (sliceSame(source, start, count, "latch")) return T_KEYWORD_LATCH;
+                if (sliceSame(source, start, count, "assert")) return T_KEYWORD_ASSERT;
+                if (sliceSame(source, start, count, "rupture")) return T_KEYWORD_RUPTURE;
+                if (sliceSame(source, start, count, "bridge")) return T_KEYWORD_BRIDGE;
+                if (sliceSame(source, start, count, "seal")) return T_KEYWORD_SEAL;
+                if (sliceSame(source, start, count, "reg")) return T_KEYWORD_REG;
+                if (sliceSame(source, start, count, "flag")) return T_KEYWORD_FLAG;
+                if (sliceSame(source, start, count, "label")) return T_KEYWORD_LABEL;
+                if (sliceSame(source, start, count, "inst")) return T_KEYWORD_INST;
+                return T_IDENTIFIER;
+            }
+
+            addToken(
+                state >> p<byte>,
+                kind >> int,
+                line >> int,
+                column >> int,
+                payloadHash >> int,
+                payloadBytes >> int,
+                tokenStart >> int
+            ) -> bool {
+                guard reserveRecord(state) else return false;
+                count >> int <- integer(state, S_COUNT);
+                record >> p<byte> <- off(records(state), count * RECORD_BYTES);
+                wr<int>(off(record, 12), 0);
+                wr<int>(off(record, 20), 0);
+                wr<u64>(off(record, 40), 0);
+                wr<int>(off(record, R_KIND), kind);
+                wr<int>(off(record, R_LINE), line);
+                wr<int>(off(record, R_COLUMN), column);
+                wr<int>(off(record, R_HASH), payloadHash);
+                wr<int>(off(record, R_LENGTH), payloadBytes);
+                wr<int>(off(record, R_START), tokenStart);
+                wr<int>(off(record, R_END), integer(state, S_POS));
+                wr<int>(off(record, R_PAYLOAD),
+                    kind == T_STRING || kind == T_CHAR ?
+                    integer(state, S_DECODED_COUNT) - payloadBytes : tokenStart);
+                putInteger(state, S_COUNT, count + 1);
+                return true;
+            }
+
+            hexValue(value >> int) -> int {
+                if (value >= 48 && value <= 57) return value - 48;
+                if (value >= 65 && value <= 70) return value - 65 + 10;
+                if (value >= 97 && value <= 102) return value - 97 + 10;
+                return -1;
+            }
+
+            decodeEscape(state >> p<byte>) -> int {
+                line >> int <- integer(state, S_LINE);
+                column >> int <- integer(state, S_COLUMN);
+                guard peek(state, 0) == 92 else return -1;
+                advance(state);
+                if (peek(state, 0) < 0) {
+                    setError(state, 4, line, column);
+                    return -1;
+                }
+                escape >> int <- peek(state, 0);
+                if (!advance(state)) {
+                    setError(state, 7, integer(state, S_LINE), integer(state, S_COLUMN));
+                    return -1;
+                }
+                if (escape == 110) return 10;
+                if (escape == 114) return 13;
+                if (escape == 116) return 9;
+                if (escape == 48) return 0;
+                if (escape == 34 || escape == 39 || escape == 92 ||
+                    escape == 38 || escape == 63 || escape == 35) return escape;
+                if (escape == 120) {
+                    high >> int <- hexValue(peek(state, 0));
+                    if (high < 0) { setError(state, 4, line, column); return -1; }
+                    advance(state);
+                    low >> int <- hexValue(peek(state, 0));
+                    if (low < 0) { setError(state, 4, line, column); return -1; }
+                    advance(state);
+                    return high * 16 + low;
+                }
+                if (escape == 117) {
+                    if (peek(state, 0) != 123) {
+                        setError(state, 4, line, column);
+                        return -1;
+                    }
+                    advance(state);
+                    point >> int <- 0;
+                    digits >> int <- 0;
+                    while (peek(state, 0) >= 0 && peek(state, 0) != 125) {
+                        digit >> int <- hexValue(peek(state, 0));
+                        if (digit < 0 || digits == 6) {
+                            setError(state, 4, line, column);
+                            return -1;
+                        }
+                        point <- point * 16 + digit;
+                        digits += 1;
+                        advance(state);
+                    }
+                    if (peek(state, 0) != 125 || digits == 0 || point > 0x10FFFF ||
+                        (point >= 0xD800 && point <= 0xDFFF)) {
+                        setError(state, 4, line, column);
+                        return -1;
+                    }
+                    advance(state);
+                    return point;
+                }
+                setError(state, 4, line, column);
+                return -1;
+            }
+
+            scanString(state >> p<byte>, line >> int, column >> int) -> bool {
+                start >> int <- integer(state, S_POS);
+                advance(state);
+                hash >> int <- 5381;
+                payloadBytes >> int <- 0;
+                while (peek(state, 0) >= 0 && peek(state, 0) != 34) {
+                    point >> int <- 0;
+                    if (peek(state, 0) == 92) {
+                        point <- decodeEscape(state);
+                        guard integer(state, S_ERROR) == 0 else return false;
+                    } else {
+                        point <- scalar(state);
+                        guard point >= 0 else return setError(
+                            state, 7, integer(state, S_LINE), integer(state, S_COLUMN));
+                        advance(state);
+                    }
+                    hash <- hashScalar(hash, point);
+                    appendScalar(state, point);
+                    payloadBytes += scalarBytes(point);
+                }
+                if (peek(state, 0) != 34) return setError(state, 3, line, column);
+                advance(state);
+                return addToken(state, T_STRING, line, column, hash, payloadBytes, start);
+            }
+
+            scanChar(state >> p<byte>, line >> int, column >> int) -> bool {
+                start >> int <- integer(state, S_POS);
+                advance(state);
+                if (peek(state, 0) < 0) return setError(state, 5, line, column);
+                escaped >> bool <- peek(state, 0) == 92;
+                point >> int <- escaped ? decodeEscape(state) : scalar(state);
+                guard integer(state, S_ERROR) == 0 else return false;
+                if (point < 0) return setError(state, 7,
+                    integer(state, S_LINE), integer(state, S_COLUMN));
+                if (!escaped) advance(state);
+                if (peek(state, 0) != 39) return setError(state, 5, line, column);
+                if (point > 255) return setError(state, 6, line, column);
+                advance(state);
+                appendByte(state, point);
+                return addToken(state, T_CHAR, line, column,
+                    hashByte(5381, point), 1, start);
+            }
+
+            identifierStart(value >> int) -> bool {
+                return (value >= 65 && value <= 90) ||
+                    (value >= 97 && value <= 122) || value == 95;
+            }
+
+            identifierContinue(value >> int) -> bool {
+                return identifierStart(value) || (value >= 48 && value <= 57);
+            }
+
+            scanIdentifier(state >> p<byte>, line >> int, column >> int) -> bool {
+                start >> int <- integer(state, S_POS);
+                while (identifierContinue(peek(state, 0))) { advance(state); }
+                count >> int <- integer(state, S_POS) - start;
+                kind >> int <- keywordKind(data(state), start, count);
+                return addToken(state, kind, line, column,
+                    kind == T_IDENTIFIER ? hashSlice(data(state), start, count) : 0,
+                    kind == T_IDENTIFIER ? count : 0, start);
+            }
+
+            numberDigit(value >> int) -> bool {
+                return value >= 48 && value <= 57;
+            }
+
+            scanNumber(state >> p<byte>, line >> int, column >> int) -> bool {
+                start >> int <- integer(state, S_POS);
+                if (peek(state, 0) == 48 && (peek(state, 1) == 120 || peek(state, 1) == 88)) {
+                    advance(state); advance(state);
+                    while (hexValue(peek(state, 0)) >= 0 || peek(state, 0) == 95) { advance(state); }
+                } else if (peek(state, 0) == 48 && (peek(state, 1) == 98 || peek(state, 1) == 66)) {
+                    advance(state); advance(state);
+                    while (peek(state, 0) == 48 || peek(state, 0) == 49 || peek(state, 0) == 95) {
+                        advance(state);
+                    }
+                } else if (peek(state, 0) == 48 && (peek(state, 1) == 111 || peek(state, 1) == 79)) {
+                    advance(state); advance(state);
+                    while ((peek(state, 0) >= 48 && peek(state, 0) <= 55) || peek(state, 0) == 95) {
+                        advance(state);
+                    }
+                } else {
+                    seenDot >> bool <- false;
+                    while (numberDigit(peek(state, 0)) || peek(state, 0) == 95 ||
+                        (!seenDot && peek(state, 0) == 46 && numberDigit(peek(state, 1)))) {
+                        if (peek(state, 0) == 46) seenDot <- true;
+                        advance(state);
+                    }
+                }
+                count >> int <- integer(state, S_POS) - start;
+                return addToken(state, T_NUMBER, line, column,
+                    hashSlice(data(state), start, count), count, start);
+            }
+
+            skipAsciiCommentRun(state >> p<byte>) -> bool {
+                start >> int <- integer(state, S_POS);
+                at >> int <- start;
+                count >> int <- integer(state, S_BYTES);
+                sourceData >> p<byte> <- data(state);
+                while (at < count) {
+                    value >> int <- rawByte(sourceData, at);
+                    if (value >= 128 || value == 10 || value == 42 || value == 47) break;
+                    at += 1;
+                }
+                if (at == start) return false;
+                putInteger(state, S_POS, at);
+                putInteger(state, S_COLUMN, integer(state, S_COLUMN) + at - start);
+                return true;
+            }
+
+            skipTrivia(state >> p<byte>) -> bool {
+                again >> bool <- true;
+                while (again) {
+                    again <- false;
+                    while (peek(state, 0) >= 0 &&
+                        (asciiSpace(peek(state, 0)) || unicodeSpace(scalar(state)))) {
+                        guard advance(state) else return setError(
+                            state, 7, integer(state, S_LINE), integer(state, S_COLUMN));
+                    }
+                    if (peek(state, 0) == 47 && peek(state, 1) == 47) {
+                        while (peek(state, 0) >= 0 && peek(state, 0) != 10) {
+                            if (skipAsciiCommentRun(state)) continue;
+                            guard advance(state) else return setError(state, 7,
+                                integer(state, S_LINE), integer(state, S_COLUMN));
+                        }
+                        again <- true;
+                    } else if (peek(state, 0) == 47 && peek(state, 1) == 42) {
+                        line >> int <- integer(state, S_LINE);
+                        column >> int <- integer(state, S_COLUMN);
+                        advance(state); advance(state);
+                        closed >> bool <- false;
+                        while (peek(state, 0) >= 0) {
+                            if (peek(state, 0) == 42 && peek(state, 1) == 47) {
+                                advance(state); advance(state);
+                                closed <- true;
+                                break;
+                            }
+                            if (skipAsciiCommentRun(state)) continue;
+                            guard advance(state) else return setError(state, 7,
+                                integer(state, S_LINE), integer(state, S_COLUMN));
+                        }
+                        guard closed else return setError(state, 2, line, column);
+                        again <- true;
+                    }
+                }
+                return true;
+            }
+
+            scanOperator(state >> p<byte>, line >> int, column >> int) -> bool {
+                start >> int <- integer(state, S_POS);
+                first >> int <- peek(state, 0);
+                second >> int <- peek(state, 1);
+                third >> int <- peek(state, 2);
+                kind >> int <- 0;
+                width >> int <- 1;
+                if (first == 123) kind <- T_LBRACE;
+                else if (first == 125) kind <- T_RBRACE;
+                else if (first == 40) kind <- T_LPAREN;
+                else if (first == 41) kind <- T_RPAREN;
+                else if (first == 91) kind <- T_LBRACKET;
+                else if (first == 93) kind <- T_RBRACKET;
+                else if (first == 58) kind <- T_COLON;
+                else if (first == 59) kind <- T_SEMICOLON;
+                else if (first == 44) kind <- T_COMMA;
+                else if (first == 46) kind <- T_DOT;
+                else if (first == 64) kind <- T_AT;
+                else if (first == 126) kind <- T_TILDE;
+                else if (first == 37) kind <- T_PERCENT;
+                else if (first == 94) kind <- T_CARET;
+                else if (first == 63) kind <- T_QUESTION;
+                else if (first == 42) {
+                    kind <- second == 61 ? T_STAR_EQ : T_STAR;
+                    if (second == 61) width <- 2;
+                } else if (first == 124) {
+                    kind <- second == 124 ? T_OR_OR : T_PIPE;
+                    if (second == 124) width <- 2;
+                } else if (first == 38) {
+                    kind <- second == 38 ? T_AND_AND : T_AMP;
+                    if (second == 38) width <- 2;
+                } else if (first == 43) {
+                    kind <- second == 43 ? T_PLUS_PLUS : (second == 61 ? T_PLUS_EQ : T_PLUS);
+                    if (second == 43 || second == 61) width <- 2;
+                } else if (first == 47) kind <- T_SLASH;
+                else if (first == 45) {
+                    if (second == 62 && third == 62) { kind <- T_ARROW2; width <- 3; }
+                    else if (second == 62) { kind <- T_ARROW; width <- 2; }
+                    else if (second == 45) { kind <- T_MINUS_MINUS; width <- 2; }
+                    else if (second == 61) { kind <- T_MINUS_EQ; width <- 2; }
+                    else kind <- T_MINUS;
+                } else if (first == 60) {
+                    if (second == 45) { kind <- T_LESS_DASH; width <- 2; }
+                    else if (second == 60) { kind <- T_SHIFT_LEFT; width <- 2; }
+                    else if (second == 61) { kind <- T_LESS_EQ; width <- 2; }
+                    else kind <- T_LESS;
+                } else if (first == 62) {
+                    if (second == 62 && third == 62) { kind <- T_SHIFT3; width <- 3; }
+                    else if (second == 62) { kind <- T_SHIFT2; width <- 2; }
+                    else if (second == 61) { kind <- T_GREATER_EQ; width <- 2; }
+                    else kind <- T_GREATER;
+                } else if (first == 33) {
+                    if (second == 62) { kind <- T_BANG_SHIFT; width <- 2; }
+                    else if (second == 61) { kind <- T_NOT_EQ; width <- 2; }
+                    else kind <- T_BANG;
+                } else if (first == 61) {
+                    kind <- second == 61 ? T_EQ_EQ : T_EQ;
+                    if (second == 61) width <- 2;
+                }
+                guard kind != 0 else return false;
+                at >> int <- 0;
+                while (at < width) { advance(state); at += 1; }
+                return addToken(state, kind, line, column, 0, 0, start);
+            }
+
+            scan(state >> p<byte>) -> bool {
+                while (integer(state, S_POS) < integer(state, S_BYTES)) {
+                    guard skipTrivia(state) else return false;
+                    if (integer(state, S_POS) >= integer(state, S_BYTES)) break;
+                    line >> int <- integer(state, S_LINE);
+                    column >> int <- integer(state, S_COLUMN);
+                    current >> int <- peek(state, 0);
+                    if (utf8Width(state) == 0) return setError(state, 7, line, column);
+                    if (current == 34) {
+                        guard scanString(state, line, column) else return false;
+                    } else if (current == 39) {
+                        guard scanChar(state, line, column) else return false;
+                    } else if (numberDigit(current)) {
+                        guard scanNumber(state, line, column) else return false;
+                    } else if (identifierStart(current)) {
+                        guard scanIdentifier(state, line, column) else return false;
+                    } else if (!scanOperator(state, line, column)) {
+                        if (integer(state, S_ERROR) != 0) return false;
+                        return setError(state, 1, line, column);
+                    }
+                }
+                return addToken(state, T_EOF, integer(state, S_LINE),
+                    integer(state, S_COLUMN), 0, 0, integer(state, S_POS));
+            }
+
+            tokenName(kind >> int) -> str {
+                if (kind == T_IDENTIFIER) return "Identifier";
+                if (kind == T_NUMBER) return "Number";
+                if (kind == T_STRING) return "String";
+                if (kind == T_CHAR) return "Char";
+                if (kind == T_LBRACE) return "LBrace";
+                if (kind == T_RBRACE) return "RBrace";
+                if (kind == T_LPAREN) return "LParen";
+                if (kind == T_RPAREN) return "RParen";
+                if (kind == T_LBRACKET) return "LBracket";
+                if (kind == T_RBRACKET) return "RBracket";
+                if (kind == T_LT) return "Lt";
+                if (kind == T_GT) return "Gt";
+                if (kind == T_COLON) return "Colon";
+                if (kind == T_SEMICOLON) return "Semicolon";
+                if (kind == T_COMMA) return "Comma";
+                if (kind == T_DOT) return "Dot";
+                if (kind == T_AT) return "At";
+                if (kind == T_STAR) return "Star";
+                if (kind == T_ARROW) return "Arrow";
+                if (kind == T_ARROW2) return "Arrow2";
+                if (kind == T_SHIFT2) return "Shift2";
+                if (kind == T_SHIFT3) return "Shift3";
+                if (kind == T_BANG_SHIFT) return "BangShift";
+                if (kind == T_LESS_DASH) return "LessDash";
+                if (kind == T_PIPE) return "Pipe";
+                if (kind == T_GREATER) return "Greater";
+                if (kind == T_LESS) return "Less";
+                if (kind == T_GREATER_EQ) return "GreaterEq";
+                if (kind == T_LESS_EQ) return "LessEq";
+                if (kind == T_EQ) return "Eq";
+                if (kind == T_EQ_EQ) return "EqEq";
+                if (kind == T_NOT_EQ) return "NotEq";
+                if (kind == T_BANG) return "Bang";
+                if (kind == T_TILDE) return "Tilde";
+                if (kind == T_PLUS) return "Plus";
+                if (kind == T_PLUS_PLUS) return "PlusPlus";
+                if (kind == T_PLUS_EQ) return "PlusEq";
+                if (kind == T_MINUS) return "Minus";
+                if (kind == T_MINUS_MINUS) return "MinusMinus";
+                if (kind == T_MINUS_EQ) return "MinusEq";
+                if (kind == T_SLASH) return "Slash";
+                if (kind == T_PERCENT) return "Percent";
+                if (kind == T_AMP) return "Amp";
+                if (kind == T_CARET) return "Caret";
+                if (kind == T_QUESTION) return "Question";
+                if (kind == T_SHIFT_LEFT) return "ShiftLeft";
+                if (kind == T_STAR_EQ) return "StarEq";
+                if (kind == T_AND_AND) return "AndAnd";
+                if (kind == T_OR_OR) return "OrOr";
+                if (kind == T_KEYWORD_USE) return "KeywordUse";
+                if (kind == T_KEYWORD_IMPORT) return "KeywordImport";
+                if (kind == T_KEYWORD_STC) return "KeywordStc";
+                if (kind == T_KEYWORD_LOCAL) return "KeywordLocal";
+                if (kind == T_KEYWORD_FN) return "KeywordFn";
+                if (kind == T_KEYWORD_MOVE) return "KeywordMove";
+                if (kind == T_KEYWORD_PROBE) return "KeywordProbe";
+                if (kind == T_KEYWORD_BIND) return "KeywordBind";
+                if (kind == T_KEYWORD_BINARY) return "KeywordBinary";
+                if (kind == T_KEYWORD_RAW) return "KeywordRaw";
+                if (kind == T_KEYWORD_STRUCTURE) return "KeywordStructure";
+                if (kind == T_KEYWORD_STR) return "KeywordStr";
+                if (kind == T_KEYWORD_FINAL) return "KeywordFinal";
+                if (kind == T_KEYWORD_FA) return "KeywordFa";
+                if (kind == T_KEYWORD_PUBLIC) return "KeywordPublic";
+                if (kind == T_KEYWORD_PRIVATE) return "KeywordPrivate";
+                if (kind == T_KEYWORD_INTERNAL) return "KeywordInternal";
+                if (kind == T_KEYWORD_STRICTLY) return "KeywordStrictly";
+                if (kind == T_KEYWORD_RETURN) return "KeywordReturn";
+                if (kind == T_KEYWORD_DEV) return "KeywordDev";
+                if (kind == T_KEYWORD_IF) return "KeywordIf";
+                if (kind == T_KEYWORD_ELSE) return "KeywordElse";
+                if (kind == T_KEYWORD_WHILE) return "KeywordWhile";
+                if (kind == T_KEYWORD_REF) return "KeywordRef";
+                if (kind == T_KEYWORD_MAIN) return "KeywordMain";
+                if (kind == T_KEYWORD_SKK_MAIN) return "KeywordSkkMain";
+                if (kind == T_KEYWORD_TRUE) return "KeywordTrue";
+                if (kind == T_KEYWORD_FALSE) return "KeywordFalse";
+                if (kind == T_KEYWORD_LY) return "KeywordLy";
+                if (kind == T_KEYWORD_CNT) return "KeywordCnt";
+                if (kind == T_KEYWORD_CUT) return "KeywordCut";
+                if (kind == T_KEYWORD_ANCHOR) return "KeywordAnchor";
+                if (kind == T_KEYWORD_SLOT) return "KeywordSlot";
+                if (kind == T_KEYWORD_PATTERN) return "KeywordPattern";
+                if (kind == T_KEYWORD_MASK) return "KeywordMask";
+                if (kind == T_KEYWORD_WINDOW) return "KeywordWindow";
+                if (kind == T_KEYWORD_SIGNAL) return "KeywordSignal";
+                if (kind == T_KEYWORD_BUS) return "KeywordBus";
+                if (kind == T_KEYWORD_STATE) return "KeywordState";
+                if (kind == T_KEYWORD_TIMING) return "KeywordTiming";
+                if (kind == T_KEYWORD_EMIT) return "KeywordEmit";
+                if (kind == T_KEYWORD_SAMPLE) return "KeywordSample";
+                if (kind == T_KEYWORD_LATCH) return "KeywordLatch";
+                if (kind == T_KEYWORD_ASSERT) return "KeywordAssert";
+                if (kind == T_KEYWORD_RUPTURE) return "KeywordRupture";
+                if (kind == T_KEYWORD_BRIDGE) return "KeywordBridge";
+                if (kind == T_KEYWORD_SEAL) return "KeywordSeal";
+                if (kind == T_KEYWORD_REG) return "KeywordReg";
+                if (kind == T_KEYWORD_FLAG) return "KeywordFlag";
+                if (kind == T_KEYWORD_LABEL) return "KeywordLabel";
+                if (kind == T_KEYWORD_INST) return "KeywordInst";
+                if (kind == T_EOF) return "Eof";
+                return "Unknown";
+            }
+
+            emitRecord(record >> p<byte>, json >> bool) -> bool {
+                kind >> int <- rd<int>(off(record, R_KIND));
+                if (json) {
+                    print("{\"kind\":\""); print(tokenName(kind));
+                    print("\",\"line\":"); print(renderInt(rd<int>(off(record, R_LINE))));
+                    print(",\"column\":"); print(renderInt(rd<int>(off(record, R_COLUMN))));
+                    print(",\"payload_hash\":"); print(renderInt(rd<int>(off(record, R_HASH))));
+                    print(",\"payload_bytes\":"); print(renderInt(rd<int>(off(record, R_LENGTH))));
+                    print("}");
+                } else {
+                    print(tokenName(kind)); print(" ");
+                    print(renderInt(rd<int>(off(record, R_LINE)))); print(":");
+                    print(renderInt(rd<int>(off(record, R_COLUMN)))); print(" hash=");
+                    print(renderInt(rd<int>(off(record, R_HASH)))); print(" bytes=");
+                    println(renderInt(rd<int>(off(record, R_LENGTH))));
+                }
+                return true;
+            }
+
+            emitAll(state >> p<byte>, json >> bool) -> bool {
+                count >> int <- integer(state, S_COUNT);
+                if (json) {
+                    print("{\"schema\":\"nc.bootstrap.lexer.tokens.v1\",\"count\":");
+                    print(renderInt(count));
+                    print(",\"tokens\":[");
+                }
+                at >> int <- 0;
+                while (at < count) {
+                    if (json && at > 0) print(",");
+                    emitRecord(off(records(state), at * RECORD_BYTES), json);
+                    at += 1;
+                }
+                if (json) println("]}");
+                return true;
+            }
+
+            makeState(sourceData >> p<byte>, byteCount >> int) -> p<byte> {
+                guard byteCount >= 0 && byteCount < 2147483647 else return null;
+                guard sourceData != null || byteCount == 0 else return null;
+                state >> p<byte> <- cast<byte>(alloc(STATE_BYTES));
+                guard state != null else return null;
+                capacity >> int <- byteCount < INITIAL_RECORDS ? byteCount + 1 : INITIAL_RECORDS;
+                tokenMemory >> p<byte> <- cast<byte>(alloc(capacity * RECORD_BYTES));
+                guard tokenMemory != null else { free(state); return null; }
+                payloadMemory >> p<byte> <- cast<byte>(alloc(byteCount + 1));
+                guard payloadMemory != null else {
+                    free(tokenMemory);
+                    free(state);
+                    return null;
+                }
+                at >> int <- 0;
+                while (at < STATE_BYTES) { wr<byte>(off(state, at), 0); at += 1; }
+                wr<addr>(off(state, S_DATA), adr(sourceData));
+                wr<addr>(off(state, S_RECORDS), adr(tokenMemory));
+                wr<addr>(off(state, S_DECODED), adr(payloadMemory));
+                putInteger(state, S_CAPACITY, capacity);
+                putInteger(state, S_BYTES, byteCount);
+                putInteger(state, S_LINE, 1);
+                putInteger(state, S_COLUMN, 1);
+                return state;
+            }
+
+            releaseState(state >> p<byte>) -> bool {
+                if (state != null) {
+                    if (integer(state, S_OWNS_DATA) != 0) {
+                        source.nccSource.release(data(state));
+                    }
+                    free(records(state));
+                    free(decoded(state));
+                    free(state);
+                }
+                return true;
+            }
+
+        public:
+            openBuffer(sourceData >> p<byte>, byteCount >> int) -> p<byte> {
+                state >> p<byte> <- makeState(sourceData, byteCount);
+                if (state != null) scan(state);
+                return state;
+            }
+
+            openFile(path >> str) -> p<byte> {
+                byteCount >> int <- source.nccSource.bytes(path);
+                guard byteCount >= 0 else return null;
+                sourceData >> p<byte> <- source.nccSource.loadSized(path, byteCount);
+                guard sourceData != null else return null;
+                state >> p<byte> <- makeState(sourceData, byteCount);
+                guard state != null else {
+                    source.nccSource.release(sourceData);
+                    return null;
+                }
+                putInteger(state, S_OWNS_DATA, 1);
+                scan(state);
+                return state;
+            }
+
+            valid(state >> p<byte>) -> bool {
+                guard state != null else return false;
+                return integer(state, S_ERROR) == 0;
+            }
+
+            errorKind(state >> p<byte>) -> int { return integer(state, S_ERROR); }
+            errorLine(state >> p<byte>) -> int { return integer(state, S_ERROR_LINE); }
+            errorColumn(state >> p<byte>) -> int { return integer(state, S_ERROR_COLUMN); }
+            errorByte(state >> p<byte>) -> int { return integer(state, S_ERROR_BYTE); }
+            tokenCount(state >> p<byte>) -> int { return integer(state, S_COUNT); }
+
+            recordLayoutValid() -> bool {
+                return sizeOf(TokenRecord) == RECORD_BYTES &&
+                    offsetOf<TokenRecord>(end) == R_END &&
+                    offsetOf<TokenRecord>(payload) == R_PAYLOAD;
+            }
+
+            tokenKindAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_KIND));
+            }
+
+            tokenNameAt(state >> p<byte>, index >> int) -> str {
+                return tokenName(tokenKindAt(state, index));
+            }
+
+            tokenLineAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_LINE));
+            }
+
+            tokenColumnAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_COLUMN));
+            }
+
+            tokenHashAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_HASH));
+            }
+
+            tokenStartAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_START));
+            }
+
+            tokenEndAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_END));
+            }
+
+            tokenPayloadAt(state >> p<byte>, index >> int) -> p<byte> {
+                kind >> int <- tokenKindAt(state, index);
+                payloadStart >> int <- rd<int>(off(records(state), index * RECORD_BYTES + R_PAYLOAD));
+                base >> p<byte> <- data(state);
+                if (kind == T_STRING || kind == T_CHAR) base <- decoded(state);
+                return off(base, payloadStart);
+            }
+
+            reservedRecordBytes(state >> p<byte>) -> int {
+                return integer(state, S_CAPACITY) * RECORD_BYTES;
+            }
+
+            copyPayload(state >> p<byte>, index >> int, out >> p<byte>, capacity >> int) -> int {
+                guard state != null else return -1;
+                guard index >= 0 && index < tokenCount(state) else return -1;
+                count >> int <- tokenBytesAt(state, index);
+                guard capacity >= count && (out != null || count == 0) else return -1;
+                sourceData >> p<byte> <- tokenPayloadAt(state, index);
+                at >> int <- 0;
+                while (at < count) {
+                    wr<byte>(off(out, at), rd<byte>(off(sourceData, at)));
+                    at += 1;
+                }
+                return count;
+            }
+
+            tokenBytesAt(state >> p<byte>, index >> int) -> int {
+                return rd<int>(off(records(state), index * RECORD_BYTES + R_LENGTH));
+            }
+
+            tokenDataAt(state >> p<byte>, index >> int) -> p<byte> {
+                return off(data(state), tokenStartAt(state, index));
+            }
+
+            keywordSame(kind >> int, value >> str) -> bool {
+                if (kind == T_KEYWORD_USE) return value == "use";
+                if (kind == T_KEYWORD_IMPORT) return value == "import";
+                if (kind == T_KEYWORD_STC) return value == "stc";
+                if (kind == T_KEYWORD_LOCAL) return value == "local";
+                if (kind == T_KEYWORD_FN) return value == "fn";
+                if (kind == T_KEYWORD_MOVE) return value == "move";
+                if (kind == T_KEYWORD_PROBE) return value == "probe";
+                if (kind == T_KEYWORD_BIND) return value == "bind";
+                if (kind == T_KEYWORD_BINARY) return value == "binary";
+                if (kind == T_KEYWORD_RAW) return value == "raw";
+                if (kind == T_KEYWORD_STRUCTURE) return value == "structure";
+                if (kind == T_KEYWORD_STR) return value == "str";
+                if (kind == T_KEYWORD_FINAL) return value == "final";
+                if (kind == T_KEYWORD_FA) return value == "fa";
+                if (kind == T_KEYWORD_PUBLIC) return value == "public";
+                if (kind == T_KEYWORD_PRIVATE) return value == "private";
+                if (kind == T_KEYWORD_INTERNAL) return value == "internal";
+                if (kind == T_KEYWORD_STRICTLY) return value == "strictly";
+                if (kind == T_KEYWORD_RETURN) return value == "return";
+                if (kind == T_KEYWORD_DEV) return value == "dev";
+                if (kind == T_KEYWORD_IF) return value == "if";
+                if (kind == T_KEYWORD_ELSE) return value == "else";
+                if (kind == T_KEYWORD_WHILE) return value == "while";
+                if (kind == T_KEYWORD_REF) return value == "ref";
+                if (kind == T_KEYWORD_MAIN) return value == "main";
+                if (kind == T_KEYWORD_SKK_MAIN) return value == "skkMain";
+                if (kind == T_KEYWORD_TRUE) return value == "true";
+                if (kind == T_KEYWORD_FALSE) return value == "false";
+                if (kind == T_KEYWORD_LY) return value == "ly";
+                if (kind == T_KEYWORD_CNT) return value == "cnt";
+                if (kind == T_KEYWORD_CUT) return value == "cut";
+                if (kind == T_KEYWORD_ANCHOR) return value == "anchor";
+                if (kind == T_KEYWORD_SLOT) return value == "slot";
+                if (kind == T_KEYWORD_PATTERN) return value == "pattern";
+                if (kind == T_KEYWORD_MASK) return value == "mask";
+                if (kind == T_KEYWORD_WINDOW) return value == "window";
+                if (kind == T_KEYWORD_SIGNAL) return value == "signal";
+                if (kind == T_KEYWORD_BUS) return value == "bus";
+                if (kind == T_KEYWORD_STATE) return value == "state";
+                if (kind == T_KEYWORD_TIMING) return value == "timing";
+                if (kind == T_KEYWORD_EMIT) return value == "emit";
+                if (kind == T_KEYWORD_SAMPLE) return value == "sample";
+                if (kind == T_KEYWORD_LATCH) return value == "latch";
+                if (kind == T_KEYWORD_ASSERT) return value == "assert";
+                if (kind == T_KEYWORD_RUPTURE) return value == "rupture";
+                if (kind == T_KEYWORD_BRIDGE) return value == "bridge";
+                if (kind == T_KEYWORD_SEAL) return value == "seal";
+                if (kind == T_KEYWORD_REG) return value == "reg";
+                if (kind == T_KEYWORD_FLAG) return value == "flag";
+                if (kind == T_KEYWORD_LABEL) return value == "label";
+                if (kind == T_KEYWORD_INST) return value == "inst";
+                return false;
+            }
+
+            tokenSame(state >> p<byte>, index >> int, value >> str) -> bool {
+                if (tokenKindAt(state, index) > T_CHAR) {
+                    return keywordSame(tokenKindAt(state, index), value);
+                }
+                return sliceSame(tokenPayloadAt(state, index), 0,
+                    tokenBytesAt(state, index), value);
+            }
+
+            tokenEqual(state >> p<byte>, left >> int, right >> int) -> bool {
+                if (tokenKindAt(state, left) != tokenKindAt(state, right)) return false;
+                leftBytes >> int <- tokenBytesAt(state, left);
+                rightBytes >> int <- tokenBytesAt(state, right);
+                if (leftBytes != rightBytes || tokenHashAt(state, left) !=
+                    tokenHashAt(state, right)) return false;
+                leftData >> p<byte> <- tokenPayloadAt(state, left);
+                rightData >> p<byte> <- tokenPayloadAt(state, right);
+                at >> int <- 0;
+                while (at < leftBytes) {
+                    if (rd<byte>(off(leftData, at)) !=
+                        rd<byte>(off(rightData, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            identifierKind(kind >> int) -> bool {
+                return kind == T_IDENTIFIER || kind == T_KEYWORD_LOCAL ||
+                    kind == T_KEYWORD_FN || kind == T_KEYWORD_MOVE ||
+                    kind == T_KEYWORD_BIND || kind == T_KEYWORD_BINARY ||
+                    kind == T_KEYWORD_RAW || (kind >= T_KEYWORD_ANCHOR && kind <= T_KEYWORD_INST);
+            }
+
+            identifierHashAt(state >> p<byte>, index >> int) -> int {
+                guard state != null else return 0;
+                guard index >= 0 && index < tokenCount(state) else return 0;
+                guard identifierKind(tokenKindAt(state, index)) else return 0;
+                return hashSlice(tokenDataAt(state, index), 0,
+                    tokenEndAt(state, index) - tokenStartAt(state, index));
+            }
+
+            tokenAtByte(state >> p<byte>, position >> int) -> int {
+                guard state != null else return -1;
+                guard position >= 0 else return -1;
+                left >> int <- 0;
+                right >> int <- tokenCount(state);
+                while (left < right) {
+                    middle >> int <- left + (right - left) / 2;
+                    if (tokenStartAt(state, middle) <= position) left <- middle + 1;
+                    else right <- middle;
+                }
+                index >> int <- left - 1;
+                guard index >= 0 else return -1;
+                if (position < tokenEndAt(state, index)) return index;
+                if (tokenKindAt(state, index) == T_EOF &&
+                    position == tokenStartAt(state, index)) return index;
+                return -1;
+            }
+
+            pathSegmentKind(kind >> int) -> bool {
+                return kind == T_IDENTIFIER || (kind >= T_KEYWORD_USE && kind <= T_KEYWORD_INST);
+            }
+
+            wordHashAt(state >> p<byte>, index >> int) -> int {
+                guard state != null else return 0;
+                guard index >= 0 && index < tokenCount(state) else return 0;
+                guard pathSegmentKind(tokenKindAt(state, index)) else return 0;
+                return hashSlice(tokenDataAt(state, index), 0,
+                    tokenEndAt(state, index) - tokenStartAt(state, index));
+            }
+
+            // Contextual headers fold ASCII only; ordinary identifiers remain case-sensitive.
+            tokenAsciiWordSame(state >> p<byte>, index >> int, value >> str) -> bool {
+                guard state != null && index >= 0 && index < tokenCount(state) else return false;
+                guard pathSegmentKind(tokenKindAt(state, index)) else return false;
+                bytes >> int <- tokenEndAt(state, index) - tokenStartAt(state, index);
+                guard textLength(value) == bytes else return false;
+                data >> p<byte> <- tokenDataAt(state, index);
+                wanted >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (at < bytes) {
+                    left >> int <- rd<byte>(off(data, at)) & 255;
+                    right >> int <- rd<byte>(off(wanted, at)) & 255;
+                    if (left >= 65 && left <= 90) left += 32;
+                    if (right >= 65 && right <= 90) right += 32;
+                    if (left != right) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            copySpan(state >> p<byte>, start >> int, end >> int, target >> p<byte>, capacity >> int) -> int {
+                guard state != null else return -1;
+                guard start >= 0 && end >= start && end <= integer(state, S_BYTES) else return -1;
+                count >> int <- end - start;
+                guard capacity >= count else return -1;
+                if (count == 0) return 0;
+                guard target != null else return -1;
+                cp(target, off(data(state), start), count);
+                return count;
+            }
+
+            copyLexeme(state >> p<byte>, index >> int, target >> p<byte>, capacity >> int) -> int {
+                guard state != null else return -1;
+                guard index >= 0 && index < tokenCount(state) else return -1;
+                return copySpan(state, tokenStartAt(state, index), tokenEndAt(state, index), target, capacity);
+            }
+
+            close(state >> p<byte>) -> bool { return releaseState(state); }
+
+            scanFile(path >> str, json >> bool, quiet >> bool) -> int {
+                state >> p<byte> <- openFile(path);
+                guard state != null else {
+                    println("error[E_NCC_BOOTSTRAP_SOURCE_001]: source cannot be read");
+                    return 66;
+                }
+                code >> int <- 0;
+                if (valid(state)) {
+                    if (!quiet) emitAll(state, json);
+                } else code <- diagnostics.nccDiagnostics.emitDiagnostic(
+                    integer(state, S_ERROR), integer(state, S_ERROR_LINE),
+                    integer(state, S_ERROR_COLUMN), path);
+                releaseState(state);
+                return code;
+            }
+
+            selfTest() -> bool {
+                sample >> str <- "use <io:output>; probe { fn: run() -> bool { return true; } fa: return true; }";
+                sourceData >> p<byte> <- cast<byte>(sample);
+                state >> p<byte> <- makeState(sourceData, textLength(sample));
+                guard state != null else return false;
+                ok >> bool <- scan(state) && integer(state, S_COUNT) > 10 &&
+                    rd<int>(off(records(state), R_KIND)) == T_KEYWORD_USE &&
+                    rd<int>(off(records(state),
+                        (integer(state, S_COUNT) - 1) * RECORD_BYTES + R_KIND)) == T_EOF;
+                releaseState(state);
+                return ok;
+            }
+
+    fa:
+        return true;
+}

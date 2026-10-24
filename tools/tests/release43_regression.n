@@ -1,0 +1,89 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:release43_common, release43_distribution, release43_archive, release43_public, release_io, cert_json, tool_cli>;
+
+release43Regression {
+    stc: failures >> int <- 0; results >> int;
+    fn:
+        private:
+            expect(name >> str, passed >> bool) -> void {
+                println((passed ? "PASS " : "FAIL ")+name); release43_common.release43Common.put(results,name,jsonNewBool(passed)); if (!passed) failures += 1;
+            }
+            add(words >> int, value >> str) -> void { release43_common.release43Common.arg(words,value); }
+            set(object >> int, name >> str, value >> str) -> void { release43_common.release43Common.put(object,name,jsonNewString(value)); }
+            fixture(root >> str, destination >> str) -> bool {
+                paths >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_cicd_compat_spec.md\",\"docs/spec/release/v2_0_0_phase10_cicd_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_cicd_compat_contract.json\",\"docs/spec/release/v2_0_0_phase10_manifest_format_contract.json\",\"docs/spec/release/v2_0_0_phase10_installer_matrix_spec.md\",\"docs/spec/release/v2_0_0_phase10_installer_matrix_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_installer_matrix_contract.json\",\"docs/status/STATUS_PHASE10_punto14_cicd_compat_v2_0_0.md\",\"docs/status/STATUS_PHASE10_punto16_installer_matrix_v2_0_0.md\",\"tools/ci/setup_ncup_ci_v2_0_0.sh\",\"tools/ci/github/setup_ncup_ci_v2_0_0.sh\",\"tools/ci/gitlab/setup_ncup_ci_v2_0_0.sh\",\".github/actions/setup-nc/action.yml\",\".gitlab-ci.ncup.yml\",\".github/workflows/phase10-installer-matrix.yml\",\"tools/release/qa_phase10_p14_v2_0_0.sh\",\"tools/release/qa_phase10_p16_v2_0_0.sh\",\"examples/root_at/root_at_minimal_ok.nb\"]");
+                index >> int <- 0; good >> bool <- true;
+                while (index < jsonArrayLen(paths) && good) { path >> str <- release43_common.release43Common.stringAt(paths,index); good <- release43_common.release43Common.copyRequired(root+"/"+path,destination+"/"+path); index += 1; }
+                release43_common.release43Common.release(paths);
+                if (good) good <- release43_common.release43Common.copyTree(root+"/tools/ncc/nc/src/verification",destination+"/tools/ncc/nc/src/verification");
+                return good;
+            }
+            verifier(tool >> str, candidate >> str, root >> str, work >> str, command >> str, distribution >> str, golden >> str, negative >> bool) -> void {
+                reportPath >> str <- work+"/"+command+(negative ? "-negative" : "")+".json";
+                words >> int <- jsonNewArray(); add(words,command); add(words,"--root"); add(words,root); add(words,"--candidate"); add(words,candidate); add(words,"--report"); add(words,reportPath);
+                if (distribution != "") { add(words,"--distribution"); add(words,distribution); }
+                row >> int <- release43_common.release43Common.invoke(tool,words); report >> int <- release43_common.release43Common.load(reportPath);
+                schema >> str <- command == "release-updates" ? "nc.phase10.updates.report.v1" : (command == "release-cicd-compat" ? "nc.phase10.cicd.compat.report.v1" : (command == "release-installer-matrix" ? "nc.phase10.installer.matrix.report.v1" : (command == "release-manifest-format" ? "nc.phase10.manifest.format.report.v1" : "nc.phase10.supply.chain.security.report.v1")));
+                expected >> int <- jsonParse(golden); actual >> int <- report == 0 ? 0 : jsonObjectGet(report,"checks");
+                passed >> bool <- report != 0 && actual != 0;
+                if (passed) passed <- release_io.releaseIo.number(row,"code",-1) == (negative ? 1 : 0) && release43_common.release43Common.field(report,"schema") == schema && release43_common.release43Common.field(report,"version") == "2.0.0" && release43_common.release43Common.field(report,"state") == "frozen" && release43_common.release43Common.field(report,"status") == (negative ? "error" : "ok") && jsonObjectLen(actual) == jsonObjectLen(expected);
+                index >> int <- 0;
+                while (index < jsonObjectLen(expected) && actual != 0) {
+                    name >> str <- jsonObjectKeyAt(expected,index); a >> int <- jsonObjectGet(actual,name); b >> int <- jsonObjectGet(expected,name);
+                    passed <- passed && jsonKind(a) == 2 && jsonGetBoolOr(a,false) == jsonGetBoolOr(b,false);
+                    release43_common.release43Common.release(a); release43_common.release43Common.release(b); free(cast<byte>(name)); index += 1;
+                }
+                expect(command+(negative ? "-negative-golden" : "-golden"),passed);
+                if (!passed) println(release43_common.release43Common.field(row,"stderr"));
+                release43_common.release43Common.release(actual); release43_common.release43Common.release(expected); release43_common.release43Common.release(report); release43_common.release43Common.release(row);
+            }
+            publicTools(root >> str, work >> str) -> void {
+                options >> int <- jsonNewObject(); set(options,"--root",root); set(options,"--source",work+"/public-source"); set(options,"--out",work+"/public-artifacts");
+                expect("package-fixture",release43_common.release43Common.writeText(work+"/public-source/example.n","nC native regression\n"));
+                expect("package-native",release43_public.release43Public.package(options) == 0); release43_common.release43Common.release(options);
+                payload >> p<byte> <- cast(alloc(4)); read >> int <- release43_common.release43Common.readBytes(work+"/public-artifacts/ncc-public-beta-source.zip",payload,4);
+                expect("package-zip-signature",read == 4 && rd<byte>(payload) == 80 && rd<byte>(off<byte>(payload,1)) == 75 && rd<byte>(off<byte>(payload,2)) == 3 && rd<byte>(off<byte>(payload,3)) == 4); free(payload);
+                manifest >> int <- jsonParse("{\"schema\":\"ncc.public_beta.manifest.v1\",\"public_name\":\"ncc\",\"dist_root\":\"dist/public-beta/ncc\",\"public_files\":[\"LICENSE\"],\"public_doc_files\":[],\"public_tool_files\":[],\"public_trees\":[],\"public_fixture_trees\":[],\"private_roots\":[],\"private_segments\":[],\"private_file_suffixes\":[],\"private_path_fragments\":[],\"public_test_groups\":[\"tests/native\"],\"public_examples\":[],\"forbidden_public_roots\":[\"target\"],\"public_example_name_policy\":{\"forbid_path_tokens\":[]},\"public_package_prune\":{\"crate_integration_tests\":true}}");
+                expect("layout-manifest",release43_common.release43Common.save(root+"/tools/release/public_beta_manifest.json",manifest)); release43_common.release43Common.release(manifest);
+                expect("layout-source",release43_common.release43Common.writeText(root+"/LICENSE","native regression license\n")); options <- jsonNewObject(); set(options,"--root",root);
+                expect("layout-native",release43_public.release43Public.layout(options) == 0); release43_common.release43Common.release(options);
+                expect("layout-golden",release43_common.release43Common.text(root+"/dist/public-beta/ncc/LICENSE") == "native regression license\n" && release43_common.release43Common.fileType(root+"/dist/public-beta/ncc/tests/native/.gitkeep") == 1 && release43_common.release43Common.fileType(root+"/dist/public-beta/ncc/.cargo/config.toml") == 1);
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) != 5) return 2;
+                root >> str <- release43_common.release43Common.absolute(argsAt(args,1)); candidate >> str <- release43_common.release43Common.absolute(argsAt(args,2)); tool >> str <- release43_common.release43Common.absolute(argsAt(args,3)); distribution >> str <- release43_common.release43Common.absolute(argsAt(args,4));
+                options >> int <- jsonNewObject(); set(options,"--root",root); if (!release43_common.release43Common.initialize(options)) return 2; release43_common.release43Common.release(options);
+                results <- jsonNewObject(); work >> str <- release43_common.release43Common.workPath(); migrated >> str <- work+"/migrated"; println("work="+work);
+                expect("migrated-fixture",fixture(root,migrated));
+                originals >> int <- jsonParse("[\"package_public_beta.py\",\"prepare_public_beta_layout.py\",\"verify_phase10_cicd_compat_v2_0_0.py\",\"verify_phase10_installer_matrix_v2_0_0.py\",\"verify_phase10_manifest_format_v2_0_0.py\",\"verify_phase10_supply_chain_security_v2_0_0.py\",\"verify_phase10_updates_v2_0_0.py\"]"); index >> int <- 0;
+                while (index < 7) { name >> str <- release43_common.release43Common.stringAt(originals,index); expect("original-absent-"+name,release43_common.release43Common.fileType(migrated+"/tools/release/"+name) == 0); index += 1; } release43_common.release43Common.release(originals);
+                publicTools(migrated,work);
+                verifier(tool,candidate,migrated,work,"release-updates","","{\"update_active_only\":true,\"rollback_on_failure\":true,\"history_manifest_written\":true,\"history_contains_success_and_rollback\":true}",false);
+                ciGolden >> str <- "{\"artifacts_present\":true,\"contract_consistent\":true,\"ci_setup_online_ok\":true,\"ci_cache_miss_then_hit\":true,\"ci_offline_bundle_ok\":true,\"github_action_wired\":true,\"gitlab_template_wired\":true}";
+                verifier(tool,candidate,migrated,work,"release-cicd-compat","",ciGolden,false);
+                verifier(tool,candidate,migrated,work,"release-manifest-format",distribution,"{\"distribution_build_ok\":true,\"release_manifest_shape\":true,\"release_manifest_semantic_compat\":true,\"channel_manifests_shape\":true,\"channel_manifests_semantic_compat\":true,\"entries_hashes_match_artifacts\":true,\"entries_urls_declared\":true}",false);
+                installer >> str <- work+"/installer-distribution"; expect("installer-dist-copy",release43_common.release43Common.copyTree(distribution,installer)); sums >> str <- release43_common.release43Common.text(installer+"/integrity/SHA256SUMS");
+                expect("installer-dist-signature",release43_common.release43Common.writeText(installer+"/integrity/SHA256SUMS.sig",release43_distribution.release43Distribution.hmac("phase10-p16-signing-key",cast<byte>(sums),strByteLen(sums))+"\n"));
+                verifier(tool,candidate,migrated,work,"release-installer-matrix",installer,"{\"artifacts_present\":true,\"contract_consistent\":true,\"fresh_install\":true,\"upgrade\":true,\"downgrade\":true,\"rollback\":true,\"corrupt_download\":true,\"invalid_signature\":true,\"insufficient_space\":true,\"path_empty\":true,\"path_existing\":true,\"multi_toolchain_override\":true,\"os_runner_matrix\":true}",false);
+                if (!envHas("WINDIR")) {
+                    supply >> str <- work+"/supply-distribution"; expect("supply-dist-copy",release43_common.release43Common.copyTree(distribution,supply)); sums <- release43_common.release43Common.text(supply+"/integrity/SHA256SUMS");
+                    expect("supply-dist-signature",release43_common.release43Common.writeText(supply+"/integrity/SHA256SUMS.sig",release43_distribution.release43Distribution.hmac("phase10-p7-signing-key-v1",cast<byte>(sums),strByteLen(sums))+"\n"));
+                    verifier(tool,candidate,migrated,work,"release-supply-chain",supply,"{\"root_trust_bootstrap\":true,\"verify_passes_clean\":true,\"verify_detects_tampering\":true,\"verify_recovers_after_reinstall\":true,\"enterprise_mode_verified\":true,\"distribution_checksums_and_signature\":true,\"clean_install_pre_verifies_distribution\":true}",false);
+                } else {
+                    words >> int <- jsonNewArray(); add(words,"release-supply-chain"); add(words,"--root"); add(words,migrated); add(words,"--candidate"); add(words,candidate); add(words,"--report"); add(words,work+"/supply-windows-negative.json");
+                    row >> int <- release43_common.release43Common.invoke(tool,words);
+                    expect("supply-windows-original-missing-host-negative",release_io.releaseIo.number(row,"code",-1) == 1 && strContains(release43_common.release43Common.field(row,"stderr"),"tamper target directory is missing") && release43_common.release43Common.fileType(work+"/supply-windows-negative.json") == 0); release43_common.release43Common.release(row);
+                }
+                contractPath >> str <- migrated+"/docs/spec/release/v2_0_0_phase10_cicd_compat_contract.json"; contract >> int <- release43_common.release43Common.load(contractPath); set(contract,"state","invalid"); expect("ci-negative-fixture",release43_common.release43Common.save(contractPath,contract)); release43_common.release43Common.release(contract);
+                badGolden >> int <- jsonParse(ciGolden); release43_common.release43Common.put(badGolden,"contract_consistent",jsonNewBool(false)); verifier(tool,candidate,migrated,work,"release-cicd-compat","",cert_json.certJson.stringify(badGolden),true); release43_common.release43Common.release(badGolden);
+                evidence >> int <- jsonNewObject(); set(evidence,"schema","nc.release43.native.regression.v1"); set(evidence,"migrated_root",migrated); set(evidence,"candidate_sha256",release43_common.release43Common.hashFile(candidate)); set(evidence,"native_sha256",release43_common.release43Common.hashFile(tool));
+                set(evidence,"candidate_path",candidate); set(evidence,"native_path",tool); release43_common.release43Common.put(evidence,"passed",jsonNewBool(failures == 0));
+                release43_common.release43Common.put(evidence,"python_required",jsonNewBool(false)); release43_common.release43Common.put(evidence,"failures",jsonNewInt(failures)); jsonObjectSet(evidence,"checks",results);
+                release43_common.release43Common.save(work+"/regression.json",evidence); println("sealed="+work+"/regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,45 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_common>;
+
+physical43NumericTests {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 2;
+                model >> int <- physical43_common.physical43Common.read(argsAt(arguments,1),false);
+                rows >> int <- jsonObjectBorrow(model,"vectors"); index >> int <- 0; passed >> bool <- jsonKind(rows) == 5;
+                results >> int <- jsonNewArray();
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,index);
+                    input >> str <- physical43_common.physical43Common.field(row,"input");
+                    expected >> str <- physical43_common.physical43Common.field(row,"canonical");
+                    payload >> int <- jsonParse(input);
+                    actual >> str <- physical43_common.physical43Common.canonical(payload,true,0);
+                    matched >> bool <- actual == expected; passed <- passed && matched;
+                    if (!matched) println("FAIL "+renderInt(index)+" "+input+" expected="+expected+" actual="+actual);
+                    result >> int <- jsonNewObject();
+                    physical43_common.physical43Common.put(result,"input",jsonNewString(input));
+                    physical43_common.physical43Common.put(result,"canonical",jsonNewString(actual));
+                    physical43_common.physical43Common.put(result,"matched",jsonNewBool(matched));
+                    physical43_common.physical43Common.push(results,result);
+                    strRelease(input); strRelease(expected); strRelease(actual); jsonRelease(payload); jsonRelease(row); index += 1;
+                }
+                payloadText >> str <- physical43_common.physical43Common.field(model,"signed_input");
+                signed >> int <- jsonParse(payloadText);
+                signature >> str <- physical43_common.physical43Common.hmac("physical43-float-golden",signed,"physical43-native-key");
+                expectedSignature >> str <- physical43_common.physical43Common.field(model,"hmac_sha256");
+                hmacMatches >> bool <- signature == expectedSignature; passed <- passed && hmacMatches;
+                report >> int <- jsonNewObject();
+                physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.physical43.numeric-tests.v1"));
+                physical43_common.physical43Common.put(report,"vectors",results);
+                physical43_common.physical43Common.put(report,"hmac_matches",jsonNewBool(hmacMatches));
+                physical43_common.physical43Common.put(report,"hmac_sha256",jsonNewString(signature));
+                physical43_common.physical43Common.put(report,"passed",jsonNewBool(passed));
+                saved >> bool <- physical43_common.physical43Common.save(argsAt(arguments,2),report);
+                println("numeric vectors="+renderInt(index)+" hmac="+renderBool(hmacMatches)+" passed="+renderBool(passed));
+                return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+}

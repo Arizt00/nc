@@ -1,0 +1,92 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:sha256>;
+
+prepareJsonFault78 {
+    ensure(path >> str) -> bool {
+        if (exists(path)) return true;
+        at >> int <- strByteLen(path)-1;
+        while (at > 0 && rd(off(cast<byte>(path),at)) != 47) at -= 1;
+        if (at <= 0) return false;
+        parent >> str <- strSubstring(path,0,at);
+        valid >> bool <- ensure(parent) && isOk(createDir(path)); strRelease(parent); return valid;
+    }
+    read(path >> str) -> str {
+        count >> int <- fsSize(path);
+        if (count < 1 || count > 1048576) return null;
+        data >> p<byte> <- alloc(count+1);
+        if (data == null) return null;
+        if (fsReadInto(path,data,count) != count) { free(data); return null; }
+        wr(off(data,count),0); return cast<str>(data);
+    }
+    replace(body >> str, wanted >> str, replacement >> str) -> str {
+        bytes >> int <- strByteLen(body); width >> int <- strByteLen(wanted);
+        extra >> int <- strByteLen(replacement);
+        if (width < 1 || bytes > 1048576) return null;
+        output >> p<byte> <- alloc(bytes+(bytes/width+1)*extra+1);
+        if (output == null) return null;
+        at >> int <- 0; cursor >> int <- 0;
+        while (at < bytes) {
+            count >> int <- 0;
+            while (count < width && at+count < bytes &&
+                rd(off(cast<byte>(body),at+count)) == rd(off(cast<byte>(wanted),count))) count += 1;
+            if (count == width) { cp(off(output,cursor),cast<byte>(replacement),extra); cursor += extra; at += width; }
+            else { wr(off(output,cursor),rd(off(cast<byte>(body),at))); cursor += 1; at += 1; }
+        }
+        wr(off(output,cursor),0); return cast<str>(output);
+    }
+    copy(source >> str, output >> str) -> bool {
+        body >> str <- read(source);
+        if (cast<byte>(body) == null) return false;
+        count >> int <- strByteLen(body);
+        valid >> bool <- fsWriteFrom(output,cast<byte>(body),count,false) == count;
+        strRelease(body); return valid;
+    }
+    instrument(repo >> str, output >> str, source >> str, expected >> str) -> bool {
+        path >> str <- repo+"/"+source;
+        digest >> str <- sha256.nccSha256.file(path);
+        valid >> bool <- digest == expected; strRelease(digest);
+        if (!valid) { strRelease(path); return false; }
+        original >> str <- read(path); strRelease(path);
+        if (cast<byte>(original) == null) return false;
+        body >> str <- replace(original,"alloc(","fault_heap.runtimeFaultHeap78.allocate("); strRelease(original);
+        if (cast<byte>(body) == null) return false;
+        rewritten >> str <- replace(body,"free(","fault_heap.runtimeFaultHeap78.release("); strRelease(body);
+        if (cast<byte>(rewritten) == null) return false;
+        body <- "use <project:fault_heap>;\n"+rewritten; strRelease(rewritten);
+        count >> int <- strByteLen(body);
+        valid <- fsWriteFrom(output,cast<byte>(body),count,false) == count;
+        strRelease(body); return valid;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3) return 64;
+        repo >> str <- argsAt(arguments,1); root >> str <- argsAt(arguments,2);
+        if (exists(root+"/.ncc")) return 78;
+        if (!ensure(root+"/src")) return 68;
+        manifest >> int <- jsonParseFile(repo+"/bootstrap/frontend-v78-build.json");
+        if (manifest == 0) return 65;
+        rows >> int <- jsonObjectBorrow(manifest,"runtime_sources"); at >> int <- 0; copied >> int <- 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at);
+            value >> int <- jsonObjectBorrow(row,"source"); source >> str <- jsonGetStringOr(value,""); jsonRelease(value);
+            value <- jsonObjectBorrow(row,"sha256"); expected >> str <- jsonGetStringOr(value,""); jsonRelease(value);
+            if (source == "runtime/nc/json_native_provider.n" || source == "runtime/nc/binary64.n") {
+                name >> str <- source == "runtime/nc/binary64.n" ? "binary64" : "json";
+                if (!instrument(repo,root+"/src/"+name+".n",source,expected)) return 69;
+                copied += 1;
+            }
+            strRelease(source); strRelease(expected); jsonRelease(row); at += 1;
+        }
+        jsonRelease(rows); jsonRelease(manifest);
+        valid >> bool <- copied == 2 &&
+            copy(repo+"/tools/tests/native_json_oom78.n",root+"/main.n") &&
+            copy(repo+"/tools/tests/runtime_fault_heap78.n",root+"/src/fault_heap.n");
+        argsRelease(arguments);
+        println(valid ? "native JSON fault project prepared" : "native JSON fault preparation failed");
+        return valid ? 0 : 70;
+    }
+    ref main ->> run;
+    fa: return true;
+}

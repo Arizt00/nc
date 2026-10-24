@@ -1,0 +1,33 @@
+use <io:output>;
+
+nativeFilePublish64 {
+    fn:
+        public:
+            run() -> int {
+                source >> str <- "publish-source-64.bin";
+                copy >> str <- "publish-copy-64.bin";
+                destination >> str <- "publish-final-64.bin";
+                empty >> str <- "publish-empty-64.bin";
+                data >> p<byte> <- cast<byte>(alloc(6));
+                if (data == null) return 1;
+                wr(data,0); wr(off(data,1),255); wr(off(data,2),10);
+                wr(off(data,3),128); wr(off(data,4),1); wr(off(data,5),2);
+                if (exists(source) || exists(copy) || exists(destination) || exists(empty)) { free(data); return 2; }
+                if (fsWriteFrom(source,data,6,false) != 6 || fsCopy(source,copy) != 6) { free(data); return 3; }
+                if (fsCopy(source,source) != 6 || fsReadInto(copy,data,6) != 6) { free(data); return 4; }
+                if (rd(data) != 0 || rd(off(data,1)) != 255 || rd(off(data,2)) != 10 ||
+                    rd(off(data,3)) != 128 || rd(off(data,4)) != 1 || rd(off(data,5)) != 2) { free(data); return 5; }
+                if (fsWriteFrom(destination,data,1,false) != 1 || !rename_file(copy,destination)) { free(data); return 6; }
+                if (exists(copy) || fsSize(destination) != 6 || fsReadInto(destination,data,6) != 6 ||
+                    rd(data) != 0 || rd(off(data,1)) != 255 || rd(off(data,2)) != 10 ||
+                    rd(off(data,3)) != 128 || rd(off(data,4)) != 1 || rd(off(data,5)) != 2) { free(data); return 7; }
+                if (fsCopy(copy,source) != -1 || rename_file(copy,source) || !exists(source)) { free(data); return 8; }
+                if (fsWriteFrom(empty,data,0,false) != 0 || fsCopy(empty,copy) != 0 || fsSize(copy) != 0) { free(data); return 9; }
+                free(data);
+                if (!delete_file(source) || !delete_file(destination) || !delete_file(empty) || !delete_file(copy)) return 10;
+                println("file-publish-ok");
+                return 195;
+            }
+    ref main ->> run;
+    fa: return true;
+}

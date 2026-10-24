@@ -1,0 +1,513 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env, spawn, wait>;
+use <text:parse>;
+use <time:clock>;
+use <project:text, package_graph, resolver, sha256, build_pipeline>;
+
+executionPipeline[@runtime] {
+    const:
+        PATH_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            baseName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return cast(off(source, at + 1));
+            }
+
+            stem(path >> str) -> str {
+                name >> str <- baseName(path);
+                width >> int <- strByteLen(name);
+                return width > 2 && strEndsWith(name, ".n") ?
+                    strSubstring(name, 0, width - 2) : name;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            sanitize(value >> str) -> str {
+                bytes >> int <- strByteLen(value);
+                output >> p<byte> <- cast(alloc(bytes + 1));
+                guard output != null else return value;
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (at < bytes) {
+                    current >> byte <- rd(off(source, at));
+                    wr(off(output, at), separator(current) || current == 58 ? 95 : current);
+                    at += 1;
+                }
+                wr(off(output, bytes), 0);
+                return cast(output);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") return "";
+                    if (text.ghorText.same(current, name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") return false;
+                    if (text.ghorText.same(current, name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            countOption(handle >> addr, name >> str, fallback >> int, zeroAllowed >> bool) -> int {
+                value >> str <- option(handle, name);
+                if (value == "") return fallback;
+                parsed >> int <- 0;
+                if (!tryParseInt(value, &parsed) || parsed < 0 || (!zeroAllowed && parsed == 0)) return -1;
+                return parsed;
+            }
+
+            programArguments(handle >> addr) -> list<str> {
+                result >> list<str> <- listCreateWithCapacity<str>(8);
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                forwarding >> bool <- false;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (forwarding) listAdd(result, current);
+                    else if (current == "--") forwarding <- true;
+                    at += 1;
+                }
+                return result;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            compiler(handle >> addr) -> str {
+                selected >> str <- option(handle, "--ncc");
+                if (selected != "") return selected;
+                selected <- envText("NC_GHOR_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            hostTarget() -> str {
+                configured >> str <- envText("NC_GHOR_HOST_TARGET");
+                if (configured != "") return configured;
+                arch >> str <- envText("PROCESSOR_ARCHITECTURE");
+                if (arch == "") arch <- envText("HOSTTYPE");
+                normalized >> str <- arch;
+                if (arch == "AMD64" || arch == "amd64" || arch == "x64") normalized <- "x86_64";
+                else if (arch == "arm64") normalized <- "aarch64";
+                if (normalized == "") normalized <- "x86_64";
+                if (envText("OS") == "Windows_NT") return normalized + "-pc-windows-msvc";
+                platform >> str <- envText("OSTYPE");
+                if (strContains(platform, "darwin")) return normalized + "-apple-darwin";
+                return normalized + "-unknown-linux-gnu";
+            }
+
+            selectedTarget(handle >> addr, model >> int) -> str {
+                selected >> str <- option(handle, "--target");
+                if (selected != "") return selected;
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(model, "target_default"), "triple"), hostTarget());
+            }
+
+            sharedTarget(model >> int) -> str {
+                configured >> str <- jsonGetStringOr(jsonObjectGet(model, "shared_target"), "");
+                if (configured != "") return configured;
+                root >> str <- jsonGetStringOr(jsonObjectGet(model, "workspace_root"), "");
+                if (root == "") root <- directory(jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                return join(root, "target/ghor");
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            collectSources(root >> str, files >> int) -> int {
+                if (!exists(root) || !isDirectory(root)) return 0;
+                names >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard names != null else return -1;
+                listed >> int <- listDirInto(root, names, PATH_BYTES);
+                if (listed < 0) { free(names); return -1; }
+                if (listed >= PATH_BYTES) listed <- PATH_BYTES - 1;
+                wr(off(names, listed), 0);
+                count >> int <- 0;
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(root, name);
+                            if (isDirectory(child)) {
+                                nested >> int <- collectSources(child, files);
+                                if (nested < 0) { free(names); return -1; }
+                                count += nested;
+                            }
+                            else if (strEndsWith(name, ".n")) {
+                                jsonArrayPush(files, jsonNewString(child));
+                                count += 1;
+                            }
+                        }
+                        while (at < listed &&
+                            (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return count;
+            }
+
+            addDiagnostic(entries >> int, code >> str, message >> str, path >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                if (path != "") jsonObjectSet(item, "path", jsonNewString(path));
+                return jsonArrayPush(entries, item);
+            }
+
+            printModel(model >> int) -> bool {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                return true;
+            }
+
+            runNative(executable >> str, arguments >> list<str>) -> int {
+                process >> Result<ProcessHandle, ProcessError> <- spawn(executable, arguments);
+                if (!isOk(process)) return -1;
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) ? unwrap(status) : -1;
+            }
+
+            nativeBuild(entry >> int) -> int {
+                path >> str <- jsonGetStringOr(jsonObjectGet(entry, "artifact"), "");
+                if (path == "" || !exists(path)) return 0;
+                report >> int <- jsonParseFile(path);
+                guard report != 0 else return 0;
+                build >> int <- jsonClone(jsonObjectGet(report, "native_build"));
+                jsonRelease(report);
+                return build;
+            }
+
+            executeRun(handle >> addr) -> int {
+                model >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be materialized");
+                    return 2;
+                }
+                diagnostics >> int <- jsonNewArray();
+                if ((hasFlag(handle, "--locked") || hasFlag(handle, "--frozen")) &&
+                    !resolver.resolver.lockCurrent(handle)) {
+                    addDiagnostic(diagnostics, "E_GHOR_LOCK_DRIFT_001",
+                        "ghor.lock does not match manifest resolution",
+                        jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                }
+                target >> str <- selectedTarget(handle, model);
+                host >> str <- hostTarget();
+                if (target != host) addDiagnostic(diagnostics, "E_GHOR_RUN_TARGET_001",
+                    "selected target cannot execute on this host", target);
+                artifact >> int <- 0;
+                build >> int <- 0;
+                executable >> str <- "";
+                code >> int <- -1;
+                if (jsonArrayLen(diagnostics) == 0) {
+                    artifact <- build_pipeline.buildPipeline.materializeManifest(handle,
+                        jsonGetStringOr(jsonObjectGet(model, "path"), ""),
+                        sharedTarget(model), diagnostics);
+                    if (artifact != 0) {
+                        executable <- jsonGetStringOr(jsonObjectGet(artifact, "executable"), "");
+                        build <- nativeBuild(artifact);
+                    }
+                    if (executable == "" || !exists(executable)) {
+                        addDiagnostic(diagnostics, "E_GHOR_RUN_001",
+                            "native build did not produce an executable", executable);
+                    }
+                    else code <- runNative(executable, programArguments(handle));
+                    if (code != 0 && jsonArrayLen(diagnostics) == 0) {
+                        addDiagnostic(diagnostics, "E_GHOR_RUN_001",
+                            "native executable returned a nonzero status", executable);
+                    }
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.run.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 && code == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "execution", jsonNewString("native_machine_executable"));
+                jsonObjectSet(report, "target", jsonNewString(target));
+                jsonObjectSet(report, "executable", jsonNewString(executable));
+                jsonObjectSet(report, "exit_code", jsonNewInt(code));
+                jsonObjectSet(report, "build", build == 0 ? jsonNewNull() : build);
+                jsonObjectSet(report, "artifact", artifact == 0 ? jsonNewNull() : artifact);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                printModel(report);
+                failed >> bool <- jsonArrayLen(diagnostics) != 0 || code != 0;
+                jsonRelease(report);
+                jsonRelease(model);
+                return failed ? (code > 0 ? code : 2) : 0;
+            }
+
+            buildBenchmark(
+                handle >> addr,
+                source >> str,
+                target >> str,
+                outputDirectory >> str,
+                diagnostics >> int
+            ) -> int {
+                name >> str <- stem(source);
+                executable >> str <- join(outputDirectory,
+                    strContains(target, "windows") ? name + ".exe" : name);
+                arguments >> list<str> <- listCreateWithCapacity<str>(22);
+                listAdd(arguments, "build"); listAdd(arguments, source); listAdd(arguments, executable);
+                listAdd(arguments, "--out-dir"); listAdd(arguments, outputDirectory);
+                listAdd(arguments, "--profile"); listAdd(arguments, "release-fast");
+                listAdd(arguments, "--target"); listAdd(arguments, target);
+                listAdd(arguments, "--cpu");
+                cpu >> str <- option(handle, "--cpu");
+                listAdd(arguments, cpu == "" ? "native" : cpu);
+                tune >> str <- option(handle, "--tune-profile");
+                cc >> str <- option(handle, "--cc");
+                linker >> str <- option(handle, "--linker");
+                if (tune != "") { listAdd(arguments, "--tune-profile"); listAdd(arguments, tune); }
+                if (cc != "") { listAdd(arguments, "--cc"); listAdd(arguments, cc); }
+                if (linker != "") { listAdd(arguments, "--linker"); listAdd(arguments, linker); }
+                listAdd(arguments, "--quiet");
+                envSet("NCC_CHILD_QUIET", "1");
+                buildCode >> int <- runNative(compiler(handle), arguments);
+                if (buildCode != 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                        "benchmark compiler returned a nonzero status", source);
+                    return 0;
+                }
+                materialDirectory >> str <- outputDirectory;
+                compilerManifestPath >> str <- join(
+                    join(materialDirectory, "run"), name + ".native-build.json");
+                machine >> str <- join(
+                    join(materialDirectory, "lowering"), name + ".nm");
+                object >> str <- join(
+                    join(materialDirectory, "obj"), name + ".obj");
+                executable <- join(
+                    materialDirectory, strContains(target, "windows") ? name + ".exe" : name);
+                artifact >> int <- jsonNewObject();
+                jsonObjectSet(artifact, "source", jsonNewString(source));
+                jsonObjectSet(artifact, "name", jsonNewString(name));
+                jsonObjectSet(artifact, "executable", jsonNewString(executable));
+                jsonObjectSet(artifact, "executable_bytes", jsonNewInt(fsSize(executable)));
+                jsonObjectSet(artifact, "executable_sha256", jsonNewString(sha256.sha256.file(executable)));
+                jsonObjectSet(artifact, "nm", jsonNewString(machine));
+                jsonObjectSet(artifact, "nm_sha256", jsonNewString(sha256.sha256.file(machine)));
+                jsonObjectSet(artifact, "object", jsonNewString(object));
+                jsonObjectSet(artifact, "object_sha256", jsonNewString(sha256.sha256.file(object)));
+                jsonObjectSet(artifact, "compiler_manifest", jsonNewString(compilerManifestPath));
+                return artifact;
+            }
+
+            measureBenchmark(
+                artifact >> int,
+                warmup >> int,
+                iterations >> int,
+                noRun >> bool,
+                arguments >> list<str>,
+                diagnostics >> int
+            ) -> int {
+                executable >> str <- jsonGetStringOr(jsonObjectGet(artifact, "executable"), "");
+                samples >> int <- jsonNewArray();
+                code >> int <- 0;
+                at >> int <- 0;
+                if (!noRun) {
+                    while (at < warmup && code == 0) {
+                        code <- runNative(executable, arguments);
+                        at += 1;
+                    }
+                }
+                total >> int <- 0;
+                minimum >> int <- -1;
+                maximum >> int <- 0;
+                at <- 0;
+                while (!noRun && at < iterations && code == 0) {
+                    started >> int <- monotonicNs();
+                    code <- runNative(executable, arguments);
+                    elapsed >> int <- monotonicNs() - started;
+                    jsonArrayPush(samples, jsonNewInt(elapsed));
+                    total += elapsed;
+                    if (minimum < 0 || elapsed < minimum) minimum <- elapsed;
+                    if (elapsed > maximum) maximum <- elapsed;
+                    at += 1;
+                }
+                if (code != 0) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "benchmark executable returned a nonzero status", executable);
+                jsonObjectSet(artifact, "status", jsonNewString(
+                    code == 0 ? (noRun ? "built" : "ok") : "error"));
+                jsonObjectSet(artifact, "exit_code", jsonNewInt(code));
+                jsonObjectSet(artifact, "warmup", jsonNewInt(noRun ? 0 : warmup));
+                jsonObjectSet(artifact, "iterations", jsonNewInt(noRun ? 0 : jsonArrayLen(samples)));
+                jsonObjectSet(artifact, "samples_ns", samples);
+                jsonObjectSet(artifact, "total_ns", jsonNewInt(total));
+                jsonObjectSet(artifact, "min_ns", jsonNewInt(noRun ? 0 : minimum));
+                jsonObjectSet(artifact, "max_ns", jsonNewInt(maximum));
+                jsonObjectSet(artifact, "mean_ns", jsonNewInt(
+                    jsonArrayLen(samples) == 0 ? 0 : total / jsonArrayLen(samples)));
+                return artifact;
+            }
+
+            executeBench(handle >> addr) -> int {
+                model >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be materialized");
+                    return 2;
+                }
+                diagnostics >> int <- jsonNewArray();
+                iterations >> int <- countOption(handle, "--iterations", 10, false);
+                warmup >> int <- countOption(handle, "--warmup", 1, true);
+                if (iterations < 1) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "--iterations must be a positive integer", option(handle, "--iterations"));
+                if (warmup < 0) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "--warmup must be a nonnegative integer", option(handle, "--warmup"));
+                if ((hasFlag(handle, "--locked") || hasFlag(handle, "--frozen")) &&
+                    !resolver.resolver.lockCurrent(handle)) {
+                    addDiagnostic(diagnostics, "E_GHOR_LOCK_DRIFT_001",
+                        "ghor.lock does not match manifest resolution",
+                        jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                }
+                target >> str <- selectedTarget(handle, model);
+                if (target != hostTarget()) addDiagnostic(diagnostics, "E_GHOR_RUN_TARGET_001",
+                    "benchmark target cannot execute on this host", target);
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(model, "path"), "");
+                root >> str <- directory(manifestPath);
+                files >> int <- jsonNewArray();
+                found >> int <- collectSources(join(root, "benches"), files);
+                if (found < 0) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "benchmark directory cannot be enumerated", root);
+                selected >> str <- option(handle, "--bench");
+                outputDirectory >> str <- join(join(join(sharedTarget(model), "bench"),
+                    sanitize(target)), "release-fast");
+                if (!ensureDirectory(outputDirectory)) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "benchmark artifact directory cannot be created", outputDirectory);
+                benchmarks >> int <- jsonNewArray();
+                matched >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(files) && jsonArrayLen(diagnostics) == 0) {
+                    source >> str <- jsonGetString(jsonArrayGet(files, at));
+                    if (selected == "" || stem(source) == selected) {
+                        matched += 1;
+                        artifact >> int <- buildBenchmark(handle, source, target, outputDirectory, diagnostics);
+                        if (artifact != 0) jsonArrayPush(benchmarks, measureBenchmark(artifact,
+                            warmup, iterations, hasFlag(handle, "--no-run"),
+                            programArguments(handle), diagnostics));
+                    }
+                    at += 1;
+                }
+                if (selected != "" && matched == 0) addDiagnostic(diagnostics, "E_GHOR_BENCH_001",
+                    "selected benchmark does not exist", selected);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.bench.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "profile", jsonNewString("release-fast"));
+                jsonObjectSet(report, "target", jsonNewString(target));
+                jsonObjectSet(report, "artifact_directory", jsonNewString(outputDirectory));
+                jsonObjectSet(report, "benchmarks", benchmarks);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                printModel(report);
+                failed >> bool <- jsonArrayLen(diagnostics) != 0;
+                jsonRelease(report);
+                jsonRelease(files);
+                jsonRelease(model);
+                return failed ? 2 : 0;
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "run" || command == "bench";
+            }
+
+            execute(handle >> addr) -> int {
+                return argsAt(handle, 1) == "run" ? executeRun(handle) : executeBench(handle);
+            }
+
+            selfTest() -> bool {
+                return stem("benches/raw_speed.n") == "raw_speed" &&
+                    sanitize("x86_64:pc/windows") == "x86_64_pc_windows";
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,41 @@
+use <io:output>;
+
+nativeRecordsStorage65 {
+    type:
+        Pair {
+            public:
+                low >> byte;
+                high >> u64;
+        }
+        Packet {
+            public:
+                ready >> bool;
+                tag >> int;
+                pair >> Pair;
+                label >> str;
+                link >> p<byte>;
+        }
+    fn:
+        run() -> int {
+            source >> Packet <- Packet(ready: true, tag: -17,
+                pair: Pair(low: 251, high: 0xFEDCBA9876543210), label: "record", link: from<byte>(0x123456789ABC));
+            copy >> Packet;
+            expectedLink >> addr <- 0x123456789ABC;
+            cp(&copy,&source,sizeOf(Packet));
+            copy.tag += 2;
+            copy.pair.low <- 19;
+            copy.pair.high <- 0x8123456789ABCDEF;
+            copy.ready <- false;
+            if (source.tag != -17 || source.pair.low != 251 || !source.ready) return 1;
+            if (copy.tag != -15 || copy.pair.low != 19 || copy.pair.high != 0x8123456789ABCDEF || copy.ready) return 2;
+            if (copy.label != "record" || adr(copy.link) != expectedLink) return 3;
+            if (sizeOf(Packet) != 40 || alignOf(Packet) != 8 || offsetOf(Packet, pair) != 8) return 4;
+            if (adr(&copy.pair) != adr(&copy)+8 || adr(&copy.tag) != adr(&copy)+4) return 5;
+            cp(&source,&copy,sizeOf(Packet));
+            if (source.tag != -15 || source.pair.high != copy.pair.high) return 6;
+            println("records-storage-ok");
+            return 197;
+        }
+    ref main ->> run;
+    fa: return true;
+}

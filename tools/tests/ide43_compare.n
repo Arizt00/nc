@@ -1,0 +1,64 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:tool_cli, cert_json, ide43_core, ide43_files, sha256>;
+
+ide43Compare {
+    fn:
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                options >> int <- tool_cli.toolCli.parse(args,"|--oracle|--native|--oracle-code|--native-code|--out|","");
+                if (options == 0) return 2;
+                oraclePath >> str <- tool_cli.toolCli.value(options,"--oracle","");
+                nativePath >> str <- tool_cli.toolCli.value(options,"--native","");
+                output >> str <- tool_cli.toolCli.value(options,"--out","");
+                oracle >> int <- jsonParseFile(oraclePath); native >> int <- jsonParseFile(nativePath);
+                passed >> bool <- jsonKind(oracle) == 6 && jsonKind(native) == 6 &&
+                    tool_cli.toolCli.value(options,"--oracle-code","") == tool_cli.toolCli.value(options,"--native-code","") &&
+                    jsonObjectLen(oracle) == jsonObjectLen(native);
+                ot >> int <- jsonObjectGet(oracle,"generated_at"); nt >> int <- jsonObjectGet(native,"generated_at");
+                passed <- jsonKind(ot) == 4 && jsonKind(nt) == 4 && strByteLen(jsonStringView(ot,"")) == 20 &&
+                    strByteLen(jsonStringView(nt,"")) == 20 && strEndsWith(jsonStringView(ot,""),"Z") && strEndsWith(jsonStringView(nt,""),"Z") && passed;
+                jsonRelease(ot); jsonRelease(nt);
+                keys >> int <- ide43_core.ide43Core.list("schema|version|state|status|checks"); index >> int <- 0;
+                if (jsonObjectHas(oracle,"plugin_product_version")) cert_json.certJson.push(keys,jsonNewString("plugin_product_version"));
+                while (index < jsonArrayLen(keys)) {
+                    key >> int <- jsonArrayGet(keys,index);
+                    a >> int <- jsonObjectGet(oracle,jsonStringView(key,"")); b >> int <- jsonObjectGet(native,jsonStringView(key,""));
+                    passed <- jsonEquals(a,b) && passed; jsonRelease(a); jsonRelease(b); jsonRelease(key); index += 1;
+                }
+                a >> int <- jsonObjectGet(oracle,"commands"); b >> int <- jsonObjectGet(native,"commands");
+                passed <- jsonArrayLen(a) == jsonArrayLen(b) && passed;
+                index <- 0;
+                while (index < jsonArrayLen(a)) {
+                    x >> int <- jsonArrayGet(a,index); y >> int <- jsonArrayGet(b,index);
+                    xc >> int <- jsonObjectGet(x,"code"); yc >> int <- jsonObjectGet(y,"code");
+                    xo >> int <- jsonObjectGet(x,"ok"); yo >> int <- jsonObjectGet(y,"ok");
+                    xs >> int <- jsonObjectGet(x,"stdout"); ys >> int <- jsonObjectGet(y,"stdout");
+                    xe >> int <- jsonObjectGet(x,"stderr"); ye >> int <- jsonObjectGet(y,"stderr");
+                    xd >> int <- jsonObjectGet(x,"cmd"); yd >> int <- jsonObjectGet(y,"cmd");
+                    passed <- jsonKind(xd) == 4 && jsonKind(yd) == 4 && jsonKind(xc) == 3 && jsonKind(yc) == 3 &&
+                        jsonKind(xo) == 2 && jsonKind(yo) == 2 && jsonKind(xs) == 4 && jsonKind(ys) == 4 && jsonKind(xe) == 4 && jsonKind(ye) == 4 && passed;
+                    jsonRelease(xd); jsonRelease(yd);
+                    passed <- jsonEquals(xc,yc) && jsonEquals(xo,yo) && jsonObjectLen(x) == 5 && jsonObjectLen(y) == 5 && passed;
+                    passed <- jsonEquals(xs,ys) && jsonEquals(xe,ye) && passed;
+                    jsonRelease(xs); jsonRelease(ys); jsonRelease(xe); jsonRelease(ye);
+                    jsonRelease(xc); jsonRelease(yc); jsonRelease(xo); jsonRelease(yo); jsonRelease(x); jsonRelease(y); index += 1;
+                }
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.ide43.oracle-comparison.v1"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(passed));
+                cert_json.certJson.put(report,"oracle_sha256",jsonNewString(sha256.nccSha256.file(oraclePath)));
+                cert_json.certJson.put(report,"native_sha256",jsonNewString(sha256.nccSha256.file(nativePath)));
+                cert_json.certJson.put(report,"differences",ide43_files.ide43Files.diff(oracle,native));
+                cert_json.certJson.put(report,"scope",jsonNewString("exact check set and values, schema/version/state/status, exit code, command count/code/ok/stdout/stderr; raw timestamp and native command substitutions recorded field by field"));
+                if (output == "" || !cert_json.certJson.save(output,report)) passed <- false;
+                println(passed ? "PASS ide43 oracle" : "FAIL ide43 oracle");
+                jsonRelease(a); jsonRelease(b); jsonRelease(keys); jsonRelease(report); jsonRelease(oracle); jsonRelease(native);
+                jsonRelease(options); argsRelease(args); return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

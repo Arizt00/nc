@@ -1,0 +1,52 @@
+use <io:output>;
+
+nativeOveralignmentMachine81 {
+    type:
+        Wide { public: value >> u64; layout: align(512); }
+    emit(code >> p<byte>, cursor >> int, value >> byte) -> int { wr(off(code,cursor),value); return cursor+1; }
+    word(code >> p<byte>, cursor >> int, value >> u32) -> int { wr<u32>(off(code,cursor),value); return cursor+4; }
+    callee(code >> p<byte>, windows >> bool) -> int {
+        at >> int <- 0;
+        if (windows) { at <- emit(code,at,0x48); at <- emit(code,at,0x89); at <- emit(code,at,0xC8); }
+        else {
+            at <- emit(code,at,0x48); at <- emit(code,at,0x8D); at <- emit(code,at,0x44);
+            at <- emit(code,at,0x24); at <- emit(code,at,8);
+        }
+        at <- emit(code,at,0x48); at <- emit(code,at,0xA9); at <- word(code,at,511);
+        at <- emit(code,at,0x75); at <- emit(code,at,4);
+        at <- emit(code,at,0x48); at <- emit(code,at,0x8B); at <- emit(code,at,0); at <- emit(code,at,0xC3);
+        at <- emit(code,at,0xB8); at <- word(code,at,0xFFFFFFFF); return emit(code,at,0xC3);
+    }
+    caller(code >> p<byte>, start >> int, windows >> bool) -> int {
+        at >> int <- start;
+        at <- emit(code,at,0x55); at <- emit(code,at,0x48); at <- emit(code,at,0x89); at <- emit(code,at,0xE5);
+        at <- emit(code,at,0x49); at <- emit(code,at,0x89); at <- emit(code,at,windows ? 0xCB : 0xFB);
+        at <- emit(code,at,0x48); at <- emit(code,at,0x81); at <- emit(code,at,0xEC); at <- word(code,at,1040);
+        at <- emit(code,at,0x48); at <- emit(code,at,0x81); at <- emit(code,at,0xE4); at <- word(code,at,0xFFFFFE00);
+        if (windows) {
+            at <- emit(code,at,0x48); at <- emit(code,at,0x8D); at <- emit(code,at,0x8C); at <- emit(code,at,0x24); at <- word(code,at,512);
+        } else { at <- emit(code,at,0x48); at <- emit(code,at,0x89); at <- emit(code,at,0xE1); }
+        at <- emit(code,at,0x48); at <- emit(code,at,0xC7); at <- emit(code,at,1); at <- word(code,at,73);
+        at <- emit(code,at,0x41); at <- emit(code,at,0xFF); at <- emit(code,at,0xD3);
+        at <- emit(code,at,0xC9); return emit(code,at,0xC3);
+    }
+    receive(value >> Wide) -> u64 {
+        if (adr(&value) % 512 != 0) return 0;
+        return value.value+1;
+    }
+    run() -> int {
+        bytes >> int <- vmPageSize(); code >> p<byte> <- vmReserve(null,bytes,0);
+        if (code == null || !vmCommit(code,bytes,vmReadWriteProtection())) return 1;
+        windows >> bool <- vmReadWriteProtection() == 4;
+        middle >> int <- callee(code,windows); count >> int <- caller(code,middle,windows);
+        if (fsWriteFrom("overalignment-machine-abi.bin",code,count,false) != count || !vmExecutable(code,bytes)) return 2;
+        rawCallee >> fn(Wide) -> u64 <- cast(code);
+        rawCaller >> fn(addr) -> u64 <- cast(off(code,middle));
+        if (rawCallee(Wide(value: 37)) != 37) return 3;
+        if (rawCaller(adr(&receive)) != 74) return 4;
+        if (!vmRelease(code,bytes)) return 5;
+        println("native-overalignment-machine-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

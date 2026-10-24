@@ -1,0 +1,78 @@
+use <project:fs_describe_host>;
+
+fsDescribeProvider {
+    fn:
+        private:
+            append(out >> p<byte>, at >> int, text >> str) -> int {
+                source >> p<byte> <- cast<byte>(text);
+                index >> int <- 0;
+                while (rd(off(source,index)) != 0) {
+                    wr(off(out,at),rd(off(source,index))); at += 1; index += 1;
+                }
+                return at;
+            }
+            decimal(out >> p<byte>, at >> int, value >> u64) -> int {
+                digits >> int <- 1;
+                scan >> u64 <- value;
+                while (scan >= 10) { scan = scan / 10; digits += 1; }
+                end >> int <- at + digits;
+                while (digits > 0) {
+                    digits -= 1;
+                    digit >> byte <- value % 10 + 48;
+                    wr(off(out,at+digits),digit); value = value / 10;
+                }
+                return end;
+            }
+            valid(path >> str) -> bool {
+                return cast<byte>(path) != null && rd(cast<byte>(path)) != 0;
+            }
+            describe(path >> str, out >> p<byte>, capacity >> u64, permissions >> bool) -> int {
+                if (!valid(path)) return -1;
+                metadata >> array<u64,4>;
+                data >> p<byte> <- cast<byte>(&metadata);
+                if (!fs_describe_host.fsDescribeHost.inspect(path,data)) return -1;
+                scratch >> array<byte,256>;
+                text >> p<byte> <- cast<byte>(&scratch);
+                kind >> u32 <- rd<u32>(cast<u32>(off(data,16)));
+                mode >> u32 <- rd<u32>(cast<u32>(off(data,20)));
+                readonly >> bool <- rd<u32>(cast<u32>(off(data,24))) != 0;
+                cursor >> int <- 0;
+                if (permissions) {
+                    cursor = append(text,cursor,"readonly=");
+                    cursor = append(text,cursor,readonly ? "true" : "false");
+                    cursor = append(text,cursor,";mode=");
+                    cursor = decimal(text,cursor,mode);
+                } else {
+                    cursor = append(text,cursor,"type=");
+                    cursor = append(text,cursor,kind == 1 ? "file" : (kind == 2 ? "directory" : (kind == 3 ? "symlink" : "other")));
+                    cursor = append(text,cursor,";length=");
+                    cursor = decimal(text,cursor,rd<u64>(cast<u64>(data)));
+                    cursor = append(text,cursor,";readonly=");
+                    cursor = append(text,cursor,readonly ? "true" : "false");
+                    cursor = append(text,cursor,";modified=");
+                    cursor = decimal(text,cursor,rd<u64>(cast<u64>(off(data,8))));
+                }
+                if (out == null || capacity <= cursor) return -2;
+                wr(off(text,cursor),0);
+                index >> int <- 0;
+                while (index <= cursor) { wr(off(out,index),rd(off(text,index))); index += 1; }
+                return cursor;
+            }
+        public:
+            provider_fs_fsMetadataInto(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                return describe(path,out,capacity,false);
+            }
+            provider_fs_fsPermissionsInto(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                return describe(path,out,capacity,true);
+            }
+            provider_fs_listDirInto(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                if (!valid(path)) return -1;
+                return fs_describe_host.fsDescribeHost.names(path,out,capacity);
+            }
+            provider_fs_officialPathInto(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                if (!valid(path)) return -1;
+                if (out == null || capacity == 0) return -2;
+                return fs_describe_host.fsDescribeHost.canonical(path,out,capacity);
+            }
+    fa: return true;
+}

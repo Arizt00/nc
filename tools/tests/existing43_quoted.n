@@ -1,0 +1,77 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:process_capture, tool_cli, release_io, cert_json>;
+
+existing43Quoted {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+    fn:
+        private:
+            check(name >> str, good >> bool) -> void {
+                checks += 1;
+                if (!good) { failures += 1; println("FAIL "+name); }
+            }
+            quote(name >> str, value >> str, expected >> str) -> void {
+                text >> str <- process_capture.processCapture.quoted(value);
+                check(name+"-bytes",text == expected);
+                check(name+"-owned-release",strRelease(text));
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                if (argsCount(arguments) > 1 && argsAt(arguments,1) == "--echo") {
+                    actual >> int <- jsonNewArray(); index >> int <- 2;
+                    while (index < argsCount(arguments)) { jsonArrayPush(actual,jsonNewString(argsAt(arguments,index))); index += 1; }
+                    encoded >> str <- cert_json.certJson.stringify(actual);
+                    println(encoded); strRelease(encoded); jsonRelease(actual); argsRelease(arguments); return 0;
+                }
+                if (argsCount(arguments) != 2) return 2;
+                quote("empty","","\"\"");
+                quote("plain","alpha","\"alpha\"");
+                quote("space","two words","\"two words\"");
+                quote("tab","a\tb","\"a\tb\"");
+                quote("quote","a\"b","\"a\\\"b\"");
+                quote("trailing","a\\","\"a\\\\\"");
+                quote("double-trailing","a\\\\","\"a\\\\\\\\\"");
+                quote("slash-quote","a\\\"b",envHas("WINDIR") ? "\"a\\\\\\\"b\"" : "\"a\\\\\\\"b\"");
+                quote("unicode","\u{e9}\u{4e2d}","\"\u{e9}\u{4e2d}\"");
+                rows >> int <- jsonNewArray();
+                tool_cli.toolCli.append(rows,"alpha"); tool_cli.toolCli.append(rows,"two words"); tool_cli.toolCli.append(rows,"a\\");
+                index >> int <- 0; stable >> bool <- true;
+                while (index < 1024) {
+                    line >> str <- tool_cli.toolCli.arrayLine(rows);
+                    if (line != "\"alpha\" \"two words\" \"a\\\\\"" || !strRelease(line)) stable <- false;
+                    index += 1;
+                }
+                check("array-line-owned-1024",stable && index == 1024); jsonRelease(rows);
+                index <- 0; stable <- true;
+                while (index < 4096) {
+                    owned >> str <- process_capture.processCapture.quoted("space \" quote \\ \u{e9}");
+                    if (!strRelease(owned)) stable <- false; index += 1;
+                }
+                check("quote-owned-4096",stable && index == 4096);
+                rows <- jsonNewArray(); tool_cli.toolCli.append(rows,argsAt(arguments,0)); tool_cli.toolCli.append(rows,"--echo");
+                expected >> int <- jsonNewArray();
+                tool_cli.toolCli.append(expected,""); tool_cli.toolCli.append(expected,"two words"); tool_cli.toolCli.append(expected,"a\\");
+                tool_cli.toolCli.append(expected,"a\\\"b"); tool_cli.toolCli.append(expected,"\u{e9}\u{4e2d}");
+                index <- 0;
+                while (index < jsonArrayLen(expected)) {
+                    value >> int <- jsonArrayGet(expected,index); tool_cli.toolCli.append(rows,jsonStringView(value,"")); jsonRelease(value); index += 1;
+                }
+                capture >> int <- tool_cli.toolCli.execute(rows,".",30000);
+                check("real-argv-capture",tool_cli.toolCli.clean(capture) && release_io.releaseIo.number(capture,"code",999) == 0);
+                text >> str <- cert_json.certJson.field(capture,"stdout"); encoded >> str <- cert_json.certJson.stringify(expected);
+                trimmed >> str <- strTrim(text); check("real-argv-values",trimmed == encoded);
+                strRelease(trimmed); strRelease(text); strRelease(encoded); jsonRelease(capture); jsonRelease(rows); jsonRelease(expected);
+                report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.quoted.v43"));
+                jsonObjectSet(report,"checks",jsonNewInt(checks)); jsonObjectSet(report,"failures",jsonNewInt(failures)); jsonObjectSet(report,"passed",jsonNewBool(failures == 0 && checks == 22));
+                saved >> bool <- release_io.releaseIo.save(argsAt(arguments,1),report);
+                println("existing43 quoting checks="+renderInt(checks)+" failures="+renderInt(failures));
+                jsonRelease(report); argsRelease(arguments); return failures == 0 && checks == 22 && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}
+

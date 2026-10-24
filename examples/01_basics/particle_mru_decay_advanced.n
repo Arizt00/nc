@@ -1,0 +1,209 @@
+use <collections:list>;
+use <io:output, render, input>;
+use <memory:ptr, region>;
+
+particleMruDecayAdvanced :: runtime {
+    ParticleRun :: type {
+            speedMetersPerSecond >> int;
+            seconds >> int;
+            initialMassGrams >> int;
+            exponent >> int;
+    }
+
+        stc:
+            timeline >> list<int>;
+            fifoQueue >> list<int>;
+            samples >> dinArray.binary<int>;
+            sampleRegion >> memRegion<int>;
+            baseAddress >> addr;
+            samplePtr >> p<int>;
+
+            option >> int;
+            running >> bool;
+            initialMassGrams >> int;
+            selectedSpeed >> int;
+            selectedSeconds >> int;
+            selectedExponent >> int;
+            digits >> int;
+            limit >> int;
+            zeroCount >> int;
+            zerosPrinted >> int;
+            head >> int;
+            processed >> int;
+            ok >> bool;
+
+        fn:
+            loadAdvancedStorage() -> bool {
+                timeline <- [1, 60, 600, 3600, 86400];
+                fifoQueue <- [1, 60, 600, 3600, 86400];
+                samples <- [1, 60, 600, 3600, 86400];
+                ok <- samples.binarySeal();
+                sampleRegion <- listAsRegion(timeline);
+                baseAddress <- 0x4000;
+                samplePtr !> p<int> : baseAddress;
+                return ok;
+            }
+
+            computeMassExponent(secondsValue >> int) -> int {
+                return secondsValue * 9;
+            }
+
+            countDigits(value >> int) -> int {
+                digits <- 1;
+                limit <- 10;
+
+                while (value >= limit) {
+                    digits <- digits + 1;
+                    limit <- limit * 10;
+                }
+
+                return digits;
+            }
+
+            askMass() -> bool {
+                print("Introduce masa inicial en gramos [1..999999999]: ");
+                initialMassGrams <- readInt();
+
+                if (initialMassGrams < 1) {
+                    println("Masa invalida: debe ser mayor o igual que 1.");
+                    return false;
+                }
+
+                if (initialMassGrams > 999999999) {
+                    println("Masa invalida: para decimal exacto en este ejemplo usa maximo 999999999 g.");
+                    return false;
+                }
+
+                return true;
+            }
+
+            askSpeed() -> bool {
+                print("Introduce velocidad en m/s [1..299792458]: ");
+                selectedSpeed <- readInt();
+
+                if (selectedSpeed < 1) {
+                    println("Velocidad invalida: minimo 1 m/s.");
+                    return false;
+                }
+
+                if (selectedSpeed > 299792458) {
+                    println("Velocidad invalida: no puede superar la velocidad de la luz.");
+                    return false;
+                }
+
+                return true;
+            }
+
+            askTime() -> bool {
+                print("Introduce tiempo en segundos [1..86400]: ");
+                selectedSeconds <- readInt();
+
+                if (selectedSeconds < 1) {
+                    println("Tiempo invalido: minimo 1 segundo.");
+                    return false;
+                }
+
+                if (selectedSeconds > 86400) {
+                    println("Tiempo invalido: maximo 24 horas = 86400 segundos.");
+                    return false;
+                }
+
+                return true;
+            }
+
+            drainQueueWithBifunctionAlternation() -> bool {
+                head <- 0;
+                processed <- 0;
+
+                while (head < fifoQueue.len()) {
+                    selectedExponent <- computeMassExponent(fifoQueue.get(head));
+                    head <- head + 1;
+                    processed <- processed + 1;
+                }
+
+                return processed == 5;
+            }
+
+            printExactFinalMass() -> bool {
+                selectedExponent <- computeMassExponent(selectedSeconds);
+                digits <- countDigits(initialMassGrams);
+                zeroCount <- selectedExponent - digits;
+
+                println("===== SOLUCION EXACTA =====");
+                println("Velocidad elegida: " + renderInt(selectedSpeed) + " m/s");
+                println("Tiempo elegido: " + renderInt(selectedSeconds) + " s");
+                println("Masa inicial: " + renderInt(initialMassGrams) + " g");
+                println("Factor por segundo: dividir entre 1000000000 = 10^9");
+                println("Exponente total: 9 * t = " + renderInt(selectedExponent));
+                println("Masa final exacta en gramos:");
+
+                print("0.");
+
+                zerosPrinted <- 0;
+
+                while (zerosPrinted < zeroCount) {
+                    print("0");
+                    zerosPrinted <- zerosPrinted + 1;
+                }
+
+                println(renderInt(initialMassGrams));
+
+                return true;
+            }
+
+            calculateCase() -> bool {
+                ok <- loadAdvancedStorage();
+                ok <- drainQueueWithBifunctionAlternation();
+
+                ok <- askMass();
+                if (ok == false) {
+                    return false;
+                }
+
+                ok <- askSpeed();
+                if (ok == false) {
+                    return false;
+                }
+
+                ok <- askTime();
+                if (ok == false) {
+                    return false;
+                }
+
+                ok <- printExactFinalMass();
+                return ok;
+            }
+
+            menu() -> bool {
+                running <- true;
+
+                while (running == true) {
+                    println("===== MENU PARTICULA MRU + MASA EXACTA =====");
+                    println("1. Calcular masa final exacta");
+                    println("0. Salir");
+                    print("Elige opcion: ");
+
+                    option <- readInt();
+
+                    if (option == 1) {
+                        ok <- calculateCase();
+                    }
+
+                    if (option == 0) {
+                        running <- false;
+                    }
+                }
+
+                return true;
+            }
+
+            run() -> bool {
+                return menu();
+            }
+
+        ref main ->> run;
+
+        fa:
+            return true;
+
+    }

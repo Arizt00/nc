@@ -1,0 +1,141 @@
+use <project:lexer, ast_arena>;
+
+nccParserModules {
+    const:
+        MODULE >> int <- 81;
+        PACKAGE >> int <- 82;
+        SEGMENT >> int <- 83;
+        VERSION >> int <- 84;
+        PROFILE >> int <- 85;
+        SUPERSEDED >> int <- 1;
+
+    fn:
+        private:
+            kind(state >> p<byte>, at >> int) -> int {
+                return lexer.nccLexer.tokenKindAt(state, at);
+            }
+
+            fail(arena >> p<byte>, state >> p<byte>, at >> int, error >> int) -> int {
+                if (rd<int>(off(arena, 16)) == 0) {
+                    last >> int <- lexer.nccLexer.tokenCount(state) - 1;
+                    if (at > last) at <- last;
+                    wr<int>(off(arena, 16), error);
+                    wr<int>(off(arena, 24), lexer.nccLexer.tokenLineAt(state, at));
+                    wr<int>(off(arena, 32), lexer.nccLexer.tokenColumnAt(state, at));
+                }
+                return -1;
+            }
+
+            add(arena >> p<byte>, state >> p<byte>, tag >> int,
+                parent >> int, first >> int, origin >> int) -> int {
+                index >> int <- ast_arena.nccAstArena.append(arena, tag, parent,
+                    lexer.nccLexer.tokenLineAt(state, first),
+                    lexer.nccLexer.tokenColumnAt(state, first),
+                    lexer.nccLexer.wordHashAt(state, origin), 0, first);
+                if (index >= 0) {
+                    record >> p<byte> <- ast_arena.nccAstArena.node(arena, index);
+                    wr<int>(off(record, 56), origin);
+                }
+                return index;
+            }
+
+            finish(arena >> p<byte>, index >> int, end >> int) -> bool {
+                guard index >= 0 else return false;
+                record >> p<byte> <- ast_arena.nccAstArena.node(arena, index);
+                wr<int>(off(record, 28), end);
+                return true;
+            }
+
+            path(arena >> p<byte>, state >> p<byte>, at >> int, parent >> int) -> int {
+                while (true) {
+                    // Stage0 reports a bad consumed path word at the following token.
+                    guard lexer.nccLexer.pathSegmentKind(kind(state, at))
+                        else return fail(arena, state, at + 1, 10);
+                    part >> int <- add(arena, state, SEGMENT, parent, at, at);
+                    guard part >= 0 else return -1;
+                    at += 1;
+                    if (kind(state, at) != 16) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            moduleDecl(arena >> p<byte>, state >> p<byte>, first >> int, parent >> int) -> int {
+                item >> int <- add(arena, state, MODULE, parent, first, first + 1);
+                guard item >= 0 else return -1;
+                end >> int <- path(arena, state, first + 1, item);
+                guard end >= 0 else return -1;
+                guard kind(state, end) == 14 else return fail(arena, state, end, 13);
+                finish(arena, item, end);
+                return end + 1;
+            }
+
+            packageDecl(arena >> p<byte>, state >> p<byte>, first >> int, parent >> int) -> int {
+                guard lexer.nccLexer.identifierKind(kind(state, first + 1))
+                    else return fail(arena, state, first + 2, 10);
+                item >> int <- add(arena, state, PACKAGE, parent, first, first + 1);
+                guard item >= 0 else return -1;
+                at >> int <- first + 2;
+                if (kind(state, at) != 5) {
+                    guard kind(state, at) == 14 else return fail(arena, state, at, 13);
+                    finish(arena, item, at);
+                    return at + 1;
+                }
+                at += 1;
+                lastVersion >> int <- -1;
+                lastProfile >> int <- -1;
+                while (kind(state, at) != 6) {
+                    guard kind(state, at) == 1 else return fail(arena, state, at, 9);
+                    if (lexer.nccLexer.tokenSame(state, at, "module")) {
+                        at <- moduleDecl(arena, state, at, item);
+                        guard (at >= 0) else return -1;
+                    } else {
+                        version >> bool <- lexer.nccLexer.tokenSame(state, at, "version");
+                        profile >> bool <- lexer.nccLexer.tokenSame(state, at, "profile");
+                        guard version || profile else return fail(arena, state, at, 9);
+                        guard kind(state, at + 1) == 13 else return fail(arena, state, at + 1, 12);
+                        if (version) {
+                            guard kind(state, at + 2) == 3 else return fail(arena, state, at + 2, 8);
+                        } else {
+                            guard lexer.nccLexer.pathSegmentKind(kind(state, at + 2))
+                                else return fail(arena, state, at + 3, 10);
+                        }
+                        guard kind(state, at + 3) == 14 else return fail(arena, state, at + 3, 13);
+                        field >> int <- add(arena, state, version ? VERSION : PROFILE, item, at, at + 2);
+                        guard field >= 0 else return -1;
+                        finish(arena, field, at + 3);
+                        previous >> int <- lastProfile;
+                        if (version) previous <- lastVersion;
+                        if (previous >= 0) {
+                            old >> p<byte> <- ast_arena.nccAstArena.node(arena, previous);
+                            wr<int>(off(old, 44), SUPERSEDED);
+                        }
+                        if (version) lastVersion <- field;
+                        else lastProfile <- field;
+                        at += 4;
+                    }
+                }
+                finish(arena, item, at);
+                if (kind(state, at + 1) == 14) return fail(arena, state, at + 2, 10);
+                return at + 1;
+            }
+
+        public:
+            starts(state >> p<byte>, at >> int) -> bool {
+                guard kind(state, at) == 1 else return false;
+                if (kind(state, at + 1) == 5) return false;
+                return lexer.nccLexer.tokenSame(state, at, "module") ||
+                    lexer.nccLexer.tokenSame(state, at, "package");
+            }
+
+            parse(arena >> p<byte>, state >> p<byte>, at >> int, parent >> int) -> int {
+                guard arena != null && state != null else return -1;
+                guard starts(state, at) else return -1;
+                if (lexer.nccLexer.tokenSame(state, at, "module")) {
+                    return moduleDecl(arena, state, at, parent);
+                }
+                return packageDecl(arena, state, at, parent);
+            }
+    fa:
+        return true;
+}

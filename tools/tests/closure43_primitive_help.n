@@ -1,0 +1,32 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output, render>;
+use <project:closure43_core, release_io, tool_cli>;
+
+closure43PrimitiveHelp {
+    fn:
+        run() -> int {
+            args >> addr <- argsOpen(); if (argsCount(args) != 4) return 2;
+            binary >> str <- argsAt(args,1); lab >> str <- argsAt(args,2); destination >> str <- argsAt(args,3);
+            if (release_io.releaseIo.fileType(lab) != 0) return 3;
+            envSet("CLOSURE43_ROOT",lab); envSet("CLOSURE43_DATA_ROOT",lab+"/missing-data");
+            envSet("CLOSURE43_CARGO",lab+"/must-not-run"); envSet("CLOSURE43_NCC",lab+"/must-not-run");
+            cases >> int <- jsonParse("[[\"-h\"],[\"--help\"],[\"ignored\",\"--help\"],[\"--\",\"-h\"],[\"--help\",\"--unknown\"]]");
+            rows >> int <- jsonNewArray(); index >> int <- 0; passed >> bool <- true;
+            while (index < jsonArrayLen(cases)) {
+                testcase >> int <- jsonArrayGet(cases,index); words >> int <- jsonNewArray();
+                closure43_core.closure43Core.push(words,jsonNewString(binary)); closure43_core.closure43Core.push(words,jsonNewString("generate-primitive-real-closure")); at >> int <- 0;
+                while (at < jsonArrayLen(testcase)) { closure43_core.closure43Core.push(words,jsonArrayGet(testcase,at)); at += 1; }
+                record >> int <- tool_cli.toolCli.execute(words,"",120000); code >> int <- release_io.releaseIo.number(record,"code",-1);
+                good >> bool <- tool_cli.toolCli.clean(record) && code == 0 && closure43_core.closure43Core.field(record,"stderr") == "" && strStartsWith(closure43_core.closure43Core.field(record,"stdout"),"usage: ncc-closures-v43 generate-primitive-real-closure") && release_io.releaseIo.fileType(lab) == 0;
+                if (!good) passed <- false;
+                row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"name","primitive-help-"+renderInt(index+1)); jsonObjectSet(row,"arguments",testcase); closure43_core.closure43Core.put(row,"code",jsonNewInt(code)); closure43_core.closure43Core.put(row,"no_workspace_created",jsonNewBool(release_io.releaseIo.fileType(lab) == 0)); closure43_core.closure43Core.put(row,"passed",jsonNewBool(good)); closure43_core.closure43Core.set(row,"stdout",closure43_core.closure43Core.field(record,"stdout")); closure43_core.closure43Core.set(row,"stderr",closure43_core.closure43Core.field(record,"stderr")); closure43_core.closure43Core.push(rows,row);
+                jsonRelease(testcase); jsonRelease(words); jsonRelease(record); index += 1;
+            }
+            report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.primitive-help-no-write.v1"); closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed)); closure43_core.closure43Core.put(report,"cases",rows);
+            if (!release_io.releaseIo.write(destination,closure43_core.closure43Core.pretty(report)+"\n")) passed <- false;
+            println("closure43 primitive help: 5 no-write checks"); jsonRelease(report); jsonRelease(cases); argsRelease(args); return passed ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

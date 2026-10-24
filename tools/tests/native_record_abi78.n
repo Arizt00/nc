@@ -1,0 +1,53 @@
+nativeRecordAbi78 {
+    type:
+        public:
+            Mixed { public: value >> ft64; tag >> i64; }
+            Reverse { public: tag >> i64; value >> ft64; }
+            Pair { public: first >> ft64; second >> ft64; }
+            Small { public: first >> ft32; second >> ft32; }
+            Shared { public: tag >> int; value >> ft32; }
+            Nested { public: pair >> Small; value >> ft64; }
+            Large { public: first >> ft64; tag >> i64; second >> ft64; }
+            Packed { public: tag >> byte; value >> ft64; layout: repr(C); packed; }
+            Samples { public: values >> array<ft32,4>; }
+            Aligned { public: value >> ft64; layout: repr(C); align(16); }
+    fn:
+        public:
+            mixed(a >> Mixed, b >> ft64, c >> i64) -> Mixed {
+                a.value += b; a.tag += c; return a;
+            }
+            reverse(a >> Reverse) -> Reverse { a.value *= 2.0; return a; }
+            pair(a >> Pair) -> Pair { a.second += a.first; return a; }
+            small(a >> Small) -> Small { a.second += a.first; return a; }
+            shared(a >> Shared) -> Shared { a.value += a.tag; return a; }
+            nested(a >> Nested) -> Nested { a.value += a.pair.first; return a; }
+            large(a >> Large, scale >> ft64) -> Large {
+                a.first *= scale; a.second += a.tag; return a;
+            }
+            packed(a >> Packed) -> Packed { a.value += a.tag; return a; }
+            samples(a >> Samples) -> Samples { a.values[2] += 0.5; return a; }
+            arrayIdentity(a >> array<ft32,4>) -> array<ft32,4> { a[2] += 0.5; return a; }
+            arrayBuild() -> array<ft32,4> { return [0.5,1.5,2.5,3.5]; }
+            aligned(a >> Aligned) -> Aligned { a.value += 0.5; return a; }
+            alignedSize() -> int { return sizeOf(Aligned); }
+            scalar(a >> Mixed, offset >> ft64) -> ft64 { return a.value+a.tag+offset; }
+            invoke(callback >> fn(Mixed,ft64,i64) -> Mixed, value >> Mixed) -> Mixed {
+                return callback(value,0.5,1);
+            }
+            wrongCallback(value >> Pair, offset >> ft64, tag >> i64) -> Pair {
+                value.first += offset; value.second += tag; return value;
+            }
+            gpFull(a >> i64,b >> i64,c >> i64,d >> i64,e >> i64,f >> i64,
+                m >> Mixed, tail >> ft64) -> ft64 {
+                return a+b+c+d+e+f+m.value+m.tag+tail;
+            }
+            fpFull(a >> ft64,b >> ft64,c >> ft64,d >> ft64,e >> ft64,f >> ft64,
+                g >> ft64,h >> ft64,m >> Mixed, tail >> i64) -> ft64 {
+                return a+b+c+d+e+f+g+h+m.value+m.tag+tail;
+            }
+            rollback(a >> ft64,b >> ft64,c >> ft64,d >> ft64,e >> ft64,f >> ft64,
+                g >> ft64,p >> Pair, tail >> ft64) -> ft64 {
+                return a+b+c+d+e+f+g+p.first+p.second+tail;
+            }
+    fa: return true;
+}

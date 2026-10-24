@@ -1,0 +1,55 @@
+use <core.sync:atomic>;
+use <io:output>;
+
+rawOptimizerMemoryIntrinsics {
+    stc:
+        source >> p<byte>;
+        target >> p<byte>;
+        i        >> int <- 0;
+        checksum >> int <- 0;
+        cell >> atomic<int>;
+        old      >> int <- 0;
+        observed >> int <- 0;
+
+    fn:
+        run() -> bool {
+            source <- alloc(128)!;
+            target <- alloc(128)!;
+            memset(adr(source), 0, 128);
+            memset(adr(target), 0, 128);
+
+            while (i < 64) {
+                wr(off(source, i), i * 2 + 1);
+                i <- i + 1;
+            }
+
+            memcpy(adr(target), adr(source), 64);
+            memmove(adr(off(target, 8)), adr(target), 48);
+            memset(adr(off(target, 56)), 85, 8);
+
+            i <- 0;
+            while (i < 64) {
+                checksum += rd(off(target, i));
+                i <- i + 1;
+            }
+
+            volatileWrite<int>(source, checksum);
+            checksum <- volatileRead<int>(source);
+            atomicStoreOrder(cell, 41, "release");
+            old <- atomicFetchAdd(cell, 1, "acq_rel");
+            observed <- atomicLoadOrder(cell, "acquire");
+            atomicThreadFence("seq_cst");
+            atomicCompilerFence("acq_rel");
+            println(checksum);
+            println(observed);
+            free(target);
+            free(source);
+            return checksum == 3048 && old == 41 && observed == 42;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

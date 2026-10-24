@@ -1,0 +1,86 @@
+use <data:json>;
+use <io:output>;
+use <project:lexer_verifier_bytes, lexer_verifier_json, lexer_verifier_stream, lexer_verifier_contract>;
+
+lexerVerifierTests {
+    fn:
+        private:
+            framed(text >> str) -> bool {
+                cursor >> p<byte> <- lexer_verifier_stream.lexerVerifierStream.open(text);
+                row >> int <- lexer_verifier_stream.lexerVerifierStream.next(cursor,false);
+                ok >> bool <- jsonKind(row) == 6; jsonRelease(row);
+                tail >> int <- lexer_verifier_stream.lexerVerifierStream.next(cursor,false);
+                ok <- ok && tail == 0 && lexer_verifier_stream.lexerVerifierStream.complete(cursor);
+                jsonRelease(tail); lexer_verifier_stream.lexerVerifierStream.close(cursor); return ok;
+            }
+            expect(name >> str, value >> bool) -> bool {
+                if (!value) println("FAIL decoder: "+name);
+                return value;
+            }
+            payload(kind >> str, expected >> str) -> bool {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"kind",jsonNewString(kind));
+                jsonObjectSet(row,"line",jsonNewInt(1)); jsonObjectSet(row,"column",jsonNewInt(1));
+                actual >> int <- lexer_verifier_bytes.lexerVerifierBytes.canonical(row);
+                wanted >> int <- jsonParse(expected);
+                ok >> bool <- jsonEquals(jsonObjectBorrow(actual,"payload"),wanted);
+                jsonRelease(wanted); jsonRelease(actual); jsonRelease(row); return ok;
+            }
+        public:
+            run() -> bool {
+                ok >> bool <- expect("NUL-unicode",payload("String(\"A\\0\\u{1f642}B\")","[65,0,240,159,153,130,66]"));
+                ok <- expect("byte-char",payload("Char('\\u{ff}')","[255]")) && ok;
+                ok <- expect("hex-string",payload("String(\"\\xFF\")","[195,191]")) && ok;
+                ok <- expect("identifier",payload("Identifier(\"name\")","[110,97,109,101]")) && ok;
+                ok <- expect("EOF",payload("Eof","[]")) && ok;
+                ok <- expect("stream-nesting",framed("{\"count\":1,\"tokens\":[{\"text\":\"} [\",\"data\":[1,2]}]}")) && ok;
+                ok <- expect("stream-trailing-comma",!framed("{\"count\":1,\"tokens\":[{},]}")) && ok;
+                ok <- expect("stream-trailing-data",!framed("{\"count\":1,\"tokens\":[{}]} false")) && ok;
+                ok <- expect("stream-missing-close",!framed("{\"count\":1,\"tokens\":[{}]")) && ok;
+                ok <- expect("stream-missing-separator",!framed("{\"count\":1,\"tokens\":[{}{}]}")) && ok;
+                ok <- expect("stream-nul-kind",!framed("{\"count\":1,\"tokens\":[{\"kind\":\"Eof\\u0000suffix\"}]}")) && ok;
+                ok <- expect("escaped-nul-text",framed("{\"count\":1,\"tokens\":[{\"text\":\"\\\\u0000\"}]}")) && ok;
+                ok <- expect("capture-physical-nul",!lexer_verifier_json.lexerVerifierJson.completeBytes("a\0b",3)) && ok;
+                ok <- expect("capture-length",lexer_verifier_json.lexerVerifierJson.completeBytes("a",1) && !lexer_verifier_json.lexerVerifierJson.completeBytes("a",-1)) && ok;
+                capture >> int <- jsonNewObject();
+                jsonObjectSet(capture,"stderr",jsonNewString("a"));
+                jsonObjectSet(capture,"stderr_bytes",jsonNewInt(3));
+                jsonObjectSet(capture,"stderr_hex",jsonNewString("610062"));
+                jsonObjectSet(capture,"stderr_diagnostic",jsonNewString("a\x01b"));
+                ok <- expect("diagnostic-binary-exact",lexer_verifier_json.lexerVerifierJson.completeStream(capture,"stderr",true)) && ok;
+                ok <- expect("tokens-no-binary",!lexer_verifier_json.lexerVerifierJson.completeStream(capture,"stderr",false)) && ok;
+                jsonObjectSet(capture,"stderr_hex",jsonNewString("610063"));
+                ok <- expect("diagnostic-binary-tampered",!lexer_verifier_json.lexerVerifierJson.completeStream(capture,"stderr",true)) && ok;
+                jsonRelease(capture);
+                unicodeDoc >> int <- lexer_verifier_json.lexerVerifierJson.tokens("{\"tokens\":[{\"kind\":\"String(\\\"\u{e9}\u{1f642}\\\")\",\"line\":1,\"column\":1}]}");
+                unicodeRow >> int <- lexer_verifier_bytes.lexerVerifierBytes.canonical(jsonArrayBorrow(jsonObjectBorrow(unicodeDoc,"tokens"),0));
+                unicodeBytes >> int <- jsonParse("[195,169,240,159,153,130]");
+                ok <- expect("oracle-raw-utf8-json",jsonKind(unicodeDoc) == 6 && jsonEquals(jsonObjectBorrow(unicodeRow,"payload"),unicodeBytes)) && ok;
+                jsonRelease(unicodeBytes); jsonRelease(unicodeRow); jsonRelease(unicodeDoc);
+                bad >> int <- lexer_verifier_bytes.lexerVerifierBytes.debugPayload("\\u{d800}",0,8,false);
+                ok <- expect("surrogate",bad == 0) && ok; jsonRelease(bad);
+                bad <- lexer_verifier_bytes.lexerVerifierBytes.debugPayload("\\u{110000}",0,10,false);
+                ok <- expect("out-of-range-scalar",bad == 0) && ok; jsonRelease(bad);
+                bad <- lexer_verifier_bytes.lexerVerifierBytes.debugPayload("\\x0",0,3,false);
+                ok <- expect("truncated-hex",bad == 0) && ok; jsonRelease(bad);
+                bad <- lexer_verifier_bytes.lexerVerifierBytes.debugPayload("ab",0,2,true);
+                ok <- expect("wide-char",bad == 0) && ok; jsonRelease(bad);
+                source >> p<byte> <- cast(alloc(5));
+                guard source != null else return false;
+                wr(source,240); wr(off(source,1),159); wr(off(source,2),153); wr(off(source,3),130); wr(off(source,4),0);
+                ok <- expect("utf8-width",lexer_verifier_bytes.lexerVerifierBytes.width(source,4,0) == 4) && ok;
+                ok <- expect("utf8-truncated",lexer_verifier_bytes.lexerVerifierBytes.width(source,3,0) == 0) && ok;
+                wr(source,244); wr(off(source,1),144);
+                ok <- expect("utf8-invalid",lexer_verifier_bytes.lexerVerifierBytes.width(source,4,0) == 0) && ok;
+                wr(source,97);
+                rows >> int <- jsonParse("[{\"kind\":\"Identifier\",\"start\":0,\"end\":1,\"line\":1,\"column\":1,\"payload\":[97]},{\"kind\":\"Eof\",\"start\":1,\"end\":1,\"line\":1,\"column\":2,\"payload\":[]}]");
+                ok <- expect("span-valid",lexer_verifier_bytes.lexerVerifierBytes.spans(source,1,rows)) && ok;
+                token >> int <- jsonArrayBorrow(rows,0); jsonObjectSet(token,"end",jsonNewInt(2));
+                ok <- expect("span-outside",!lexer_verifier_bytes.lexerVerifierBytes.spans(source,1,rows)) && ok;
+                jsonObjectSet(token,"end",jsonNewInt(1)); jsonObjectSet(token,"line",jsonNewInt(2));
+                ok <- expect("span-line",!lexer_verifier_bytes.lexerVerifierBytes.spans(source,1,rows)) && ok;
+                jsonRelease(token); jsonRelease(rows); free(source);
+                return lexer_verifier_contract.lexerVerifierContract.selfTest() && ok;
+            }
+    fa: return true;
+}

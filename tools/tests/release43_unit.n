@@ -1,0 +1,82 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:release43_common, release43_archive, release43_public, release43_toml, release43_distribution, release_io, sha256>;
+
+release43Unit {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void { println((good ? "PASS " : "FAIL ")+name); if (!good) failures += 1; }
+            set(object >> int, name >> str, value >> str) -> void { release43_common.release43Common.put(object,name,jsonNewString(value)); }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); root >> str <- argsCount(args) > 1 ? argsAt(args,1) : ".";
+                options >> int <- jsonNewObject(); set(options,"--root",root);
+                expect("session-new",release43_common.release43Common.initialize(options)); jsonRelease(options);
+                work >> str <- release43_common.release43Common.workPath(); root <- release43_common.release43Common.rootPath();
+                println("work: "+work);
+                expect("sha256-known-vectors",sha256.nccSha256.selfTest());
+                expect("crc32-known-vector",release43_archive.release43Archive.crc(cast<byte>("123456789"),9) == -873187034);
+                expect("i64-format",release43_common.release43Common.wideText(4294967297) == "4294967297");
+                wide >> int <- jsonNewObject(); release43_common.release43Common.put(wide,"size",release43_common.release43Common.integer64(8589934593));
+                expect("i64-json-roundtrip",release43_common.release43Common.number64(wide,"size") == 8589934593); jsonRelease(wide);
+                expect("hmac-rfc4231-case2",release43_distribution.release43Distribution.hmac("Jefe",cast<byte>("what do ya want for nothing?"),28) == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+                invalidToml >> int <- jsonParse("[\"value = nonsense\\n\",\"value = null\\n\",\"value = {\\n\",\"value = [1, nonsense]\\n\",\"value = 1\\nvalue = 2\\n\",\"[valid]\\nx = 1\\n[broken\\n\",\"[[not_entries]]\\nx = 1\\n\",\"value = \\\"unterminated\\n\"]"); atToml >> int <- 0;
+                while (atToml < jsonArrayLen(invalidToml)) {
+                    parsed >> int <- release43_toml.release43Toml.parse(release43_common.release43Common.stringAt(invalidToml,atToml));
+                    expect("toml-negative-"+renderInt(atToml),parsed == 0); release43_common.release43Common.release(parsed); atToml += 1;
+                }
+                jsonRelease(invalidToml);
+                parsed >> int <- release43_toml.release43Toml.parse("schema = 'example'\n[compatibility]\nmin_ncup_version = \"2.0.0\"\n[[entries]]\ncomponents = [\"compiler\", # comment\n 'runtime',]\n");
+                expect("toml-generated-contract-positive",parsed != 0); release43_common.release43Common.release(parsed);
+                expect("boundary-sibling",!release43_common.release43Common.inside(work+"-sibling",work));
+                expect("boundary-dot-dot",!release43_common.release43Common.inside(work+"/../outside",work));
+                expect("reject-parent",!release43_common.release43Common.relative("a/../b"));
+                source >> str <- work+"/source";
+                expect("text-fixture",release43_common.release43Common.writeText(source+"/a.txt","hello\n"));
+                expect("nested-fixture",release43_common.release43Common.writeText(source+"/a/z.txt","nested\n"));
+                expect("empty-dir",release43_common.release43Common.makeDirectories(source+"/empty"));
+                expect("unicode-fixture",release43_common.release43Common.writeText(source+"/café.txt","café\n"));
+                bytes >> p<byte> <- cast(alloc(256)); at >> int <- 0; while (at < 256) { wr(off(bytes,at),at); at += 1; }
+                expect("binary-fixture",release43_common.release43Common.writeBytes(source+"/binary.bin",bytes,256,false) == 256); free(bytes);
+                options <- jsonNewObject(); set(options,"--root",root); set(options,"--source",source); set(options,"--out",work+"/native");
+                expect("package-positive",release43_public.release43Public.package(options) == 0);
+                files >> int <- release43_archive.release43Archive.files(source); expect("file-count",jsonArrayLen(files) == 4); jsonRelease(files);
+                manifest >> int <- release43_common.release43Common.load(work+"/native/PACKAGE_MANIFEST.json");
+                expect("package-schema",release43_common.release43Common.field(manifest,"schema") == "ncc.public_beta.package.v1");
+                artifacts >> int <- jsonObjectGet(manifest,"artifacts"); at <- 0;
+                while (at < jsonArrayLen(artifacts)) {
+                    row >> int <- jsonArrayGet(artifacts,at); name >> str <- release43_common.release43Common.field(row,"file");
+                    expect("archive-hash-"+name,release43_common.release43Common.field(row,"sha256") == release43_common.release43Common.hashFile(work+"/native/"+name));
+                    jsonRelease(row); at += 1;
+                }
+                jsonRelease(artifacts); jsonRelease(manifest);
+                set(options,"--stem",""); expect("package-empty-stem",release43_public.release43Public.package(options) == 0);
+                expect("package-empty-stem-files",release43_common.release43Common.fileType(work+"/native/.zip") == 1 && release43_common.release43Common.fileType(work+"/native/.tar.gz") == 1);
+                set(options,"--stem","missing/item"); expect("package-missing-stem-parent",release43_public.release43Public.package(options) == 1);
+                expect("package-no-created-stem-parent",release43_common.release43Common.fileType(work+"/native/missing") == 0);
+                expect("package-glob-fixture-a",release43_common.release43Common.writeText(work+"/native/batcha.old","delete"));
+                expect("package-glob-fixture-c",release43_common.release43Common.writeText(work+"/native/batchc.old","retain"));
+                expect("package-glob-fixture-dir",release43_common.release43Common.makeDirectories(work+"/native/batchb.directory"));
+                set(options,"--stem","batch[ab]"); expect("package-glob-stem",release43_public.release43Public.package(options) == 0);
+                expect("package-glob-deletion",release43_common.release43Common.fileType(work+"/native/batcha.old") == 0 && release43_common.release43Common.fileType(work+"/native/batchc.old") == 1 && release43_common.release43Common.fileType(work+"/native/batchb.directory") == 2);
+                expect("package-stem-parent",release43_common.release43Common.makeDirectories(work+"/native/sub"));
+                set(options,"--stem","sub/item"); expect("package-nested-stem",release43_public.release43Public.package(options) == 0);
+                manifest <- release43_common.release43Common.load(work+"/native/PACKAGE_MANIFEST.json"); artifacts <- jsonObjectGet(manifest,"artifacts"); row >> int <- jsonArrayGet(artifacts,0);
+                expect("package-nested-stem-basename",release43_common.release43Common.field(row,"file") == "item.zip"); jsonRelease(row); jsonRelease(artifacts); jsonRelease(manifest);
+                set(options,"--stem","ncc-public-beta-source");
+                expect("forbidden-fixture",release43_common.release43Common.writeText(source+"/.git/config","private"));
+                expect("package-forbidden",release43_public.release43Public.package(options) == 1);
+                release43_common.release43Common.remove(source+"/.git",source);
+                set(options,"--source",root); expect("package-root-rejected",release43_public.release43Public.package(options) == 1);
+                jsonRelease(options);
+                expect("layout-invalid-fixture",release43_common.release43Common.writeText(work+"/invalid-layout.json","{\"public_name\":\"ncc\",\"dist_root\":\"dist/public-beta/ncc\"}"));
+                options <- jsonNewObject(); set(options,"--root",work+"/layout-root"); set(options,"--manifest",work+"/invalid-layout.json");
+                expect("layout-incomplete-manifest-rejected",release43_public.release43Public.layout(options) == 1); jsonRelease(options);
+                argsRelease(args);
+                println("failures: "+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

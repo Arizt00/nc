@@ -1,0 +1,52 @@
+use <io:output, render>;
+use <process:args>;
+
+nativeFsDescribe69 {
+    verify(arguments >> addr) -> int {
+        if (argsCount(arguments) != 6) return 64;
+        file >> str <- argsAt(arguments,1);
+        directory >> str <- argsAt(arguments,2);
+        missing >> str <- argsAt(arguments,3);
+        expected >> str <- argsAt(arguments,4);
+        expectedPermissions >> str <- argsAt(arguments,5);
+        buffer >> array<byte,256>;
+        data >> p<byte> <- cast<byte>(&buffer);
+        wr(data,77);
+        length >> int <- fsMetadataInto(file,data,256);
+        if (length <= 0 || length >= 256 || rd(off(data,length)) != 0) return 1;
+        view >> str <- cast<str>(data);
+        if (view != expected || strByteLen(view) != length) {
+            println(view); println(expected); println(length);
+            return 2;
+        }
+        exact >> array<byte,258>;
+        boundary >> p<byte> <- cast<byte>(&exact);
+        wr(boundary,91); wr(off(boundary,length+2),93);
+        if (fsMetadataInto(file,off(boundary,1),length+1) != length) return 3;
+        if (rd(boundary) != 91 || rd(off(boundary,length+2)) != 93) return 4;
+        wr(data,77);
+        if (fsMetadataInto(file,data,length) != -2 || rd(data) != 77) return 5;
+        if (fsMetadataInto(file,null,0) != -2) return 6;
+        if (fsMetadataInto(missing,data,256) != -1 || rd(data) != 77) return 7;
+        if (fsMetadataInto("",data,256) != -1) return 8;
+        length = fsMetadataInto(directory,data,256);
+        if (length <= 0 || !strStartsWith(cast<str>(data),"type=directory;length=")) return 9;
+        length = fsPermissionsInto(file,data,256);
+        if (length <= 0 || rd(off(data,length)) != 0) return 10;
+        view = cast<str>(data);
+        if (view != expectedPermissions) return 11;
+        wr(data,77);
+        if (fsPermissionsInto(file,data,length) != -2 || rd(data) != 77) return 12;
+        if (fsPermissionsInto(missing,data,256) != -1 || rd(data) != 77) return 13;
+        println("filesystem-describe-ok");
+        return 221;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        code >> int <- verify(arguments);
+        argsRelease(arguments);
+        return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

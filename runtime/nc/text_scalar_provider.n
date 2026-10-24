@@ -1,0 +1,333 @@
+textScalarProvider :: runtime {
+    fn:
+        private:
+            isSpace(code >> byte) -> bool {
+                return code == 32 || code == 9 || code == 10 ||
+                    code == 11 || code == 12 || code == 13;
+            }
+
+            textEnd(value >> str) -> int {
+                if (cast<byte>(value) == null) return 0;
+                bytes >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (rd(off(bytes, at)) != 0) {
+                    at += 1;
+                }
+                return at;
+            }
+
+            trimmedBegin(bytes >> p<byte>, finish >> int) -> int {
+                at >> int <- 0;
+                while (at < finish && isSpace(rd(off(bytes, at)))) {
+                    at += 1;
+                }
+                return at;
+            }
+
+            trimmedEnd(bytes >> p<byte>, begin >> int, finish >> int) -> int {
+                at >> int <- finish;
+                while (at > begin && isSpace(rd(off(bytes, at - 1)))) {
+                    at -= 1;
+                }
+                return at;
+            }
+
+            digitValue(code >> byte) -> int {
+                if (code >= 48 && code <= 57) {
+                    return code - 48;
+                }
+                if (code >= 65 && code <= 90) {
+                    return code - 55;
+                }
+                if (code >= 97 && code <= 122) {
+                    return code - 87;
+                }
+                return -1;
+            }
+
+            foldAscii(code >> byte) -> byte {
+                if (code >= 65 && code <= 90) {
+                    lowered >> byte <- code + 32;
+                    return lowered;
+                }
+                return code;
+            }
+
+            equalsFold4(bytes >> p<byte>, begin >> int, a >> byte, b >> byte, c >> byte, d >> byte) -> bool {
+                return foldAscii(rd(off(bytes, begin))) == a &&
+                    foldAscii(rd(off(bytes, begin + 1))) == b &&
+                    foldAscii(rd(off(bytes, begin + 2))) == c &&
+                    foldAscii(rd(off(bytes, begin + 3))) == d;
+            }
+
+            equalsFold5(
+                bytes >> p<byte>,
+                begin >> int,
+                a >> byte,
+                b >> byte,
+                c >> byte,
+                d >> byte,
+                e >> byte
+            ) -> bool {
+                return foldAscii(rd(off(bytes, begin))) == a &&
+                    foldAscii(rd(off(bytes, begin + 1))) == b &&
+                    foldAscii(rd(off(bytes, begin + 2))) == c &&
+                    foldAscii(rd(off(bytes, begin + 3))) == d &&
+                    foldAscii(rd(off(bytes, begin + 4))) == e;
+            }
+
+            scanUnsigned(value >> str, out >> p<u64>) -> bool {
+                if (out == null) return false;
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                guard begin < finish else return false;
+
+                at >> int <- begin;
+                if (rd(off(bytes, at)) == 43) {
+                    at += 1;
+                }
+                guard at < finish else return false;
+
+                base >> int <- 10;
+                if (at + 1 < finish && rd(off(bytes, at)) == 48) {
+                    prefix >> byte <- foldAscii(rd(off(bytes, at + 1)));
+                    if (prefix == 120) {
+                        base <- 16;
+                        at += 2;
+                    } else if (prefix == 98) {
+                        base <- 2;
+                        at += 2;
+                    } else if (prefix == 111) {
+                        base <- 8;
+                        at += 2;
+                    }
+                }
+                guard at < finish else return false;
+
+                result >> u64 <- 0;
+                digits >> int <- 0;
+                separator >> bool <- false;
+                while (at < finish) {
+                    code >> byte <- rd(off(bytes, at));
+                    if (code == 95) {
+                        guard digits > 0 && !separator else return false;
+                        separator <- true;
+                        at += 1;
+                        continue;
+                    }
+                    digit >> int <- digitValue(code);
+                    guard digit >= 0 && digit < base else return false;
+                    baseWide >> u64 <- base;
+                    digitWide >> u64 <- digit;
+                    result <- result * baseWide + digitWide;
+                    digits += 1;
+                    separator <- false;
+                    at += 1;
+                }
+                guard digits > 0 && !separator else return false;
+                wr(out, result);
+                return true;
+            }
+
+            scanSigned(value >> str, out >> p<int>) -> bool {
+                if (out == null) return false;
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                guard begin < finish else return false;
+
+                negative >> bool <- false;
+                at >> int <- begin;
+                if (rd(off(bytes, at)) == 43 || rd(off(bytes, at)) == 45) {
+                    negative <- rd(off(bytes, at)) == 45;
+                    at += 1;
+                }
+                guard at < finish else return false;
+
+                base >> int <- 10;
+                if (at + 1 < finish && rd(off(bytes, at)) == 48) {
+                    prefix >> byte <- foldAscii(rd(off(bytes, at + 1)));
+                    if (prefix == 120) {
+                        base <- 16;
+                        at += 2;
+                    } else if (prefix == 98) {
+                        base <- 2;
+                        at += 2;
+                    } else if (prefix == 111) {
+                        base <- 8;
+                        at += 2;
+                    }
+                }
+                guard at < finish else return false;
+
+                magnitude >> u64 <- 0;
+                digits >> int <- 0;
+                separator >> bool <- false;
+                while (at < finish) {
+                    code >> byte <- rd(off(bytes, at));
+                    if (code == 95) {
+                        guard digits > 0 && !separator else return false;
+                        separator <- true;
+                        at += 1;
+                        continue;
+                    }
+                    digit >> int <- digitValue(code);
+                    guard digit >= 0 && digit < base else return false;
+                    baseWide >> u64 <- base;
+                    digitWide >> u64 <- digit;
+                    magnitude <- magnitude * baseWide + digitWide;
+                    digits += 1;
+                    separator <- false;
+                    at += 1;
+                }
+                guard digits > 0 && !separator else return false;
+                signed >> int <- magnitude;
+                wr(out, negative ? 0 - signed : signed);
+                return true;
+            }
+
+            scanBool(value >> str, out >> p<bool>) -> bool {
+                if (out == null) return false;
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                count >> int <- finish - begin;
+                if (count == 1 && rd(off(bytes, begin)) == 49) {
+                    wr(out, true);
+                    return true;
+                }
+                if (count == 1 && rd(off(bytes, begin)) == 48) {
+                    wr(out, false);
+                    return true;
+                }
+                if (count == 4 && equalsFold4(bytes, begin, 116, 114, 117, 101)) {
+                    wr(out, true);
+                    return true;
+                }
+                if (count == 5 && equalsFold5(bytes, begin, 102, 97, 108, 115, 101)) {
+                    wr(out, false);
+                    return true;
+                }
+                return false;
+            }
+
+
+            duplicate(value >> str, begin >> int, count >> int) -> str {
+                bytes >> u64 <- count;
+                result >> p<byte> <- cast(alloc(bytes+1));
+                if (result == null) return cast(null);
+                if (count > 0) cp(result,off(cast<byte>(value),begin),count);
+                wr(off(result,count),0);
+                return cast(result);
+            }
+            asciiCase(value >> str, upper >> bool) -> str {
+                count >> int <- textEnd(value);
+                result >> str <- duplicate(value,0,count);
+                if (cast<byte>(result) == null) return result;
+                data >> p<byte> <- cast(result);
+                at >> int <- 0;
+                while (at < count) {
+                    code >> byte <- rd(off(data,at));
+                    if (upper && code >= 97 && code <= 122) wr(off(data,at),code-32);
+                    if (!upper && code >= 65 && code <= 90) wr(off(data,at),code+32);
+                    at += 1;
+                }
+                return result;
+            }
+            padding(value >> str, width >> int, fill >> char, mode >> int) -> str {
+                count >> int <- textEnd(value);
+                total >> int <- width > count ? width : count;
+                gap >> int <- total-count;
+                left >> int <- mode == 1 ? gap : (mode == 3 ? gap/2 : 0);
+                bytes >> u64 <- total;
+                data >> p<byte> <- cast(alloc(bytes+1));
+                if (data == null) return cast(null);
+                at >> int <- 0;
+                while (at < left) { wr(off(data,at),fill); at += 1; }
+                if (count > 0) cp(off(data,left),cast<byte>(value),count);
+                at <- left+count;
+                while (at < total) { wr(off(data,at),fill); at += 1; }
+                wr(off(data,total),0); return cast(data);
+            }
+        public:
+            provider_parse_parseInt(value >> str) -> int {
+                result >> int <- 0; scanSigned(value,&result); return result;
+            }
+            provider_parse_parseUInt(value >> str) -> u64 {
+                result >> u64 <- 0; scanUnsigned(value,&result); return result;
+            }
+            provider_parse_parseBool(value >> str) -> bool {
+                result >> bool <- false; scanBool(value,&result); return result;
+            }
+            provider_parse_parseChar(value >> str) -> char {
+                count >> int <- textEnd(value);
+                at >> int <- trimmedBegin(cast<byte>(value),count);
+                result >> char;
+                wr<byte>(cast<byte>(&result),at < count ? rd<byte>(off(cast<byte>(value),at)) : 0);
+                return result;
+            }
+            provider_parse_tryParseInt(value >> str, out >> p<int>) -> bool { return scanSigned(value,out); }
+            provider_parse_tryParseBool(value >> str, out >> p<bool>) -> bool { return scanBool(value,out); }
+            provider_string_strToLower(value >> str) -> str { return asciiCase(value,false); }
+            provider_string_strToUpper(value >> str) -> str { return asciiCase(value,true); }
+            provider_string_strTrim(value >> str) -> str {
+                data >> p<byte> <- cast(value);
+                end >> int <- textEnd(value); begin >> int <- 0;
+                while (begin < end && rd(off(data,begin)) <= 32) { begin += 1; }
+                while (end > begin && rd(off(data,end-1)) <= 32) { end -= 1; }
+                return duplicate(value,begin,end-begin);
+            }
+            provider_string_strEmpty() -> str { return duplicate("",0,0); }
+            provider_string_charCode(value >> char) -> int { return rd<byte>(cast<byte>(&value)); }
+            provider_string_charToStr(value >> char) -> str {
+                data >> p<byte> <- cast(alloc(2));
+                if (data == null) return cast(null);
+                wr(data,value); wr(off(data,1),0); return cast(data);
+            }
+            provider_string_repeatChar(value >> char, count >> int) -> str {
+                if (count < 0) count <- 0;
+                bytes >> u64 <- count;
+                data >> p<byte> <- cast(alloc(bytes+1));
+                if (data == null) return cast(null);
+                at >> int <- 0;
+                while (at < count) { wr(off(data,at),value); at += 1; }
+                wr(off(data,count),0); return cast(data);
+            }
+            provider_string_strFromInt(value >> int) -> str {
+                data >> p<byte> <- cast(alloc(12));
+                if (data == null) return cast(null);
+                wide >> i64 <- value;
+                magnitude >> u64 <- value < 0 ? 0-wide : wide;
+                digits >> int <- 0;
+                repeat {
+                    digit >> byte <- magnitude % 10;
+                    wr(off(data,digits),digit+48);
+                    magnitude <- magnitude/10; digits += 1;
+                } until (magnitude == 0);
+                if (value < 0) { wr(off(data,digits),45); digits += 1; }
+                at >> int <- 0;
+                while (at < digits/2) {
+                    left >> byte <- rd(off(data,at)); right >> byte <- rd(off(data,digits-1-at));
+                    wr(off(data,at),right); wr(off(data,digits-1-at),left); at += 1;
+                }
+                wr(off(data,digits),0); return cast(data);
+            }
+            provider_string_strFromBool(value >> bool) -> str { return duplicate(value ? "true" : "false",0,value ? 4 : 5); }
+            provider_string_strConcat(left >> str, right >> str) -> str {
+                a >> int <- textEnd(left); b >> int <- textEnd(right);
+                bytes >> u64 <- a; bytes += b;
+                data >> p<byte> <- cast(alloc(bytes+1));
+                if (data == null) return cast(null);
+                if (a > 0) cp(data,cast<byte>(left),a);
+                if (b > 0) cp(off(data,a),cast<byte>(right),b);
+                wr(off(data,a+b),0); return cast(data);
+            }
+            provider_pad_padLeft(value >> str, width >> int, fill >> char) -> str { return padding(value,width,fill,1); }
+            provider_pad_padRight(value >> str, width >> int, fill >> char) -> str { return padding(value,width,fill,2); }
+            provider_pad_padBoth(value >> str, width >> int, fill >> char) -> str { return padding(value,width,fill,3); }
+    fa: return true;
+}

@@ -1,0 +1,77 @@
+use <process:args, env>;
+use <io:output, errorOutput, render>;
+use <project:docs43_books, docs43_manual, tool_cli, release_io>;
+
+docs43Cli {
+    fn:
+        private:
+            help(args >> addr) -> bool {
+                index >> int <- 1;
+                while (index < argsCount(args)) {
+                    value >> str <- argsAt(args,index);
+                    if (value == "-h" || value == "--help") return true;
+                    index += 1;
+                }
+                return false;
+            }
+            usage(command >> str) -> void {
+                if (command != "build_public_pdf_library") println("Usage: ncc-documents-v43 build_nc_manual [--root PATH]");
+                if (command != "build_nc_manual") println("Usage: ncc-documents-v43 build_public_pdf_library [--root PATH] [--out PATH]");
+            }
+            environment(name >> str) -> str {
+                size >> int <- envGet(name,null,0); guard size > 0 && size < 1048576 else return "";
+                data >> p<byte> <- cast(alloc(size)); guard data != null else return "";
+                count >> int <- envGet(name,adr(data),size);
+                if (count < 0 || count >= size) { free(data); return ""; }
+                wr(off(data,count),0); text >> str <- cast(data); result >> str <- strSubstring(text,0,count); free(data); return result;
+            }
+            display(path >> str) -> str {
+                return strContains(path,":") ? docs43_books.docs43Books.replace(path,"/","\\") : path;
+            }
+            repository(args >> addr) -> str {
+                executable >> str <- tool_cli.toolCli.absolute(argsAt(args,0));
+                if (release_io.releaseIo.fileType(executable) != 1) {
+                    name >> str <- argsAt(args,0); windows >> bool <- envHas("WINDIR");
+                    if (windows && !strEndsWith(name,".exe")) name <- name+".exe";
+                    paths >> str <- environment("PATH"); bytes >> p<byte> <- cast(paths); at >> int <- 0; start >> int <- 0;
+                    while (at <= strByteLen(paths)) {
+                        if (at == strByteLen(paths) || rd(off(bytes,at)) == (windows ? 59 : 58)) {
+                            entry >> str <- strSubstring(paths,start,at-start); trial >> str <- tool_cli.toolCli.absolute(entry+"/"+name);
+                            if (release_io.releaseIo.fileType(trial) == 1) { executable <- trial; break; }
+                            start <- at+1;
+                        }
+                        at += 1;
+                    }
+                }
+                candidate >> str <- release_io.releaseIo.directory(executable);
+                i >> int <- 0;
+                while (i < 20) {
+                    if (release_io.releaseIo.fileType(candidate+"/docs/spec") == 2 && release_io.releaseIo.fileType(candidate+"/examples") == 2) return candidate;
+                    parent >> str <- release_io.releaseIo.directory(candidate);
+                    if (parent == candidate) break;
+                    candidate <- parent; i += 1;
+                }
+                return ".";
+            }
+        public:
+            execute(args >> addr, command >> str) -> int {
+                if (help(args)) { usage(command); return 0; }
+                if (command != "build_nc_manual" && command != "build_public_pdf_library") return 2;
+                root >> str <- tool_cli.toolCli.absolute(release_io.releaseIo.option(args,"--root",repository(args)));
+                if (release_io.releaseIo.fileType(root) != 2) { eprintln("documents: root is not a directory"); return 1; }
+                if (command == "build_nc_manual") {
+                    guard docs43_manual.docs43Manual.build(root) else { eprintln("documents: manual build failed: "+docs43_manual.docs43Manual.phase()); return 1; }
+                    println(display(root+"/docs/manual/Manual_completo_nC.docx")); return 0;
+                }
+                out >> str <- tool_cli.toolCli.absolute(release_io.releaseIo.option(args,"--out",root+"/output/pdf/ncc_public_beta_books"));
+                i >> int <- 0;
+                while (i < 6) {
+                    guard docs43_books.docs43Books.buildBook(out,i) else { eprintln("documents: book build failed"); return 1; }
+                    i += 1;
+                }
+                i <- 0;
+                while (i < 6) { println(display(out+"/"+docs43_books.docs43Books.filename(i))); i += 1; }
+                return 0;
+            }
+    fa: return true;
+}

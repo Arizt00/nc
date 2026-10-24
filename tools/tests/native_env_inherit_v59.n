@@ -1,0 +1,41 @@
+use <process:env, args, command>;
+use <io:output>;
+
+nativeEnvInheritV59 {
+    child() -> int {
+        buffer >> p<byte> <- cast<byte>(alloc(64)); guard buffer != null else return 1;
+        text >> str <- cast(buffer);
+        guard envHas("NC_ENV_GATE59_CHILD") && envGet("NC_ENV_GATE59_CHILD",adr(buffer),64) == 15 && text == "inherited value" else return 2;
+        free(buffer); println("child ok"); return 150;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); guard arguments != null else return 3;
+        if (argsCount(arguments) > 1) { argsRelease(arguments); return child(); }
+        guard envSet("NC_ENV_GATE59_CHILD","inherited value") else return 4;
+        pipe >> addr <- commandPipeOpen(false,true); guard pipe != null && commandPipeError(pipe) == 0 else return 5;
+        executable >> str <- argsAt(arguments,0); length >> int <- strByteLen(executable);
+        storage >> p<byte> <- cast<byte>(alloc(length+12)); guard storage != null else return 6;
+        wr(storage,34); index >> int <- 0;
+        while (index < length) { wr(off(storage,index+1),rd<byte>(off(cast<byte>(executable),index))); index += 1; }
+        suffix >> p<byte> <- cast<byte>("\" --child"); index <- 0;
+        while (index < 10) { wr(off(storage,length+1+index),rd(off(suffix,index))); index += 1; }
+        line >> str <- cast(storage);
+        process >> addr <- commandOpen(line,".",null,commandPipeWriteHandle(pipe),null,0);
+        free(storage);
+        commandPipeCloseWrite(pipe); guard process != null && commandStarted(process) else return 6;
+        buffer >> p<byte> <- cast<byte>(alloc(64)); guard buffer != null else return 7;
+        text >> str <- cast(buffer);
+        count >> int <- 0; received >> int <- commandPipeRead(pipe,adr(buffer),63);
+        while (received > 0 && count+received < 64) {
+            count += received; received <- commandPipeRead(pipe,adr(off(buffer,count)),63-count);
+        }
+        guard count == 9 && (received == 0 || received == -109) else return 7;
+        wr(off(buffer,count),0); guard text == "child ok\n" else return 8;
+        guard commandWait(process,30000) == 0 && commandExitCode(process) == 150 else return 9;
+        commandRelease(process); commandPipeRelease(pipe); argsRelease(arguments); free(buffer);
+        guard envRemove("NC_ENV_GATE59_CHILD") else return 10;
+        println("env inheritance ok"); return 150;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,296 @@
+use <data:json>;
+use <io:output>;
+use <process:env>;
+use <project:release_io, tool_cli, contract_checks, sha256, cert_json>;
+
+certMatrix {
+    const:
+        SCHEMA >> str <- "nc.release.industrial.matrix.v1";
+        TIMEOUT_MS >> int <- 1800000;
+    stc:
+        captureEncoding >> str <- "utf8";
+    fn:
+        private:
+            joined(words >> int) -> str {
+                result >> str <- "";
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    item >> int <- jsonArrayBorrow(words,index);
+                    if (index > 0) result <- cert_json.certJson.append(result," ");
+                    result <- cert_json.certJson.append(result,jsonStringView(item,""));
+                    jsonRelease(item); index += 1;
+                }
+                return result;
+            }
+            invoke(root >> str, cargo >> str, words >> int) -> int {
+                argv >> int <- jsonClone(words);
+                cert_json.certJson.insert(argv,0,jsonNewString(cargo));
+                started >> int <- nowMs();
+                result >> int <- tool_cli.toolCli.execute(argv,root,TIMEOUT_MS);
+                elapsed >> int <- nowMs()-started;
+                outputText >> str <- cert_json.certJson.field(result,"stdout");
+                errorText >> str <- cert_json.certJson.field(result,"stderr");
+                complete >> bool <- strByteLen(outputText) == release_io.releaseIo.number(result,"stdout_bytes",0) &&
+                    strByteLen(errorText) == release_io.releaseIo.number(result,"stderr_bytes",0);
+                decodedOut >> str <- captureText(outputText,captureEncoding);
+                decodedErr >> str <- captureText(errorText,captureEncoding);
+                decoded >> bool <- (outputText == "" || decodedOut != "") && (errorText == "" || decodedErr != "");
+                strRelease(decodedOut); strRelease(decodedErr);
+                if (!decoded) {
+                    cert_json.certJson.put(result,"ok",jsonNewBool(false));
+                    cert_json.certJson.put(result,"capture_ok",jsonNewBool(false));
+                    cert_json.certJson.put(result,"error",jsonNewString("text output contains an undefined CP1252 byte"));
+                }
+                if (!complete) {
+                    cert_json.certJson.put(result,"ok",jsonNewBool(false));
+                    cert_json.certJson.put(result,"capture_ok",jsonNewBool(false));
+                    cert_json.certJson.put(result,"error",jsonNewString("embedded NUL in text output is not representable by the retained runtime"));
+                }
+                strRelease(outputText); strRelease(errorText);
+                cert_json.certJson.put(result,"duration_sec",jsonNewFloat(elapsed/1000.0));
+                cert_json.certJson.put(result,"argv",argv);
+                logical >> int <- jsonClone(words);
+                cert_json.certJson.insert(logical,0,jsonNewString("cargo"));
+                commandText >> str <- joined(logical);
+                cert_json.certJson.put(result,"cmd",jsonNewString(commandText));
+                strRelease(commandText);
+                jsonRelease(logical);
+                return result;
+            }
+            commandRow(result >> int) -> int {
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"cmd",jsonObjectBorrow(result,"cmd"));
+                cert_json.certJson.put(row,"ok",jsonObjectBorrow(result,"ok"));
+                cert_json.certJson.put(row,"code",jsonObjectBorrow(result,"code"));
+                cert_json.certJson.put(row,"duration_sec",jsonObjectBorrow(result,"duration_sec"));
+                stdout >> str <- normalizedField(result,"stdout");
+                stderr >> str <- normalizedField(result,"stderr");
+                setTail(row,"stdout_tail",stdout,4000);
+                setTail(row,"stderr_tail",stderr,4000);
+                strRelease(stdout); strRelease(stderr);
+                // Retain capture failures separately; an exit code alone is not success.
+                cert_json.certJson.put(row,"capture",result);
+                return row;
+            }
+            suiteWords(suite >> str, list >> bool) -> int {
+                words >> int <- jsonParse("[\"test\",\"-p\",\"ncc-cli\",\"--test\"]");
+                cert_json.certJson.push(words,jsonNewString(suite));
+                cert_json.certJson.push(words,jsonNewString("--"));
+                cert_json.certJson.push(words,jsonNewString(list ? "--list" : "--nocapture"));
+                return words;
+            }
+            listSuite(root >> str, cargo >> str, suite >> str) -> int {
+                words >> int <- suiteWords(suite,true);
+                result >> int <- invoke(root,cargo,words);
+                jsonRelease(words);
+                stdout >> str <- normalizedField(result,"stdout");
+                stderr >> str <- normalizedField(result,"stderr");
+                names >> int <- tool_cli.toolCli.hasFlag(result,"ok") ? testNames(stdout) : jsonNewArray();
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"target",jsonNewString(suite));
+                cert_json.certJson.put(row,"ok",jsonObjectBorrow(result,"ok"));
+                cert_json.certJson.put(row,"count",jsonNewInt(jsonArrayLen(names)));
+                cert_json.certJson.put(row,"names",names);
+                cert_json.certJson.put(row,"list_cmd",jsonObjectBorrow(result,"cmd"));
+                cert_json.certJson.put(row,"list_cmd_code",jsonObjectBorrow(result,"code"));
+                cert_json.certJson.put(row,"list_duration_sec",jsonObjectBorrow(result,"duration_sec"));
+                setTail(row,"list_stdout_tail",stdout,1200);
+                setTail(row,"list_stderr_tail",stderr,1200);
+                cert_json.certJson.put(row,"capture",result);
+                strRelease(stdout); strRelease(stderr);
+                return row;
+            }
+            normalizedField(result >> int, field >> str) -> str {
+                child >> int <- jsonObjectBorrow(result,field);
+                decoded >> str <- captureText(jsonStringView(child,""),captureEncoding);
+                resultText >> str <- newlines(decoded); strRelease(decoded);
+                jsonRelease(child);
+                return resultText;
+            }
+            setTail(row >> int, name >> str, text >> str, count >> int) -> void {
+                clipped >> str <- tail(text,count);
+                cert_json.certJson.put(row,name,jsonNewString(clipped));
+                strRelease(clipped);
+            }
+        public:
+            captureText(text >> str, encoding >> str) -> str {
+                if (encoding == "utf8") return strSubstring(text,0,strByteLen(text));
+                // The original subprocess text mode uses CP1252 on the verified
+                // Windows host, unless Python UTF-8 mode is selected.
+                high >> int <- jsonParse("[8364,-1,8218,402,8222,8230,8224,8225,710,8240,352,8249,338,-1,381,-1,-1,8216,8217,8220,8221,8226,8211,8212,732,8482,353,8250,339,-1,382,376]");
+                length >> int <- strByteLen(text); source >> p<byte> <- cast(text);
+                data >> p<byte> <- cast(alloc(length*3+1));
+                if (data == null) { jsonRelease(high); return ""; }
+                index >> int <- 0; written >> int <- 0;
+                while (index < length) {
+                    code >> int <- rd(off(source,index)) & 255; index += 1;
+                    if (code >= 128 && code < 160) {
+                        item >> int <- jsonArrayBorrow(high,code-128); code <- jsonGetInt(item); jsonRelease(item);
+                        if (code < 0) { free(data); jsonRelease(high); return ""; }
+                    }
+                    if (code < 128) { wr(off(data,written),code); written += 1; }
+                    else if (code < 2048) {
+                        a >> int <- 192+(code >>> 6); b >> int <- 128+(code & 63);
+                        wr(off(data,written),a); wr(off(data,written+1),b); written += 2;
+                    } else {
+                        a >> int <- 224+(code >>> 12); b >> int <- 128+((code >>> 6) & 63); c >> int <- 128+(code & 63);
+                        wr(off(data,written),a); wr(off(data,written+1),b); wr(off(data,written+2),c); written += 3;
+                    }
+                }
+                wr(off(data,written),0); view >> str <- cast(data); result >> str <- strSubstring(view,0,written);
+                free(data); jsonRelease(high); return result;
+            }
+            defaultEncoding() -> str {
+                if (!envHas("WINDIR")) return "utf8";
+                data >> p<byte> <- cast(alloc(16)); if (data == null) return "cp1252";
+                size >> int <- envGet("PYTHONUTF8",adr(data),16);
+                utf8 >> bool <- size == 1 && rd(data) == 49; free(data); return utf8 ? "utf8" : "cp1252";
+            }
+            newlines(text >> str) -> str {
+                length >> int <- strByteLen(text);
+                source >> p<byte> <- cast(text);
+                data >> p<byte> <- cast(alloc(length+1));
+                guard data != null else return "";
+                index >> int <- 0;
+                written >> int <- 0;
+                while (index < length) {
+                    value >> int <- rd(off(source,index));
+                    if (value == 13) {
+                        value <- 10;
+                        if (index+1 < length && rd(off(source,index+1)) == 10) index += 1;
+                    }
+                    wr(off(data,written),value); written += 1; index += 1;
+                }
+                wr(off(data,written),0);
+                view >> str <- cast(data);
+                result >> str <- strSubstring(view,0,written);
+                free(data);
+                return result;
+            }
+            tail(text >> str, count >> int) -> str {
+                // Python slices Unicode codepoints, whereas runtime substring uses byte offsets.
+                length >> int <- strByteLen(text);
+                bytes >> p<byte> <- cast(text);
+                start >> int <- length;
+                retained >> int <- 0;
+                while (start > 0 && retained < count) {
+                    start -= 1;
+                    while (start > 0 && (rd(off(bytes,start)) & 192) == 128) { start -= 1; }
+                    retained += 1;
+                }
+                return strSubstring(text,start,length-start);
+            }
+            testNames(text >> str) -> int {
+                result >> int <- jsonNewArray();
+                length >> int <- strByteLen(text);
+                bytes >> p<byte> <- cast(text);
+                start >> int <- 0;
+                index >> int <- 0;
+                while (index <= length) {
+                    if (index < length && rd(off(bytes,index)) != 10) { index += 1; continue; }
+                    rawText >> str <- strSubstring(text,start,index-start);
+                    line >> str <- strTrim(rawText);
+                    if (strEndsWith(line,": test")) {
+                        name >> str <- strSubstring(line,0,strLen(line)-6);
+                        cert_json.certJson.push(result,jsonNewString(name)); strRelease(name);
+                    }
+                    strRelease(line); strRelease(rawText); index += 1; start <- index;
+                }
+                return result;
+            }
+            suites() -> int {
+                return jsonParse("[\"official_arrays_lists_indexing_matrix\",\"expert_release_suite\",\"expert_release_type_contract_checks\",\"driver_factory_suite\"]");
+            }
+            commands(full >> bool) -> int {
+                rows >> int <- jsonParse("[[\"run\",\"-p\",\"ncc-cli\",\"--\",\"compiler\",\"ffi-smoke\",\"--json\",\"--strict\"],[\"run\",\"-p\",\"ncc-cli\",\"--\",\"compiler\",\"doctor\"],[\"run\",\"-p\",\"ncc-cli\",\"--\",\"runtime\",\"doctor\"],[\"run\",\"-p\",\"ncc-cli\",\"--\",\"run\",\"examples/types/type_17_array_of_type.n\"],[\"run\",\"-p\",\"ncc-cli\",\"--\",\"run\",\"examples/expert_release_v2/types/01_type_contract_release.n\"],[\"run\",\"-p\",\"ncc-cli\",\"--\",\"run\",\"examples/expert_release_v2/ffi/21_ffi_surface_release.n\"]]");
+                if (full) {
+                    cert_json.certJson.push(rows,jsonParse("[\"fmt\",\"--all\"]"));
+                    cert_json.certJson.push(rows,jsonParse("[\"check\",\"--workspace\",\"--all-targets\"]"));
+                    cert_json.certJson.push(rows,jsonParse("[\"test\",\"--workspace\",\"--all-targets\"]"));
+                    cert_json.certJson.push(rows,jsonParse("[\"clippy\",\"--workspace\",\"--all-targets\",\"--\",\"-D\",\"warnings\"]"));
+                }
+                return rows;
+            }
+            build(root >> str, cargo >> str, full >> bool, fixture >> bool) -> int {
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString(SCHEMA));
+                cert_json.certJson.put(report,"generated_at_utc",jsonNewString(release_io.releaseIo.utc(timestamp())));
+                cert_json.certJson.put(report,"workspace_root",jsonNewString(root));
+                cert_json.certJson.put(report,"include_full_gates",jsonNewBool(full));
+                suiteRows >> int <- jsonNewObject();
+                commandRows >> int <- jsonNewArray();
+                passed >> bool <- true;
+                names >> int <- suites();
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayBorrow(names,index);
+                    suite >> str <- jsonStringView(name,"");
+                    listRow >> int <- listSuite(root,cargo,suite);
+                    passed <- contract_checks.contractChecks.boolean(listRow,"ok",true) && passed;
+                    cert_json.certJson.put(suiteRows,suite,listRow);
+                    words >> int <- suiteWords(suite,false);
+                    row >> int <- commandRow(invoke(root,cargo,words));
+                    passed <- contract_checks.contractChecks.boolean(row,"ok",true) && passed;
+                    cert_json.certJson.put(row,"kind",jsonNewString("suite"));
+                    cert_json.certJson.put(row,"name",jsonNewString(suite));
+                    cert_json.certJson.push(commandRows,row);
+                    jsonRelease(words); jsonRelease(name); index += 1;
+                }
+                jsonRelease(names);
+                rows >> int <- commands(full);
+                index <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    words >> int <- jsonArrayBorrow(rows,index);
+                    row >> int <- commandRow(invoke(root,cargo,words));
+                    passed <- contract_checks.contractChecks.boolean(row,"ok",true) && passed;
+                    cert_json.certJson.put(row,"kind",jsonNewString("command"));
+                    cert_json.certJson.push(commandRows,row);
+                    jsonRelease(words); index += 1;
+                }
+                jsonRelease(rows);
+                cert_json.certJson.put(report,"suites",suiteRows);
+                cert_json.certJson.put(report,"commands",commandRows);
+                cert_json.certJson.put(report,"status",jsonNewString(passed ? "ok" : "fail"));
+                cert_json.certJson.put(report,"implementation_language",jsonNewString("nC"));
+                cert_json.certJson.put(report,"external_tool",jsonNewString(cargo));
+                cert_json.certJson.put(report,"external_tool_sha256",jsonNewString(sha256.nccSha256.file(cargo)));
+                cert_json.certJson.put(report,"verification_scope",jsonNewString(fixture ? "controlled_process_fixture_only" : "external_tool_commands; not physical or exact-head certification"));
+                cert_json.certJson.put(report,"physical_certification",jsonNewBool(false));
+                cert_json.certJson.put(report,"stage0_retained",jsonNewBool(true));
+                cert_json.certJson.put(report,"capture_encoding",jsonNewString(captureEncoding));
+                return report;
+            }
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--report|--cargo|--capture-encoding|","|--no-full-gates|--fixture|--help|-h|");
+                if (options == 0) { println("cert-matrix: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools cert-matrix --cargo EXE [--root REPO] [--report JSON] [--no-full-gates] [--fixture]");
+                    println("Explicit --cargo authorizes external Cargo commands, including builds and fmt for full gates.");
+                    jsonRelease(options); return 0;
+                }
+                cargo >> str <- tool_cli.toolCli.value(options,"--cargo","");
+                captureEncoding <- tool_cli.toolCli.value(options,"--capture-encoding",defaultEncoding());
+                if (captureEncoding != "utf8" && captureEncoding != "cp1252") { println("cert-matrix: invalid capture encoding"); jsonRelease(options); return 2; }
+                if (cargo == "") { println("cert-matrix: require explicit --cargo executable"); jsonRelease(options); return 2; }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                cargo <- tool_cli.toolCli.absolute(cargo);
+                if (release_io.releaseIo.fileType(root) != 2 || release_io.releaseIo.fileType(cargo) != 1) {
+                    println("cert-matrix: root or external tool not found"); jsonRelease(options); return 2;
+                }
+                output >> str <- tool_cli.toolCli.value(options,"--report",root+"/docs/status/RELEASE_INDUSTRIAL_MATRIX_v2_1_0.json");
+                outputBytes >> p<byte> <- cast(output);
+                rooted >> bool <- strStartsWith(output,"/") || strStartsWith(output,"\\") ||
+                    (strByteLen(output) > 1 && rd(off(outputBytes,1)) == 58);
+                if (!rooted) output <- root+"/"+output;
+                output <- tool_cli.toolCli.absolute(output);
+                report >> int <- build(root,cargo,!tool_cli.toolCli.hasFlag(options,"--no-full-gates"),tool_cli.toolCli.hasFlag(options,"--fixture"));
+                passed >> bool <- cert_json.certJson.field(report,"status") == "ok";
+                written >> bool <- cert_json.certJson.save(output,report);
+                println("industrial release matrix report -> "+output);
+                println("status="+cert_json.certJson.field(report,"status"));
+                if (!written) println("cert-matrix: report write failed");
+                jsonRelease(report); jsonRelease(options);
+                return passed && written ? 0 : 1;
+            }
+    fa: return true;
+}

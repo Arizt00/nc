@@ -1,0 +1,62 @@
+use <data:json>;
+use <io:output, erroroutput>;
+use <process:args, env>;
+use <project:release_io, tool_cli, cert_json, ide43_core, sha256>;
+
+ide43Bundle {
+    fn:
+        public:
+            run(executable >> str, words >> str, cwd >> str) -> bool {
+                args >> int <- ide43_core.ide43Core.list(words); jsonArrayInsert(args,0,jsonNewString(executable));
+                if (envHas("WINDIR") && (strEndsWith(executable,".cmd") || strEndsWith(executable,".bat"))) {
+                    line >> str <- tool_cli.toolCli.arrayLine(args); jsonRelease(args);
+                    args <- ide43_core.ide43Core.list("cmd.exe|/d|/s|/c"); cert_json.certJson.push(args,jsonNewString(line)); strRelease(line);
+                }
+                result >> int <- tool_cli.toolCli.execute(args,cwd,600000); jsonRelease(args);
+                eprint(release_io.releaseIo.field(result,"stderr"));
+                succeeded >> bool <- tool_cli.toolCli.hasFlag(result,"ok"); jsonRelease(result); return succeeded;
+            }
+            ghidra(root >> str, zip >> str, announce >> bool) -> bool {
+                out >> str <- root+"/var/releases/v2_0_0/phase10_ide_dist/ghidra";
+                archive >> str <- out+"/nc-ghidra-extension-v2_0_0.zip";
+                if (!release_io.releaseIo.makeDirectories(out)) return false;
+                delete_file(archive);
+                words >> int <- ide43_core.ide43Core.list("README.md|extension.properties|Module.manifest|bin|ghidra_scripts");
+                jsonArrayInsert(words,0,jsonNewString(archive));
+                if (strEndsWith(zip,"tar.exe")) {
+                    jsonArrayInsert(words,0,jsonNewString("-cf")); jsonArrayInsert(words,0,jsonNewString("--format=zip"));
+                } else jsonArrayInsert(words,0,jsonNewString("-qr"));
+                jsonArrayInsert(words,0,jsonNewString(zip));
+                result >> int <- tool_cli.toolCli.execute(words,root+"/tools/ghidra/nc-ghidra-extension",600000);
+                jsonRelease(words); succeededZip >> bool <- tool_cli.toolCli.hasFlag(result,"ok");
+                eprint(release_io.releaseIo.field(result,"stderr"));
+                if (announce) print(release_io.releaseIo.field(result,"stdout")); jsonRelease(result);
+                if (!succeededZip) return false;
+                hash >> str <- sha256.nccSha256.file(archive); if (hash == "") return false;
+                manifest >> int <- jsonNewObject();
+                cert_json.certJson.put(manifest,"schema",jsonNewString("nc.ghidra.extension.bundle.v1"));
+                cert_json.certJson.put(manifest,"version",jsonNewString("2.0.0"));
+                cert_json.certJson.put(manifest,"state",jsonNewString("frozen"));
+                cert_json.certJson.put(manifest,"artifact",jsonNewString("var/releases/v2_0_0/phase10_ide_dist/ghidra/nc-ghidra-extension-v2_0_0.zip"));
+                cert_json.certJson.put(manifest,"sha256",jsonNewString(hash));
+                succeeded >> bool <- cert_json.certJson.save(out+"/ghidra_extension_manifest.v1.json",manifest);
+                jsonRelease(manifest);
+                if (succeeded && announce) {
+                    println("OK: ghidra extension manifest var/releases/v2_0_0/phase10_ide_dist/ghidra/ghidra_extension_manifest.v1.json");
+                    println("OK: ghidra extension bundle -> var/releases/v2_0_0/phase10_ide_dist/ghidra/nc-ghidra-extension-v2_0_0.zip");
+                }
+                return succeeded;
+            }
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--zip|","|--help|-h|");
+                if (options == 0) return 2;
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ide43-bundle [--root REPO] [--zip ZIP]"); jsonRelease(options); return 0;
+                }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                zip >> str <- tool_cli.toolCli.value(options,"--zip",envHas("WINDIR") ? "C:/Windows/System32/tar.exe" : "zip");
+                succeeded >> bool <- ghidra(root,zip,true); jsonRelease(options); return succeeded ? 0 : 1;
+            }
+    fa: return true;
+}
+

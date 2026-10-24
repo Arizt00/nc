@@ -1,0 +1,123 @@
+use <io:output>;
+use <memory:slice, span, stack>;
+
+memoryViewsManual :: runtime {
+    fn:
+        bindSlice(descriptor >> addr, data >> addr) -> bool {
+            return sliceAt(descriptor, data, 8, 3);
+        }
+
+        mutateSlice(descriptor >> addr) -> bool {
+            first >> bool <- sliceWrite8(descriptor, 0, 10);
+            second >> bool <- sliceWrite8(descriptor, 1, 20);
+            wrote >> bool <- sliceWrite8(descriptor, 2, 90);
+            fourth >> bool <- sliceWrite8(descriptor, 3, 40);
+            fifth >> bool <- sliceWrite8(descriptor, 4, 50);
+            sixth >> bool <- sliceWrite8(descriptor, 5, 60);
+            seventh >> bool <- sliceWrite8(descriptor, 6, 70);
+            eighth >> bool <- sliceWrite8(descriptor, 7, 80);
+            value >> int <- sliceRead8(descriptor, 2);
+            return first && second && wrote && fourth && fifth && sixth &&
+                seventh && eighth && value == 90;
+        }
+
+        inspectSlice(descriptor >> addr) -> bool {
+            length >> int <- sliceLen(descriptor);
+            flags >> int <- sliceFlags(descriptor);
+            empty >> bool <- sliceIsEmpty(descriptor);
+            return length == 8 && flags == 3 && !empty;
+        }
+
+        sliceDataProbe(descriptor >> addr) -> bool {
+            data >> addr <- sliceData(descriptor);
+            return true;
+        }
+
+        subSlice(destination >> addr, source >> addr) -> bool {
+            return sliceView(destination, source, 2, 4);
+        }
+
+        clearSlice(descriptor >> addr) -> bool {
+            return sliceClear(descriptor);
+        }
+
+        viewLayout() -> bool {
+            sliceBytes >> int <- sliceStride();
+            spanBytes >> int <- spanStride();
+            segmentBytes >> int <- spanSegmentStride();
+            return sliceBytes == 24 && spanBytes == 32 && segmentBytes == 16;
+        }
+
+        writeSegments(segments >> addr, data >> addr) -> bool {
+            first >> bool <- spanSegmentAt(segments, 0, data, 4);
+            secondData >> addr <- data + 4;
+            second >> bool <- spanSegmentAt(segments, 1, secondData, 4);
+            return first && second;
+        }
+
+        bindSpan(descriptor >> addr, segments >> addr) -> bool {
+            return spanAt(descriptor, segments, 2, 8, 5);
+        }
+
+        inspectSpan(descriptor >> addr) -> bool {
+            count >> int <- spanCount(descriptor);
+            length >> int <- spanLen(descriptor);
+            flags >> int <- spanFlags(descriptor);
+            empty >> bool <- spanIsEmpty(descriptor);
+            return count == 2 && length == 8 && flags == 5 && !empty;
+        }
+
+        readSpan(descriptor >> addr) -> bool {
+            value >> int <- spanRead8(descriptor, 2);
+            contains >> bool <- spanContains8(descriptor, 90);
+            return value == 90 && contains;
+        }
+
+        spanSegmentsProbe(descriptor >> addr) -> bool {
+            segments >> addr <- spanSegments(descriptor);
+            return true;
+        }
+
+        clearSpan(descriptor >> addr) -> bool {
+            return spanClear(descriptor);
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            data >> p<byte> <- stackAlloc(8, 8);
+            sliceBytes >> int <- sliceStride();
+            sliceA >> p<byte> <- stackAlloc(sliceBytes, 8);
+            sliceB >> p<byte> <- stackAlloc(sliceBytes, 8);
+            segmentBytes >> int <- spanSegmentStride();
+            segments >> p<byte> <- stackAlloc(segmentBytes * 2, 8);
+            spanBytes >> int <- spanStride();
+            spanValue >> p<byte> <- stackAlloc(spanBytes, 8);
+
+            sliceReady >> bool <- bindSlice(adr(sliceA), adr(data));
+            sliceMutated >> bool <- mutateSlice(adr(sliceA));
+            sliceInspected >> bool <- inspectSlice(adr(sliceA));
+            sliceDataOk >> bool <- sliceDataProbe(adr(sliceA));
+            sliceViewed >> bool <- subSlice(adr(sliceB), adr(sliceA));
+            layoutOk >> bool <- viewLayout();
+            segmentsReady >> bool <- writeSegments(adr(segments), adr(data));
+            spanReady >> bool <- bindSpan(adr(spanValue), adr(segments));
+            spanInspected >> bool <- inspectSpan(adr(spanValue));
+            spanRead >> bool <- readSpan(adr(spanValue));
+            spanSegmentsOk >> bool <- spanSegmentsProbe(adr(spanValue));
+            spanCleared >> bool <- clearSpan(adr(spanValue));
+            sliceCleared >> bool <- clearSlice(adr(sliceB));
+
+            ok >> bool <- sliceReady && sliceMutated && sliceInspected &&
+                sliceDataOk && sliceViewed && layoutOk && segmentsReady && spanReady &&
+                spanInspected && spanRead && spanSegmentsOk && spanCleared && sliceCleared;
+            print("manual nC slice span backend: ");
+            if (ok) { println("true"); } else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

@@ -1,0 +1,160 @@
+use <data:json>;
+use <project:dist_session, release_io, tool_cli, contract_checks>;
+
+distTelemetry {
+    const:
+        REQUIRED >> str <- "[\"docs/spec/release/v2_0_0_phase10_telemetry_spec.md\",\"docs/spec/release/v2_0_0_phase10_telemetry_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_telemetry_contract.json\",\"docs/status/STATUS_PHASE10_punto15_telemetry_v2_0_0.md\",\"tools/ncc/nc/src/verification/dist_telemetry.n\",\"tools/release/qa_phase10_p15_v2_0_0.sh\"]";
+        FIELDS >> str <- "[\"schema\",\"version\",\"timestamp_epoch\",\"event\",\"command\",\"status\",\"ncup_version\",\"target\"]";
+        BANNED >> str <- "[\"source_code\",\"source_contents\",\"source_paths\",\"source_file\",\"source_snippet\",\"file_contents\"]";
+    fn:
+        private:
+            runRequired(tail >> str) -> bool {
+                row >> int <- dist_session.distSession.run(tail);
+                passed >> bool <- dist_session.distSession.require(dist_session.distSession.ok(row),"telemetry command failed: "+tail);
+                jsonRelease(row); return passed;
+            }
+            status(expected >> bool) -> bool {
+                row >> int <- dist_session.distSession.run("[\"ncup\",\"telemetry\",\"status\",\"--home\",\"$home\",\"--json\"]");
+                passed >> bool <- dist_session.distSession.require(dist_session.distSession.ok(row),"telemetry status failed");
+                model >> int <- dist_session.distSession.document(row);
+                passed <- contract_checks.contractChecks.boolean(model,"enabled",expected) && passed;
+                jsonRelease(row); jsonRelease(model); return passed;
+            }
+        public:
+            events(content >> str) -> int {
+                checks >> int <- jsonNewObject();
+                success >> bool <- false;
+                failure >> bool <- false;
+                schema >> bool <- true;
+                privacy >> bool <- true;
+                valid >> bool <- true;
+                required >> int <- jsonParse(FIELDS);
+                banned >> int <- jsonParse(BANNED);
+                data >> p<byte> <- cast(content);
+                start >> int <- 0;
+                at >> int <- 0;
+                count >> int <- strByteLen(content);
+                while (at <= count) {
+                    if (at == count || rd(off(data,at)) == 10) {
+                        // Byte offsets are sliced as bytes, including multibyte JSON strings.
+                        length >> int <- at-start;
+                        buffer >> p<byte> <- cast(alloc(length+1));
+                        if (buffer == null) { valid <- false; break; }
+                        cp(buffer,off(data,start),length); wr(off(buffer,length),0);
+                        slice >> str <- cast(buffer);
+                        line >> str <- strTrim(slice);
+                        if (line != "") {
+                            event >> int <- jsonParse(line);
+                            if (jsonKind(event) != 6) {
+                                valid <- false;
+                                jsonRelease(event); strRelease(line); free(buffer);
+                                start <- at+1; at += 1; continue;
+                            }
+                            succeeded >> bool <- dist_session.distSession.isField(event,"status","success");
+                            selected >> bool <- dist_session.distSession.isField(event,"event","install") && (succeeded || dist_session.distSession.isField(event,"status","failure"));
+                            if (selected) {
+                                if (succeeded) success <- true; else failure <- true;
+                                index >> int <- 0;
+                                while (index < jsonArrayLen(required)) {
+                                    field >> int <- jsonArrayGet(required,index);
+                                    schema <- jsonObjectHas(event,jsonStringView(field,"")) && schema;
+                                    jsonRelease(field); index += 1;
+                                }
+                                target >> int <- jsonObjectGet(event,"target");
+                                schema <- jsonKind(target) > 1 && !(jsonKind(target) == 4 && jsonStringView(target,"") == "") && schema;
+                                schema <- dist_session.distSession.isField(event,"schema","ncup.telemetry.event.v1") && dist_session.distSession.isField(event,"ncup_version","2.0.0") && schema;
+                                jsonRelease(target);
+                            }
+                            privacy <- contract_checks.contractChecks.boolean(event,"collects_source_code",false) && privacy;
+                            index >> int <- 0;
+                            while (index < jsonArrayLen(banned)) {
+                                field >> int <- jsonArrayGet(banned,index);
+                                privacy <- !jsonObjectHas(event,jsonStringView(field,"")) && privacy;
+                                jsonRelease(field); index += 1;
+                            }
+                            jsonRelease(event);
+                        }
+                        strRelease(line); free(buffer); start <- at+1;
+                    }
+                    at += 1;
+                }
+                jsonRelease(required); jsonRelease(banned);
+                contract_checks.contractChecks.record(checks,"install_success_event_written",success);
+                contract_checks.contractChecks.record(checks,"install_failure_event_written",failure);
+                contract_checks.contractChecks.record(checks,"event_schema_min_fields",schema && valid);
+                contract_checks.contractChecks.record(checks,"never_collects_source",privacy && valid);
+                return checks;
+            }
+            inspect() -> void {
+                dist_session.distSession.initialize("[\"artifacts_present\",\"contract_consistent\",\"default_opt_in_false\",\"enable_disable_roundtrip\",\"install_success_event_written\",\"install_failure_event_written\",\"event_schema_min_fields\",\"never_collects_source\"]");
+                missing >> int <- dist_session.distSession.required(REQUIRED,false);
+                present >> bool <- jsonArrayLen(missing) == 0;
+                jsonRelease(missing);
+                dist_session.distSession.record("artifacts_present",present);
+                if (!dist_session.distSession.require(present,"phase10 p15 artifacts missing")) return;
+                row >> int <- dist_session.distSession.run("[\"phase10-toolchain-model\",\"--json\"]");
+                if (!dist_session.distSession.require(dist_session.distSession.ok(row),"toolchain model failed")) { jsonRelease(row); return; }
+                model >> int <- dist_session.distSession.document(row);
+                jsonRelease(row);
+                toolchains >> int <- jsonObjectGet(model,"toolchains");
+                target >> str <- "";
+                index >> int <- 0;
+                while (index < jsonArrayLen(toolchains) && target == "") {
+                    entry >> int <- jsonArrayGet(toolchains,index);
+                    id >> str <- dist_session.distSession.fieldCopy(entry,"id");
+                    if (strStartsWith(id,"stable-")) target <- strSubstring(id,7,strLen(id)-7);
+                    strRelease(id); jsonRelease(entry); index += 1;
+                }
+                jsonRelease(toolchains); jsonRelease(model);
+                if (!dist_session.distSession.require(target != "","cannot resolve stable channel/target")) return;
+                args >> int <- jsonParse("[\"ncup\",\"init\",\"--home\",\"$home\",\"--profile\",\"minimal\",\"--channel\",\"stable\",\"--target\"]");
+                tool_cli.toolCli.append(args,target);
+                tail >> int <- jsonParse("[\"--force\",\"--yes\",\"--skip-first-run\",\"--json\"]");
+                index <- 0;
+                while (index < jsonArrayLen(tail)) { jsonArrayPush(args,jsonArrayGet(tail,index)); index += 1; }
+                jsonRelease(tail);
+                row <- dist_session.distSession.compiler(args);
+                ready >> bool <- dist_session.distSession.require(dist_session.distSession.ok(row),"ncup init failed");
+                jsonRelease(row);
+                if (!ready) return;
+                dist_session.distSession.record("default_opt_in_false",status(false));
+                if (!dist_session.distSession.good()) return;
+                if (!runRequired("[\"ncup\",\"telemetry\",\"enable\",\"--home\",\"$home\",\"--json\"]")) return;
+                enabled >> bool <- status(true);
+                if (!dist_session.distSession.good()) return;
+                if (!runRequired("[\"ncup\",\"telemetry\",\"disable\",\"--home\",\"$home\",\"--json\"]")) return;
+                disabled >> bool <- status(false);
+                if (!dist_session.distSession.good()) return;
+                dist_session.distSession.record("enable_disable_roundtrip",enabled && disabled);
+                if (!runRequired("[\"ncup\",\"telemetry\",\"enable\",\"--home\",\"$home\",\"--json\"]")) return;
+                if (!runRequired("[\"ncup\",\"install\",\"stable\",\"--home\",\"$home\",\"--profile\",\"minimal\"]")) return;
+                failId >> str <- "beta-"+target;
+                path >> str <- dist_session.distSession.homePath()+"/toolchains/"+failId+"/bin";
+                if (!dist_session.distSession.require(release_io.releaseIo.write(path,"blocked"),"cannot inject blocked bin file")) return;
+                args <- jsonParse("[\"ncup\",\"toolchain\",\"install\"]");
+                tool_cli.toolCli.append(args,failId);
+                tool_cli.toolCli.append(args,"--home"); tool_cli.toolCli.append(args,"$home");
+                tool_cli.toolCli.append(args,"--profile"); tool_cli.toolCli.append(args,"minimal");
+                row <- dist_session.distSession.compiler(args);
+                rejected >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) != 0;
+                jsonRelease(row);
+                if (!dist_session.distSession.require(rejected,"expected failing install command to fail")) return;
+                path <- dist_session.distSession.homePath()+"/logs/telemetry-events.v1.ndjson";
+                eventText >> str <- release_io.releaseIo.text(path);
+                eventChecks >> int <- events(eventText);
+                if (eventText != "") free(cast<byte>(eventText));
+                index <- 0;
+                while (index < jsonObjectLen(eventChecks)) {
+                    key >> str <- jsonObjectKeyAt(eventChecks,index);
+                    dist_session.distSession.record(key,tool_cli.toolCli.hasFlag(eventChecks,key)); index += 1;
+                }
+                jsonRelease(eventChecks);
+                contract >> int <- dist_session.distSession.read(dist_session.distSession.rootPath()+"/docs/spec/release/v2_0_0_phase10_telemetry_contract.json");
+                policy >> int <- jsonObjectGet(contract,"policy");
+                if (jsonKind(policy) != 6) { jsonRelease(policy); policy <- jsonNewObject(); }
+                consistent >> bool <- dist_session.distSession.isField(contract,"schema","nc.phase10.telemetry.contract.v1") && dist_session.distSession.isField(contract,"state","frozen") && dist_session.distSession.isField(policy,"mode","opt-in-only") && contract_checks.contractChecks.boolean(policy,"default_opt_in",false) && release_io.releaseIo.member(contract,"required_gates","release_phase10_telemetry_gate_tests");
+                dist_session.distSession.record("contract_consistent",consistent);
+                jsonRelease(policy); jsonRelease(contract);
+            }
+    fa: return true;
+}

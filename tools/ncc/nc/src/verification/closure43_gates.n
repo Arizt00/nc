@@ -1,0 +1,52 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output>;
+use <project:closure43_core, closure43_options, release_io, tool_cli>;
+
+closure43Gates {
+    fn:
+        public:
+            options(args >> addr) -> int {
+                options >> int <- closure43_options.closure43Options.parse(args,false);
+                if (options == 0) return 0;
+                if (!tool_cli.toolCli.hasFlag(options,"--help") && tool_cli.toolCli.hasFlag(options,"--full-gates") && tool_cli.toolCli.hasFlag(options,"--release-scoped-gates")) closure43_core.closure43Core.fail("--full-gates and --release-scoped-gates are mutually exclusive");
+                return options;
+            }
+            cargo(options >> int, runtime >> bool) -> int {
+                result >> int <- jsonNewArray();
+                full >> bool <- tool_cli.toolCli.hasFlag(options,"--full-gates"); scoped >> bool <- tool_cli.toolCli.hasFlag(options,"--release-scoped-gates");
+                if (!full && !scoped) return result;
+                commands >> int <- jsonParse("[[\"cargo\",\"fmt\",\"--all\",\"--\",\"--check\"],[\"cargo\",\"check\",\"--workspace\",\"--all-targets\"],[\"cargo\",\"test\",\"--workspace\",\"--all-targets\"],[\"cargo\",\"clippy\",\"--workspace\",\"--all-targets\",\"--\",\"-D\",\"warnings\"]]");
+                if (scoped) {
+                    words >> int <- jsonParse("[\"cargo\",\"test\",\"-p\",\"ncc-cli\"]"); closure43_core.closure43Core.push(words,jsonNewString(runtime ? "runtime_" : "compiler_"));
+                    closure43_core.closure43Core.push(words,jsonNewString("--")); closure43_core.closure43Core.push(words,jsonNewString("--nocapture"));
+                    removed >> int <- jsonArrayRemove(commands,2); jsonRelease(removed); jsonArrayInsert(commands,2,words); jsonRelease(words);
+                }
+                index >> int <- 0;
+                while (index < 4 && closure43_core.closure43Core.ok()) {
+                    words >> int <- jsonArrayGet(commands,index); record >> int <- closure43_core.closure43Core.command(words,true,false,false); row >> int <- jsonNewObject();
+                    closure43_core.closure43Core.copyField(row,record,"cmd"); closure43_core.closure43Core.copyField(row,record,"returncode"); closure43_core.closure43Core.copyField(row,record,"sha256");
+                    closure43_core.closure43Core.push(result,row); jsonRelease(words); jsonRelease(record); index += 1;
+                }
+                jsonRelease(commands); return result;
+            }
+            configure(summary >> int, settings >> int) -> void {
+                full >> bool <- tool_cli.toolCli.hasFlag(settings,"--full-gates"); scoped >> bool <- tool_cli.toolCli.hasFlag(settings,"--release-scoped-gates");
+                closure43_core.closure43Core.put(summary,"full_workspace_gates_executed",jsonNewBool(full)); closure43_core.closure43Core.put(summary,"release_scoped_gates_executed",jsonNewBool(scoped));
+                closure43_core.closure43Core.set(summary,"gate_mode",full ? "full_workspace" : (scoped ? "release_scoped" : "point_evidence_only"));
+                context >> int <- jsonObjectGet(summary,"ci_context"); keys >> int <- jsonParse("[\"GITHUB_RUN_ID\",\"GITHUB_RUN_ATTEMPT\",\"GITHUB_SHA\",\"GITHUB_REF\",\"RUNNER_OS\",\"RUNNER_ARCH\",\"NCC_MATRIX_HOST\",\"NCC_MATRIX_ARCH\"]");
+                names >> int <- jsonParse("[\"github_run_id\",\"github_run_attempt\",\"github_sha\",\"github_ref\",\"runner_os\",\"runner_arch\",\"matrix_host\",\"matrix_arch\"]"); index >> int <- 0;
+                while (index < 8) {
+                    key >> int <- jsonArrayGet(keys,index); name >> int <- jsonArrayGet(names,index);
+                    closure43_core.closure43Core.put(context,jsonGetString(name),envHas(jsonGetString(key)) ? jsonNewString(closure43_core.closure43Core.environment(jsonGetString(key),"")) : jsonNewNull());
+                    jsonRelease(key); jsonRelease(name); index += 1;
+                }
+                closure43_core.closure43Core.put(summary,"ci_context",context); jsonRelease(keys); jsonRelease(names);
+            }
+            markerSummary(report >> int) -> int {
+                result >> int <- jsonNewObject(); closure43_core.closure43Core.copyField(result,report,"status");
+                blockers >> int <- jsonObjectGet(report,"blocking_occurrences"); closure43_core.closure43Core.put(result,"blocking_occurrences",jsonNewInt(jsonArrayLen(blockers))); jsonRelease(blockers);
+                closure43_core.closure43Core.copyField(result,report,"classified_non_blocking_count"); return result;
+            }
+    fa: return true;
+}

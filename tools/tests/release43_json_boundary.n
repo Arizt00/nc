@@ -1,0 +1,42 @@
+use <data:json>;
+use <io:output, render>;
+use <project:physical43_json, cert_json>;
+
+release43JsonBoundary {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void { println((good ? "PASS " : "FAIL ")+name); if (!good) failures += 1; }
+            compare(name >> str, raw >> str, escaped >> str) -> void {
+                a >> int <- physical43_json.physical43Json.parse(raw); b >> int <- physical43_json.physical43Json.parse(escaped); expect(name+"-parse",a != 0 && b != 0);
+                if (a != 0 && b != 0) {
+                    expect(name+"-equivalent",jsonEquals(a,b)); serialized >> str <- cert_json.certJson.stringify(a); c >> int <- physical43_json.physical43Json.parse(serialized); strRelease(serialized); expect(name+"-roundtrip",c != 0);
+                    if (c != 0) { expect(name+"-roundtrip-equal",jsonEquals(a,c)); jsonRelease(c); }
+                }
+                if (a != 0) jsonRelease(a); if (b != 0) jsonRelease(b);
+            }
+            invalidUtf8(name >> str, a >> int, b >> int, c >> int, d >> int, count >> int) -> void {
+                data >> p<byte> <- cast(alloc(8)); wr<byte>(data,34); wr<byte>(off<byte>(data,1),a);
+                if (count > 1) wr<byte>(off<byte>(data,2),b); if (count > 2) wr<byte>(off<byte>(data,3),c); if (count > 3) wr<byte>(off<byte>(data,4),d);
+                wr<byte>(off<byte>(data,count+1),34); wr<byte>(off<byte>(data,count+2),0);
+                text >> str <- cast(data); value >> int <- physical43_json.physical43Json.parse(text); expect(name,value == 0); if (value != 0) jsonRelease(value); free(data);
+            }
+        public:
+            run() -> int {
+                compare("latin","{\"café\":\"café\"}","{\"caf\\u00e9\":\"caf\\u00e9\"}");
+                compare("cjk","{\"文字\":\"文字\"}","{\"\\u6587\\u5b57\":\"\\u6587\\u5b57\"}");
+                compare("supplementary","{\"name\":\"𐐀\"}","{\"name\":\"\\ud801\\udc00\"}");
+                bad >> int <- physical43_json.physical43Json.parse("{\"bad\":\"line\nfeed\"}"); expect("unescaped-control-rejected",bad == 0); if (bad != 0) jsonRelease(bad);
+                invalidUtf8("invalid-utf8-continuation",128,0,0,0,1);
+                invalidUtf8("invalid-utf8-overlong",192,175,0,0,2);
+                invalidUtf8("invalid-utf8-truncated",230,150,0,0,2);
+                invalidUtf8("invalid-utf8-surrogate",237,160,128,0,3);
+                invalidUtf8("invalid-utf8-over-max",244,144,128,128,4);
+                duplicate >> int <- physical43_json.physical43Json.parse("{\"x\":1,\"x\":2}"); value >> int <- duplicate == 0 ? 0 : jsonObjectGet(duplicate,"x");
+                expect("duplicate-key-python-last-wins",value != 0 && jsonGetIntOr(value,0) == 2 && jsonObjectLen(duplicate) == 1);
+                if (value != 0) jsonRelease(value); if (duplicate != 0) jsonRelease(duplicate);
+                println("failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

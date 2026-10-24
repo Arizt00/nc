@@ -1,0 +1,36 @@
+use <audit:debug>;
+use <io:output>;
+use <memory:stack>;
+
+rawAuditDebug :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            records >> p<byte> <- stackAlloc(debugStride(), 8);
+            mirror >> p<byte> <- stackAlloc(debugStride(), 8);
+            table >> addr <- adr(records);
+            copy >> addr <- adr(mirror);
+
+            recorded >> bool <- debugRecord(table, 0, 91, table, 42, 3);
+            dumped >> int <- debugDump(copy, table, debugStride());
+            before >> int <- debugChecksum(table, debugStride());
+            after >> int <- debugChecksum(copy, debugStride());
+            ok >> bool <- recorded && dumped == 32 && before == after &&
+                debugTag(copy, 0) == 91 &&
+                debugLocation(copy, 0) == table &&
+                debugValue(copy, 0) == 42 &&
+                debugFlags(copy, 0) == 3;
+            checked >> bool <- debugAssert(ok, copy, debugStride());
+
+            print("manual nC audit debug backend: ");
+            if (checked) { println("true"); }
+            else { println("false"); }
+            stackRestore(mark);
+            return checked;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

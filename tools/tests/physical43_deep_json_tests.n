@@ -1,0 +1,131 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:physical43_deep_json, physical43_json, physical43_numeric, cert_json, release_io, sha256>;
+
+physical43DeepJsonTests {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+        results >> int <- 0;
+        nodes >> int <- 0;
+        deepest >> int <- 0;
+    fn:
+        private:
+            expect(valid >> bool, name >> str) -> void {
+                checks += 1; if (!valid) { failures += 1; println("FAIL "+name); }
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"name",jsonNewString(name)); cert_json.certJson.put(row,"passed",jsonNewBool(valid)); cert_json.certJson.push(results,row);
+            }
+            hex(code >> int) -> int { return code >= 48 && code <= 57 ? code-48 : (code >= 97 && code <= 102 ? code-87 : -1); }
+            unhex(source >> str) -> p<byte> {
+                length >> int <- strByteLen(source)/2; output >> p<byte> <- cast(alloc(length+1)); if (output == null) return null; at >> int <- 0; data >> p<byte> <- cast(source);
+                while (at < length) { wr(off(output,at),hex(rd(off(data,at*2)))*16+hex(rd(off(data,at*2+1)))); at += 1; } wr(off(output,length),0); return output;
+            }
+            quote(value >> str, ascii >> bool) -> str {
+                source >> str <- physical43_json.physical43Json.quote(value); result >> str <- ""; at >> int <- 0;
+                while (at < strByteLen(source)) {
+                    pair >> str <- strSubstring(source,at,2);
+                    if (pair == "\\\\") { result <- cert_json.certJson.append(result,pair); strRelease(pair); at += 2; continue; } strRelease(pair);
+                    piece >> str <- strSubstring(source,at,6); short >> str <- "";
+                    if (piece == "\\u0008") short <- "\\b"; else if (piece == "\\u0009") short <- "\\t"; else if (piece == "\\u000a") short <- "\\n"; else if (piece == "\\u000c") short <- "\\f"; else if (piece == "\\u000d") short <- "\\r";
+                    if (short != "") { result <- cert_json.certJson.append(result,short); at += 6; }
+                    else { letter >> str <- strSubstring(source,at,1); result <- cert_json.certJson.append(result,letter); strRelease(letter); at += 1; }
+                    strRelease(piece);
+                }
+                strRelease(source); if (ascii) return result;
+                source <- result; result <- ""; at <- 0;
+                while (at < strByteLen(source)) {
+                    pair >> str <- strSubstring(source,at,2);
+                    if (pair == "\\\\") { result <- cert_json.certJson.append(result,pair); strRelease(pair); at += 2; continue; }
+                    if (pair == "\\u" && at+6 <= strByteLen(source)) {
+                        data >> p<byte> <- cast(source); code >> int <- 0; cursor >> int <- 0;
+                        while (cursor < 4) { code <- code*16+hex(rd(off(data,at+cursor+2))); cursor += 1; }
+                        if (code >= 128) {
+                            width >> int <- 6;
+                            if (code >= 55296 && code <= 56319 && at+12 <= strByteLen(source)) {
+                                marker >> str <- strSubstring(source,at+6,2); low >> int <- 0; cursor <- 0;
+                                while (cursor < 4) { low <- low*16+hex(rd(off(data,at+cursor+8))); cursor += 1; }
+                                if (marker == "\\u" && low >= 56320 && low <= 57343) { code <- 65536+(code-55296)*1024+low-56320; width <- 12; } strRelease(marker);
+                            }
+                            if (code >= 55296 && code <= 57343) { strRelease(pair); strRelease(source); strRelease(result); return ""; }
+                            scalar >> str <- physical43_json.physical43Json.scalarText(code); result <- cert_json.certJson.append(result,scalar); strRelease(scalar); strRelease(pair); at += width; continue;
+                        }
+                    }
+                    strRelease(pair); letter >> str <- strSubstring(source,at,1); result <- cert_json.certJson.append(result,letter); strRelease(letter); at += 1;
+                }
+                strRelease(source); return result;
+            }
+            keys(model >> int) -> int {
+                result >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonObjectLen(model)) {
+                    name >> str <- jsonObjectKeyAt(model,at); value >> int <- jsonNewString(name); position >> int <- 0;
+                    while (position < jsonArrayLen(result)) { other >> int <- jsonArrayBorrow(result,position); comparison >> int <- physical43_json.physical43Json.rawCompare(name,jsonStringView(other,"")); jsonRelease(other); if (comparison < 0) break; position += 1; }
+                    jsonArrayInsert(result,position,value); jsonRelease(value); strRelease(name); at += 1;
+                }
+                return result;
+            }
+            canonical(model >> int, ascii >> bool) -> str {
+                nodes <- 0; deepest <- 0; result >> str <- ""; frame >> p<byte> <- null; current >> int <- jsonClone(model); depth >> int <- 0;
+                while (current != 0 || frame != null) {
+                    if (current != 0) {
+                        nodes += 1; if (depth > deepest) deepest <- depth; kind >> int <- jsonKind(current);
+                        if (kind == 5 || kind == 6) {
+                            next >> p<byte> <- cast(alloc(32)); if (next == null) return "";
+                            wr<p<byte>>(cast<p<byte>>(next),frame); wr<int>(cast<int>(off(next,8)),current); wr<int>(cast<int>(off(next,12)),0); wr<int>(cast<int>(off(next,16)),kind == 6 ? keys(current) : 0); wr<int>(cast<int>(off(next,20)),depth);
+                            frame <- next; result <- cert_json.certJson.append(result,kind == 5 ? "[" : "{"); current <- 0;
+                        } else {
+                            value >> str <- "";
+                            if (physical43_deep_json.physical43DeepJson.isNumber(current)) { lexical >> str <- physical43_deep_json.physical43DeepJson.numberText(current); value <- physical43_numeric.physical43Numeric.canonicalText(lexical); strRelease(lexical); }
+                            else if (kind == 4) value <- quote(jsonStringView(current,""),ascii);
+                            else if (kind == 2) value <- jsonGetBoolOr(current,false) ? "true" : "false";
+                            else value <- "null";
+                            result <- cert_json.certJson.append(result,value); strRelease(value); jsonRelease(current); current <- 0;
+                        }
+                    }
+                    if (frame != null && current == 0) {
+                        parent >> int <- rd<int>(cast<int>(off(frame,8))); index >> int <- rd<int>(cast<int>(off(frame,12))); names >> int <- rd<int>(cast<int>(off(frame,16))); object >> bool <- jsonKind(parent) == 6; count >> int <- object ? jsonArrayLen(names) : jsonArrayLen(parent);
+                        if (index < count) {
+                            if (index > 0) result <- cert_json.certJson.append(result,",");
+                            if (object) { key >> int <- jsonArrayBorrow(names,index); name >> str <- jsonStringView(key,""); encoded >> str <- quote(name,ascii); result <- cert_json.certJson.append(result,encoded); result <- cert_json.certJson.append(result,":"); strRelease(encoded); current <- jsonObjectBorrow(parent,name); jsonRelease(key); }
+                            else current <- jsonArrayBorrow(parent,index);
+                            depth <- rd<int>(cast<int>(off(frame,20)))+1; wr<int>(cast<int>(off(frame,12)),index+1);
+                        } else {
+                            result <- cert_json.certJson.append(result,object ? "}" : "]"); if (names != 0) jsonRelease(names); jsonRelease(parent); previous >> p<byte> <- rd<p<byte>>(cast<p<byte>>(frame)); free(frame); frame <- previous;
+                        }
+                    }
+                }
+                return result;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 2;
+                catalogText >> str <- release_io.releaseIo.text(argsAt(arguments,1)); catalog >> int <- jsonParse(catalogText); strRelease(catalogText); if (catalog == 0) return 2;
+                results <- jsonNewArray();
+                reserved >> int <- physical43_deep_json.physical43DeepJson.parse("[\"\\u0001physical43-number-1\",NaN,Infinity,-Infinity,\"\\u0001physical43-number-99999\"]");
+                expect(reserved != 0,"reserved namespace parse"); item >> int <- jsonArrayBorrow(reserved,0); expect(!physical43_deep_json.physical43DeepJson.isNumber(item),"future numeric token literal is not a number"); expect(!physical43_deep_json.physical43DeepJson.hasSurrogates(jsonStringView(item,"")),"reserved registry permission is not an actual surrogate"); expect(!physical43_json.physical43Json.rawSurrogates(jsonStringView(item,"")),"forceRegistry keeps actual surrogate flag false"); jsonRelease(item);
+                item <- jsonArrayBorrow(reserved,1); expect(physical43_deep_json.physical43DeepJson.isNumber(item),"NaN tagged number"); lexical >> str <- physical43_deep_json.physical43DeepJson.numberText(item); expect(lexical == "NaN","NaN lexical owned"); strRelease(lexical);
+                copied >> int <- jsonClone(item); jsonRelease(item); expect(physical43_deep_json.physical43DeepJson.isNumber(copied),"number clone semantic identity"); holder >> int <- jsonNewObject(); jsonObjectSet(holder,"n",copied); jsonRelease(copied); item <- jsonObjectBorrow(holder,"n"); expect(physical43_deep_json.physical43DeepJson.isNumber(item),"number set/borrow semantic identity"); jsonRelease(item); jsonRelease(holder); jsonRelease(reserved);
+                item <- physical43_deep_json.physical43DeepJson.parse("\"NaN\""); expect(!physical43_deep_json.physical43DeepJson.isNumber(item),"ordinary NaN string"); lexical <- physical43_deep_json.physical43DeepJson.numberText(item); expect(lexical == "","numberText refuses nonnumber"); strRelease(lexical); jsonRelease(item);
+                item <- physical43_deep_json.physical43DeepJson.parse("\"\\ud800\""); expect(physical43_deep_json.physical43DeepJson.hasSurrogates(jsonStringView(item,"")),"actual high surrogate"); jsonRelease(item); item <- physical43_deep_json.physical43DeepJson.parse("\"\\udc00\""); expect(physical43_deep_json.physical43DeepJson.hasSurrogates(jsonStringView(item,"")),"actual low surrogate"); jsonRelease(item); item <- physical43_deep_json.physical43DeepJson.parse("\"\\ud800\\udc00\""); expect(!physical43_deep_json.physical43DeepJson.hasSurrogates(jsonStringView(item,"")),"paired surrogate is a scalar"); jsonRelease(item);
+                span >> p<byte> <- cast(alloc(8)); cp(span,cast<byte>("{}"),2); wr(off(span,2),0); cp(off(span,3),cast<byte>("false"),5); item <- physical43_deep_json.physical43DeepJson.parseBytes(span,8); expect(item == 0,"raw NUL trailing data cannot truncate JSON"); if (item != 0) jsonRelease(item); free(span);
+                rows >> int <- jsonObjectBorrow(catalog,"vectors"); index >> int <- 0; vectorResults >> int <- jsonNewArray();
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayBorrow(rows,index); name >> str <- cert_json.certJson.field(row,"name"); input >> str <- cert_json.certJson.field(row,"input_hex"); wanted >> str <- cert_json.certJson.field(row,"canonical"); accept >> int <- jsonObjectBorrow(row,"accepted"); accepted >> bool <- jsonGetBoolOr(accept,false); jsonRelease(accept);
+                    bytes >> p<byte> <- unhex(input); model >> int <- physical43_deep_json.physical43DeepJson.parseBytes(bytes,strByteLen(input)/2); first >> int <- checks; before >> int <- failures;
+                    expect((model != 0) == accepted,name+" acceptance"); actual >> str <- "";
+                    if (accepted && model != 0) {
+                        actual <- canonical(model,true); expect(actual == wanted,name+" full canonical content"); expected >> int <- jsonObjectBorrow(row,"nodes"); expect(nodes == jsonGetIntOr(expected,-1),name+" all nodes"); jsonRelease(expected); expected <- jsonObjectBorrow(row,"depth"); expect(deepest == jsonGetIntOr(expected,-1),name+" depth"); jsonRelease(expected);
+                        copiedModel >> int <- jsonClone(model); cloneText >> str <- canonical(copiedModel,true); expect(cloneText == wanted,name+" deep clone"); strRelease(cloneText); jsonRelease(copiedModel);
+                        roundtrip >> int <- physical43_deep_json.physical43DeepJson.parse(actual); roundText >> str <- roundtrip != 0 ? canonical(roundtrip,true) : ""; expect(roundtrip != 0 && roundText == wanted,name+" roundtrip"); strRelease(roundText); if (roundtrip != 0) jsonRelease(roundtrip);
+                        withoutSpan >> int <- physical43_deep_json.physical43DeepJson.parse(physical43_json.physical43Json.asText(bytes)); textResult >> str <- withoutSpan != 0 ? canonical(withoutSpan,true) : ""; expect(withoutSpan != 0 && textResult == wanted,name+" text API"); strRelease(textResult); if (withoutSpan != 0) jsonRelease(withoutSpan);
+                        utfHex >> str <- cert_json.certJson.field(row,"canonical_utf8_hex");
+                        if (utfHex != "") { wantedBytes >> p<byte> <- unhex(utfHex); utfActual >> str <- canonical(model,false); expect(utfActual == physical43_json.physical43Json.asText(wantedBytes),name+" ensure_ascii false full UTF8"); free(wantedBytes); strRelease(utfActual); } strRelease(utfHex);
+                    } else if (!accepted) expect(physical43_deep_json.physical43DeepJson.diagnostic() != "",name+" diagnostic");
+                    result >> int <- jsonNewObject(); cert_json.certJson.put(result,"name",jsonNewString(name)); cert_json.certJson.put(result,"passed",jsonNewBool(before == failures)); cert_json.certJson.put(result,"checks",jsonNewInt(checks-first)); digest >> str <- sha256.nccSha256.bytes(cast<byte>(actual),strByteLen(actual)); cert_json.certJson.put(result,"canonical_sha256",jsonNewString(digest)); strRelease(digest); cert_json.certJson.push(vectorResults,result);
+                    if (model != 0) jsonRelease(model); free(bytes); strRelease(name); strRelease(input); strRelease(wanted); strRelease(actual); jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows); jsonRelease(catalog); report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.physical43.deep-json.native-tests.v43")); cert_json.certJson.put(report,"passed",jsonNewBool(failures == 0)); cert_json.certJson.put(report,"check_count",jsonNewInt(checks)); cert_json.certJson.put(report,"failures",jsonNewInt(failures)); cert_json.certJson.put(report,"checks",results); cert_json.certJson.put(report,"cases",vectorResults); saved >> bool <- cert_json.certJson.save(argsAt(arguments,2),report); jsonRelease(report);
+                println("deep JSON vectors="+renderInt(index)+" checks="+renderInt(checks)+" failures="+renderInt(failures)); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+}

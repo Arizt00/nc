@@ -1,0 +1,73 @@
+use <data:json>;
+use <io:output, render>;
+use <fs:dir>;
+use <collections:result>;
+use <project:ide43_core, ide43_golden, cert_json, release_io>;
+
+ide43Probe {
+    local:
+        count >> int <- 0;
+        failures >> int <- 0;
+    fn:
+        check(name >> str, good >> bool) -> void {
+            count += 1; if (!good) failures += 1;
+            println((good ? "PASS " : "FAIL ")+name);
+        }
+        run() -> int {
+            memoryWork >> str <- "target/tmp/ide43-owned-text-"+renderInt(nowMs());
+            release_io.releaseIo.makeDirectories("target/tmp");
+            reserved >> Result<bool, FsError> <- createDir(memoryWork);
+            ready >> bool <- isOk(reserved);
+            if (ready) ready <- release_io.releaseIo.write(memoryWork+"/source.txt","owned text\n") &&
+                release_io.releaseIo.write(memoryWork+"/empty.txt","");
+            check("owned text setup",ready);
+            value >> str <- ide43_core.ide43Core.readText(memoryWork+"/source.txt");
+            check("owned text content",ready && value == "owned text\n"); strRelease(value);
+            value <- ide43_core.ide43Core.readText(memoryWork+"/empty.txt");
+            check("owned empty text",ready && value == ""); strRelease(value);
+            value <- ide43_core.ide43Core.readText(memoryWork+"/missing.txt");
+            check("owned missing text",ready && value == ""); strRelease(value);
+            cycle >> int <- 0; stable >> bool <- ready;
+            while (cycle < 256) {
+                value <- ide43_core.ide43Core.readText(memoryWork+"/source.txt");
+                stable <- value == "owned text\n" && stable; strRelease(value); cycle += 1;
+            }
+            check("owned text repeated release",stable);
+            if (isOk(reserved)) { delete_file(memoryWork+"/source.txt"); delete_file(memoryWork+"/empty.txt"); removeDir(memoryWork); }
+            model >> int <- jsonParse("{\"a\":{\"b\":true},\"set\":[\"n\",\"nb\",\"n\"],\"order\":[\"c\",\"cpp\",\"rust\",\"java\"]}");
+            check("typed lookup",ide43_core.ide43Core.boolean(model,"a|b",true));
+            check("missing lookup rejects",!ide43_core.ide43Core.boolean(model,"a|missing",false));
+            check("exact set allows duplicate",ide43_core.ide43Core.members(model,"set","n|nb",true));
+            check("exact set rejects extra",!ide43_core.ide43Core.members(model,"set","n",true));
+            check("subset",ide43_core.ide43Core.members(model,"order","rust|c",false));
+            check("sequence",ide43_core.ide43Core.sequence(model,"order","c|cpp|rust|java"));
+            check("sequence rejects reordering",!ide43_core.ide43Core.sequence(model,"order","cpp|c|rust|java"));
+            values >> int <- jsonParse("[null,false,true,0,0.5,\"\",\"x\",[],[0],{}, {\"x\":0}]");
+            expected >> int <- jsonParse("[false,false,true,false,true,false,true,false,true,false,true]"); index >> int <- 0;
+            while (index < jsonArrayLen(values)) {
+                value >> int <- jsonArrayGet(values,index); want >> int <- jsonArrayGet(expected,index);
+                check("truth "+renderInt(index),ide43_core.ide43Core.truth(value) == jsonGetBoolOr(want,false));
+                jsonRelease(value); jsonRelease(want); index += 1;
+            }
+            extensions >> int <- ide43_core.ide43Core.extensions("<fileType extensions=\"n; nb;nm; ncp\"/>");
+            check("extension parser",release_io.releaseIo.contains(extensions,"n") && release_io.releaseIo.contains(extensions,"nb") &&
+                release_io.releaseIo.contains(extensions,"nm") && release_io.releaseIo.contains(extensions,"ncp"));
+            strictExtensions >> int <- ide43_core.ide43Core.extensions("<fileType extensions=\"nb,nm ncp\"/>");
+            check("commas are not separators",!release_io.releaseIo.contains(strictExtensions,"nb") && release_io.releaseIo.contains(strictExtensions,"nb,nm ncp"));
+            jsonRelease(strictExtensions);
+            ide43_golden.ide43Golden.scope("/root","/temp","/work","/repo","/fixture/bin/native-fixture");
+            a >> int <- jsonParse("{\"cmd\":\"route\",\"code\":0,\"ok\":true,\"stdout\":\"{}\",\"stderr\":\"\"}");
+            normalized >> int <- ide43_golden.ide43Golden.model(a);
+            check("command shape",!jsonObjectHas(normalized,"invalid_command_shape"));
+            cert_json.certJson.put(a,"code",jsonNewString("0")); bad >> int <- ide43_golden.ide43Golden.model(a);
+            check("wrong command code type",jsonObjectHas(bad,"invalid_command_shape"));
+            check("known paths only",ide43_golden.ide43Golden.text("/temp/file.n") == "$TEMP/file.n" &&
+                ide43_golden.ide43Golden.text("1.0.0.20v") == "1.0.0.20v");
+            ide43_golden.ide43Golden.close();
+            jsonRelease(model); jsonRelease(values); jsonRelease(expected); jsonRelease(extensions); jsonRelease(a); jsonRelease(normalized); jsonRelease(bad);
+            println("ide43 unit count="+renderInt(count)+" failures="+renderInt(failures));
+            return failures == 0 ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,85 @@
+nccStringAbi {
+    fn:
+        internal:
+            same(data >> p<byte>, bytes >> int, text >> str, count >> int) -> bool {
+                if (data == null || bytes != count) return false;
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(data,at)) != rd<byte>(off(cast<byte>(text),at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            resolve(name >> p<byte>, bytes >> int) -> int {
+                if (same(name,bytes,"strByteLen",10)) return 1;
+                if (same(name,bytes,"strLen",6)) return 2;
+                if (same(name,bytes,"len",3)) return 3;
+                if (same(name,bytes,"strRelease",10)) return 4;
+                if (same(name,bytes,"concat",6)) return 5;
+                if (same(name,bytes,"concat3",7)) return 6;
+                if (same(name,bytes,"strSubstring",12) || same(name,bytes,"strSlice",8) || same(name,bytes,"substring",9)) return 7;
+                if (same(name,bytes,"strContains",11)) return 8;
+                if (same(name,bytes,"strStartsWith",13)) return 9;
+                if (same(name,bytes,"strEndsWith",11)) return 10;
+                if (same(name,bytes,"strCompare",10)) return 11;
+                if (same(name,bytes,"strIndexOf",10)) return 12;
+                if (same(name,bytes,"strEq",5)) return 13;
+                if (same(name,bytes,"parseInt",8)) return 14;
+                if (same(name,bytes,"parseUInt",9)) return 15;
+                if (same(name,bytes,"parseBool",9)) return 16;
+                if (same(name,bytes,"parseChar",9)) return 17;
+                if (same(name,bytes,"tryParseInt",11)) return 18;
+                if (same(name,bytes,"tryParseBool",12)) return 19;
+                if (same(name,bytes,"strToLower",10)) return 20;
+                if (same(name,bytes,"strToUpper",10)) return 21;
+                if (same(name,bytes,"strTrim",7)) return 22;
+                if (same(name,bytes,"strEmpty",8)) return 23;
+                if (same(name,bytes,"charCode",8)) return 24;
+                if (same(name,bytes,"charToStr",9)) return 25;
+                if (same(name,bytes,"repeatChar",10)) return 26;
+                if (same(name,bytes,"strFromInt",10)) return 27;
+                if (same(name,bytes,"strFromBool",11)) return 28;
+                if (same(name,bytes,"strConcat",9)) return 29;
+                if (same(name,bytes,"padLeft",7)) return 30;
+                if (same(name,bytes,"padRight",8)) return 31;
+                if (same(name,bytes,"padBoth",7)) return 32;
+                return 0;
+            }
+            owned(name >> p<byte>, bytes >> int, owner >> p<byte>, ownerBytes >> int) -> int {
+                id >> int <- resolve(name,bytes);
+                if (id >= 14 && id <= 19) return same(owner,ownerBytes,"parse",5) ? id : 0;
+                if (id >= 30 && id <= 32) return same(owner,ownerBytes,"pad",3) ? id : 0;
+                if (id >= 1 && id <= 4 && same(owner,ownerBytes,"string",6)) return id;
+                if (id >= 5 && id <= 6 && same(owner,ownerBytes,"concat",6)) return id;
+                if (id >= 7 && same(owner,ownerBytes,"string",6)) return id;
+                return 0;
+            }
+            arity(id >> int) -> int {
+                if (id == 23) return 0;
+                if (id >= 30 && id <= 32) return 3;
+                if (id == 18 || id == 19 || id == 26 || id == 29) return 2;
+                if (id >= 14 && id <= 29) return 1;
+                return id == 7 ? 3 : (id >= 8 && id <= 13 ? 2 : (id >= 5 && id <= 6 ? id-3 : (id >= 1 && id <= 4 ? 1 : -1)));
+            }
+            argumentCode(id >> int, index >> int) -> int {
+                if (index < 0 || index >= arity(id)) return -1;
+                if ((id == 18 || id == 19) && index == 1) return 8;
+                if (id == 24 || id == 25 || (id == 26 && index == 0) || (id >= 30 && index == 2)) return 35;
+                if (id == 28) return 33;
+                if (id == 27 || (id == 26 && index == 1) || (id >= 30 && index == 1)) return 20;
+                return id == 7 && index > 0 ? 20 : 34;
+            }
+            resultCode(id >> int) -> int {
+                if (id == 15) return 8;
+                if (id == 17) return 35;
+                if (id == 16 || id == 18 || id == 19) return 33;
+                if (id == 14 || id == 24) return 20;
+                if (id >= 20 && id <= 32) return 34;
+                if (id >= 5 && id <= 7) return 34;
+                if (id == 4 || (id >= 8 && id <= 10) || id == 13) return 33;
+                return (id >= 1 && id <= 3) || id == 11 || id == 12 ? 20 : -1;
+            }
+            ownerData(id >> int) -> p<byte> { return cast<byte>(id >= 14 && id <= 19 ? "parse" : (id >= 30 ? "pad" : (id >= 5 && id <= 6 ? "concat" : "string"))); }
+            ownerBytes(id >> int) -> int { return id >= 14 && id <= 19 ? 5 : (id >= 30 ? 3 : 6); }
+    fa: return true;
+}

@@ -1,0 +1,71 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release43_common, release43_public, release_io, cert_json>;
+
+release43UnicodePublic {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void {
+                println((good ? "PASS " : "FAIL ")+name); release43_common.release43Common.record(name,good); if (!good) failures += 1;
+            }
+            set(object >> int, key >> str, value >> str) -> void { release43_common.release43Common.put(object,key,jsonNewString(value)); }
+            sameTrees(a >> str, b >> str) -> bool {
+                rows >> int <- release43_common.release43Common.tree(a); other >> int <- release43_common.release43Common.tree(b);
+                good >> bool <- rows != 0 && other != 0 && jsonArrayLen(rows) == jsonArrayLen(other); index >> int <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows,index); path >> str <- release43_common.release43Common.field(row,"path");
+                    kind >> int <- release_io.releaseIo.number(row,"kind",0);
+                    if (release43_common.release43Common.fileType(b+"/"+path) != kind) good <- false;
+                    if (kind == 1) {
+                        if (path == "tools/release/public_beta_manifest.json") {
+                            left >> int <- release43_common.release43Common.load(a+"/"+path); right >> int <- release43_common.release43Common.load(b+"/"+path);
+                            if (left == 0 || right == 0) good <- false;
+                            else { x >> str <- cert_json.certJson.stringify(left); y >> str <- cert_json.certJson.stringify(right); if (x != y) good <- false; strRelease(x); strRelease(y); }
+                            release43_common.release43Common.release(left); release43_common.release43Common.release(right);
+                        } else if (release43_common.release43Common.hashFile(a+"/"+path) != release43_common.release43Common.hashFile(b+"/"+path)) good <- false;
+                    }
+                    release43_common.release43Common.release(row); index += 1;
+                }
+                release43_common.release43Common.release(rows); release43_common.release43Common.release(other); return good;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- jsonNewObject(); set(options,"--root",argsCount(arguments) > 1 ? argsAt(arguments,1) : ".");
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options);
+                work >> str <- release43_common.release43Common.workPath(); root >> str <- work+"/repo á漢字𐐀"; rawDist >> str <- root+"/dist/public-beta/raw"; escaped >> str <- root+"/dist/public-beta/escaped";
+                println("root="+root);
+                expect("latin-source",release43_common.release43Common.writeText(root+"/assets/café.txt","café\n"));
+                expect("cjk-source",release43_common.release43Common.writeText(root+"/assets/文字.txt","漢字\n"));
+                expect("supplementary-source",release43_common.release43Common.writeText(root+"/assets/𐐀.txt","𐐀\n"));
+                manifestText >> str <- "{\"schema\":\"ncc.public_beta.manifest.v1\",\"public_name\":\"ncc á漢字𐐀\",\"dist_root\":\"dist/public-beta/raw\",\"public_files\":[\"assets/café.txt\",\"assets/文字.txt\",\"assets/𐐀.txt\"],\"public_doc_files\":[],\"public_tool_files\":[\"tools/release/public_beta_manifest.json\"],\"public_trees\":[],\"public_test_groups\":[\"tests/文字𐐀\"],\"public_examples\":[{\"source\":\"examples/缺少𐐀.n\",\"dest\":\"examples/缺少𐐀.n\"}],\"forbidden_public_roots\":[\"_archive\"],\"public_example_name_policy\":{\"forbid_path_tokens\":[\"私有𐐀\"]}}";
+                expect("raw-manifest-file",release43_common.release43Common.writeText(root+"/tools/release/public_beta_manifest.json",manifestText));
+                options <- jsonNewObject(); set(options,"--root",root); set(options,"--dist",rawDist);
+                expect("raw-unicode-layout",release43_public.release43Public.layout(options) == 0);
+                manifest >> int <- release43_common.release43Common.load(root+"/tools/release/public_beta_manifest.json"); expect("raw-manifest-parsed",manifest != 0);
+                if (manifest != 0) {
+                    expect("escaped-manifest-file",release43_common.release43Common.save(root+"/escaped-manifest.json",manifest));
+                    set(options,"--manifest",root+"/escaped-manifest.json"); set(options,"--dist",escaped);
+                    expect("escaped-unicode-layout",release43_public.release43Public.layout(options) == 0);
+                    expect("raw-escaped-copied-bytes-manifest-values",sameTrees(rawDist,escaped));
+                    copy >> int <- release43_common.release43Common.load(rawDist+"/tools/release/public_beta_manifest.json");
+                    expect("sanitized-unicode-public-name",copy != 0 && release43_common.release43Common.field(copy,"public_name") == "ncc á漢字𐐀");
+                    release43_common.release43Common.release(copy);
+                    expect("copied-latin-bytes",release43_common.release43Common.text(rawDist+"/assets/café.txt") == "café\n");
+                    expect("copied-cjk-bytes",release43_common.release43Common.text(rawDist+"/assets/文字.txt") == "漢字\n");
+                    expect("copied-supplementary-bytes",release43_common.release43Common.text(rawDist+"/assets/𐐀.txt") == "𐐀\n");
+                    set(options,"--source",rawDist); set(options,"--out",root+"/artifacts"); set(options,"--stem","archivo á漢字𐐀");
+                    expect("unicode-package",release43_public.release43Public.package(options) == 0);
+                    package >> int <- release43_common.release43Common.load(root+"/artifacts/PACKAGE_MANIFEST.json"); expect("unicode-package-json",package != 0);
+                    release43_common.release43Common.release(package);
+                }
+                release43_common.release43Common.release(manifest); jsonRelease(options);
+                report >> int <- jsonNewObject(); set(report,"schema","nc.release43.unicode.public.regression.v1"); set(report,"root",root);
+                release43_common.release43Common.put(report,"checks",release43_common.release43Common.checkRows()); release43_common.release43Common.put(report,"failures",jsonNewInt(failures));
+                release43_common.release43Common.put(report,"python_required",jsonNewBool(false)); release43_common.release43Common.save(work+"/unicode-public-regression.json",report);
+                println("sealed="+work+"/unicode-public-regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

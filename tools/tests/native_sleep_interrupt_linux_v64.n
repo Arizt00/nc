@@ -1,0 +1,32 @@
+use <project:time_platform>;
+use foreign { c };
+
+nativeSleepInterrupt64 {
+    foreign:
+        c symbol "signal" { abi: C; header: "signal.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr) -> addr; }
+        c symbol "alarm" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(u32) -> u32; }
+        c symbol "dlopen" { abi: C; header: "dlfcn.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,i32) -> addr; }
+        c symbol "dlsym" { abi: C; header: "dlfcn.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> addr; }
+        c symbol "dlclose" { abi: C; header: "dlfcn.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+    fn:
+        public:
+            run() -> int {
+                library >> addr <- dlopen(adr("libncruntime.so.2"),2);
+                if (library == null) return 2;
+                handler >> addr <- dlsym(library,adr("nC.runtime.sleep.sleepMs"));
+                if (handler == null) { dlclose(library); return 3; }
+                previous >> addr <- signal(14,handler);
+                invalid >> addr <- 0xFFFFFFFFFFFFFFFF;
+                if (previous == invalid) { dlclose(library); return 4; }
+                // The native void(int) provider is also a reentrant Linux signal callback.
+                alarm(1);
+                started >> int <- time_platform.timeFsHost.monotonicMilliseconds();
+                time_platform.timeFsHost.sleepMilliseconds(1200);
+                elapsed >> int <- time_platform.timeFsHost.monotonicMilliseconds()-started;
+                remaining >> u32 <- alarm(0);
+                signal(14,previous); dlclose(library);
+                return remaining == 0 && elapsed >= 1195 && elapsed < 10000 ? 196 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

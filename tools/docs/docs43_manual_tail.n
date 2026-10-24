@@ -1,0 +1,62 @@
+use <project:docs43_document, docs43_source>;
+
+docs43ManualTail {
+    stc:
+        workspace >> str <- "";
+    fn:
+        private:
+            p(text >> str) -> void { docs43_document.docs43Document.paragraph(text); }
+            h(text >> str) -> void { docs43_document.docs43Document.heading(text,2); }
+            chapter(number >> str, title >> str) -> void { docs43_document.docs43Document.page(); docs43_document.docs43Document.heading(number+". "+title,1); }
+            t(headers >> str, rows >> str, widths >> str) -> void { docs43_document.docs43Document.table(headers,rows,widths); }
+            s(paths >> str) -> void { docs43_document.docs43Document.sources(paths); }
+            c(caption >> str, code >> str) -> void { docs43_document.docs43Document.code(caption,code); }
+            example(relative >> str, maxLines >> int) -> void {
+                text >> str <- docs43_source.docs43Source.read(workspace,relative,maxLines); c("Fuente: "+relative,text); strRelease(text);
+            }
+        public:
+            chapters(root >> str) -> void {
+                workspace <- root;
+                chapter("8","Basal [@]: raíz, tablas, IR y seal");
+                p("Basal es la capa raíz semántico-binaria de nC. Cubre `[@]`, `.nb` y `.nbb`. No toca hardware directamente, no ejecuta runtime directamente y no emite machine artifacts sin backend de lowering autorizado.");
+                t("Fase|Cierre","Fase 1|.nb grammar/parser/AST/spans/diagnostics/recovery.\nFase 2|Root/Site/Bind tables.\nFase 3|BasalIR/RootIR/SiteIR/BindIR/verifier.\nFase 4|Lowering BasalIR -> [@ma"+"chine].\nFase 5|NBB0 writer/reader/verifier.\nFase 5.5|const/routine/raw/verify/probe/report/width/mem/terminal.\nFase 6|Machine evidence integration + seal final.\nFase 7|Release seal, conformance y evidence bundle.","1700|7660");
+                h(".nb grammar"); p("La forma canónica de ejemplos conserva `RootName[@] { ... }`. El parser también acepta una forma experimental `[@] root RootName {` para migración, pero los ejemplos mantienen el base existente.");
+                h("Root, target, site, bind"); p("`root:` declara identidad, versión, profile, authority, binary/evidence/lowering. `target:` declara arch/triple/profile/symbols. `site:` declara anchors semánticos con kind, size, align y permissions. `bind:` vincula símbolos de root, sites o machine refs; machine refs deben resolverse o quedar pendientes explícitamente según fase.");
+                h("Executable surface"); p("Fase 5.5 fija la lengua basal: `const:` define constantes inmutables tipadas; `routine:` define rutina root lowerable; `raw` declara poder crudo explícito; `verify:` juzga; `report:` declara salida basal; `seal:` exige evidencia y hash. `probe:` queda como alias transicional documentado.");
+                h("NBB0"); p("`.nbb` es binario real, no JSON/text. NBB0 mantiene header de 64 bytes, section table, string table, root/site/bind/lowering records, executable surface compatible, evidence section y seal record cuando está integrado.");
+                example("examples/basal/phase6/bit_weight_pure_root_sealed.nb",160);
+                s("docs/spec/basal/basal_overview.md|docs/spec/basal/basal_nb_grammar.md|docs/spec/basal/basal_executable_surface.md|docs/spec/basal/basal_nbb_format.md|docs/status/STATUS_basal_closed.md");
+                chapter("9","[@ma"+"chine]: contrato de máquina");
+                p("`[@ma"+"chine]` declara máquina como contrato. Puede producir MachineIR, assembly textual, bytes, objetos, reports, diagnostics y evidencia. No usa `fn:` ni `fa:` de alto nivel en ejemplos positivos machine.");
+                t("Sección|Función","target|Arquitectura, ABI, object format, endian, pointer width y profile.\nsymbol|Símbolos, binding, sección y tipo.\nentry|Entrada del artefacto o rutina.\nproc/routine/frame|Cuerpo de rutina, frame y unwind cuando aplica.\ninstr|Instrucciones machine verificadas.\nverify|Gates de target, encoding, object, debug, roundtrip.\nseal|Requisitos de artefacto y evidencia.","1700|7660");
+                h("Alcance cerrado"); p("Machine está cerrada para perfiles declarados con `asm_complete_total=true`: VEX, FMA/F16C, AVX2, EVEX, AVX-512, debug/unwind, disasm object-aware, roundtrip, cross-arch parity, macro/directive system, dialect import/export, linker integration, external compatibility, fuzz/corpus y release seal.");
+                h("CLI machine"); example("docs/spec/machine/machine_cli.md",120);
+                h("Ejemplo machine"); example("examples/machine/native/roundtrip_elf64_x86_64.nm",120);
+                s("docs/spec/machine/machine_definition.md|docs/status/STATUS_machine_asm_complete_total.md|docs/status/STATUS_machine_release_seal.md|docs/spec/machine/machine_cli.md");
+                chapter("10","primi"+"tive[@]: materialidad y entorno");
+                p("`primi"+"tive[@]` declara materialidad, discontinuidad, borde físico y transición controlada. No es basal, no es machine, y no promete hardware universal.");
+                h("Ley de entorno"); p("Toda operación material primitive requiere target, material environment, capability, witness y lowering path. Si falta un elemento, debe fallar con diagnostic canónico. QEMU puede ser evidencia de emulación, no certificación de hardware físico.");
+                t("Familia|Lectura semántica","anchor/window|Puntos y ventanas materiales.\nsignal/bus/port|Interacción física declarada y canalizada.\ncapability|Gobernanza de permisos materiales.\noperation|Acción material con reads/writes/faults/barriers.\nsignature/entry|Forma de entrada y comprobaciones requeridas.\nbridge/seal|Continuidad hacia root y machine, cierre final de primitive.","2100|7260");
+                h("Ejemplo primitive"); example("examples/primitive/boot_serial_hello.ncp",180);
+                s("docs/spec/primitive/primitive_surface_official_v0_1.md|docs/spec/primitive/primitive_environment_law.md|docs/spec/primitive/primitive_technical_closure_v0_1.md|examples/primitive/boot_serial_hello.ncp");
+                chapter("11","ghor: orquestador y project forge");
+                p("`ghor` es el orquestador Cargo-like de nC y el project forge universal para adaptadores explícitos. Nace desde `[@ma"+"chine]`, pero no sustituye destructivamente a `ncc`, `ncup`, `npkg`, `nbuild`, `nfmt` ni `nlint`. Coordina.");
+                t("Área|Superficie","Proyecto|`new`, `init`, `nc.toml`, metadata y plantillas.\nBuild graph|check/build/run/test/bench/clean y workspace graph.\nPaquetes|lockfile, package, publish, search, info, yank, owners.\nCalidad|fmt, lint, doc, audit, sbom, license, supply-chain.\nEvidence|evidence, seal, conformance y release-check.\nLenguajes|nC nativo; C/C++/Rust/Java/Python/JS/TS como adaptadores explícitos.","1700|7660");
+                h("Manifest mental"); p("`nc.toml` declara identidad de proyecto, miembros, lenguaje nativo y adaptadores. Los lenguajes externos no reemplazan a nC: se declaran en `[languages]` y `[language_adapter.*]`.");
+                h("Estado"); p("El estado actual de `ghor` está cerrado para la superficie inicial y `ghor doctor` detecta toolchain drift si un ncc instalado todavía reporta basal/machine stale mientras el repo ya reporta basal cerrado.");
+                s("docs/spec/tooling/ghor.md|docs/spec/tooling/ghor_manifest.md|docs/spec/tooling/ghor_lockfile.md|docs/status/STATUS_ghor_closed.md");
+                chapter("12","CLI y recetas de trabajo");
+                p("El terminal es la autoridad operacional de nC. Los IDE pueden asistir, pero los comandos que cierran estado son `ncc`, `ghor` y scripts de release/evidence.");
+                h("Validación de workspace"); c("Comandos base","cargo fmt --all -- --check\ncargo check --workspace --all-targets\ncargo test --workspace --all-targets\ncargo clippy --workspace --all-targets -- -D warnings");
+                h("Basal release path"); c("Pipeline basal","ncc basal check examples/basal/phase6/bit_weight_pure_root_sealed.nb\nncc basal tables examples/basal/phase6/bit_weight_pure_root_sealed.nb --json\nncc basal ir examples/basal/phase6/bit_weight_pure_root_sealed.nb --json\nncc basal lower examples/basal/phase6/bit_weight_pure_root_sealed.nb --json\nncc basal emit-nbb examples/basal/phase6/bit_weight_pure_root_sealed.nb --out target/tmp/root.pending.nbb\nncc basal integrate-evidence examples/basal/phase6/bit_weight_pure_root_sealed.nb --out target/tmp/root.evidence.nbb\nncc basal seal target/tmp/root.evidence.nbb --json\nncc basal verify-seal target/tmp/root.evidence.nbb --json");
+                h("Machine path"); c("Pipeline machine","ncc machine doctor\nncc machine asm-complete native-doctor --json\nncc machine check examples/machine/native/roundtrip_elf64_x86_64.nm\nncc machine emit-object examples/machine/native/roundtrip_elf64_x86_64.nm --target x86_64-unknown-linux-gnu --out target/tmp/roundtrip.o\nncc machine verify-object target/tmp/roundtrip.o --json");
+                h("Ghor path"); c("Pipeline ghor","ghor doctor --json\nghor new app --language nc\nghor check\nghor build\nghor test\nghor evidence\nghor release-check");
+                s("docs/spec/basal/basal_cli_final.md|docs/spec/machine/machine_cli.md|docs/spec/compiler/compiler_cli.md|docs/spec/tooling/ghor.md");
+                chapter("13","Release, evidencia y límites conocidos");
+                p("El cierre actual distingue evidencia real de documentación. Machine y Basal están cerrados; runtime/primitive/compiler tienen superficies industriales y docs de estado, pero el documento no declara cierres nuevos.");
+                t("Dominio|Evidencia principal|Límite","Machine|doctor, native-doctor, object verify, disasm, roundtrip, fuzz/corpus.|Cierra perfiles declarados, no hardware imaginario.\nBasal|conformance, NBB0, machine evidence, seal hash, examples matrix.|No reabre const/routine/raw/verify/report.\nRuntime|90 familias, capabilities/policies, examples.|Uso depende de contexto permitido y políticas.\nPrimitive|parser/AST/sema/IR, QEMU smoke y environment law.|QEMU no certifica hardware físico.\nGhor|doctor, manifest, lockfile, adapters, release-check.|No reemplaza ncc ni oculta adaptadores.","1600|4500|3260");
+                h("Regla de honestidad"); p("Cuando una pieza no aplica a un target/profile, debe quedar como not_applicable_with_reason. Cuando una pieza falta, debe reportarse como missing o blocked, no como fake evidence.");
+                s("docs/status/STATUS_release_machine_basal_closed.md|docs/spec/basal/basal_known_limitations.md|docs/spec/machine/machine_evidence_bundle.md|docs/spec/primitive/primitive_environment_law.md");
+            }
+    fa: return true;
+}

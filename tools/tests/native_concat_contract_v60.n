@@ -1,0 +1,40 @@
+use <io:output, concat>;
+
+nativeConcatContractV60 {
+    combine(a >> str, b >> str) -> str { return a+b; }
+    run() -> int {
+        source >> p<byte> <- cast<byte>(alloc(16));
+        guard source != null else return 1;
+        cp(source,cast<byte>("left"),5);
+        left >> str <- cast(source);
+        right >> str <- "right";
+        joined >> str <- combine(left,right);
+        guard joined == "leftright" && strByteLen(joined) == 9 else return 2;
+        guard cast<byte>(joined) != source && left == "left" && right == "right" else return 3;
+        wr(source,76);
+        guard joined == "leftright" && left == "Left" else return 4;
+        empty >> str <- ""+"";
+        guard cast<byte>(empty) != null && strByteLen(empty) == 0 else return 5;
+        choice >> str <- (true ? left : right)+(false ? left : right);
+        guard choice == "Leftright" else return 6;
+        three >> str <- concat3(left,"/",right);
+        two >> str <- concat(left,right);
+        guard three == "Left/right" && two == "Leftright" else return 7;
+        previous >> str <- two;
+        two += "!";
+        guard two == "Leftright!" && previous == "Leftright" && strRelease(previous) else return 11;
+        embedded >> str <- cast(source);
+        wr(off(source,2),0);
+        stopped >> str <- embedded+right;
+        guard stopped == "Leright" else return 8;
+        absent >> str <- cast<str>(null);
+        failed >> str <- absent+right;
+        guard cast<byte>(failed) == null && cast<byte>(concat(right,null)) == null else return 9;
+        guard strRelease(joined) && strRelease(empty) && strRelease(choice) &&
+            strRelease(three) && strRelease(two) && strRelease(stopped) && free(source) else return 10;
+        println("concat contract ok");
+        return 152;
+    }
+    ref main ->> run;
+    fa: return true;
+}

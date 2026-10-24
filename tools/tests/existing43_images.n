@@ -1,0 +1,93 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:modules_binary, modules_tests, release_io, tool_cli>;
+
+existing43Images {
+    local:
+        rows >> int;
+        failures >> int <- 0;
+        work >> str;
+    fn:
+        private:
+            check(name >> str, good >> bool) -> void {
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"name",jsonNewString(name)); jsonObjectSet(row,"passed",jsonNewBool(good));
+                jsonArrayPush(rows,row); jsonRelease(row);
+                if (!good) { failures += 1; println("FAIL "+name); }
+            }
+            image(data >> p<byte>, wide >> bool) -> int {
+                fill(data,0,128);
+                wr(off(data,1),97); wr(off(data,2),115); wr(off(data,3),109); wr(off(data,4),1);
+                wr(off(data,9),wide ? 11 : 10); wr(off(data,10),6);
+                cp(off(data,11),cast<byte>("nC.mct"),6); wr(off(data,17),2);
+                wr(off(data,18),wide ? 128 : 127);
+                if (wide) { wr(off(data,19),1); wr(off(data,20),9); }
+                else wr(off(data,19),7);
+                // A following section prevents an accidental suffix exemption.
+                next >> int <- wide ? 21 : 20;
+                wr(off(data,next),1); wr(off(data,next+1),1); wr(off(data,next+2),0);
+                return next+3;
+            }
+            compare(a >> p<byte>, na >> int, b >> p<byte>, nb >> int, hash >> int, ir >> int) -> bool {
+                first >> str <- work+"/first.wasm"; second >> str <- work+"/second.wasm";
+                check("write-images",fsWriteFrom(first,a,na,false) == na && fsWriteFrom(second,b,nb,false) == nb);
+                row >> int <- modules_binary.modulesBinary.compareMaterial(first,second,127,hash,7,ir);
+                valid >> bool <- tool_cli.toolCli.hasFlag(row,"valid");
+                jsonRelease(row); strRelease(first); strRelease(second); return valid;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                if (argsCount(arguments) != 2) { argsRelease(arguments); return 2; }
+                work <- argsAt(arguments,1); rows <- jsonNewArray();
+                check("work-created",release_io.releaseIo.makeDirectories(work));
+                check("v42-regression",modules_tests.modulesTests.run(work+"/v42") == 0);
+                a >> p<byte> <- cast(calloc(128,1)); b >> p<byte> <- cast(calloc(128,1));
+                if (a == null || b == null) { free(a); free(b); argsRelease(arguments); return 1; }
+                na >> int <- image(a,false); nb >> int <- image(b,true);
+                check("v2-offset",modules_binary.modulesBinary.fingerprint(a,na) == 18);
+                check("v2-width-change-and-both-hashes",compare(a,na,b,nb,128,9));
+                check("v2-identical",compare(a,na,a,na,127,7));
+                check("v2-mct-hash-mismatch",!compare(a,na,b,nb,129,9));
+                check("v2-ir-hash-mismatch",!compare(a,na,b,nb,128,8));
+                wr(off(b,1),98); check("v2-magic-tamper",!compare(a,na,b,nb,128,9)); image(b,true);
+                wr(off(b,4),2); check("v2-wasm-version",!compare(a,na,b,nb,128,9)); image(b,true);
+                wr(off(b,17),3); check("v2-unknown-mct-version",!compare(a,na,b,nb,128,9)); image(b,true);
+                wr(off(b,24),0); check("v2-truncated-following-section",!compare(a,na,b,25,128,9)); image(b,true);
+                wr(off(b,23),1); check("v2-code-or-suffix-tamper",!compare(a,na,b,nb,128,9)); image(b,true);
+                wr(off(b,9),12); check("v2-extra-header-byte",!compare(a,na,b,nb+1,128,9)); image(b,true);
+                wr(off(b,9),10); check("v2-short-header",!compare(a,na,b,nb,128,9)); image(b,true);
+                check("v2-truncated-image",!compare(a,na,b,20,128,9));
+                cp(off(b,nb),off(b,8),13); check("v2-duplicate-mct",!compare(a,na,b,nb+13,128,9)); image(b,true);
+                wr(off(b,18),255); wr(off(b,19),255); wr(off(b,20),255); wr(off(b,21),255); wr(off(b,22),16);
+                wr(off(b,9),13); check("v2-uleb32-overflow",modules_binary.modulesBinary.fingerprint(b,24) == -1);
+                wr(off(b,22),128); check("v2-uleb-unterminated",modules_binary.modulesBinary.fingerprint(b,24) == -1); image(b,true);
+                wr(off(b,18),255); wr(off(b,19),0); check("v2-noncanonical-mct-hash",modules_binary.modulesBinary.fingerprint(b,nb) == -1);
+                image(b,true); wr(off(b,20),137); wr(off(b,21),0); wr(off(b,9),12);
+                check("v2-noncanonical-ir-hash",modules_binary.modulesBinary.fingerprint(b,22) == -1);
+                image(b,true); wr(off(b,17),130); wr(off(b,18),0);
+                check("v2-noncanonical-version",modules_binary.modulesBinary.fingerprint(b,nb) == -1);
+                image(b,true); cp(off(b,30),off(b,10),nb-10); cp(off(b,11),off(b,30),nb-10);
+                wr(off(b,9),139); wr(off(b,10),0);
+                check("v2-noncanonical-section-size",modules_binary.modulesBinary.fingerprint(b,nb+1) == -1);
+                image(b,true); cp(off(b,30),off(b,11),nb-11); cp(off(b,12),off(b,30),nb-11);
+                wr(off(b,9),12); wr(off(b,10),134); wr(off(b,11),0);
+                check("v2-noncanonical-name-size",modules_binary.modulesBinary.fingerprint(b,nb+1) == -1);
+                image(b,true); wr(off(b,11),120); check("v2-wrong-custom-name",!compare(a,na,b,nb,128,9));
+                image(b,true); fsWriteFrom(work+"/legacy-a.wasm",a,na,false); fsWriteFrom(work+"/legacy-b.wasm",b,nb,false);
+                row >> int <- modules_binary.modulesBinary.compare(work+"/legacy-a.wasm",work+"/legacy-b.wasm",true,127,128);
+                check("v2-cannot-use-v1-four-byte-exemption",!tool_cli.toolCli.hasFlag(row,"valid")); jsonRelease(row);
+                free(a); free(b);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.images.v43"));
+                jsonObjectSet(report,"passed",jsonNewBool(failures == 0)); jsonObjectSet(report,"failures",jsonNewInt(failures));
+                jsonObjectSet(report,"checks",jsonNewInt(jsonArrayLen(rows))); jsonObjectSet(report,"rows",rows);
+                written >> bool <- release_io.releaseIo.save(work+"/report.json",report);
+                println("existing43 image checks="+renderInt(jsonArrayLen(rows))+" failures="+renderInt(failures));
+                jsonRelease(report); jsonRelease(rows); argsRelease(arguments);
+                return written && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

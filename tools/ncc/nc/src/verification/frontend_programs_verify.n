@@ -1,0 +1,140 @@
+use <data:json>;
+use <io:output, render>;
+use <process:env>;
+use <project:frontend_session, frontend_material, frontend_types_verify, contract_checks, release_io, tool_cli>;
+
+frontendProgramsVerify {
+    fn:
+        private:
+            errorCase(name >> str, path >> str, expected >> str) -> bool {
+                arguments >> int <- jsonNewArray();
+                if (name != "stage0") tool_cli.toolCli.append(arguments,"compiler");
+                tool_cli.toolCli.append(arguments,name == "stage0" ? "check" : "sema-types");
+                tool_cli.toolCli.append(arguments,path);
+                if (name != "stage0") tool_cli.toolCli.append(arguments,"--json");
+                row >> int <- frontend_session.frontendSession.invoke(name,arguments);
+                text >> str <- release_io.releaseIo.field(row,"stdout") + release_io.releaseIo.field(row,"stderr");
+                ok >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) == 1 && strContains(text,expected);
+                strRelease(text); jsonRelease(row); return ok;
+            }
+            irRejected(path >> str, expected >> str, target >> str) -> bool {
+                row >> int <- frontend_session.frontendSession.invoke("candidate",
+                    frontend_session.frontendSession.args("emit-ir",path,"--json",target));
+                text >> str <- release_io.releaseIo.field(row,"stdout") + release_io.releaseIo.field(row,"stderr");
+                ok >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) == 1 && strContains(text,expected);
+                strRelease(text); jsonRelease(row); return ok;
+            }
+            executeCase(name >> str, path >> str, target >> str, expected >> int) -> bool {
+                suffix >> str <- target == "x86_64-pc-windows-msvc" ? ".exe" : "";
+                image >> str <- frontend_session.frontendSession.outputPath() + "/" + name + suffix;
+                arguments >> int <- frontend_session.frontendSession.args("emit-executable",path,"--json",target);
+                tool_cli.toolCli.append(arguments,"--out"); tool_cli.toolCli.append(arguments,image);
+                row >> int <- frontend_session.frontendSession.invoke("candidate",arguments);
+                ok >> bool <- tool_cli.toolCli.hasFlag(row,"ok") && exists(image);
+                jsonRelease(row);
+                if (ok) {
+                    if (suffix == "") {
+                        args >> int <- jsonNewArray(); tool_cli.toolCli.append(args,"+x"); tool_cli.toolCli.append(args,image);
+                        row <- frontend_session.frontendSession.invokeProgram("/usr/bin/chmod",args,30000);
+                        ok <- tool_cli.toolCli.hasFlag(row,"ok"); jsonRelease(row);
+                    }
+                    if (ok) {
+                        row <- frontend_session.frontendSession.invokeProgram(image,jsonNewArray(),30000);
+                        ok <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",-1) == expected;
+                        jsonRelease(row);
+                    }
+                }
+                strRelease(image); return ok;
+            }
+            nativeRejected(name >> str, path >> str, target >> str, expected >> str) -> bool {
+                image >> str <- frontend_session.frontendSession.outputPath() + "/" + name + ".rejected-image";
+                if (exists(image)) delete_file(image);
+                arguments >> int <- frontend_session.frontendSession.args("emit-executable",path,"--json",target);
+                tool_cli.toolCli.append(arguments,"--out"); tool_cli.toolCli.append(arguments,image);
+                row >> int <- frontend_session.frontendSession.invoke("candidate",arguments);
+                text >> str <- release_io.releaseIo.field(row,"stdout") + release_io.releaseIo.field(row,"stderr");
+                ok >> bool <- tool_cli.toolCli.clean(row) && release_io.releaseIo.number(row,"code",0) == 1 &&
+                    strContains(text,expected) && !exists(image);
+                strRelease(text); strRelease(image); jsonRelease(row); return ok;
+            }
+        public:
+            run(arguments >> addr) -> int {
+                if (!frontend_session.frontendSession.open(arguments)) return 2;
+                catalog >> int <- jsonParseFile(frontend_session.frontendSession.corpusPath());
+                cases >> int <- jsonObjectGet(catalog,"cases"); details >> int <- jsonNewObject();
+                frontend_session.frontendSession.check(jsonArrayLen(cases) >= 30,"whole-program-inventory");
+                frontend_session.frontendSession.check(frontend_session.frontendSession.compiler("candidate") !=
+                    frontend_session.frontendSession.compiler("baseline"),"distinct-candidates");
+                at >> int <- 0; positives >> int <- 0; negatives >> int <- 0; clauses >> int <- 0; executed >> int <- 0;
+                rejected >> int <- 0;
+                target >> str <- envHas("WINDIR") ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                while (at < jsonArrayLen(cases)) {
+                    entry >> int <- jsonArrayGet(cases,at); name >> str <- release_io.releaseIo.field(entry,"name");
+                    source >> str <- release_io.releaseIo.field(entry,"source"); path >> str <- frontend_session.frontendSession.fixture(name,source);
+                    expected >> str <- release_io.releaseIo.field(entry,"error");
+                    if (expected != "") {
+                        oracleError >> str <- jsonObjectHas(entry,"oracle_error") ?
+                            release_io.releaseIo.field(entry,"oracle_error") : expected;
+                        frontend_session.frontendSession.check(errorCase("candidate",path,expected) &&
+                            errorCase("baseline",path,expected),"native-semantic-rejection-" + name);
+                        frontend_session.frontendSession.check(errorCase("stage0",path,oracleError),"oracle-semantic-rejection-" + name);
+                        frontend_session.frontendSession.check(irRejected(path,expected,target),"invalid-contract-blocks-ir-" + name);
+                        if (jsonObjectHas(entry,"oracle_error")) strRelease(oracleError);
+                        negatives += 1;
+                    } else {
+                        material >> int <- frontend_session.frontendSession.document("candidate","ast-head",path,"--material","");
+                        previous >> int <- frontend_session.frontendSession.document("baseline","ast-head",path,"--material","");
+                        frontend_session.frontendSession.check(frontend_material.frontendMaterial.validate(material,fsSize(path)) &&
+                            contract_checks.contractChecks.equal(material,previous),"program-material-" + name);
+                        jsonRelease(material); jsonRelease(previous);
+                        native >> int <- frontend_session.frontendSession.document("candidate","type-contracts",path,"--json","");
+                        rust >> int <- frontend_session.frontendSession.document("stage0","ast",path,"--json","");
+                        if (native != 0 && rust != 0) {
+                            types >> int <- jsonNewArray(); frontend_types_verify.frontendTypesVerify.collectTypes(rust,types);
+                            actual >> int <- jsonObjectGet(native,"types");
+                            frontend_session.frontendSession.check(contract_checks.contractChecks.equal(types,actual),"program-serialization-" + name);
+                            jsonRelease(types); jsonRelease(actual);
+                        } else {
+                            frontend_session.frontendSession.check(false,"program-serialization-" + name);
+                        }
+                        if (native != 0) jsonRelease(native);
+                        if (rust != 0) jsonRelease(rust);
+                        report >> int <- frontend_session.frontendSession.document("candidate","sema-types",path,"--json","");
+                        count >> int <- release_io.releaseIo.number(report,"clauses",0); clauses += count;
+                        if (jsonObjectHas(entry,"clauses")) frontend_session.frontendSession.check(count == release_io.releaseIo.number(entry,"clauses",-1),"all-clause-consumers");
+                        jsonRelease(report);
+                        fullSema >> int <- frontend_session.frontendSession.document("candidate","sema",path,"--json","");
+                        jsonRelease(fullSema);
+                        if (jsonObjectHas(entry,"execute")) {
+                            frontend_session.frontendSession.check(executeCase(name,path,target,
+                                release_io.releaseIo.number(entry,"execute",-1)),"native-program-execution-" + name); executed += 1;
+                        }
+                        if (jsonObjectHas(entry,"native_reject")) {
+                            reason >> str <- release_io.releaseIo.field(entry,"native_reject");
+                            frontend_session.frontendSession.check(nativeRejected(name,path,target,reason),"native-capability-rejection-" + name);
+                            strRelease(reason); rejected += 1;
+                        }
+                        if (tool_cli.toolCli.hasFlag(entry,"wasm")) {
+                            image >> str <- frontend_session.frontendSession.outputPath() + "/" + name + ".wasm";
+                            words >> int <- frontend_session.frontendSession.args("emit-executable",path,"--json","wasm32-wasi");
+                            tool_cli.toolCli.append(words,"--out"); tool_cli.toolCli.append(words,image);
+                            row >> int <- frontend_session.frontendSession.invoke("candidate",words);
+                            frontend_session.frontendSession.check(tool_cli.toolCli.hasFlag(row,"ok") && exists(image),"wasm-real-body-" + name);
+                            jsonRelease(row); strRelease(image);
+                        }
+                        positives += 1;
+                    }
+                    jsonRelease(entry); strRelease(name); strRelease(source); strRelease(path); strRelease(expected); at += 1;
+                }
+                jsonRelease(cases); jsonRelease(catalog);
+                jsonObjectSet(details,"positive_programs",jsonNewInt(positives));
+                jsonObjectSet(details,"negative_programs",jsonNewInt(negatives));
+                jsonObjectSet(details,"clauses_consumed",jsonNewInt(clauses));
+                jsonObjectSet(details,"native_executions",jsonNewInt(executed));
+                jsonObjectSet(details,"native_capability_rejections",jsonNewInt(rejected));
+                jsonObjectSet(details,"whole_grammar_equivalence",jsonNewBool(false));
+                jsonObjectSet(details,"self_build_complete",jsonNewBool(false));
+                return frontend_session.frontendSession.finish("nc.frontend.whole-program-equivalence.v45",details);
+            }
+    fa: return true;
+}

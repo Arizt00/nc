@@ -1,0 +1,30 @@
+primitive[@] target x86_64:
+    capability hw:
+        allow port.write;
+        deny host.console.write;
+    bus io8:
+        width 8;
+        volatile true;
+    port uart.data:
+        bus io8;
+        addr ioaddr(0x03F8);
+        width 8;
+    operation kernelEntry():
+        capability hw;
+        writes uart.data;
+        write uart.data <- 0x6E;
+        write uart.data <- 0x43;
+        barrier io;
+        haltLoop;
+    anchor boot0:
+        addr physaddr(0x0000_7C00);
+    entry kernelEntry:
+        anchor boot0;
+        mode real16;
+    bridge:
+        root.policy.bind;
+        root.policy.guard;
+        root.memory.resolve;
+        machine.machineCore;
+    seal:
+        primitiveClosed;

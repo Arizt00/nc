@@ -1,0 +1,127 @@
+use <io:output, render>;
+use <data:json>;
+use <project:release_io, tool_cli>;
+
+mctSmoke {
+    fn:
+        public:
+            stderrPath(path >> str) -> str {
+                data >> p<byte> <- cast(path); at >> int <- strByteLen(path)-1;
+                while (at >= 0) {
+                    code >> int <- rd(off(data,at));
+                    if (code == 47 || code == 92) break;
+                    if (code == 46) {
+                        if (at > 0 && at < strByteLen(path)-1 && rd(off(data,at-1)) != 47 && rd(off(data,at-1)) != 92)
+                            return strSubstring(path,0,at)+".stderr.txt";
+                        break;
+                    }
+                    at -= 1;
+                }
+                return path+".stderr.txt";
+            }
+            outcome(report >> int, invocation >> int, allowMissing >> bool) -> int {
+                if (!tool_cli.toolCli.clean(invocation)) return 1;
+                status >> str <- release_io.releaseIo.field(report,"status");
+                code >> int <- release_io.releaseIo.number(invocation,"code",1);
+                if (status == "mct_llvm_toolchain_matrix_passed" && code == 0) return 0;
+                if (allowMissing && status == "mct_llvm_toolchain_matrix_missing_tools") return 0;
+                return code == 0 ? 1 : code;
+            }
+            markdown(report >> int, command >> str, code >> int) -> str {
+                summary >> int <- jsonObjectGet(report,"summary");
+                result >> str <- "# MCT LLVM Toolchain Smoke\n\n- status: `"+release_io.releaseIo.field(report,"status")+"`\n";
+                result <- result+"- command_exit_code: `"+renderInt(code)+"`\n";
+                keys >> int <- jsonParse("[\"rows\",\"passed\",\"failed\",\"missing_toolchain\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(keys)) {
+                    item >> int <- jsonArrayGet(keys,index);
+                    key >> str <- jsonGetString(item);
+                    result <- result+"- "+key+": `"+renderInt(release_io.releaseIo.number(summary,key,0))+"`\n";
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(summary); jsonRelease(keys);
+                result <- result+"- command: `"+command+"`\n\n## Rows\n\n| profile | target | object | status | missing tools |\n| --- | --- | --- | --- | --- |\n";
+                rows >> int <- jsonObjectGet(report,"rows");
+                index <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows,index);
+                    missing >> int <- jsonObjectGet(row,"missing_tools");
+                    description >> str <- "";
+                    cursor >> int <- 0;
+                    while (cursor < jsonArrayLen(missing)) {
+                        entry >> int <- jsonArrayGet(missing,cursor);
+                        if (cursor > 0) description <- description+", ";
+                        description <- description+jsonGetString(entry);
+                        jsonRelease(entry); cursor += 1;
+                    }
+                    if (description == "") description <- "-";
+                    result <- result+"| "+release_io.releaseIo.field(row,"profile")+" | "+release_io.releaseIo.field(row,"target_triple")+" | "+release_io.releaseIo.field(row,"object_format")+" | "+release_io.releaseIo.field(row,"status")+" | "+description+" |\n";
+                    jsonRelease(row); jsonRelease(missing); index += 1;
+                }
+                jsonRelease(rows);
+                versions >> int <- jsonObjectGet(report,"tool_versions");
+                text >> str <- jsonStringifyPretty(versions,2);
+                result <- result+"\n## Tool Versions\n\n```json\n"+text+"\n```\n";
+                strRelease(text); jsonRelease(versions);
+                return result;
+            }
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--ncc|--source|--out-dir|--json-out|--summary-md|--opt-level|","|--allow-missing-tools|--help|-h|");
+                if (options == 0) { println("mct-smoke: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools mct-smoke [--ncc EXE] [--root DIR] [--source FILE] [--out-dir DIR] [--json-out JSON] [--summary-md MD] [--opt-level 2] [--allow-missing-tools]");
+                    jsonRelease(options); return 0;
+                }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                source >> str <- tool_cli.toolCli.value(options,"--source","examples/backend/mct_llvm_target_attributes.n");
+                if (source == "examples/backend/mct_llvm_target_attributes.n") {
+                    if (!exists(root+"/"+source)) source <- "_archive/old_examples/backend/mct_llvm_target_attributes.n";
+                }
+                output >> str <- tool_cli.toolCli.value(options,"--out-dir","target/tmp/mct-llvm-ci");
+                absoluteOut >> str <- output;
+                if (!strStartsWith(output,"/") && !strContains(output,":")) absoluteOut <- root+"/"+output;
+                absoluteOut <- tool_cli.toolCli.absolute(absoluteOut);
+                jsonPath >> str <- tool_cli.toolCli.value(options,"--json-out",absoluteOut+"/toolchain_smoke.json");
+                mdPath >> str <- tool_cli.toolCli.value(options,"--summary-md",absoluteOut+"/toolchain_smoke.md");
+                if (!strStartsWith(jsonPath,"/") && !strContains(jsonPath,":")) jsonPath <- root+"/"+jsonPath;
+                if (!strStartsWith(mdPath,"/") && !strContains(mdPath,":")) mdPath <- root+"/"+mdPath;
+                if (!release_io.releaseIo.makeDirectories(absoluteOut)) { jsonRelease(options); return 1; }
+                command >> int <- jsonNewArray();
+                tool_cli.toolCli.append(command,tool_cli.toolCli.value(options,"--ncc","ncc"));
+                tool_cli.toolCli.append(command,"mct");
+                tool_cli.toolCli.append(command,"llvm-toolchain-smoke");
+                tool_cli.toolCli.append(command,source);
+                tool_cli.toolCli.append(command,"--out-dir");
+                tool_cli.toolCli.append(command,absoluteOut);
+                tool_cli.toolCli.append(command,"--all-targets");
+                tool_cli.toolCli.append(command,"--opt-level");
+                tool_cli.toolCli.append(command,tool_cli.toolCli.value(options,"--opt-level","2"));
+                tool_cli.toolCli.append(command,"--json");
+                missing >> bool <- tool_cli.toolCli.hasFlag(options,"--allow-missing-tools");
+                if (missing) tool_cli.toolCli.append(command,"--allow-missing-tools");
+                invocation >> int <- tool_cli.toolCli.execute(command,root,600000);
+                captured >> str <- release_io.releaseIo.field(invocation,"stdout");
+                report >> int <- jsonParse(captured);
+                nonJson >> bool <- jsonKind(report) != 6;
+                if (nonJson) {
+                    jsonRelease(report);
+                    report <- jsonNewObject();
+                    jsonObjectSet(report,"schema",jsonNewString("nc.mct.llvm.toolchain_smoke.wrapper.v1"));
+                    jsonObjectSet(report,"status",jsonNewString("command_failed_non_json"));
+                    jsonObjectSet(report,"stdout",jsonNewString(captured));
+                    jsonObjectSet(report,"summary",jsonParse("{\"rows\":0,\"passed\":0,\"failed\":1,\"missing_toolchain\":0}"));
+                }
+                errorPath >> str <- stderrPath(jsonPath);
+                if (nonJson) jsonObjectSet(report,"stderr_path",jsonNewString(errorPath));
+                written >> bool <- release_io.releaseIo.atomicWrite(errorPath,release_io.releaseIo.field(invocation,"stderr"));
+                if (!release_io.releaseIo.save(jsonPath,report)) written <- false;
+                content >> str <- markdown(report,tool_cli.toolCli.arrayLine(command),release_io.releaseIo.number(invocation,"code",-1));
+                if (!release_io.releaseIo.atomicWrite(mdPath,content)) written <- false;
+                code >> int <- outcome(report,invocation,missing);
+                if (!written) code <- 1;
+                strRelease(content); jsonRelease(command); jsonRelease(invocation); jsonRelease(options); jsonRelease(report);
+                return code;
+            }
+    fa:
+        return true;
+}

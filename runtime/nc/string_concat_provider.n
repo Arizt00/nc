@@ -1,0 +1,39 @@
+stringConcatProvider :: runtime {
+    const:
+        MAX_BYTES >> int <- 2147483646;
+    fn:
+        private:
+            bytes(value >> str) -> int {
+                data >> p<byte> <- cast<byte>(value);
+                if (data == null) return -1;
+                at >> int <- 0;
+                while (rd(off(data,at)) != 0) {
+                    if (at == MAX_BYTES) return -1;
+                    at += 1;
+                }
+                return at;
+            }
+            combine(a >> str, b >> str, c >> str) -> str {
+                na >> int <- bytes(a);
+                nb >> int <- bytes(b);
+                nc >> int <- bytes(c);
+                if (na < 0 || nb < 0 || nc < 0) return null;
+                if (nb > MAX_BYTES-na || nc > MAX_BYTES-na-nb) return null;
+                count >> int <- na+nb+nc;
+                out >> p<byte> <- cast<byte>(alloc(count+1));
+                if (out == null) return null;
+                cp(out,cast<byte>(a),na);
+                cp(off(out,na),cast<byte>(b),nb);
+                cp(off(out,na+nb),cast<byte>(c),nc);
+                wr(off(out,count),0);
+                return cast<str>(out);
+            }
+        public:
+            provider_concat_concat(a >> str, b >> str) -> str {
+                return combine(a,b,"");
+            }
+            provider_concat_concat3(a >> str, b >> str, c >> str) -> str {
+                return combine(a,b,c);
+            }
+    fa: return true;
+}

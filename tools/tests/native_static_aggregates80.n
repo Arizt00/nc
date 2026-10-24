@@ -1,0 +1,72 @@
+use <io:output>;
+
+nativeStaticAggregates80 {
+    const:
+        VALUE >> u64 <- 0x1234567890ABCDEF;
+        COUNT >> int <- 3;
+        TEMPLATE >> Pair <- Pair(number: 83,fraction: 8.5);
+    type:
+        Pair { public: number >> i32; fraction >> ft64; }
+        Word union { public: bits >> u64; value >> ft64; pair >> Pair; }
+        Packed { public: mark >> byte; number >> u64; layout: packed; }
+        Packet {
+            public:
+                tag >> byte;
+                pair >> Pair;
+                values >> array<array<i16,3>,2>;
+                payload >> Word;
+                text >> str;
+                pointer >> p<i32>;
+                callback >> fn(int) -> int;
+            layout: align(16);
+        }
+        Node { public: value >> int; next >> p<Node>; }
+        Large { public: bytes >> array<byte,4096>; }
+    stc:
+        packet >> Packet <- Packet(tag: 73,pair: Pair(number: -7,fraction: 1.25),values: [[-1,2,3],[4,5,-6]],
+            payload: Word(pair: Pair(number: 42,fraction: 2.5)),text: "static-native",pointer: &words[1],callback: &twice);
+        words >> array<i32,3> <- [5,9,13];
+        views >> array<p<i32>,3> <- [&words[0],&words[1],&packet.pair.number];
+        offsets >> array<p<i32>,3> <- [off<i32>(&words[0],2),off<i32>(&words[1],-1),&words[5]];
+        affine >> array<p<i32>,2> <- [from<i32>(adr(&words[0])+8),from<i32>(4+adr(&words[0]))];
+        nullable >> array<str,2> <- [null,"ok"];
+        packed >> Packed <- Packed(mark: 29,number: VALUE);
+        floats >> array<ft32,3> <- [1.5,-2.25,3.75];
+        zero >> Pair <- Pair(number: 0,fraction: 0.0);
+        uninitialized >> Pair;
+        self >> Node <- Node(value: 37,next: &self);
+        first >> Node <- Node(value: 41,next: &second);
+        second >> Node <- Node(value: 43,next: &first);
+        unionBits >> Word <- Word(bits: VALUE);
+        unionFloat >> Word <- Word(value: -3.5);
+        selected >> Pair <- true ? Pair(number: COUNT * 7,fraction: 4.5) : Pair(number: 0,fraction: 0.0);
+        copiedConstant >> Pair <- TEMPLATE;
+    twice(value >> int) -> int { return value*2; }
+    run() -> int {
+        if (packet.tag != 73 || packet.pair.number != -7 || packet.pair.fraction != 1.25 ||
+            packet.values[0][0] != -1 || packet.values[1][2] != -6 || packet.payload.pair.number != 42 ||
+            packet.payload.pair.fraction != 2.5 || strByteLen(packet.text) != 13 || rd(packet.pointer) != 9 || packet.callback(11) != 22) return 1;
+        if (words[0] != 5 || words[2] != 13 || packed.mark != 29 || packed.number != VALUE ||
+            floats[0] != 1.5 || floats[1] != -2.25 || floats[2] != 3.75) return 2;
+        if (zero.number != 0 || zero.fraction != 0.0 || uninitialized.number != 0 || uninitialized.fraction != 0.0) return 3;
+        if (self.next != &self || first.next != &second || second.next != &first) return 4;
+        if (unionBits.bits != VALUE || unionFloat.value != -3.5 || selected.number != 21 || selected.fraction != 4.5 ||
+            copiedConstant.number != 83 || copiedConstant.fraction != 8.5) return 5;
+        bytes >> p<byte> <- cast<byte>(&packet);
+        if (adr(bytes) % 16 != 0 || rd(off(bytes,1)) != 0 || rd(off(bytes,7)) != 0) return 6;
+        if (sizeOf(Packet) != 80 || offsetOf(Packet,pair) != 8 || offsetOf(Packet,values) != 24 || offsetOf(Packet,payload) != 40 ||
+            offsetOf(Packet,text) != 56 || offsetOf(Packet,pointer) != 64 || offsetOf(Packet,callback) != 72) return 9;
+        if (rd<u32>(off(bytes,8)) != 0xFFFFFFF9 || rd<u64>(off(bytes,16)) != 0x3FF4000000000000 ||
+            rd<u16>(off(bytes,24)) != 0xFFFF || rd<u16>(off(bytes,34)) != 0xFFFA ||
+            rd<u32>(off(bytes,40)) != 42 || rd<u64>(off(bytes,48)) != 0x4004000000000000 ||
+            rd<byte>(cast<byte>(packet.text)) != 115 || rd<byte>(off(cast<byte>(packet.text),12)) != 101) return 10;
+        wr(packet.pointer,27); packet.pair.number = 31; self.value = 47;
+        if (words[1] != 27 || packet.pair.number != 31 || self.value != 47 || rd(views[0]) != 5 || rd(views[1]) != 27 || rd(views[2]) != 31) return 7;
+        if (rd(offsets[0]) != 13 || rd(offsets[1]) != 5 || adr(offsets[2]) != adr(&words[0])+20) return 8;
+        if (rd(affine[0]) != 13 || rd(affine[1]) != 27) return 11;
+        if (nullable[0] != null || strByteLen(nullable[1]) != 2) return 12;
+        println("native-static-aggregates-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,44 @@
+use <io:output>;
+use <process:args>;
+
+nativeRuntimeFiles76 {
+    verify(root >> str) -> int {
+        folder >> str <- root+"/native-\u{3a9}-\u{1f600}";
+        first >> str <- folder+"/Espa\u{f1}ol.dat";
+        copied >> str <- folder+"/copy.dat";
+        renamed >> str <- folder+"/renamed-\u{3a9}.dat";
+        if (!isOk(createDir(folder))) return 1;
+        bytes >> p<byte> <- alloc(8193);
+        readback >> p<byte> <- alloc(8193);
+        if (bytes == null || readback == null) return 2;
+        at >> int <- 0;
+        while (at < 8193) { wr(off(bytes,at),(at*37+11)&255); at += 1; }
+        if (fsWriteFrom(first,bytes,8192,false) != 8192 || fsWriteFrom(first,off(bytes,8192),1,true) != 1) return 3;
+        if (!exists(first) || fsSize(first) != 8193 || fsReadInto(first,readback,8193) != 8193) return 4;
+        at <- 0;
+        while (at < 8193) { if (rd(off(bytes,at)) != rd(off(readback,at))) return 5; at += 1; }
+        if (fsCopy(first,copied) != 8193 || fsSize(copied) != 8193) return 6;
+        if (!rename_file(copied,renamed) || exists(copied) || !exists(renamed)) return 7;
+        listing >> array<byte,512>;
+        names >> p<byte> <- cast<byte>(&listing);
+        length >> int <- listDirInto(folder,names,512);
+        if (length <= 0 || !strContains(cast<str>(names),"Espa\u{f1}ol.dat\n") ||
+            !strContains(cast<str>(names),"renamed-\u{3a9}.dat\n")) return 8;
+        if (officialPathInto(first,names,512) <= 0 || !exists(cast<str>(names))) return 9;
+        if (fsMetadataInto(first,names,512) <= 0 || !strStartsWith(cast<str>(names),"type=file;length=8193;")) return 10;
+        if (!delete_file(first) || !delete_file(renamed) || !isOk(removeDir(folder))) return 11;
+        if (exists(folder)) return 12;
+        free(bytes); free(readback);
+        strRelease(folder); strRelease(first); strRelease(copied); strRelease(renamed);
+        println("native-runtime-files-utf8-ok");
+        return 0;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        code >> int <- verify(argsAt(arguments,1));
+        argsRelease(arguments); return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

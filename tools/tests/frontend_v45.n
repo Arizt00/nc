@@ -1,0 +1,35 @@
+use <io:output>;
+use <process:args>;
+use <project:frontend_types_verify, frontend_programs_verify, frontend_promotion, frontend_artifacts_verify>;
+use <project:parser_material_verify, lexer_material_verify>;
+
+frontendV45 {
+    fn:
+        run() -> int {
+            arguments >> addr <- argsOpen();
+            if (argsCount(arguments) == 2 && argsAt(arguments,1) == "--self-test") {
+                ok >> bool <- frontend_promotion.frontendPromotion.selfTest();
+                argsRelease(arguments); return ok ? 0 : 1;
+            }
+            if (argsCount(arguments) > 1 && argsAt(arguments,1) == "programs") {
+                code >> int <- frontend_programs_verify.frontendProgramsVerify.run(arguments);
+                argsRelease(arguments); return code;
+            }
+            if (argsCount(arguments) > 1 && argsAt(arguments,1) == "artifacts") {
+                code >> int <- frontend_artifacts_verify.frontendArtifactsVerify.run(arguments);
+                argsRelease(arguments); return code;
+            }
+            if (argsCount(arguments) > 1 && argsAt(arguments,1) == "parser") {
+                code >> int <- parser_material_verify.parserMaterialVerify.execute(arguments);
+                argsRelease(arguments); return code;
+            }
+            if (argsCount(arguments) > 1 && argsAt(arguments,1) == "lexer") {
+                code >> int <- lexer_material_verify.lexerMaterialVerify.execute(arguments);
+                argsRelease(arguments); return code;
+            }
+            code >> int <- frontend_types_verify.frontendTypesVerify.run(arguments);
+            argsRelease(arguments); return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

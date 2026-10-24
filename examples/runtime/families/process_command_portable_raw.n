@@ -1,0 +1,51 @@
+use <io:output>;
+use <memory:stack>;
+use <process:command, env>;
+
+rawProcessCommandPortable :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            output >> p<byte> <- stackAlloc(64, 8);
+            windows >> bool <- envHas("WINDIR");
+            line >> str <- windows ?
+                "cmd.exe /d /s /c \"echo NC_COMMAND_OK\"" :
+                "sh -c 'printf NC_COMMAND_OK'";
+
+            pipe >> addr <- commandPipeOpen(false, true);
+            writer >> addr <- commandPipeWriteHandle(pipe);
+            process >> addr <- commandOpen(line, "", null, writer, writer, 134217728);
+            started >> bool <- process != null && commandStarted(process);
+            writeClosed >> bool <- commandPipeCloseWrite(pipe);
+            waited >> int <- commandWait(process, 5000);
+            received >> int <- commandPipeRead(pipe, adr(output), 64);
+            exitCode >> int <- commandExitCode(process);
+
+            ok >> bool <-
+                started &&
+                writeClosed &&
+                waited == 0 &&
+                exitCode == 0 &&
+                received >= 13 &&
+                rd(off(output, 0)) == 78 &&
+                rd(off(output, 1)) == 67 &&
+                rd(off(output, 2)) == 95 &&
+                rd(off(output, 10)) == 95 &&
+                rd(off(output, 11)) == 79 &&
+                rd(off(output, 12)) == 75;
+
+            commandRelease(process);
+            commandPipeRelease(pipe);
+            stackRestore(mark);
+
+            print("manual nC portable process command backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

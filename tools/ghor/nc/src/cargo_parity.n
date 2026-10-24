@@ -1,0 +1,146 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:package_graph, project_inspection>;
+
+cargoParity[@runtime] {
+    const:
+        PATH_BYTES >> int <- 32768;
+
+    fn:
+        private:
+            printModel(model >> int) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: project manifest cannot be materialized");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            absolute(path >> str) -> str {
+                output >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard output != null else return path;
+                written >> int <- absolutePathInto(path, output, PATH_BYTES);
+                if (written < 0 || written >= PATH_BYTES) {
+                    free(output);
+                    return path;
+                }
+                wr(off(output, written), 0);
+                result >> str <- cast(output);
+                return result;
+            }
+
+            selectedManifest(handle >> addr, model >> int) -> str {
+                workspace >> str <- jsonGetStringOr(
+                    jsonObjectGet(model, "workspace_manifest"), "");
+                if (workspace != "") return workspace;
+                return absolute("ghor.toml");
+            }
+
+            locate(handle >> addr) -> int {
+                source >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard source != 0 else return printModel(0);
+                path >> str <- selectedManifest(handle, source);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.locate-project.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("ok"));
+                jsonObjectSet(model, "manifest_path", jsonNewString(path));
+                jsonObjectSet(model, "workspace_root", jsonClone(
+                    jsonObjectGet(source, "workspace_root")));
+                jsonObjectSet(model, "workspace_manifest", jsonClone(
+                    jsonObjectGet(source, "workspace_manifest")));
+                jsonRelease(source);
+                return printModel(model);
+            }
+
+            readManifest(handle >> addr) -> int {
+                source >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard source != 0 else return printModel(0);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.read-manifest.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("ok"));
+                jsonObjectSet(model, "manifest_path", jsonNewString(
+                    selectedManifest(handle, source)));
+                jsonObjectSet(model, "manifest", jsonClone(source));
+                jsonRelease(source);
+                return printModel(model);
+            }
+
+            packageId(handle >> addr) -> int {
+                source >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard source != 0 else return printModel(0);
+                package >> int <- jsonObjectGet(source, "package");
+                name >> str <- jsonGetStringOr(jsonObjectGet(package, "name"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(package, "version"), "0.0.0");
+                path >> str <- selectedManifest(handle, source);
+                guard name != "" else { jsonRelease(source); return printModel(0); }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.pkgid.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("ok"));
+                jsonObjectSet(model, "name", jsonNewString(name));
+                jsonObjectSet(model, "version", jsonNewString(version));
+                jsonObjectSet(model, "manifest_path", jsonNewString(path));
+                jsonObjectSet(model, "package_id", jsonNewString(
+                    "path+file://" + path + "#" + name + "@" + version));
+                jsonRelease(source);
+                return printModel(model);
+            }
+
+            unitGraph(handle >> addr) -> int {
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                guard graph != 0 else return printModel(0);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.unit-graph.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("ok"));
+                jsonObjectSet(model, "graph", graph);
+                return printModel(model);
+            }
+
+            timings(handle >> addr) -> int {
+                started >> int <- monotonicNs();
+                graph >> int <- project_inspection.projectInspection.projectGraph(handle);
+                elapsed >> int <- monotonicNs() - started;
+                guard graph != 0 else return printModel(0);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.timings.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("measured"));
+                jsonObjectSet(model, "project_graph_ns", jsonNewInt(elapsed));
+                jsonObjectSet(model, "clock", jsonNewString("monotonic_ns"));
+                jsonObjectSet(model, "graph", graph);
+                return printModel(model);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "locate-project" || command == "read-manifest" ||
+                    command == "pkgid" || command == "unit-graph" ||
+                    command == "timings";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "locate-project") return locate(handle);
+                if (command == "read-manifest") return readManifest(handle);
+                if (command == "pkgid") return packageId(handle);
+                if (command == "unit-graph") return unitGraph(handle);
+                return timings(handle);
+            }
+
+            selfTest() -> bool {
+                return PATH_BYTES >= 32768;
+            }
+
+    fa:
+        return true;
+}

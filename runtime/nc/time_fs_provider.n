@@ -1,0 +1,44 @@
+use <project:time_platform>;
+
+timeFsProvider :: runtime {
+    fn:
+        private:
+            removeEncoded(path >> str) -> u64 {
+                if (cast<byte>(path) == null || rd<byte>(cast<byte>(path)) == 0) return 2;
+                return time_platform.timeFsHost.removeDirectory(path) ? 3 : 2;
+            }
+        public:
+            provider_sleep_sleepMs(milliseconds >> int) -> void {
+                if (milliseconds <= 0) return;
+                time_platform.timeFsHost.sleepMilliseconds(milliseconds);
+            }
+            provider_time_monotonicMs() -> int {
+                return time_platform.timeFsHost.monotonicMilliseconds();
+            }
+            provider_dir_removeDir(path >> str) -> u64 {
+                return removeEncoded(path);
+            }
+            provider_fs_removeDir(path >> str) -> u64 {
+                return removeEncoded(path);
+            }
+            provider_fs_delete_file(path >> str) -> bool {
+                if (cast<byte>(path) == null || rd<byte>(cast<byte>(path)) == 0) return false;
+                return time_platform.timeFsHost.deleteFile(path);
+            }
+            provider_fs_fsCopy(source >> str, destination >> str) -> int {
+                if (cast<byte>(source) == null || cast<byte>(destination) == null) return -1;
+                count >> int <- fsSize(source);
+                if (count < 0) return -1;
+                data >> p<byte> <- cast<byte>(alloc(count == 0 ? 1 : count));
+                if (data == null) return -1;
+                copied >> int <- -1;
+                if (fsReadInto(source,data,count) == count) copied <- fsWriteFrom(destination,data,count,false);
+                free(data); return copied == count ? count : -1;
+            }
+            provider_fs_rename_file(source >> str, destination >> str) -> bool {
+                if (cast<byte>(source) == null || cast<byte>(destination) == null) return false;
+                if (rd<byte>(cast<byte>(source)) == 0 || rd<byte>(cast<byte>(destination)) == 0) return false;
+                return time_platform.timeFsHost.renameFile(source,destination);
+            }
+    fa: return true;
+}

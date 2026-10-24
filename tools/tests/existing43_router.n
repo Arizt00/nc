@@ -1,0 +1,57 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:ide_router, release_io>;
+
+existing43Router {
+    local:
+        checks >> int;
+        failures >> int;
+    fn:
+        private:
+            check(name >> str, passed >> bool) -> void {
+                jsonObjectSet(checks,name,jsonNewBool(passed)); if (!passed) { failures += 1; println("FAIL "+name); }
+            }
+            prefix(count >> int, unicode >> bool) -> str {
+                data >> p<byte> <- cast(alloc(count*2+1)); index >> int <- 0; at >> int <- 0;
+                while (index < count) {
+                    if (unicode) { wr(off(data,at),195); wr(off(data,at+1),169); at += 2; }
+                    else { wr(off(data,at),120); at += 1; }
+                    index += 1;
+                }
+                wr(off(data,at),0); return cast(data);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 2) return 2;
+                checks <- jsonNewObject(); failures <- 0;
+                before >> str <- prefix(8189,true); after >> str <- prefix(8190,true);
+                check("unicode-marker-inside-limit",ide_router.ideRouter.lowLevel("file.n",before+"[@]"));
+                check("unicode-marker-crosses-limit",!ide_router.ideRouter.lowLevel("file.n",after+"[@]"));
+                free(cast<byte>(before)); free(cast<byte>(after));
+                before <- prefix(8189,false); after <- prefix(8192,false);
+                check("ascii-marker-inside-limit",ide_router.ideRouter.lowLevel("file.n",before+"[@]"));
+                check("ascii-marker-after-limit",!ide_router.ideRouter.lowLevel("file.n",after+"[@]"));
+                free(cast<byte>(before)); free(cast<byte>(after));
+                data >> p<byte> <- cast(alloc(7)); wr(data,91); wr(off(data,1),64); wr(off(data,2),255); wr(off(data,3),93); wr(off(data,4),0);
+                text >> str <- cast(data); check("invalid-utf8-ignored",ide_router.ideRouter.lowLevel("file.n",text)); free(data);
+                check("empty-high-level",!ide_router.ideRouter.lowLevel("file.n",""));
+                check("suffix-nb",ide_router.ideRouter.lowLevel("file.NB",""));
+                check("suffix-nm",ide_router.ideRouter.lowLevel("file.NM",""));
+                check("suffix-ncp",ide_router.ideRouter.lowLevel("file.NCP",""));
+                check("nbb-deliberate-expanded-lane",ide_router.ideRouter.lowLevel("file.NBB",""));
+                check("root-marker",ide_router.ideRouter.lowLevel("file.n","[@]"));
+                check("machine-marker",ide_router.ideRouter.lowLevel("file.n","[@machine]"));
+                check("primitive-marker",ide_router.ideRouter.lowLevel("file.n","primitive[@]"));
+                check("novice-profile",ide_router.ideRouter.profile(" NOVICE ",false) == "novice");
+                check("vscode-profile-default",ide_router.ideRouter.profile("unknown",false) == "standard");
+                check("ghidra-profile-default",ide_router.ideRouter.profile("unknown",true) == "expert");
+                report >> int <- jsonNewObject(); jsonObjectSet(report,"schema",jsonNewString("nc.existing-retirement.router.v43"));
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+                written >> bool <- release_io.releaseIo.save(argsAt(arguments,1),report);
+                println("existing43 router checks="+renderInt(jsonObjectLen(checks))+" failures="+renderInt(failures));
+                jsonRelease(report); jsonRelease(checks); argsRelease(arguments); return failures == 0 && written ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,50 @@
+use <auth.system:dir>;
+use <memory:stack>;
+use <io:output>;
+
+authSystemDirManualRaw {
+    fn:
+        strideCheck() -> bool {
+            return authDirStride() == 64;
+        }
+
+        writeCopy(table >> p<byte>) -> bool {
+            written >> bool <- authDirWrite(table, 0, 7001, 6001, 91, 7, 4, 44, 3, 1);
+            copied >> bool <- authDirCopy(table, 1, table, 0);
+            return written && copied;
+        }
+
+        identity(table >> p<byte>) -> bool {
+            return authDirPathKey(table, 1) == 7001 &&
+                authDirParentKey(table, 1) == 6001 &&
+                authDirHandle(table, 1) == 91 &&
+                authDirOwner(table, 1) == 44 &&
+                authDirGeneration(table, 1) == 3;
+        }
+
+        authority(table >> p<byte>) -> bool {
+            return authDirRights(table, 1) == 7 &&
+                authDirFlags(table, 1) == 4 &&
+                authDirState(table, 1) == 1 &&
+                authDirAllows(table, 1, 3);
+        }
+
+        clearRecord(table >> p<byte>) -> bool {
+            cleared >> bool <- authDirClear(table, 1);
+            return cleared && authDirState(table, 1) == 0;
+        }
+
+        run() -> bool {
+            stride >> int <- authDirStride();
+            table >> p<byte> <- stackAlloc(stride * 2, 8);
+            ok >> bool <- strideCheck() && writeCopy(table) && identity(table) &&
+                authority(table) && clearRecord(table);
+            println("manual nC auth system dir backend: " + (ok ? "true" : "false"));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

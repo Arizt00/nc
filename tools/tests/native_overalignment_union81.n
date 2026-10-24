@@ -1,0 +1,30 @@
+use <io:output>;
+
+nativeOveralignmentUnion81 {
+    type:
+        Value union { public: bits >> u64; fraction >> ft64; layout: align(64); }
+        Packed { public: mark >> byte; bits >> u64; layout: packed; align(128); }
+    stc:
+        values >> array<Value,2> <- [Value(fraction: 1.5),Value(bits: 0x4004000000000000)];
+        packed >> Packed <- Packed(mark: 7,bits: 0x1122334455667788);
+    change(value >> Value) -> Value {
+        if (adr(&value) % 64 != 0) return Value(bits: 0);
+        value.fraction += 1.0; return value;
+    }
+    readPacked(value >> Packed) -> u64 {
+        if (adr(&value) % 128 != 0) return 0;
+        return value.bits+value.mark;
+    }
+    run() -> int {
+        if (adr(&values[0]) % 64 != 0 || adr(&values[1])-adr(&values[0]) != 64 ||
+            adr(&packed) % 128 != 0 || offsetOf(Packed,bits) != 1 || sizeOf(Packed) != 128) return 1;
+        next >> Value <- change(values[0]);
+        callback >> fn(Value) -> Value <- &change;
+        next <- callback(next);
+        if (adr(&next) % 64 != 0 || next.fraction != 3.5 || values[1].fraction != 2.5) return 2;
+        if (readPacked(packed) != 0x112233445566778F) return 3;
+        println("native-overalignment-union-packed-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

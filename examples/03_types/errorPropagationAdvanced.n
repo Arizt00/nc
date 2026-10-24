@@ -1,0 +1,101 @@
+use <collections:result>;
+use <memory:stack>;
+use <task:async>;
+
+errorPropagationAdvanced :: runtime {
+    stc:
+        trace >> int <- 0;
+
+    fn:
+        source(enabled >> bool) -> Result<int, str> {
+            if (enabled) {
+                return ok(40);
+            }
+            return err("disabled");
+        }
+
+        nested(enabled >> bool) -> Result<int, str> {
+            i >> int <- 0;
+            while (i < 3) {
+                if (i == 0) {
+                    defer {
+                        trace <- trace * 10 + 1;
+                    }
+                    i++;
+                    continue;
+                }
+                defer {
+                    trace <- trace * 10 + 2;
+                }
+                break;
+            }
+            value >> int <- source(enabled)?;
+            return ok(value + 1);
+        }
+
+    fn:
+        async asyncRelay(enabled >> bool) -> Result<int, str> {
+            defer {
+                trace <- trace * 10 + 3;
+            }
+            value >> int <- source(enabled)?;
+            return ok(value + 2);
+        }
+
+    fn:
+        closureRelay(enabled >> bool) -> Result<int, str> {
+            mark >> p<byte> <- stackMark();
+            relayStorage >> p<byte> <- stackAlloc(512, 16);
+            relay >> fn(bool) -> Result<int, str> <- closureAt(relayStorage,
+                |enabled >> bool| -> Result<int, str>
+                effects(state.write)
+                captures(mut trace) {
+                    defer {
+                        trace <- trace * 10 + 4;
+                    }
+                    value >> int <- source(enabled)?;
+                    return ok(value + 3);
+                });
+            result >> Result<int, str> <- relay(enabled);
+            stackRestore(mark);
+            return result;
+        }
+
+        testNested() -> bool {
+            trace <- 0;
+            good >> Result<int, str> <- nested(true);
+            return unwrap(good) == 41 && trace == 21;
+        }
+
+        testClosure() -> bool {
+            trace <- 0;
+            bad >> Result<int, str> <- closureRelay(false);
+            return isErr(bad) && trace == 4;
+        }
+
+        testAsync() -> bool
+    effects(async.await)
+    {
+            trace <- 0;
+        mark >> p<byte> <- stackMark();
+        futureStorage >> p<byte> <- stackAlloc(512, 16);
+        pending >> Future<Result<int, str>> <- asyncAt(futureStorage, asyncRelay(false));
+        asyncBad >> Result<int, str> <- await pending;
+        failed >> bool <- isErr(asyncBad) && trace == 3;
+        stackRestore(mark);
+        return failed;
+    }
+
+    fn:
+        run() -> bool
+    effects(async.await)
+    {
+        return testNested() && testClosure() && testAsync();
+    }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

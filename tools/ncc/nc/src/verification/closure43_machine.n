@@ -1,0 +1,204 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:closure43_core, closure43_documents, closure43_options, release_io, tool_cli, sha256>;
+
+closure43Machine {
+    fn:
+        private:
+            unique(array >> int, text >> str) -> void {
+                if (!release_io.releaseIo.contains(array,text)) closure43_core.closure43Core.push(array,jsonNewString(text));
+            }
+            options(arguments >> addr) -> int { return closure43_options.closure43Options.parse(arguments,true); }
+            ncc(words >> int) -> int {
+                all >> int <- jsonParse("[\"@ncc\",\"machine\"]"); index >> int <- 0;
+                while (index < jsonArrayLen(words)) { closure43_core.closure43Core.push(all,jsonArrayGet(words,index)); index += 1; }
+                result >> int <- closure43_core.closure43Core.command(all,true,false,false); jsonRelease(all); return result;
+            }
+            report(words >> int) -> int {
+                record >> int <- ncc(words); result >> int <- closure43_core.closure43Core.payload(record,true); jsonRelease(record); return result;
+            }
+            sources() -> int {
+                result >> int <- jsonNewObject(); directories >> int <- jsonParse("[\"examples/machine\",\"_archive/old_examples/machine\"]"); at >> int <- 0;
+                while (at < 2) {
+                    dir >> int <- jsonArrayGet(directories,at); paths >> int <- closure43_core.closure43Core.files(jsonGetString(dir),".nm"); index >> int <- 0;
+                    while (index < jsonArrayLen(paths)) {
+                        path >> int <- jsonArrayGet(paths,index); text >> str <- jsonGetString(path); prefix >> str <- jsonGetString(dir)+"/";
+                        name >> str <- strSubstring(text,strByteLen(prefix),strByteLen(text)-strByteLen(prefix));
+                        if (!jsonObjectHas(result,name)) jsonObjectSet(result,name,path);
+                        jsonRelease(path); index += 1;
+                    }
+                    jsonRelease(dir); jsonRelease(paths); at += 1;
+                }
+                jsonRelease(directories); return result;
+            }
+            byTarget(rows >> int, first >> bool) -> int {
+                result >> int <- jsonNewObject(); index >> int <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows,index); target >> str <- closure43_core.closure43Core.field(row,"target");
+                    if (!first || !jsonObjectHas(result,target)) jsonObjectSet(result,target,row);
+                    jsonRelease(row); index += 1;
+                }
+                return result;
+            }
+            smokes(specs >> int, loader >> bool) -> int {
+                result >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(specs) && closure43_core.closure43Core.ok()) {
+                    spec >> int <- jsonArrayGet(specs,index); src >> int <- jsonArrayGet(spec,0); tgt >> int <- jsonArrayGet(spec,1);
+                    source >> str <- jsonGetString(src); target >> str <- jsonGetString(tgt); resolved >> str <- closure43_core.closure43Core.resolve(source);
+                    args >> int <- jsonParse("[\"link-smoke\"]"); closure43_core.closure43Core.push(args,jsonNewString(resolved));
+                    closure43_core.closure43Core.push(args,jsonNewString("--target")); closure43_core.closure43Core.push(args,jsonNewString(target));
+                    if (loader) {
+                        closure43_core.closure43Core.push(args,jsonNewString("--system-loader")); closure43_core.closure43Core.push(args,jsonNewString("--expect-exit")); closure43_core.closure43Core.push(args,jsonArrayGet(spec,2));
+                    }
+                    closure43_core.closure43Core.push(args,jsonNewString("--json")); row >> int <- report(args);
+                    if (!jsonObjectHas(row,"source")) closure43_core.closure43Core.set(row,"source",source);
+                    if (!jsonObjectHas(row,"resolved_source")) closure43_core.closure43Core.set(row,"resolved_source",resolved);
+                    if (!jsonObjectHas(row,"target")) closure43_core.closure43Core.set(row,"target",target);
+                    if (loader && !jsonObjectHas(row,"expected_exit")) closure43_core.closure43Core.put(row,"expected_exit",jsonNewInt(42));
+                    closure43_core.closure43Core.push(result,row); jsonRelease(spec); jsonRelease(src); jsonRelease(tgt); jsonRelease(args); index += 1;
+                }
+                return result;
+            }
+            required(rows >> int, strict >> int, loader >> bool) -> int {
+                result >> int <- jsonNewArray(); sorted >> int <- release_io.releaseIo.sorted(strict); index >> int <- 0;
+                while (index < jsonArrayLen(sorted)) {
+                    item >> int <- jsonArrayGet(sorted,index); target >> str <- jsonGetString(item); row >> int <- jsonObjectGet(rows,target);
+                    if (row == 0) row <- jsonNewObject();
+                    entry >> int <- jsonNewObject(); closure43_core.closure43Core.set(entry,"kind",loader ? "system_loader_smoke" : "link_smoke");
+                    closure43_core.closure43Core.set(entry,"target",target); status >> str <- "missing";
+                    if (jsonObjectHas(row,"status")) status <- closure43_core.closure43Core.field(row,"status");
+                    closure43_core.closure43Core.set(entry,"status",status); closure43_core.closure43Core.put(entry,"passed",jsonNewBool(status == "passed"));
+                    fields >> int <- jsonParse(loader ? "[\"evidence_level\",\"loader\",\"exit_code\",\"expected_exit\",\"diagnostic\"]" : "[\"evidence_level\",\"environment\",\"stdout\",\"diagnostic\"]"); at >> int <- 0;
+                    while (at < jsonArrayLen(fields)) { key >> int <- jsonArrayGet(fields,at); closure43_core.closure43Core.copyField(entry,row,jsonGetString(key)); jsonRelease(key); at += 1; }
+                    if (!loader) {
+                        compiler >> str <- closure43_core.closure43Core.field(row,"compiler");
+                        if (compiler == "") compiler <- closure43_core.closure43Core.field(row,"cross_compiler");
+                        if (compiler == "") closure43_core.closure43Core.copyField(entry,row,"linker");
+                        else closure43_core.closure43Core.set(entry,"compiler",compiler);
+                        if (!jsonObjectHas(entry,"compiler")) { closure43_core.closure43Core.put(entry,"compiler",jsonObjectGet(row,"linker")); jsonObjectRemove(entry,"linker"); }
+                    }
+                    closure43_core.closure43Core.push(result,entry); jsonRelease(row); jsonRelease(item); jsonRelease(fields); index += 1;
+                }
+                jsonRelease(sorted); return result;
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                closure43_core.closure43Core.init(); settings >> int <- options(arguments);
+                closure43_core.closure43Core.commandStyle("machine");
+                if (settings == 0) return 2;
+                if (closure43_options.closure43Options.help(settings,"machine")) return 0;
+                data >> int <- closure43_core.closure43Core.load("machine");
+                if (!release_io.releaseIo.makeDirectories(closure43_core.closure43Core.diskPath(closure43_core.closure43Core.path("reports/machine_closure")))) return 1;
+                if (tool_cli.toolCli.hasFlag(settings,"--full-gates")) {
+                    gates >> int <- jsonParse("[[\"cargo\",\"fmt\",\"--all\",\"--\",\"--check\"],[\"cargo\",\"check\",\"--workspace\",\"--all-targets\"],[\"cargo\",\"test\",\"--workspace\",\"--all-targets\"],[\"cargo\",\"clippy\",\"--workspace\",\"--all-targets\",\"--\",\"-D\",\"warnings\"]]"); index >> int <- 0;
+                    while (index < 4 && closure43_core.closure43Core.ok()) { words >> int <- jsonArrayGet(gates,index); record >> int <- closure43_core.closure43Core.command(words,true,false,false); jsonRelease(record); jsonRelease(words); index += 1; }
+                    jsonRelease(gates);
+                }
+                if (!closure43_core.closure43Core.ok()) return 1;
+                build >> int <- closure43_core.closure43Core.run("[\"cargo\",\"build\",\"-p\",\"ncc-cli\"]",true,false,false); jsonRelease(build);
+                if (!closure43_core.closure43Core.ok()) return 1;
+                words >> int <- jsonParse("[\"doctor\",\"--json\"]"); doctor >> int <- report(words); jsonRelease(words);
+                words <- jsonParse("[\"targets\",\"--json\"]"); targets >> int <- report(words); jsonRelease(words);
+                words <- jsonParse("[\"target-family-gate\"]"); gate >> int <- report(words); jsonRelease(words);
+                sourceMap >> int <- sources(); names >> int <- closure43_core.closure43Core.keys(sourceMap); checks >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(names) && closure43_core.closure43Core.ok()) {
+                    key >> int <- jsonArrayGet(names,index); name >> str <- jsonGetString(key);
+                    if (!strContains(name,"st"+"ub")) {
+                        words <- jsonParse("[\"check\"]"); closure43_core.closure43Core.push(words,jsonObjectGet(sourceMap,name)); record >> int <- ncc(words); short >> int <- jsonNewObject();
+                        closure43_core.closure43Core.copyField(short,record,"cmd"); closure43_core.closure43Core.copyField(short,record,"returncode"); closure43_core.closure43Core.copyField(short,record,"sha256");
+                        closure43_core.closure43Core.push(checks,short); jsonRelease(record); jsonRelease(words);
+                    }
+                    jsonRelease(key); index += 1;
+                }
+                specs >> int <- jsonObjectGet(data,"artifacts"); artifacts >> int <- jsonNewArray(); index <- 0;
+                while (index < jsonArrayLen(specs) && closure43_core.closure43Core.ok()) {
+                    spec >> int <- jsonArrayGet(specs,index); src >> int <- jsonArrayGet(spec,0); tgt >> int <- jsonArrayGet(spec,1); out >> int <- jsonArrayGet(spec,2);
+                    source >> str <- jsonGetString(src); resolved >> str <- closure43_core.closure43Core.resolve(source); relative >> str <- "target/tmp/machine_level6/"+jsonGetString(out);
+                    if (!release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(closure43_core.closure43Core.path(relative)))) closure43_core.closure43Core.fail("cannot create machine artifact directory");
+                    words <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonArrayLen(spec) == 4 ? jsonArrayGet(spec,3) : jsonNewString("emit-object"));
+                    closure43_core.closure43Core.push(words,jsonNewString(resolved)); closure43_core.closure43Core.push(words,jsonNewString("--target")); jsonArrayPush(words,tgt);
+                    closure43_core.closure43Core.push(words,jsonNewString("--out")); closure43_core.closure43Core.push(words,jsonNewString(closure43_core.closure43Core.path(relative)));
+                    record >> int <- ncc(words); row >> int <- jsonNewObject(); closure43_core.closure43Core.set(row,"source",source); closure43_core.closure43Core.set(row,"resolved_source",resolved);
+                    jsonObjectSet(row,"target",tgt); closure43_core.closure43Core.set(row,"artifact",relative);
+                    bytes >> int <- fsSize(closure43_core.closure43Core.path(relative)); if (bytes < 0) closure43_core.closure43Core.fail("missing emitted artifact: "+relative);
+                    closure43_core.closure43Core.put(row,"bytes",jsonNewInt(bytes)); closure43_core.closure43Core.set(row,"sha256",sha256.nccSha256.file(closure43_core.closure43Core.path(relative)));
+                    closure43_core.closure43Core.put(row,"command",jsonObjectGet(record,"cmd")); closure43_core.closure43Core.set(row,"stdout",strTrim(closure43_core.closure43Core.field(record,"stdout")));
+                    closure43_core.closure43Core.push(artifacts,row); jsonRelease(spec); jsonRelease(src); jsonRelease(tgt); jsonRelease(out); jsonRelease(words); jsonRelease(record); index += 1;
+                }
+                if (!closure43_core.closure43Core.ok()) return 1;
+                specs <- jsonObjectGet(data,"link_smoke_specs"); links >> int <- smokes(specs,false); jsonRelease(specs);
+                specs <- jsonObjectGet(data,"system_loader_specs"); loaders >> int <- smokes(specs,true); jsonRelease(specs);
+                if (!closure43_core.closure43Core.ok()) return 1;
+                strictArgs >> int <- jsonObjectGet(settings,"--strict-target"); loaderArgs >> int <- jsonObjectGet(settings,"--strict-system-loader-target"); strict >> int <- jsonNewArray(); strictLoader >> int <- jsonNewArray(); index <- 0;
+                while (index < jsonArrayLen(strictArgs)) { item >> int <- jsonArrayGet(strictArgs,index); unique(strict,jsonGetString(item)); jsonRelease(item); index += 1; }
+                index <- 0; while (index < jsonArrayLen(loaderArgs)) { item >> int <- jsonArrayGet(loaderArgs,index); unique(strictLoader,jsonGetString(item)); jsonRelease(item); index += 1; } jsonRelease(strictArgs); jsonRelease(loaderArgs);
+                explicit >> bool <- jsonArrayLen(strict) > 0 || jsonArrayLen(strictLoader) > 0; unique(strict,"wasm32-unknown-unknown");
+                host >> str <- closure43_core.closure43Core.field(settings,"--ci-host"); arch >> str <- closure43_core.closure43Core.field(settings,"--ci-arch");
+                if (!explicit) {
+                    if (host == "linux" && arch == "x86_64") { unique(strict,"x86_64-unknown-linux-gnu"); unique(strict,"riscv64-unknown-elf"); unique(strictLoader,"x86_64-unknown-linux-gnu"); }
+                    if (host == "linux" && arch == "aarch64") unique(strict,"aarch64-unknown-linux-gnu");
+                    if (host == "windows" && arch == "x86_64") { unique(strict,"x86_64-pc-windows-msvc"); unique(strictLoader,"x86_64-pc-windows-msvc"); }
+                    if (host == "macos" && arch == "x86_64") { unique(strict,"x86_64-apple-darwin"); unique(strictLoader,"x86_64-apple-darwin"); }
+                }
+                failed >> bool <- false; index <- 0;
+                while (index < jsonArrayLen(links)+jsonArrayLen(loaders)) {
+                    isLoader >> bool <- index >= jsonArrayLen(links); row >> int <- isLoader ? jsonArrayGet(loaders,index-jsonArrayLen(links)) : jsonArrayGet(links,index);
+                    if (release_io.releaseIo.contains(isLoader ? strictLoader : strict,closure43_core.closure43Core.field(row,"target")) && closure43_core.closure43Core.field(row,"status") != "passed") failed <- true;
+                    jsonRelease(row); index += 1;
+                }
+                if (tool_cli.toolCli.hasFlag(settings,"--strict-local-link") && failed) { closure43_core.closure43Core.fail("strict local link smoke failed"); return 1; }
+                firstLinks >> int <- byTarget(links,true); lastLinks >> int <- byTarget(links,false); loaderMap >> int <- byTarget(loaders,false);
+                nonX86 >> int <- jsonNewObject(); native >> int <- jsonNewObject();
+                closure43_core.closure43Core.put(nonX86,"aarch64-unknown-linux-gnu",jsonObjectGet(firstLinks,"aarch64-unknown-linux-gnu")); closure43_core.closure43Core.put(nonX86,"riscv64-unknown-elf",jsonObjectGet(firstLinks,"riscv64-unknown-elf"));
+                closure43_core.closure43Core.put(native,"x86_64-pc-windows-msvc",jsonObjectGet(firstLinks,"x86_64-pc-windows-msvc")); closure43_core.closure43Core.put(native,"x86_64-apple-darwin",jsonObjectGet(firstLinks,"x86_64-apple-darwin"));
+                summary >> int <- jsonParse("{\"schema\":\"nC.machine.level5_level6.evidence.v1\",\"status\":\"local_level5_closed_ci_level6_gate_ready\",\"claim\":\"multi_host_release_pending_retained_actions_artifacts\"}");
+                closure43_core.closure43Core.set(summary,"generated_at",closure43_core.closure43Core.iso()); closure43_core.closure43Core.set(summary,"host",host); closure43_core.closure43Core.set(summary,"arch",arch);
+                closure43_core.closure43Core.put(summary,"toolchain",jsonObjectGet(settings,"--ci-toolchain")); closure43_core.closure43Core.put(summary,"ci_evidence_id",jsonObjectGet(settings,"--ci-evidence-id"));
+                jsonObjectSet(summary,"doctor",doctor); jsonObjectSet(summary,"target_gate",gate); closure43_core.closure43Core.copyField(summary,targets,"targets");
+                jsonObjectSet(summary,"checks",checks); jsonObjectSet(summary,"artifacts",artifacts); jsonObjectSet(summary,"link_smokes",links); jsonObjectSet(summary,"system_loader_smokes",loaders);
+                jsonObjectSet(summary,"final_system_loader_execution",loaderMap); jsonObjectSet(summary,"non_x86_execution",nonX86); jsonObjectSet(summary,"native_executable_execution",native);
+                digest >> str <- closure43_core.closure43Core.stamp(summary,"evidence_hash"); closure43_core.closure43Core.save("reports/machine_closure/machine_level5_level6_evidence.json",summary);
+                closure43_core.closure43Core.trace("machine: summary saved");
+                requiredRows >> int <- required(lastLinks,strict,false); other >> int <- required(loaderMap,strictLoader,true); index <- 0; passed >> bool <- true;
+                closure43_core.closure43Core.trace("machine: required rows assembled");
+                while (index < jsonArrayLen(other)) { closure43_core.closure43Core.push(requiredRows,jsonArrayGet(other,index)); index += 1; }
+                index <- 0; while (index < jsonArrayLen(requiredRows)) { row >> int <- jsonArrayGet(requiredRows,index); if (!tool_cli.toolCli.hasFlag(row,"passed")) passed <- false; jsonRelease(row); index += 1; }
+                ci >> int <- jsonParse("{\"schema\":\"nC.machine.ci.retained.row.v1\",\"summary_path\":\"reports/machine_closure/machine_level5_level6_evidence.json\"}");
+                closure43_core.closure43Core.trace("machine: CI started");
+                closure43_core.closure43Core.set(ci,"status",passed ? "passed" : "failed"); closure43_core.closure43Core.put(ci,"lane_id",jsonObjectGet(settings,"--ci-evidence-id"));
+                closure43_core.closure43Core.set(ci,"host",host); closure43_core.closure43Core.set(ci,"arch",arch); closure43_core.closure43Core.put(ci,"toolchain",jsonObjectGet(settings,"--ci-toolchain"));
+                closure43_core.closure43Core.trace("machine: CI basic fields");
+                closure43_core.closure43Core.put(ci,"strict_targets",release_io.releaseIo.sorted(strict)); closure43_core.closure43Core.put(ci,"strict_system_loader_targets",release_io.releaseIo.sorted(strictLoader)); jsonObjectSet(ci,"required",requiredRows);
+                closure43_core.closure43Core.trace("machine: CI target fields");
+                environmentFields >> int <- jsonParse("[[\"workflow\",\"GITHUB_WORKFLOW\"],[\"job\",\"GITHUB_JOB\"],[\"run_id\",\"GITHUB_RUN_ID\"],[\"run_attempt\",\"GITHUB_RUN_ATTEMPT\"],[\"repository\",\"GITHUB_REPOSITORY\"],[\"ref\",\"GITHUB_REF\"],[\"head_sha\",\"GITHUB_SHA\"],[\"runner_os\",\"RUNNER_OS\"],[\"runner_arch\",\"RUNNER_ARCH\"]]"); index <- 0;
+                while (index < jsonArrayLen(environmentFields)) {
+                    pair >> int <- jsonArrayGet(environmentFields,index); name >> int <- jsonArrayGet(pair,0); variable >> int <- jsonArrayGet(pair,1);
+                    closure43_core.closure43Core.trace("machine: CI environment "+jsonGetString(name));
+                    value >> str <- closure43_core.closure43Core.environment(jsonGetString(variable),"");
+                    closure43_core.closure43Core.set(ci,jsonGetString(name),value); jsonRelease(variable); jsonRelease(name); jsonRelease(pair); index += 1;
+                }
+                jsonRelease(environmentFields);
+                closure43_core.closure43Core.trace("machine: CI environment complete");
+                repo >> str <- closure43_core.closure43Core.field(ci,"repository"); runId >> str <- closure43_core.closure43Core.field(ci,"run_id");
+                closure43_core.closure43Core.set(ci,"run_url",repo != "" && runId != "" ? closure43_core.closure43Core.environment("GITHUB_SERVER_URL","https://github.com")+"/"+repo+"/actions/runs/"+runId : "");
+                closure43_core.closure43Core.set(ci,"summary_hash",digest); closure43_core.closure43Core.stamp(ci,"evidence_hash");
+                closure43_core.closure43Core.trace("machine: CI hashed");
+                lane >> str <- closure43_core.closure43Core.field(settings,"--ci-evidence-id"); closure43_core.closure43Core.save("reports/machine_closure/ci/"+lane+"/machine_ci_evidence.json",ci);
+                closure43_core.closure43Core.save("reports/machine_closure/machine_non_x86_linux_execution.json",nonX86);
+                nativeReport >> int <- jsonNewObject(); jsonObjectSet(nativeReport,"native_executable_execution",native); subset >> int <- jsonNewObject();
+                closure43_core.closure43Core.put(subset,"x86_64-pc-windows-msvc",jsonObjectGet(loaderMap,"x86_64-pc-windows-msvc")); closure43_core.closure43Core.put(subset,"x86_64-apple-darwin",jsonObjectGet(loaderMap,"x86_64-apple-darwin"));
+                jsonObjectSet(nativeReport,"final_system_loader_execution",subset); closure43_core.closure43Core.save("reports/machine_closure/machine_native_executable_smoke.json",nativeReport);
+                context >> int <- jsonNewObject(); jsonObjectSet(context,"options",settings); jsonObjectSet(context,"ci_evidence",ci); jsonObjectSet(context,"ci_required",requiredRows); jsonObjectSet(context,"summary",summary);
+                jsonObjectSet(context,"link_smokes",links); jsonObjectSet(context,"system_loader_smokes",loaders); jsonObjectSet(context,"non_x86_execution",nonX86); jsonObjectSet(context,"native_executable_execution",native); jsonObjectSet(context,"final_system_loader_execution",loaderMap); jsonObjectSet(context,"artifacts",artifacts);
+                documents >> int <- jsonObjectGet(data,"documents"); index <- 0;
+                while (index < jsonObjectLen(documents)) {
+                    name >> str <- jsonObjectKeyAt(documents,index); document >> int <- jsonObjectGet(documents,name);
+                    destination >> str <- strStartsWith(name,"STATUS_") ? "docs/status/"+name : "reports/machine_closure/"+name;
+                    if (name == "machine_ci_evidence.md") destination <- "reports/machine_closure/ci/"+lane+"/"+name;
+                    closure43_core.closure43Core.write(destination,closure43_documents.closure43Documents.render(document,context)); jsonRelease(document); index += 1;
+                }
+                println(closure43_core.closure43Core.pretty(summary)); return closure43_core.closure43Core.ok() ? 0 : 1;
+            }
+    fa: return true;
+}

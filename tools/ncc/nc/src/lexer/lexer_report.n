@@ -1,0 +1,54 @@
+use <io:output, render>;
+use <project:lexer, diagnostics>;
+
+nccLexerReport {
+    fn:
+        private:
+            record(state >> p<byte>, index >> int) -> void {
+                print("{\"kind\":\"");
+                print(lexer.nccLexer.tokenNameAt(state, index));
+                print("\",\"line\":"); print(renderInt(lexer.nccLexer.tokenLineAt(state, index)));
+                print(",\"column\":"); print(renderInt(lexer.nccLexer.tokenColumnAt(state, index)));
+                print(",\"start\":"); print(renderInt(lexer.nccLexer.tokenStartAt(state, index)));
+                print(",\"end\":"); print(renderInt(lexer.nccLexer.tokenEndAt(state, index)));
+                print(",\"payload\":[");
+                data >> p<byte> <- lexer.nccLexer.tokenPayloadAt(state, index);
+                count >> int <- lexer.nccLexer.tokenBytesAt(state, index);
+                at >> int <- 0;
+                while (at < count) {
+                    if (at > 0) print(",");
+                    print(renderInt(rd<byte>(off(data, at)) & 255));
+                    at += 1;
+                }
+                print("]}");
+            }
+
+        public:
+            scanFile(path >> str) -> int {
+                state >> p<byte> <- lexer.nccLexer.openFile(path);
+                guard state != null else return 66;
+                guard lexer.nccLexer.valid(state) else {
+                    result >> int <- diagnostics.nccDiagnostics.emitDiagnostic(
+                        lexer.nccLexer.errorKind(state), lexer.nccLexer.errorLine(state),
+                        lexer.nccLexer.errorColumn(state), path);
+                    lexer.nccLexer.close(state);
+                    return result;
+                }
+                count >> int <- lexer.nccLexer.tokenCount(state);
+                print("{\"schema\":\"nc.lexer.material.v2\",\"count\":"); print(renderInt(count));
+                print(",\"reserved_record_bytes\":");
+                print(renderInt(lexer.nccLexer.reservedRecordBytes(state)));
+                print(",\"tokens\":[");
+                at >> int <- 0;
+                while (at < count) {
+                    if (at > 0) print(",");
+                    record(state, at);
+                    at += 1;
+                }
+                println("]}");
+                lexer.nccLexer.close(state);
+                return 0;
+            }
+    fa:
+        return true;
+}

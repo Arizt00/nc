@@ -1,0 +1,197 @@
+use <data:json>;
+use <io:render>;
+use <project:cert_json>;
+
+physical43Json {
+    stc:
+        lastDiagnostic >> str <- "";
+        rawStrings >> p<byte> <- null;
+        nextRaw >> int <- 0;
+    fn:
+        private:
+            hex(code >> int) -> int { if (code >= 48 && code <= 57) return code-48; if (code >= 65 && code <= 70) return code-55; if (code >= 97 && code <= 102) return code-87; return -1; }
+            scalar(bytes >> p<byte>, at >> int) -> int { value >> int <- 0; index >> int <- 0; while (index < 4) { digit >> int <- hex(rd(off(bytes,at+index)) & 255); if (digit < 0) return -1; value <- value*16+digit; index += 1; } return value; }
+            utf8(data >> p<byte>, at >> int, value >> int) -> int {
+                if (value < 128) { wr(off(data,at),value); return at+1; }
+                first >> int <- 0; second >> int <- 0; third >> int <- 0; fourth >> int <- 0;
+                if (value < 2048) { first <- 192+(value >>> 6); second <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); return at+2; }
+                if (value < 65536) { first <- 224+(value >>> 12); second <- 128+((value >>> 6) & 63); third <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); return at+3; }
+                first <- 240+(value >>> 18); second <- 128+((value >>> 12) & 63); third <- 128+((value >>> 6) & 63); fourth <- 128+(value & 63); wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); wr(off(data,at+3),fourth); return at+4;
+            }
+            restore(model >> int, strings >> int, depth >> int) -> int {
+                if (depth > 64) return 0;
+                kind >> int <- jsonKind(model);
+                if (kind == 4) return jsonObjectGet(strings,jsonStringView(model,""));
+                if (kind != 5 && kind != 6) return jsonClone(model);
+                result >> int <- kind == 5 ? jsonNewArray() : jsonNewObject(); at >> int <- 0; count >> int <- kind == 5 ? jsonArrayLen(model) : jsonObjectLen(model);
+                while (at < count) {
+                    name >> str <- kind == 6 ? jsonObjectKeyAt(model,at) : ""; child >> int <- kind == 5 ? jsonArrayBorrow(model,at) : jsonObjectBorrow(model,name); value >> int <- restore(child,strings,depth+1); jsonRelease(child);
+                    if (value == 0) { jsonRelease(result); return 0; }
+                    if (kind == 5) cert_json.certJson.push(result,value);
+                    else { key >> int <- jsonObjectBorrow(strings,name); if (jsonKind(key) != 4) { jsonRelease(value); jsonRelease(result); return 0; } cert_json.certJson.put(result,jsonStringView(key,""),value); jsonRelease(key); strRelease(name); }
+                    at += 1;
+                }
+                return result;
+            }
+        public:
+            asText(data >> p<byte>) -> str { return cast(data); }
+            rawData(text >> str) -> p<byte> {
+                entry >> p<byte> <- rawStrings;
+                while (entry != null) { token >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,8))); if (asText(token) == text) return rd<p<byte>>(cast<p<byte>>(off(entry,16))); entry <- rd<p<byte>>(cast<p<byte>>(entry)); }
+                return cast<byte>(text);
+            }
+            rawLength(text >> str) -> int {
+                entry >> p<byte> <- rawStrings;
+                while (entry != null) { token >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,8))); if (asText(token) == text) return rd<int>(cast<int>(off(entry,24))); entry <- rd<p<byte>>(cast<p<byte>>(entry)); }
+                return strByteLen(text);
+            }
+            rawSurrogates(text >> str) -> bool {
+                entry >> p<byte> <- rawStrings;
+                while (entry != null) { token >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,8))); if (asText(token) == text) return rd<int>(cast<int>(off(entry,28))) != 0; entry <- rd<p<byte>>(cast<p<byte>>(entry)); }
+                return false;
+            }
+            rawCompare(left >> str, right >> str) -> int {
+                a >> p<byte> <- rawData(left); b >> p<byte> <- rawData(right); alen >> int <- rawLength(left); blen >> int <- rawLength(right); at >> int <- 0;
+                while (at < alen && at < blen) { x >> int <- rd(off(a,at)) & 255; y >> int <- rd(off(b,at)) & 255; if (x != y) return x < y ? -1 : 1; at += 1; }
+                return alen == blen ? 0 : (alen < blen ? -1 : 1);
+            }
+            quote(text >> str) -> str {
+                data >> p<byte> <- rawData(text); length >> int <- rawLength(text); at >> int <- 0; begin >> int <- 0; result >> str <- "\""; allowSurrogates >> bool <- rawSurrogates(text);
+                while (at <= length) {
+                    zero >> bool <- at == length;
+                    if (at < length) zero <- rd(off(data,at)) == 0;
+                    surrogate >> bool <- false;
+                    if (allowSurrogates && at+2 < length) { first >> int <- rd(off(data,at)) & 255; second >> int <- rd(off(data,at+1)) & 255; third >> int <- rd(off(data,at+2)) & 255; surrogate <- first == 237 && second >= 160 && second <= 191 && third >= 128 && third <= 191; }
+                    if (zero || surrogate) {
+                        piece >> p<byte> <- cast(alloc(at-begin+1)); if (piece == null) { strRelease(result); return ""; }
+                        cp(piece,off(data,begin),at-begin); wr(off(piece,at-begin),0); encoded >> str <- cert_json.certJson.quote(asText(piece)); free(piece);
+                        if (encoded == "") { strRelease(result); return ""; }
+                        middle >> str <- strSubstring(encoded,1,strByteLen(encoded)-2); result <- cert_json.certJson.append(result,middle); strRelease(middle); strRelease(encoded);
+                        if (surrogate) {
+                            code >> int <- 53248+((rd(off(data,at+1)) & 63)*64)+(rd(off(data,at+2)) & 63); digits >> p<byte> <- cast("0123456789abcdef"); escaped >> p<byte> <- cast(alloc(7)); if (escaped == null) { strRelease(result); return ""; }
+                            wr(escaped,92); wr(off(escaped,1),117); cursor >> int <- 0; while (cursor < 4) { wr(off(escaped,cursor+2),rd(off(digits,(code >>> (12-cursor*4)) & 15))); cursor += 1; } wr(off(escaped,6),0); result <- cert_json.certJson.append(result,asText(escaped)); free(escaped); at += 2;
+                        } else if (at < length) result <- cert_json.certJson.append(result,"\\u0000"); begin <- at+1;
+                    }
+                    at += 1;
+                }
+                return cert_json.certJson.append(result,"\"");
+            }
+            newStringBytes(data >> p<byte>, length >> int) -> int {
+                return newStringImpl(data,length,false);
+            }
+            newStringImpl(data >> p<byte>, length >> int, allowSurrogates >> bool) -> int {
+                return newStringWithRegistry(data,length,allowSurrogates,false);
+            }
+            newStringRegistered(data >> p<byte>, length >> int, allowSurrogates >> bool) -> int {
+                return newStringWithRegistry(data,length,allowSurrogates,true);
+            }
+            newStringWithRegistry(data >> p<byte>, length >> int, allowSurrogates >> bool, forceRegistry >> bool) -> int {
+                if (length < 0 || length > 134217728) return 0;
+                hasZero >> bool <- false; at >> int <- 0;
+                while (at < length) { if (rd(off(data,at)) == 0) hasZero <- true; at += 1; }
+                copied >> p<byte> <- cast(alloc(length+1)); if (copied == null) return 0; cp(copied,data,length); wr(off(copied,length),0);
+                text >> str <- cast(copied); collision >> bool <- rawData(text) != copied;
+                if (!hasZero && !collision && !allowSurrogates && !forceRegistry) { value >> int <- jsonNewString(text); free(copied); return value; }
+                entry >> p<byte> <- rawStrings;
+                while (entry != null) {
+                    count >> int <- rd<int>(cast<int>(off(entry,24))); bytes >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,16))); same >> bool <- count == length && (rd<int>(cast<int>(off(entry,28))) != 0) == allowSurrogates; at <- 0;
+                    while (same && at < length) { if (rd(off(bytes,at)) != rd(off(data,at))) same <- false; at += 1; }
+                    if (same) { token >> p<byte> <- rd<p<byte>>(cast<p<byte>>(off(entry,8))); free(copied); return jsonNewString(asText(token)); }
+                    entry <- rd<p<byte>>(cast<p<byte>>(entry));
+                }
+                nextRaw += 1; label >> str <- "physical43-raw-"+renderInt(nextRaw); token >> p<byte> <- cast(alloc(strByteLen(label)+2)); entry <- cast(alloc(32));
+                if (token == null || entry == null) { free(token); free(entry); free(copied); strRelease(label); return 0; }
+                wr(token,1); cp(off(token,1),cast<byte>(label),strByteLen(label)); wr(off(token,strByteLen(label)+1),0); strRelease(label);
+                wr<p<byte>>(cast<p<byte>>(entry),rawStrings); wr<p<byte>>(cast<p<byte>>(off(entry,8)),token); wr<p<byte>>(cast<p<byte>>(off(entry,16)),copied); wr<int>(cast<int>(off(entry,24)),length); wr<int>(cast<int>(off(entry,28)),allowSurrogates ? 1 : 0); rawStrings <- entry;
+                validation >> str <- quote(asText(token)); if (validation == "") { rawStrings <- rd<p<byte>>(cast<p<byte>>(entry)); free(copied); free(token); free(entry); return 0; } strRelease(validation); return jsonNewString(asText(token));
+            }
+            decodedData(blob >> p<byte>) -> p<byte> { return blob == null ? null : off(blob,8); }
+            decodedLength(blob >> p<byte>) -> int { return blob == null ? 0 : rd<int>(cast<int>(blob)); }
+            decodeReplace(data >> p<byte>, length >> int, newlines >> bool) -> p<byte> {
+                if (length < 0 || length > 134217728) return null;
+                blob >> p<byte> <- cast(alloc(length*3+9)); if (blob == null) return null;
+                out >> p<byte> <- off(blob,8); at >> int <- 0; written >> int <- 0;
+                while (at < length) {
+                    first >> int <- rd(off(data,at)) & 255;
+                    if (first < 128) {
+                        if (newlines && first == 13) { wr(off(out,written),10); if (at+1 < length) { if (rd(off(data,at+1)) == 10) at += 1; } }
+                        else wr(off(out,written),first);
+                        written += 1; at += 1; continue;
+                    }
+                    width >> int <- first >= 194 && first <= 223 ? 2 : (first >= 224 && first <= 239 ? 3 : (first >= 240 && first <= 244 ? 4 : 0));
+                    consumed >> int <- 1; valid >> bool <- width != 0;
+                    while (valid && consumed < width) {
+                        if (at+consumed >= length) { valid <- false; break; }
+                        next >> int <- rd(off(data,at+consumed)) & 255;
+                        if (next < 128 || next > 191) { valid <- false; break; }
+                        if (consumed == 1 && ((first == 224 && next < 160) || (first == 237 && next > 159) || (first == 240 && next < 144) || (first == 244 && next > 143))) { valid <- false; break; }
+                        consumed += 1;
+                    }
+                    if (valid) { cp(off(out,written),off(data,at),width); written += width; }
+                    else { wr(off(out,written),239); wr(off(out,written+1),191); wr(off(out,written+2),189); written += 3; }
+                    at += consumed;
+                }
+                wr<int>(cast<int>(blob),written); wr(off(out,written),0); return blob;
+            }
+            scalarText(value >> int) -> str {
+                data >> p<byte> <- cast(alloc(5)); guard data != null else return "";
+                count >> int <- utf8(data,0,value); wr(off(data,count),0); text >> str <- cast(data); return text;
+            }
+            diagnostic() -> str { return lastDiagnostic; }
+            parse(text >> str) -> int { return parseImpl(cast<byte>(text),strByteLen(text),false); }
+            parseCertification(text >> str) -> int { return parseImpl(cast<byte>(text),strByteLen(text),true); }
+            parseBytes(bytes >> p<byte>, length >> int) -> int { return parseImpl(bytes,length,true); }
+            parseImpl(bytes >> p<byte>, length >> int, allowZero >> bool) -> int {
+                lastDiagnostic <- "";
+                if (length < 0 || length > 134217728) return 0;
+                data >> p<byte> <- cast(alloc(length+1)); guard data != null else return 0;
+                transformed >> p<byte> <- cast(alloc(length*8+1)); guard transformed != null else { free(data); return 0; }
+                outAt >> int <- 0; strings >> int <- jsonNewObject(); at >> int <- 0; index >> int <- 0; valid >> bool <- true;
+                while (at < length && valid) {
+                    code >> int <- rd(off(bytes,at)) & 255;
+                    if (code != 34) { if (code == 0 || code >= 128) { valid <- false; break; } wr(off(transformed,outAt),code); outAt += 1; at += 1; continue; }
+                    at += 1; written >> int <- 0; closed >> bool <- false; escapedSurrogates >> bool <- false;
+                    while (at < length && valid) {
+                        code <- rd(off(bytes,at)) & 255; at += 1;
+                        if (code == 34) { closed <- true; break; }
+                        if (code < 32) { valid <- false; break; }
+                        if (code >= 128) {
+                            width >> int <- code >= 194 && code <= 223 ? 2 : (code >= 224 && code <= 239 ? 3 : (code >= 240 && code <= 244 ? 4 : 0));
+                            if (width == 0 || at+width-1 > length) { valid <- false; break; }
+                            cursor >> int <- 1; while (cursor < width) { next >> int <- rd(off(bytes,at+cursor-1)) & 255; if (next < 128 || next > 191 || (cursor == 1 && ((code == 224 && next < 160) || (code == 237 && next > 159) || (code == 240 && next < 144) || (code == 244 && next > 143)))) { valid <- false; break; } cursor += 1; }
+                            if (!valid) break; cp(off(data,written),off(bytes,at-1),width); written += width; at += width-1; continue;
+                        }
+                        if (code == 92) {
+                            if (at >= length) { valid <- false; break; } code <- rd(off(bytes,at)) & 255; at += 1;
+                            if (code == 98) code <- 8;
+                            else if (code == 102) code <- 12;
+                            else if (code == 110) code <- 10;
+                            else if (code == 114) code <- 13;
+                            else if (code == 116) code <- 9;
+                            else if (code == 117) {
+                                if (at+4 > length) { valid <- false; break; } scalarCode >> int <- scalar(bytes,at); at += 4;
+                                if (scalarCode >= 55296 && scalarCode <= 56319) {
+                                    low >> int <- -1;
+                                    if (at+6 <= length) { if (rd(off(bytes,at)) == 92 && rd(off(bytes,at+1)) == 117) low <- scalar(bytes,at+2); }
+                                    if (low >= 56320 && low <= 57343) { scalarCode <- 65536+(scalarCode-55296)*1024+low-56320; at += 6; }
+                                    else if (allowZero) escapedSurrogates <- true;
+                                    else { valid <- false; break; }
+                                } else if (scalarCode >= 56320 && scalarCode <= 57343) { if (allowZero) escapedSurrogates <- true; else { valid <- false; break; } }
+                                if (scalarCode < 0 || scalarCode > 1114111 || (scalarCode == 0 && !allowZero)) { valid <- false; break; }
+                                written <- utf8(data,written,scalarCode); continue;
+                            } else if (code != 34 && code != 92 && code != 47) { valid <- false; break; }
+                        }
+                        wr(off(data,written),code); written += 1;
+                    }
+                    if (!closed || !valid) { valid <- false; break; }
+                    wr(off(data,written),0); value >> str <- cast(data); valueNode >> int <- allowZero ? newStringImpl(data,written,escapedSurrogates) : jsonNewString(value); quoted >> str <- valueNode == 0 ? "" : quote(jsonStringView(valueNode,""));
+                    if (quoted == "") { if (valueNode != 0) jsonRelease(valueNode); lastDiagnostic <- "invalid decoded UTF-8 bytes"; valid <- false; break; } strRelease(quoted);
+                    token >> str <- "p43str"+renderInt(index); cert_json.certJson.put(strings,token,valueNode); wr(off(transformed,outAt),34); outAt += 1; cp(off(transformed,outAt),cast<byte>(token),strByteLen(token)); outAt += strByteLen(token); wr(off(transformed,outAt),34); outAt += 1; strRelease(token); index += 1;
+                }
+                free(data); wr(off(transformed,outAt),0); transformedText >> str <- cast(transformed); model >> int <- valid ? jsonParse(transformedText) : 0; free(transformed);
+                if (!valid) { if (lastDiagnostic == "") lastDiagnostic <- "invalid JSON string at byte "+renderInt(at); }
+                else if (model == 0) lastDiagnostic <- "invalid transformed JSON: "+jsonErrorMessage();
+                result >> int <- model == 0 ? 0 : restore(model,strings,0); if (model != 0 && result == 0) lastDiagnostic <- "cannot restore JSON string handles"; if (model != 0) jsonRelease(model); jsonRelease(strings); return result;
+            }
+    fa: return true;
+}

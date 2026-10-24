@@ -1,0 +1,227 @@
+use <project:ir, mct, mct_link, mct_symbol_bundle, mct_image_contract, mct_values, wasm_bytes, wasm_model, wasm_body, native_types>;
+
+nccMctImageWasm {
+    fn:
+        private:
+            qualified(out >> p<byte>, g >> p<byte>, node >> int) -> void {
+                owner >> int <- ir.nccIr.graphNodeOwnerBytes(g,node);
+                name >> int <- ir.nccIr.graphNodeNameBytes(g,node);
+                wasm_bytes.nccWasmBytes.uleb(out,owner + name + (owner > 0 ? 1 : 0));
+                if (owner > 0) {
+                    wasm_bytes.nccWasmBytes.appendRaw(out,ir.nccIr.graphNodeOwner(g,node),owner);
+                    wasm_bytes.nccWasmBytes.put(out,46);
+                }
+                wasm_bytes.nccWasmBytes.appendRaw(out,ir.nccIr.graphNodeName(g,node),name);
+            }
+            providerModule(out >> p<byte>, material >> p<byte>, node >> int) -> void {
+                owner >> int <- mct.nccMct.artifactRecordTargetOwnerBytes(material,node);
+                wasm_bytes.nccWasmBytes.uleb(out,10 + (owner > 0 ? owner + 1 : 0));
+                wasm_bytes.nccWasmBytes.appendRaw(out,cast<byte>("nC.runtime"),10);
+                if (owner > 0) {
+                    wasm_bytes.nccWasmBytes.put(out,46);
+                    wasm_bytes.nccWasmBytes.appendRaw(out,mct.nccMct.artifactRecordTargetOwner(material,node),owner);
+                }
+            }
+            providerCallee(g >> p<byte>, node >> int) -> int {
+                if (ir.nccIr.graphNodeAstKind(g,node) == 29) node <- ir.nccIr.graphNodeFirstChild(g,node);
+                return node;
+            }
+            addSection(out >> p<byte>, payload >> p<byte>, id >> int) -> void {
+                wasm_bytes.nccWasmBytes.section(out,id,payload);
+                wasm_bytes.nccWasmBytes.clear(payload);
+            }
+        public:
+            build(material >> p<byte>, plan >> p<byte>) -> p<byte> {
+                guard material != null && plan != null && mct_link.nccMctLink.finalPlanTarget(plan) == 10 else return null;
+                g >> p<byte> <- mct.nccMct.artifactGraph(material);
+                guard g != null else return null;
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                ctx >> p<byte> <- wasm_model.nccWasmModel.create(g,providers);
+                guard ctx != null else return null;
+                out >> p<byte> <- wasm_bytes.nccWasmBytes.create();
+                payload >> p<byte> <- wasm_bytes.nccWasmBytes.create();
+                if (out == null || payload == null) {
+                    wasm_bytes.nccWasmBytes.release(out); wasm_bytes.nccWasmBytes.release(payload);
+                    wasm_model.nccWasmModel.release(ctx); return null;
+                }
+                totalFunctions >> int <- rd<int>(off(ctx,16));
+                definitions >> int <- totalFunctions - providers;
+                count >> int <- ir.nccIr.graphNodes(g);
+                node >> int <- -1;
+                bytes >> int <- 0;
+                entry >> int <- -1;
+                at >> int <- 0;
+                while (at < count) {
+                    if (ir.nccIr.graphNodeAstKind(g,at) == 17) {
+                        target >> int <- mct_values.nccMctValues.resolve(g,at);
+                        if (target >= 0 && wasm_model.nccWasmModel.parameterCount(g,target) == 0)
+                            entry <- wasm_model.nccWasmModel.get(ctx,target,0);
+                    }
+                    at += 1;
+                }
+                if (entry < 0 || definitions <= 0) wasm_bytes.nccWasmBytes.reject(out);
+                index >> int <- 0;
+                while (index < providers) {
+                    node <- mct_link.nccMctLink.finalPlanProviderNode(plan,index);
+                    at <- 0;
+                    while (at < count) {
+                        if (ir.nccIr.graphNodeAstKind(g,at) == 29 &&
+                            mct_symbol_bundle.nccMctSymbolBundle.sameTarget(material,at,node))
+                            wasm_model.nccWasmModel.set(ctx,at,0,index);
+                        at += 1;
+                    }
+                    index += 1;
+                }
+                wasm_bytes.nccWasmBytes.put(out,0); wasm_bytes.nccWasmBytes.put(out,0x61);
+                wasm_bytes.nccWasmBytes.put(out,0x73); wasm_bytes.nccWasmBytes.put(out,0x6D);
+                wasm_bytes.nccWasmBytes.put(out,1);
+                index <- 0;
+                while (index < 3) { wasm_bytes.nccWasmBytes.put(out,0); index += 1; }
+
+                wasm_bytes.nccWasmBytes.uleb(payload,totalFunctions);
+                index <- 0;
+                while (index < providers) {
+                    node <- mct_link.nccMctLink.finalPlanProviderNode(plan,index);
+                    wasm_model.nccWasmModel.signature(ctx,payload,providerCallee(g,node),true);
+                    index += 1;
+                }
+                at <- 0;
+                while (at < count) {
+                    if (ir.nccIr.graphNodeAstKind(g,at) == 15) wasm_model.nccWasmModel.signature(ctx,payload,at,false);
+                    at += 1;
+                }
+                addSection(out,payload,1);
+                if (providers > 0) {
+                    wasm_bytes.nccWasmBytes.uleb(payload,providers);
+                    index <- 0;
+                    while (index < providers) {
+                        node <- mct_link.nccMctLink.finalPlanProviderNode(plan,index);
+                        providerModule(payload,material,node);
+                        wasm_bytes.nccWasmBytes.name(payload,mct.nccMct.artifactRecordTargetName(material,node),
+                            mct.nccMct.artifactRecordTargetNameBytes(material,node));
+                        wasm_bytes.nccWasmBytes.put(payload,0); wasm_bytes.nccWasmBytes.uleb(payload,index);
+                        index += 1;
+                    }
+                    addSection(out,payload,2);
+                }
+                wasm_bytes.nccWasmBytes.uleb(payload,definitions);
+                index <- providers;
+                while (index < totalFunctions) { wasm_bytes.nccWasmBytes.uleb(payload,index); index += 1; }
+                addSection(out,payload,3);
+
+                wasm_bytes.nccWasmBytes.uleb(payload,1);
+                wasm_bytes.nccWasmBytes.uleb(payload,0);
+                wasm_bytes.nccWasmBytes.uleb(payload,rd<int>(off(ctx,36)) / 65536);
+                addSection(out,payload,5);
+
+                globals >> int <- rd<int>(off(ctx,20));
+                if (globals > 0) {
+                    wasm_bytes.nccWasmBytes.uleb(payload,globals);
+                    at <- 0;
+                    while (at < count) {
+                        if (wasm_model.nccWasmModel.get(ctx,at,8) >= 0) {
+                            initial >> int <- mct_values.nccMctValues.initializer(g,at);
+                            values >> p<byte> <- wasm_model.nccWasmModel.constants(ctx);
+                            type >> int <- wasm_model.nccWasmModel.get(ctx,at,12);
+                            if (type != 0x7F && type != 0x7E) wasm_bytes.nccWasmBytes.reject(payload);
+                            wasm_bytes.nccWasmBytes.put(payload,type); wasm_bytes.nccWasmBytes.put(payload,1);
+                            if (type == 0x7E) {
+                                if (initial >= 0 && ir.nccIr.graphNodeAstKind(g,initial) != 25) wasm_bytes.nccWasmBytes.reject(payload);
+                                bits >> u64 <- initial >= 0 ? native_types.nccNativeTypes.literal(g,initial) : 0;
+                                signedBits >> i64 <- bits;
+                                wasm_bytes.nccWasmBytes.put(payload,0x42); wasm_bytes.nccWasmBytes.sleb64(payload,signedBits);
+                            } else {
+                                if (initial >= 0 && mct_values.nccMctValues.status(values,initial) != 2) wasm_bytes.nccWasmBytes.reject(payload);
+                                wasm_bytes.nccWasmBytes.put(payload,0x41);
+                                wasm_bytes.nccWasmBytes.sleb(payload,initial >= 0 ? mct_values.nccMctValues.value(values,initial) : 0);
+                            }
+                            wasm_bytes.nccWasmBytes.put(payload,0x0B);
+                        }
+                        at += 1;
+                    }
+                    wasm_bytes.nccWasmBytes.put(payload,0x7F); wasm_bytes.nccWasmBytes.put(payload,1);
+                    wasm_bytes.nccWasmBytes.put(payload,0x41); wasm_bytes.nccWasmBytes.sleb(payload,rd<int>(off(ctx,36)));
+                    wasm_bytes.nccWasmBytes.put(payload,0x0B);
+                    addSection(out,payload,6);
+                }
+                wasm_bytes.nccWasmBytes.uleb(payload,definitions + 3);
+                wasm_bytes.nccWasmBytes.literal(payload,"_start");
+                wasm_bytes.nccWasmBytes.put(payload,0); wasm_bytes.nccWasmBytes.uleb(payload,entry);
+                wasm_bytes.nccWasmBytes.literal(payload,"memory");
+                wasm_bytes.nccWasmBytes.put(payload,2); wasm_bytes.nccWasmBytes.uleb(payload,0);
+                wasm_bytes.nccWasmBytes.literal(payload,"__stack_pointer");
+                wasm_bytes.nccWasmBytes.put(payload,3); wasm_bytes.nccWasmBytes.uleb(payload,rd<int>(off(ctx,32)));
+                at <- 0;
+                while (at < count) {
+                    if (ir.nccIr.graphNodeAstKind(g,at) == 15) {
+                        qualified(payload,g,at); wasm_bytes.nccWasmBytes.put(payload,0);
+                        wasm_bytes.nccWasmBytes.uleb(payload,wasm_model.nccWasmModel.get(ctx,at,0));
+                    }
+                    at += 1;
+                }
+                addSection(out,payload,7);
+
+                wasm_bytes.nccWasmBytes.uleb(payload,definitions);
+                at <- 0;
+                while (at < count) {
+                    if (ir.nccIr.graphNodeAstKind(g,at) == 15) {
+                        body >> p<byte> <- wasm_body.nccWasmBody.functionBody(ctx,at);
+                        if (body == null) wasm_bytes.nccWasmBytes.reject(payload);
+                        else {
+                            wasm_bytes.nccWasmBytes.uleb(payload,wasm_bytes.nccWasmBytes.size(body));
+                            wasm_bytes.nccWasmBytes.append(payload,body);
+                            wasm_bytes.nccWasmBytes.release(body);
+                        }
+                    }
+                    at += 1;
+                }
+                addSection(out,payload,10);
+
+                strings >> int <- 0;
+                at <- 0;
+                while (at < count) { if (wasm_model.nccWasmModel.get(ctx,at,16) >= 0) strings += 1; at += 1; }
+                if (strings > 0) {
+                    wasm_bytes.nccWasmBytes.uleb(payload,strings);
+                    at <- 0;
+                    while (at < count) {
+                        dataOffset >> int <- wasm_model.nccWasmModel.get(ctx,at,16);
+                        if (dataOffset >= 0) {
+                            wasm_bytes.nccWasmBytes.uleb(payload,0); wasm_bytes.nccWasmBytes.put(payload,0x41);
+                            wasm_bytes.nccWasmBytes.sleb(payload,dataOffset); wasm_bytes.nccWasmBytes.put(payload,0x0B);
+                            bytes <- ir.nccIr.graphNodeNameBytes(g,at);
+                            wasm_bytes.nccWasmBytes.uleb(payload,bytes+1);
+                            wasm_bytes.nccWasmBytes.appendRaw(payload,ir.nccIr.graphNodeName(g,at),bytes);
+                            wasm_bytes.nccWasmBytes.put(payload,0);
+                        }
+                        at += 1;
+                    }
+                    addSection(out,payload,11);
+                }
+                wasm_bytes.nccWasmBytes.literal(payload,"nC.mct");
+                wasm_bytes.nccWasmBytes.uleb(payload,2);
+                wasm_bytes.nccWasmBytes.uleb(payload,mct.nccMct.artifactFingerprint(material));
+                wasm_bytes.nccWasmBytes.uleb(payload,ir.nccIr.graphFingerprint(g));
+                addSection(out,payload,0);
+
+                image >> p<byte> <- null;
+                if (wasm_bytes.nccWasmBytes.healthy(out)) {
+                    bytes <- wasm_bytes.nccWasmBytes.size(out);
+                    image <- mct_image_contract.nccMctImageContract.make(5,10,bytes,entry,providers,providers > 0 ? 3 : 1);
+                    if (image != null) cp(mct_image_contract.nccMctImageContract.data(image),wasm_bytes.nccWasmBytes.data(out),bytes);
+                }
+                wasm_bytes.nccWasmBytes.release(out); wasm_bytes.nccWasmBytes.release(payload);
+                wasm_model.nccWasmModel.release(ctx);
+                return image == null ? null : mct_image_contract.nccMctImageContract.finish(image);
+            }
+            selfTest() -> bool {
+                writer >> p<byte> <- wasm_bytes.nccWasmBytes.create();
+                guard writer != null else return false;
+                wasm_bytes.nccWasmBytes.sleb(writer,-65);
+                data >> p<byte> <- wasm_bytes.nccWasmBytes.data(writer);
+                ok >> bool <- wasm_bytes.nccWasmBytes.size(writer) == 2 &&
+                    (rd<byte>(data) & 255) == 191 && (rd<byte>(off(data,1)) & 255) == 127;
+                wasm_bytes.nccWasmBytes.release(writer); return ok;
+            }
+    fa:
+        return true;
+}

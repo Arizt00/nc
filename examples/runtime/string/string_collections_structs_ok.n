@@ -1,0 +1,46 @@
+use <collections:list>;
+use <io:output, render>;
+
+stringCollectionsStructs :: runtime {
+    Packet :: type {
+            tag >> str;
+            label >> str;
+            code >> int;
+    }
+
+    stc:
+        tags >> array<str, 3>;
+        events >> list<str>;
+        packet >> Packet;
+        picked >> str;
+        ok >> bool;
+
+    fn:
+        run() -> bool {
+            tags >> array<str, 3> <- ["rx", "tx", "ok"];
+            events >> list<str> <- listCreate<str>();
+            listAdd(events, tags[0]);
+            listAdd(events, tags[1]);
+            listAdd(events, tags[2]);
+
+            picked >> str <- listGet(events, 1);
+            packet.tag <- picked;
+            packet.label <- strConcat(packet.tag, "-packet");
+            packet.code <- strLen(packet.label);
+
+            println("packet = " + packet.label);
+            println("code = " + renderInt(packet.code));
+
+            ok >> bool <- packet.tag == "tx"
+                && packet.label == "tx-packet"
+                && packet.code == 9
+                && listGet(events, 2) == "ok";
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

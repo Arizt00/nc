@@ -1,0 +1,141 @@
+use <io:output>;
+
+nativeRecordMachine78 {
+    type:
+        Mixed { public: value >> ft64; tag >> i64; }
+        Small { public: first >> ft32; second >> ft32; }
+        Pair { public: first >> ft64; second >> ft64; }
+    put(code >> p<byte>, at >> int, value >> byte) -> int { wr(off(code,at),value); return at+1; }
+    word(code >> p<byte>, at >> int, value >> u32) -> int { wr<u32>(off(code,at),value); return at+4; }
+    immediate(code >> p<byte>, at >> int, reg >> int, value >> u64) -> int {
+        at <- put(code,at,reg >= 8 ? 0x49 : 0x48); at <- put(code,at,0xB8+(reg & 7));
+        wr<u64>(off(code,at),value); return at+8;
+    }
+    xmm(code >> p<byte>, at >> int, reg >> int, toXmm >> bool) -> int {
+        at <- put(code,at,0x66); at <- put(code,at,0x48); at <- put(code,at,0x0F);
+        at <- put(code,at,toXmm ? 0x6E : 0x7E); return put(code,at,0xC0+reg*8);
+    }
+    compare(code >> p<byte>, at >> int, expected >> u64, fixes >> p<int>, index >> int) -> int {
+        at <- immediate(code,at,10,expected);
+        at <- put(code,at,0x4C); at <- put(code,at,0x39); at <- put(code,at,0xD0);
+        at <- put(code,at,0x0F); at <- put(code,at,0x85);
+        wr(off(fixes,index),at); return word(code,at,0);
+    }
+    callback(value >> Mixed, offset >> ft64, tag >> i64) -> Mixed {
+        if (value.value != 2.5 || value.tag != 7 || offset != 1.25 || tag != 3)
+            return Mixed(value: 0.0, tag: 0);
+        return Mixed(value: 42.25, tag: 19);
+    }
+    pairReturn(code >> p<byte>, at >> int, windows >> bool, first >> u64, second >> u64) -> int {
+        at <- immediate(code,at,0,first);
+        if (windows) { at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0x01); }
+        else at <- xmm(code,at,0,true);
+        at <- immediate(code,at,0,second);
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0x41); at <- put(code,at,8);
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0xC8);
+        } else at <- xmm(code,at,1,true);
+        return put(code,at,0xC3);
+    }
+    patch(code >> p<byte>, fixes >> p<int>, count >> int, failure >> int) -> void {
+        index >> int <- 0;
+        while (index < count) { at >> int <- rd(off(fixes,index)); wr<i32>(off(code,at),failure-at-4); index += 1; }
+    }
+    run() -> int {
+        windows >> bool <- vmReadWriteProtection() == 4;
+        page >> int <- vmPageSize(); code >> p<byte> <- vmReserve(null,page,0);
+        if (code == null || !vmCommit(code,page,vmReadWriteProtection())) return 1;
+        patches >> array<int,4>; fixes >> p<int> <- cast<int>(&patches); at >> int <- 0;
+        if (windows) {
+            // RCX is sret, RDX points to the caller's 16-byte argument copy.
+            at <- put(code,at,0x48); at <- put(code,at,0x8B); at <- put(code,at,0x02);
+        } else at <- xmm(code,at,0,false);
+        at <- compare(code,at,0x4004000000000000,fixes,0);
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0x8B); at <- put(code,at,0x42); at <- put(code,at,8);
+        } else { at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0xF8); }
+        at <- compare(code,at,7,fixes,1);
+        at <- xmm(code,at,windows ? 2 : 1,false);
+        at <- compare(code,at,0x3FF4000000000000,fixes,2);
+        at <- put(code,at,windows ? 0x4C : 0x48); at <- put(code,at,0x89); at <- put(code,at,windows ? 0xC8 : 0xF0);
+        at <- compare(code,at,3,fixes,3);
+        at <- immediate(code,at,0,0x4045200000000000);
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0x01);
+            at <- put(code,at,0x48); at <- put(code,at,0xC7); at <- put(code,at,0x41); at <- put(code,at,8); at <- word(code,at,19);
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0xC8);
+        } else { at <- xmm(code,at,0,true); at <- immediate(code,at,0,19); }
+        at <- put(code,at,0xC3); failure >> int <- at;
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0xC7); at <- put(code,at,0x01); at <- word(code,at,0);
+            at <- put(code,at,0x48); at <- put(code,at,0xC7); at <- put(code,at,0x41); at <- put(code,at,8); at <- word(code,at,0);
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0xC8);
+        } else {
+            at <- put(code,at,0x66); at <- put(code,at,0x0F); at <- put(code,at,0xEF); at <- put(code,at,0xC0);
+            at <- put(code,at,0x31); at <- put(code,at,0xC0);
+        }
+        at <- put(code,at,0xC3); index >> int <- 0;
+        while (index < 4) { patch >> int <- rd(off(fixes,index)); wr<i32>(off(code,patch),failure-patch-4); index += 1; }
+        caller >> int <- at;
+        // A second independent machine function calls the actual nC callback.
+        at <- put(code,at,0x49); at <- put(code,at,0x89); at <- put(code,at,windows ? 0xCB : 0xFB);
+        at <- put(code,at,0x48); at <- put(code,at,0x83); at <- put(code,at,0xEC); at <- put(code,at,windows ? 72 : 8);
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0x8D); at <- put(code,at,0x4C); at <- put(code,at,0x24); at <- put(code,at,32);
+            at <- put(code,at,0x48); at <- put(code,at,0x8D); at <- put(code,at,0x54); at <- put(code,at,0x24); at <- put(code,at,48);
+            at <- immediate(code,at,0,0x4004000000000000);
+            at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0x02);
+            at <- put(code,at,0x48); at <- put(code,at,0xC7); at <- put(code,at,0x42); at <- put(code,at,8); at <- word(code,at,7);
+            at <- immediate(code,at,9,3);
+        } else {
+            at <- immediate(code,at,0,0x4004000000000000); at <- xmm(code,at,0,true);
+            at <- immediate(code,at,7,7); at <- immediate(code,at,6,3);
+        }
+        at <- immediate(code,at,0,0x3FF4000000000000); at <- xmm(code,at,windows ? 2 : 1,true);
+        at <- put(code,at,0x41); at <- put(code,at,0xFF); at <- put(code,at,0xD3);
+        if (windows) {
+            at <- put(code,at,0x48); at <- put(code,at,0x8B); at <- put(code,at,0x44); at <- put(code,at,0x24); at <- put(code,at,40);
+        }
+        at <- compare(code,at,19,fixes,0);
+        if (windows) { at <- put(code,at,0xF2); at <- put(code,at,0x0F); at <- put(code,at,0x10); at <- put(code,at,0x44); at <- put(code,at,0x24); at <- put(code,at,32); }
+        at <- put(code,at,0xE9); finish >> int <- at; at <- word(code,at,0);
+        patch(code,fixes,1,at);
+        at <- put(code,at,0x66); at <- put(code,at,0x0F); at <- put(code,at,0xEF); at <- put(code,at,0xC0);
+        wr<i32>(off(code,finish),at-finish-4);
+        at <- put(code,at,0x48); at <- put(code,at,0x83); at <- put(code,at,0xC4); at <- put(code,at,windows ? 72 : 8); at <- put(code,at,0xC3);
+        smallEntry >> int <- at;
+        if (windows) { at <- put(code,at,0x48); at <- put(code,at,0x89); at <- put(code,at,0xC8); }
+        else at <- xmm(code,at,0,false);
+        at <- compare(code,at,0x401000003FC00000,fixes,0);
+        at <- immediate(code,at,0,0x407000003FC00000); if (!windows) at <- xmm(code,at,0,true);
+        at <- put(code,at,0xC3); patch(code,fixes,1,at);
+        at <- immediate(code,at,0,0); if (!windows) at <- xmm(code,at,0,true); at <- put(code,at,0xC3);
+        pairEntry >> int <- at;
+        if (windows) { at <- put(code,at,0x48); at <- put(code,at,0x8B); at <- put(code,at,0x02); }
+        else at <- xmm(code,at,0,false);
+        at <- compare(code,at,0x3FF8000000000000,fixes,0);
+        if (windows) { at <- put(code,at,0x48); at <- put(code,at,0x8B); at <- put(code,at,0x42); at <- put(code,at,8); }
+        else at <- xmm(code,at,1,false);
+        at <- compare(code,at,0x4002000000000000,fixes,1);
+        at <- pairReturn(code,at,windows,0x4045200000000000,0x402B000000000000);
+        patch(code,fixes,2,at); at <- pairReturn(code,at,windows,0,0);
+        if (at >= page || fsWriteFrom("record-machine-abi.bin",code,at,false) != at || !vmExecutable(code,page)) return 2;
+        entry >> fn(Mixed,ft64,i64) -> Mixed <- cast(code);
+        value >> Mixed <- Mixed(value: 2.5, tag: 7); result >> Mixed <- entry(value,1.25,3);
+        if (result.value != 42.25 || result.tag != 19) return 3;
+        reverse >> fn(addr) -> ft64 <- cast(off(code,caller));
+        if (reverse(adr(&callback)) != 42.25) return 4;
+        result <- entry(value,1.25,4);
+        if (result.value != 0.0 || result.tag != 0) return 5;
+        smallCall >> fn(Small) -> Small <- cast(off(code,smallEntry));
+        small >> Small <- smallCall(Small(first: 1.5, second: 2.25));
+        if (small.first != 1.5 || small.second != 3.75) return 7;
+        pairCall >> fn(Pair) -> Pair <- cast(off(code,pairEntry));
+        pair >> Pair <- pairCall(Pair(first: 1.5, second: 2.25));
+        if (pair.first != 42.25 || pair.second != 13.5) return 8;
+        if (!vmRelease(code,page)) return 6;
+        println("native-record-machine-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

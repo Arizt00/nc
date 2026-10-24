@@ -1,0 +1,401 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:tool_cli, release_io, cert_json, sha256, retirement43_receipts>;
+
+nativeTools43BatchCheck {
+    const:
+        EXPECTED >> int <- 46;
+        WINDOWS_STAGE0 >> str <- "4b292b4622c4bc0dd7869f63ad50915bc38af19efbaa29ca503e4dcd1e9a142a";
+        LINUX_STAGE0 >> str <- "b8e350852f94a18f39446d9e8f51bc9483e902f97fbcafa4609720377165ba08";
+        RECOVERY_ZIP >> str <- "f8a800ffc088af5c8f09bfbc6f334f402da4f6e8101a13d3681e2e43936ba059";
+        RECOVERY_INDEX >> str <- "23106c61ddb0f64743950fbe7185f350af76e451cec6faff7bf4a3ea919c5fab";
+    stc:
+        checks >> int;
+        failed >> bool <- false;
+        root >> str;
+        retired >> bool <- false;
+    fn:
+        private:
+            check(name >> str, good >> bool) -> void {
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"name",jsonNewString(name));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.push(checks,row);
+                if (!good) { failed <- true; println("FAIL "+name); }
+            }
+            safe(path >> str) -> bool {
+                return path != "" && !strStartsWith(path,"/") && !strContains(path,"..") &&
+                    !strContains(path,":") && !strContains(path,"\\");
+            }
+            boolField(model >> int, name >> str, expected >> bool) -> bool {
+                child >> int <- jsonObjectGet(model,name);
+                good >> bool <- jsonKind(child) == 2 && jsonGetBoolOr(child,!expected) == expected;
+                if (child != 0) jsonRelease(child);
+                return good;
+            }
+            materialFormat(path >> str, family >> str) -> bool {
+                if (family == "sources" || family == "replacements" || family == "source_snapshots") return strEndsWith(path,".n");
+                if (family != "windows_objects" && family != "linux_objects" &&
+                    family != "windows_executables" && family != "linux_executables") return true;
+                data >> p<byte> <- cast(alloc(4096));
+                if (data == null) return false;
+                count >> int <- fsReadInto(root+"/"+path,data,4096);
+                good >> bool <- false;
+                if (count >= 4) {
+                    first >> int <- rd(data) & 255;
+                    second >> int <- rd(off(data,1)) & 255;
+                    third >> int <- rd(off(data,2)) & 255;
+                    fourth >> int <- rd(off(data,3)) & 255;
+                    if (family == "windows_objects") good <- count >= 20 && first == 100 && second == 134;
+                    else if (family == "windows_executables" && count >= 64 && first == 77 && second == 90) {
+                        location >> int <- (rd(off(data,60)) & 255) + ((rd(off(data,61)) & 255) * 256) +
+                            ((rd(off(data,62)) & 255) * 65536) + ((rd(off(data,63)) & 255) * 16777216);
+                        if (location >= 64 && location <= count-26) good <- rd(off(data,location)) == 80 &&
+                            rd(off(data,location+1)) == 69 && rd(off(data,location+2)) == 0 &&
+                            rd(off(data,location+3)) == 0 && (rd(off(data,location+4)) & 255) == 100 &&
+                            (rd(off(data,location+5)) & 255) == 134 && rd(off(data,location+24)) == 11 &&
+                            rd(off(data,location+25)) == 2;
+                    }
+                    else if (count >= 64 && (family == "linux_objects" || family == "linux_executables")) {
+                        kind >> int <- rd(off(data,16)) & 255;
+                        good <- count >= 64 && first == 127 && second == 69 && third == 76 && fourth == 70 &&
+                            rd(off(data,4)) == 2 && rd(off(data,5)) == 1 && rd(off(data,17)) == 0 &&
+                            rd(off(data,18)) == 62 && rd(off(data,19)) == 0;
+                        if (family == "linux_objects") good <- good && kind == 1;
+                        else good <- good && (kind == 2 || kind == 3) && rd(off(data,54)) == 56 &&
+                            rd(off(data,55)) == 0 && ((rd(off(data,56)) & 255) + (rd(off(data,57)) & 255)*256) > 0;
+                    }
+                }
+                free(data); return good;
+            }
+            artifacts(row >> int, name >> str, required >> bool) -> void {
+                entries >> int <- jsonObjectGet(row,name);
+                count >> int <- jsonKind(entries) == 5 ? jsonArrayLen(entries) : 0;
+                check(name+" present",!required || count > 0);
+                index >> int <- 0;
+                while (index < count) {
+                    item >> int <- jsonArrayBorrow(entries,index);
+                    path >> str <- cert_json.certJson.field(item,"path");
+                    digest >> str <- cert_json.certJson.field(item,"sha256");
+                    good >> bool <- safe(path) && strByteLen(digest) == 64;
+                    if (good) good <- release_io.releaseIo.fileType(root+"/"+path) == 1;
+                    if (good) good <- sha256.nccSha256.file(root+"/"+path) == digest;
+                    if (good) good <- materialFormat(path,name);
+                    check(name+": "+path,good);
+                    strRelease(path); strRelease(digest); jsonRelease(item); index += 1;
+                }
+                if (entries != 0) jsonRelease(entries);
+            }
+            artifactCount(model >> int, field >> str, suffix >> str) -> int {
+                entries >> int <- jsonObjectGet(model,field);
+                count >> int <- jsonKind(entries) == 5 ? jsonArrayLen(entries) : 0;
+                matches >> int <- 0; index >> int <- 0;
+                while (index < count) {
+                    item >> int <- jsonArrayBorrow(entries,index);
+                    path >> str <- cert_json.certJson.field(item,"path");
+                    if (strEndsWith(path,suffix)) matches += 1;
+                    strRelease(path); jsonRelease(item); index += 1;
+                }
+                if (entries != 0) jsonRelease(entries); return matches;
+            }
+            objectStem(destination >> str) -> str {
+                bytes >> p<byte> <- cast(destination); at >> int <- strByteLen(destination)-1;
+                while (at >= 0 && rd(off(bytes,at)) != 47) { at -= 1; }
+                return strSubstring(destination,at+1,strByteLen(destination)-at-3);
+            }
+            bindings(model >> int) -> void {
+                entries >> int <- jsonObjectGet(model,"source_snapshots");
+                count >> int <- jsonKind(entries) == 5 ? jsonArrayLen(entries) : 0;
+                families >> int <- jsonParse("[\"gcc\",\"ncc-tools-v43\",\"ncc-release-v43\",\"ncc-ide-v43\",\"ncc-closures-v43\",\"ncc-documents-v43\",\"ncc-certification-v43\",\"ncc-mobile-v43\",\"ncc-mobile-protocol-v43\",\"ncc-mobile-build-v43\"]");
+                index >> int <- 0;
+                while (index < count) {
+                    item >> int <- jsonArrayBorrow(entries,index);
+                    source >> str <- cert_json.certJson.field(item,"source");
+                    digest >> str <- cert_json.certJson.field(item,"sha256");
+                    host >> str <- cert_json.certJson.field(item,"host");
+                    family >> str <- cert_json.certJson.field(item,"family");
+                    good >> bool <- safe(source) && strEndsWith(source,".n") &&
+                        strByteLen(digest) == 64 && (host == "windows" || host == "linux");
+                    if (good) good <- release_io.releaseIo.fileType(root+"/"+source) == 1 &&
+                        sha256.nccSha256.file(root+"/"+source) == digest;
+                    known >> bool <- false; cursor >> int <- 0;
+                    while (cursor < jsonArrayLen(families)) {
+                        name >> int <- jsonArrayBorrow(families,cursor);
+                        if (jsonStringView(name,"") == family) known <- true;
+                        jsonRelease(name); cursor += 1;
+                    }
+                    check("compiled source binding: "+host+"/"+family+"/"+source,good && known);
+                    strRelease(source); strRelease(digest); strRelease(host); strRelease(family);
+                    jsonRelease(item); index += 1;
+                }
+                hostIndex >> int <- 0;
+                while (hostIndex < 2) {
+                    host >> str <- hostIndex == 0 ? "windows" : "linux";
+                    familyIndex >> int <- 0;
+                    while (familyIndex < jsonArrayLen(families)) {
+                        name >> int <- jsonArrayBorrow(families,familyIndex);
+                        family >> str <- jsonStringView(name,"");
+                        found >> bool <- false; index <- 0;
+                        while (index < count) {
+                            item >> int <- jsonArrayBorrow(entries,index);
+                            itemHost >> str <- cert_json.certJson.field(item,"host");
+                            itemFamily >> str <- cert_json.certJson.field(item,"family");
+                            if (itemHost == host && itemFamily == family) found <- true;
+                            strRelease(itemHost); strRelease(itemFamily); jsonRelease(item); index += 1;
+                        }
+                        check("family source bindings: "+host+"/"+family,found);
+                        jsonRelease(name); familyIndex += 1;
+                    }
+                    hostIndex += 1;
+                }
+                jsonRelease(families); if (entries != 0) jsonRelease(entries);
+            }
+            coverage(model >> int) -> void {
+                text >> str <- release_io.releaseIo.text(root+"/bootstrap/native-tools-v43.json");
+                manifest >> int <- jsonParse(text); free(cast<byte>(text));
+                families >> int <- manifest == 0 ? 0 : jsonObjectGet(manifest,"families");
+                good >> bool <- jsonKind(families) == 5 && jsonArrayLen(families) == 10;
+                check("build manifest has ten families",good);
+                if (!good) { if (families != 0) jsonRelease(families); if (manifest != 0) jsonRelease(manifest); return; }
+                entries >> int <- jsonObjectGet(model,"source_snapshots");
+                count >> int <- jsonKind(entries) == 5 ? jsonArrayLen(entries) : 0;
+                expected >> int <- 0; hostIndex >> int <- 0;
+                while (hostIndex < 2) {
+                    host >> str <- hostIndex == 0 ? "windows" : "linux";
+                    familyIndex >> int <- 0; units >> int <- 0;
+                    while (familyIndex < jsonArrayLen(families)) {
+                        family >> int <- jsonArrayBorrow(families,familyIndex);
+                        name >> str <- cert_json.certJson.field(family,"name");
+                        sources >> int <- jsonObjectGet(family,"sources");
+                        objectDirectory >> str <- "/projects/"+name+"/.ncc/obj/"+
+                            (hostIndex == 0 ? "x86_64_pc_windows_msvc/" : "x86_64_unknown_linux_gnu/");
+                        extension >> str <- hostIndex == 0 ? ".obj" : ".o";
+                        sourceIndex >> int <- 0;
+                        while (sourceIndex < jsonArrayLen(sources)) {
+                            item >> int <- jsonArrayBorrow(sources,sourceIndex);
+                            source >> str <- cert_json.certJson.field(item,host);
+                            if (source == "") { strRelease(source); source <- cert_json.certJson.field(item,"source"); }
+                            destination >> str <- cert_json.certJson.field(item,"destination");
+                            suffix >> str <- "/projects/"+name+"/"+destination;
+                            matches >> int <- 0; index >> int <- 0;
+                            while (index < count) {
+                                binding >> int <- jsonArrayBorrow(entries,index);
+                                bindingHost >> str <- cert_json.certJson.field(binding,"host");
+                                bindingFamily >> str <- cert_json.certJson.field(binding,"family");
+                                bindingSource >> str <- cert_json.certJson.field(binding,"source");
+                                bindingPath >> str <- cert_json.certJson.field(binding,"path");
+                                if (bindingHost == host && bindingFamily == name && bindingSource == source &&
+                                    strEndsWith(bindingPath,suffix)) matches += 1;
+                                strRelease(bindingHost); strRelease(bindingFamily); strRelease(bindingSource);
+                                strRelease(bindingPath); jsonRelease(binding); index += 1;
+                            }
+                            check("manifest source coverage: "+host+"/"+name+"/"+destination,matches == 1);
+                            stem >> str <- objectStem(destination);
+                            objectSuffix >> str <- objectDirectory+stem+extension;
+                            check("source object binding: "+host+"/"+name+"/"+destination,
+                                artifactCount(model,host+"_objects",objectSuffix) == 1);
+                            strRelease(stem); strRelease(objectSuffix);
+                            strRelease(source); strRelease(destination); strRelease(suffix);
+                            jsonRelease(item); sourceIndex += 1; units += 1;
+                        }
+                        check("retained runtime object: "+host+"/"+name,
+                            artifactCount(model,host+"_objects",objectDirectory+"__project_runtime"+extension) == 1);
+                        check("retained platform object: "+host+"/"+name,
+                            artifactCount(model,host+"_objects",objectDirectory+"__project_nc_runtime"+extension) == 1);
+                        check("family executable binding: "+host+"/"+name,
+                            artifactCount(model,host+"_executables","/bin/"+name+(hostIndex == 0 ? ".exe" : "")) == 1);
+                        strRelease(objectDirectory); jsonRelease(sources); strRelease(name); jsonRelease(family); familyIndex += 1;
+                    }
+                    objects >> int <- jsonObjectGet(model,host+"_objects");
+                    executables >> int <- jsonObjectGet(model,host+"_executables");
+                    check("complete object inventory: "+host,jsonKind(objects) == 5 && jsonArrayLen(objects) == units+20);
+                    check("complete executable inventory: "+host,jsonKind(executables) == 5 && jsonArrayLen(executables) == 10);
+                    if (objects != 0) jsonRelease(objects); if (executables != 0) jsonRelease(executables);
+                    expected += units; hostIndex += 1;
+                }
+                check("exact compiled snapshot inventory",count == expected);
+                if (entries != 0) jsonRelease(entries); jsonRelease(families); jsonRelease(manifest);
+            }
+            pinned(model >> int, field >> str, path >> str, digest >> str, format >> str) -> void {
+                entries >> int <- jsonObjectGet(model,field);
+                count >> int <- jsonKind(entries) == 5 ? jsonArrayLen(entries) : 0;
+                matches >> int <- 0; index >> int <- 0;
+                while (index < count) {
+                    item >> int <- jsonArrayBorrow(entries,index);
+                    itemPath >> str <- cert_json.certJson.field(item,"path");
+                    itemDigest >> str <- cert_json.certJson.field(item,"sha256");
+                    if (itemPath == path && itemDigest == digest) matches += 1;
+                    strRelease(itemPath); strRelease(itemDigest); jsonRelease(item); index += 1;
+                }
+                good >> bool <- matches == 1 && release_io.releaseIo.fileType(root+"/"+path) == 1;
+                if (good) good <- sha256.nccSha256.file(root+"/"+path) == digest && materialFormat(path,format);
+                check("pinned "+field+": "+path,good);
+                if (entries != 0) jsonRelease(entries);
+            }
+            recovery(model >> int) -> void {
+                pinned(model,"recovery","docs/evidence/native-tools43/originals-v43.zip",RECOVERY_ZIP,"recovery");
+                pinned(model,"recovery","docs/evidence/native-tools43/originals-v43.json",RECOVERY_INDEX,"recovery");
+                text >> str <- release_io.releaseIo.text(root+"/docs/evidence/native-tools43/originals-v43.json");
+                index >> int <- jsonParse(text); free(cast<byte>(text));
+                check("recovery index parsed",index != 0 && jsonKind(index) == 6);
+                if (index == 0 || jsonKind(index) != 6) { if (index != 0) jsonRelease(index); return; }
+                check("recovery entries independently verified",boolField(index,"all_entries_verified",true));
+                rows >> int <- jsonObjectGet(index,"entries"); originals >> int <- jsonObjectGet(model,"scripts");
+                count >> int <- jsonKind(rows) == 5 ? jsonArrayLen(rows) : 0;
+                check("recovery has exactly 46 originals",count == EXPECTED);
+                at >> int <- 0;
+                while (at < jsonArrayLen(originals)) {
+                    original >> int <- jsonArrayBorrow(originals,at);
+                    path >> str <- cert_json.certJson.field(original,"original");
+                    digest >> str <- cert_json.certJson.field(original,"original_sha256");
+                    cursor >> int <- 0; matches >> int <- 0;
+                    while (cursor < count) {
+                        row >> int <- jsonArrayBorrow(rows,cursor);
+                        rowPath >> str <- cert_json.certJson.field(row,"original");
+                        rowDigest >> str <- cert_json.certJson.field(row,"sha256");
+                        if (rowPath == path && rowDigest == digest && release_io.releaseIo.number(row,"bytes",0) > 0) matches += 1;
+                        strRelease(rowPath); strRelease(rowDigest); jsonRelease(row); cursor += 1;
+                    }
+                    check("recoverable original: "+path,matches == 1);
+                    strRelease(path); strRelease(digest); jsonRelease(original); at += 1;
+                }
+                if (rows != 0) jsonRelease(rows); if (originals != 0) jsonRelease(originals); jsonRelease(index);
+            }
+            qualification(model >> int, row >> int, originalPath >> str) -> void {
+                family >> str <- cert_json.certJson.field(row,"native_family");
+                receipts >> int <- jsonObjectGet(row,"qualification_receipts");
+                receiptCount >> int <- jsonKind(receipts) == 5 ? jsonArrayLen(receipts) : 0;
+                check("two host qualification receipts: "+originalPath,safe(family) && receiptCount == 2);
+                sources >> int <- jsonObjectGet(model,"source_snapshots");
+                replacements >> int <- jsonObjectGet(row,"replacements");
+                hostIndex >> int <- 0;
+                while (hostIndex < 2) {
+                    host >> str <- hostIndex == 0 ? "windows" : "linux";
+                    candidate >> str <- "target/tmp/native43-"+host+"/bin/"+family+(hostIndex == 0 ? ".exe" : "");
+                    found >> int <- 0; cursor >> int <- 0; qualified >> bool <- false;
+                    while (cursor < receiptCount) {
+                        receipt >> int <- jsonArrayBorrow(receipts,cursor);
+                        receiptHost >> str <- cert_json.certJson.field(receipt,"host");
+                        if (receiptHost == host) {
+                            path >> str <- cert_json.certJson.field(receipt,"path");
+                            candidatePath >> str <- cert_json.certJson.field(receipt,"candidate_path");
+                            digest >> str <- cert_json.certJson.field(receipt,"candidate_sha256");
+                            found += 1;
+                            qualified <- candidatePath == candidate && retirement43_receipts.retirement43Receipts.check(
+                                originalPath,host,path,candidate,digest,root);
+                            strRelease(path); strRelease(candidatePath); strRelease(digest);
+                        }
+                        strRelease(receiptHost); jsonRelease(receipt); cursor += 1;
+                    }
+                    check("qualified exact candidate: "+host+"/"+originalPath,found == 1 && qualified);
+                    cursor <- 0;
+                    while (cursor < jsonArrayLen(replacements)) {
+                        replacement >> int <- jsonArrayBorrow(replacements,cursor);
+                        path >> str <- cert_json.certJson.field(replacement,"path");
+                        matches >> int <- 0; index >> int <- 0;
+                        while (index < jsonArrayLen(sources)) {
+                            binding >> int <- jsonArrayBorrow(sources,index);
+                            bindingHost >> str <- cert_json.certJson.field(binding,"host");
+                            bindingFamily >> str <- cert_json.certJson.field(binding,"family");
+                            bindingSource >> str <- cert_json.certJson.field(binding,"source");
+                            if (bindingHost == host && bindingFamily == family && bindingSource == path) matches += 1;
+                            strRelease(bindingHost); strRelease(bindingFamily); strRelease(bindingSource);
+                            jsonRelease(binding); index += 1;
+                        }
+                        check("replacement in qualified family: "+host+"/"+path,matches == 1);
+                        strRelease(path); jsonRelease(replacement); cursor += 1;
+                    }
+                    strRelease(candidate); hostIndex += 1;
+                }
+                if (sources != 0) jsonRelease(sources);
+                if (replacements != 0) jsonRelease(replacements);
+                if (receipts != 0) jsonRelease(receipts);
+                strRelease(family);
+            }
+            original(model >> int, row >> int) -> void {
+                path >> str <- cert_json.certJson.field(row,"original");
+                digest >> str <- cert_json.certJson.field(row,"original_sha256");
+                good >> bool <- safe(path) && strEndsWith(path,".py") && strByteLen(digest) == 64;
+                check("original contract: "+path,good);
+                if (good) {
+                    present >> bool <- release_io.releaseIo.fileType(root+"/"+path) == 1;
+                    check("original state: "+path,retired ? !present : present);
+                    if (present) check("original hash: "+path,sha256.nccSha256.file(root+"/"+path) == digest);
+                }
+                check("Windows equivalence: "+path,boolField(row,"windows_equivalent",true));
+                check("Linux equivalence: "+path,boolField(row,"linux_equivalent",true));
+                check("removed field: "+path,boolField(row,"removed",retired));
+                artifacts(row,"replacements",true);
+                artifacts(row,"evidence",true);
+                artifacts(row,"qualification_receipts",true);
+                qualification(model,row,path);
+                strRelease(path); strRelease(digest);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                root <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--root","."));
+                ledger >> str <- release_io.releaseIo.option(arguments,"--ledger","bootstrap/python-retirement-v43.json");
+                out >> str <- release_io.releaseIo.option(arguments,"--out","target/tmp/native43-batch-check.json");
+                state >> str <- release_io.releaseIo.option(arguments,"--state","retained");
+                retired <- state == "retired";
+                checks <- jsonNewArray();
+                check("valid requested state",state == "retained" || state == "retired");
+                text >> str <- release_io.releaseIo.text(ledger);
+                model >> int <- jsonParse(text);
+                check("SHA-256 self test",sha256.nccSha256.selfTest());
+                check("ledger parsed",model != 0 && jsonKind(model) == 6);
+                if (model != 0 && jsonKind(model) == 6) {
+                    check("Stage0 retained",boolField(model,"stage0_retained",true));
+                    check("Stage3 not promoted",boolField(model,"stage3_promoted",false));
+                    pinned(model,"stage0_executables","target/tmp/native43-stage0-retained/windows/ncc.exe",WINDOWS_STAGE0,"windows_executables");
+                    pinned(model,"stage0_executables","target/tmp/native43-stage0-retained/linux/ncc",LINUX_STAGE0,"linux_executables");
+                    check("sources match compiled snapshots",boolField(model,"source_snapshots_match",true));
+                    check("inventory count",release_io.releaseIo.number(model,"inventory_count",-1) == EXPECTED);
+                    check("deleted count",release_io.releaseIo.number(model,"originals_deleted",-1) == (retired ? EXPECTED : 0));
+                    rows >> int <- jsonObjectGet(model,"scripts");
+                    count >> int <- jsonKind(rows) == 5 ? jsonArrayLen(rows) : 0;
+                    check("inventory has 46 scripts",count == EXPECTED);
+                    index >> int <- 0;
+                    while (index < count) {
+                        row >> int <- jsonArrayBorrow(rows,index);
+                        path >> str <- cert_json.certJson.field(row,"original");
+                        previous >> int <- 0;
+                        unique >> bool <- true;
+                        while (previous < index) {
+                            other >> int <- jsonArrayBorrow(rows,previous);
+                            name >> str <- cert_json.certJson.field(other,"original");
+                            if (name == path) unique <- false;
+                            strRelease(name); jsonRelease(other); previous += 1;
+                        }
+                        check("unique original: "+path,unique); strRelease(path);
+                        original(model,row); jsonRelease(row); index += 1;
+                    }
+                    if (rows != 0) jsonRelease(rows);
+                    artifacts(model,"sources",true);
+                    artifacts(model,"source_snapshots",true);
+                    bindings(model);
+                    coverage(model);
+                    artifacts(model,"windows_objects",true);
+                    artifacts(model,"linux_objects",true);
+                    artifacts(model,"windows_executables",true);
+                    artifacts(model,"linux_executables",true);
+                    artifacts(model,"recovery",true);
+                    recovery(model);
+                    artifacts(model,"build_manifests",true);
+                }
+                if (model != 0) jsonRelease(model);
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.native-tools.batch-check.v43"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(!failed));
+                cert_json.certJson.put(report,"state",jsonNewString(retired ? "retired" : "retained"));
+                cert_json.certJson.put(report,"checks",checks);
+                if (!cert_json.certJson.save(out,report)) failed <- true;
+                jsonRelease(report); argsRelease(arguments);
+                println(failed ? "FAILED: native script retirement ledger" : "OK: native script retirement ledger");
+                return failed ? 1 : 0;
+            }
+    ref main ->> run;
+    fa: return true;
+}

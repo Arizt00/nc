@@ -1,0 +1,20 @@
+use <io:output>;
+
+nativeOveralignmentSpills81 {
+    type:
+        Wide { public: value >> i64; layout: align(512); }
+        Small { public: value >> i64; layout: align(32); }
+    mixed(a >> i64, b >> i64, c >> i64, d >> i64, e >> i64, f >> i64, g >> i64, h >> i64,
+        wide >> Wide, fraction >> ft64, small >> Small, tail >> i64) -> i64 {
+        if (adr(&wide) % 512 != 0 || adr(&small) % 32 != 0) return -1;
+        return a+b+c+d+e+f+g+h+wide.value+cast<i64>(fraction)+small.value+tail;
+    }
+    run() -> int {
+        if (1+mixed(1,2,3,4,5,6,7,8,Wide(value: 9),10.0,Small(value: 11),12) != 79) return 1;
+        callback >> fn(i64,i64,i64,i64,i64,i64,i64,i64,Wide,ft64,Small,i64) -> i64 <- &mixed;
+        if (callback(1,2,3,4,5,6,7,8,Wide(value: 9),10.0,Small(value: 11),12) != 78) return 2;
+        println("native-overalignment-spills-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

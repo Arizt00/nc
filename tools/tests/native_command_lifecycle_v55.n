@@ -1,0 +1,32 @@
+use <process:command>;
+use <io:output>;
+nativeCommandLifecycleV55 {
+    run() -> int {
+        failed >> addr <- commandOpen("./ncc-v55-nonexistent-image","",null,null,null,0);
+        guard failed != null && !commandStarted(failed) && commandError(failed) != 0 else return 1;
+        guard commandExitCode(failed) == -1 && commandWait(failed,1) < 0 && !commandTerminate(failed,15) else return 2;
+        guard commandRelease(failed) else return 3;
+        input >> addr <- commandPipeOpen(true,false);
+        guard input != null && commandPipeError(input) == 0 else return 12;
+        child >> addr <- commandOpen("./sleeper.bin","",commandPipeReadHandle(input),null,null,0);
+        commandPipeCloseRead(input);
+        guard child != null && commandStarted(child) else return 4;
+        guard commandWait(child,10) == 258 && commandExitCode(child) == 259 else return 5;
+        guard commandTerminate(child,15) && commandWait(child,5000) == 0 else return 6;
+        code >> int <- commandExitCode(child);
+        guard code == 15 || code == 143 else return 7;
+        guard commandWait(child,-1) == 0 && commandRelease(child) else return 8;
+        guard commandPipeRelease(input) else return 13;
+        at >> int <- 0;
+        while (at < 64) {
+            pipe >> addr <- commandPipeOpen(false,false);
+            guard pipe != null && commandPipeError(pipe) == 0 else return 9;
+            guard commandPipeCloseRead(pipe) && commandPipeCloseRead(pipe) && commandPipeCloseWrite(pipe) && commandPipeCloseWrite(pipe) else return 10;
+            guard commandPipeReadHandle(pipe) == null && commandPipeWriteHandle(pipe) == null && commandPipeRelease(pipe) else return 11;
+            at += 1;
+        }
+        println("native command lifecycle ok"); return 133;
+    }
+    ref main ->> run;
+    fa: return true;
+}

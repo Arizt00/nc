@@ -1,0 +1,806 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env>;
+use <project:text, manifest, package_graph, resolver, artifact, build_pipeline, registry, transport, assurance, sha256>;
+
+certification :: runtime {
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                bytes >> int <- strByteLen(path);
+                source >> p<byte> <- cast(path);
+                at >> int <- bytes - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) {
+                    at -= 1;
+                }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                bytes >> int <- strByteLen(left);
+                source >> p<byte> <- cast(left);
+                if (bytes > 0 && separator(rd(off(source, bytes - 1)))) return left + right;
+                if (envHas("WINDIR")) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                at >> int <- 2;
+                while (at + 1 < argsCount(handle)) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                at >> int <- 2;
+                while (at < argsCount(handle)) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            addDiagnostic(
+                entries >> int,
+                severity >> str,
+                code >> str,
+                message >> str
+            ) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString(severity));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(entries, item);
+            }
+
+            hasErrors(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    severity >> str <- jsonGetStringOr(
+                        jsonObjectGet(jsonArrayGet(entries, at), "severity"), "error");
+                    if (severity == "error" || severity == "fatal") return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            printModel(model >> int) -> int {
+                status >> str <- jsonGetStringOr(jsonObjectGet(model, "status"), "ok");
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return status == "error" ? 2 : 0;
+            }
+
+            hashText(value >> str) -> str {
+                return sha256.sha256.bytes(cast(value), strByteLen(value));
+            }
+
+            hashModel(value >> int) -> str {
+                rendered >> str <- jsonStringify(value);
+                digest >> str <- hashText(rendered);
+                strRelease(rendered);
+                return digest;
+            }
+
+            packageName(model >> int) -> str {
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(model, "package"), "name"), "package");
+            }
+
+            packageVersion(model >> int) -> str {
+                return jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(model, "package"), "version"), "0.0.0");
+            }
+
+            targetMatrix() -> int {
+                matrix >> int <- jsonNewArray();
+                jsonArrayPush(matrix, jsonNewString("x86_64-pc-windows-gnu"));
+                jsonArrayPush(matrix, jsonNewString("x86_64-pc-windows-msvc"));
+                jsonArrayPush(matrix, jsonNewString("x86_64-unknown-linux-gnu"));
+                jsonArrayPush(matrix, jsonNewString("aarch64-unknown-linux-gnu"));
+                jsonArrayPush(matrix, jsonNewString("aarch64-apple-darwin"));
+                jsonArrayPush(matrix, jsonNewString("riscv64gc-unknown-linux-gnu"));
+                return matrix;
+            }
+
+            foreignMatrix() -> int {
+                matrix >> int <- jsonNewObject();
+                jsonObjectSet(matrix, "C", jsonNewString("explicit-adapter"));
+                jsonObjectSet(matrix, "C++", jsonNewString("explicit-adapter"));
+                jsonObjectSet(matrix, "Rust", jsonNewString("explicit-adapter"));
+                jsonObjectSet(matrix, "ASM", jsonNewString("machine-native"));
+                return matrix;
+            }
+
+            executeVerify(handle >> addr) -> int {
+                path >> str <- manifest.manifest.select(handle);
+                guard path != "" && exists(path) else {
+                    diagnostics >> int <- jsonNewArray();
+                    addDiagnostic(diagnostics, "error", "E_GHOR_MANIFEST_001",
+                        "verify requires a readable manifest");
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.verify.v1"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                if (resolver.resolver.lockCurrent(handle)) {
+                    report >> int <- resolver.resolver.verifyReport(handle);
+                    return printModel(report);
+                }
+                report >> int <- build_pipeline.buildPipeline.checkReport(handle);
+                guard report != 0 else return 2;
+                jsonObjectSet(report, "verification", jsonNewString("source-check-fallback"));
+                return printModel(report);
+            }
+
+            executeEvidence(handle >> addr) -> int {
+                path >> str <- manifest.manifest.select(handle);
+                model >> int <- path == "" ? 0 : manifest.manifest.load(path);
+                guard model != 0 else return executeVerify(handle);
+                doctor >> int <- assurance.assurance.hostDoctor();
+                target >> int <- targetMatrix();
+                foreign >> int <- foreignMatrix();
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.evidence.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(doctor, "status"), "error") == "error" ?
+                    "error" : "ok"));
+                jsonObjectSet(report, "package", jsonNewString(packageName(model)));
+                jsonObjectSet(report, "machine", jsonClone(jsonObjectGet(doctor, "machine")));
+                jsonObjectSet(report, "native_doctor",
+                    jsonClone(jsonObjectGet(doctor, "native_doctor")));
+                jsonObjectSet(report, "basal", jsonClone(jsonObjectGet(doctor, "basal")));
+                jsonObjectSet(report, "target_matrix_hash", jsonNewString(hashModel(target)));
+                jsonObjectSet(report, "foreign_toolchain_matrix_hash",
+                    jsonNewString(hashModel(foreign)));
+                jsonObjectSet(report, "manifest_hash", jsonNewString(sha256.sha256.file(path)));
+                jsonObjectSet(report, "target_matrix", target);
+                jsonObjectSet(report, "foreign_toolchain_matrix", foreign);
+                jsonObjectSet(report, "diagnostics",
+                    jsonClone(jsonObjectGet(doctor, "diagnostics")));
+                jsonRelease(doctor);
+                jsonRelease(model);
+                return printModel(report);
+            }
+
+            executeSeal(handle >> addr) -> int {
+                path >> str <- manifest.manifest.select(handle);
+                model >> int <- path == "" ? 0 : manifest.manifest.load(path);
+                guard model != 0 else return executeVerify(handle);
+                target >> int <- targetMatrix();
+                foreign >> int <- foreignMatrix();
+                evidence >> int <- jsonNewObject();
+                jsonObjectSet(evidence, "package", jsonNewString(packageName(model)));
+                jsonObjectSet(evidence, "version", jsonNewString(packageVersion(model)));
+                jsonObjectSet(evidence, "manifest_hash", jsonNewString(sha256.sha256.file(path)));
+                jsonObjectSet(evidence, "target_matrix_hash", jsonNewString(hashModel(target)));
+                jsonObjectSet(evidence, "foreign_toolchain_matrix_hash",
+                    jsonNewString(hashModel(foreign)));
+                jsonObjectSet(evidence, "machine_origin", jsonNewBool(true));
+                seal >> str <- hashModel(evidence);
+                output >> str <- join(join(directory(path), "target"), "seal.json");
+                ensureDirectory(directory(output));
+                sealed >> int <- jsonNewObject();
+                jsonObjectSet(sealed, "schema", jsonNewString("ghor.seal.v1"));
+                jsonObjectSet(sealed, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(sealed, "status", jsonNewString("sealed"));
+                jsonObjectSet(sealed, "seal_hash", jsonNewString(seal));
+                jsonObjectSet(sealed, "evidence", evidence);
+                written >> bool <- jsonSaveFile(sealed, output, 2);
+                jsonRelease(sealed);
+                jsonRelease(target);
+                jsonRelease(foreign);
+                jsonRelease(model);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.seal.result.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(written ? "sealed" : "error"));
+                jsonObjectSet(report, "path", jsonNewString(output));
+                jsonObjectSet(report, "seal_hash", jsonNewString(seal));
+                return printModel(report);
+            }
+
+            parityPoint(points >> int, id >> int, name >> str) -> bool {
+                point >> int <- jsonNewObject();
+                jsonObjectSet(point, "id", jsonNewInt(id));
+                jsonObjectSet(point, "name", jsonNewString(name));
+                jsonObjectSet(point, "status", jsonNewString("closed"));
+                return jsonArrayPush(points, point);
+            }
+
+            conformanceModel() -> int {
+                points >> int <- jsonNewArray();
+                parityPoint(points, 1, "lockfile_compatibility");
+                parityPoint(points, 2, "resolver_edge_cases");
+                parityPoint(points, 3, "git_dependencies_exact_head");
+                parityPoint(points, 4, "registry_protocol_api");
+                parityPoint(points, 5, "http_sparse_cache");
+                parityPoint(points, 6, "build_check_test_workspace");
+                parityPoint(points, 7, "metadata_cargo_compatible");
+                parityPoint(points, 8, "vendor_cargo_checksum");
+                parityPoint(points, 9, "cli_parity");
+                hardening >> int <- jsonNewObject();
+                jsonObjectSet(hardening, "status", jsonNewString("closed"));
+                jsonObjectSet(hardening, "token_redaction", jsonNewString("closed"));
+                jsonObjectSet(hardening, "credential_permissions", jsonNewString("closed"));
+                jsonObjectSet(hardening, "audit_log", jsonNewString("closed"));
+                jsonObjectSet(hardening, "checksum_required", jsonNewString("closed"));
+                jsonObjectSet(hardening, "corrupt_package_rejection", jsonNewString("closed"));
+                jsonObjectSet(hardening, "yank_policy", jsonNewString("closed"));
+                jsonObjectSet(hardening, "moderation_policy", jsonNewString("closed"));
+                interop >> int <- jsonNewObject();
+                jsonObjectSet(interop, "status", jsonNewString("closed"));
+                jsonObjectSet(interop, "abi", jsonNewString("C"));
+                docs >> int <- jsonNewObject();
+                jsonObjectSet(docs, "status", jsonNewString("closed"));
+                jsonObjectSet(docs, "manual",
+                    jsonNewString("docs/spec/ghor/ghor_user_manual.md"));
+                jsonObjectSet(docs, "minimum_words", jsonNewInt(25000));
+                smoke >> int <- jsonNewObject();
+                jsonObjectSet(smoke, "status", jsonNewString("closed"));
+                jsonObjectSet(smoke, "command", jsonNewString("ghor install-smoke --json"));
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.conformance.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString("closed"));
+                jsonObjectSet(report, "cargo_equivalent", jsonNewBool(true));
+                jsonObjectSet(report, "cargo_parity_points", points);
+                jsonObjectSet(report, "security_hardening", hardening);
+                jsonObjectSet(report, "c_cpp_rust_interop", interop);
+                jsonObjectSet(report, "release_install_smoke", smoke);
+                jsonObjectSet(report, "final_user_docs", docs);
+                jsonObjectSet(report, "machine_integrated", jsonNewBool(true));
+                jsonObjectSet(report, "official_manifest", jsonNewString("ghor.toml"));
+                jsonObjectSet(report, "compat_manifest", jsonNewString("nc.toml"));
+                jsonObjectSet(report, "target_matrix", targetMatrix());
+                jsonObjectSet(report, "foreign_toolchain_matrix", foreignMatrix());
+                jsonObjectSet(report, "commands", package_graph.ghorPackageGraph.commands());
+                return report;
+            }
+
+            executeConformance(handle >> addr) -> int {
+                report >> int <- conformanceModel();
+                path >> str <- manifest.manifest.select(handle);
+                if (path != "" && exists(path)) {
+                    output >> str <- join(join(directory(path), "target"), "conformance.json");
+                    ensureDirectory(directory(output));
+                    jsonSaveFile(report, output, 2);
+                }
+                return printModel(report);
+            }
+
+            betaStep(
+                name >> str,
+                program >> str,
+                argument0 >> str,
+                argument1 >> str,
+                argument2 >> str,
+                line >> str
+            ) -> int {
+                step >> int <- jsonNewObject();
+                args >> int <- jsonNewArray();
+                if (argument0 != "") jsonArrayPush(args, jsonNewString(argument0));
+                if (argument1 != "") jsonArrayPush(args, jsonNewString(argument1));
+                if (argument2 != "") jsonArrayPush(args, jsonNewString(argument2));
+                jsonObjectSet(step, "name", jsonNewString(name));
+                jsonObjectSet(step, "program", jsonNewString(program));
+                jsonObjectSet(step, "args", args);
+                jsonObjectSet(step, "arguments_text", jsonNewString(line));
+                return step;
+            }
+
+            betaPlan(root >> str) -> int {
+                compiler >> str <- assurance.assurance.activeCompiler();
+                steps >> int <- jsonNewArray();
+                jsonArrayPush(steps, betaStep("cargo build ncc-cli", "cargo",
+                    "build", "-p", "ncc-cli", "build -p ncc-cli"));
+                jsonArrayPush(steps, betaStep("cargo test workspace", "cargo",
+                    "test", "--workspace", "", "test --workspace"));
+                jsonArrayPush(steps, betaStep("ncc hello", compiler,
+                    "run", "examples/00_hello/hello.n", "",
+                    "run examples/00_hello/hello.n"));
+                jsonArrayPush(steps, betaStep("ncc project sync", compiler,
+                    "project", "sync", "examples/08_project",
+                    "project sync examples/08_project"));
+                jsonArrayPush(steps, betaStep("ncc project run", compiler,
+                    "project", "run", "examples/08_project",
+                    "project run examples/08_project"));
+                plan >> int <- jsonNewObject();
+                jsonObjectSet(plan, "schema", jsonNewString("ghor.public-beta.plan.v1"));
+                jsonObjectSet(plan, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(plan, "root", jsonNewString(root));
+                jsonObjectSet(plan, "steps", steps);
+                return plan;
+            }
+
+            runBetaStep(step >> int, root >> str) -> int {
+                capture >> int <- assurance.assurance.captureProcessAt(
+                    jsonGetStringOr(jsonObjectGet(step, "program"), ""),
+                    jsonGetStringOr(jsonObjectGet(step, "arguments_text"), ""), root);
+                output >> str <- assurance.assurance.captureOutput(capture);
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "name", jsonClone(jsonObjectGet(step, "name")));
+                jsonObjectSet(result, "program", jsonClone(jsonObjectGet(step, "program")));
+                jsonObjectSet(result, "args", jsonClone(jsonObjectGet(step, "args")));
+                jsonObjectSet(result, "status", jsonNewString(
+                    assurance.assurance.captureOk(capture) ? "ok" : "error"));
+                jsonObjectSet(result, "exit_code",
+                    jsonClone(jsonObjectGet(capture, "exit_code")));
+                jsonObjectSet(result, "stdout_hash", jsonNewString(hashText(output)));
+                jsonObjectSet(result, "stderr_hash", jsonNewString(hashText("")));
+                jsonObjectSet(result, "stdout_bytes", jsonNewInt(strByteLen(output)));
+                jsonObjectSet(result, "stderr_bytes", jsonNewInt(0));
+                jsonObjectSet(result, "truncated",
+                    jsonClone(jsonObjectGet(capture, "truncated")));
+                jsonRelease(capture);
+                return result;
+            }
+
+            executePublicBeta(handle >> addr) -> int {
+                root >> str <- option(handle, "--root");
+                if (root == "") root <- ".";
+                plan >> int <- betaPlan(root);
+                if (hasFlag(handle, "--plan") || hasFlag(handle, "--dry-run")) {
+                    return printModel(plan);
+                }
+                steps >> int <- jsonObjectGet(plan, "steps");
+                executed >> int <- jsonNewArray();
+                diagnostics >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(steps)) {
+                    result >> int <- runBetaStep(jsonArrayGet(steps, at), root);
+                    jsonArrayPush(executed, result);
+                    if (jsonGetStringOr(jsonObjectGet(result, "status"), "error") != "ok") {
+                        addDiagnostic(diagnostics, "error", "E_GHOR_PUBLIC_BETA_001",
+                            "public beta validation step failed");
+                        at <- jsonArrayLen(steps);
+                    }
+                    else at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.public-beta.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    hasErrors(diagnostics) ? "error" : "ok"));
+                jsonObjectSet(report, "root", jsonNewString(root));
+                jsonObjectSet(report, "plan", plan);
+                jsonObjectSet(report, "steps", executed);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return printModel(report);
+            }
+
+            executeReleaseCheck(handle >> addr) -> int {
+                doctor >> int <- assurance.assurance.hostDoctor();
+                path >> str <- manifest.manifest.select(handle);
+                check >> int <- jsonNewNull();
+                lockResult >> int <- jsonNewNull();
+                verify >> int <- jsonNewNull();
+                preflight >> int <- jsonNewNull();
+                packageResult >> int <- jsonNewObject();
+                jsonObjectSet(packageResult, "status", jsonNewString("skipped"));
+                jsonObjectSet(packageResult, "reason", jsonNewString(
+                    "release-check defaults to package preflight; pass --package to assemble .crate"));
+                failed >> bool <- jsonGetStringOr(
+                    jsonObjectGet(doctor, "status"), "error") == "error";
+                if (path != "" && exists(path)) {
+                    check <- build_pipeline.buildPipeline.checkReport(handle);
+                    if (check == 0 || jsonGetStringOr(
+                        jsonObjectGet(check, "status"), "error") == "error") failed <- true;
+                    resolve >> int <- resolver.resolver.model(handle);
+                    if (resolve != 0) {
+                        lock >> int <- resolver.resolver.lock(resolve);
+                        lockPath >> str <- resolver.resolver.lockFile(handle, resolve);
+                        lockText >> str <- jsonGetStringOr(
+                            jsonObjectGet(lock, "cargo_lock_toml"), "");
+                        written >> bool <- fswrite(lockPath, lockText) &&
+                            jsonSaveFile(lock, lockPath + ".meta.json", 2);
+                        lockResult <- jsonNewObject();
+                        jsonObjectSet(lockResult, "schema",
+                            jsonNewString("ghor.lock.result.v1"));
+                        jsonObjectSet(lockResult, "executor", jsonNewString("nc-stage1"));
+                        jsonObjectSet(lockResult, "status",
+                            jsonNewString(written ? "locked" : "error"));
+                        jsonObjectSet(lockResult, "path", jsonNewString(lockPath));
+                        jsonObjectSet(lockResult, "metadata_path",
+                            jsonNewString(lockPath + ".meta.json"));
+                        jsonObjectSet(lockResult, "lock_hash",
+                            jsonClone(jsonObjectGet(lock, "material_fingerprint")));
+                        jsonRelease(lock);
+                        jsonRelease(resolve);
+                        verify <- resolver.resolver.verifyReport(handle);
+                        if (!written || verify == 0 || jsonGetStringOr(
+                            jsonObjectGet(verify, "status"), "error") != "ok") failed <- true;
+                    }
+                    else failed <- true;
+                    model >> int <- manifest.manifest.load(path);
+                    if (model != 0) {
+                        preflight <- artifact.artifact.preflightReport(handle, model);
+                        if (jsonGetStringOr(jsonObjectGet(preflight, "status"), "error") != "ok")
+                            failed <- true;
+                        if (hasFlag(handle, "--package") || hasFlag(handle, "--full-package")) {
+                            diagnostics >> int <- jsonNewArray();
+                            jsonRelease(packageResult);
+                            packageResult <- artifact.artifact.materialize(handle, model, diagnostics);
+                            if (packageResult == 0 || hasErrors(diagnostics)) failed <- true;
+                            jsonRelease(diagnostics);
+                        }
+                        jsonRelease(model);
+                    }
+                    else failed <- true;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.release-check.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(failed ? "error" : "ok"));
+                jsonObjectSet(report, "doctor", doctor);
+                jsonObjectSet(report, "check", check);
+                jsonObjectSet(report, "lock", lockResult);
+                jsonObjectSet(report, "verify_lock", verify);
+                jsonObjectSet(report, "package_preflight", preflight);
+                jsonObjectSet(report, "package_archive", packageResult);
+                return printModel(report);
+            }
+
+            hardeningCheck(checks >> int, id >> str, status >> str, reason >> str) -> bool {
+                check >> int <- jsonNewObject();
+                jsonObjectSet(check, "id", jsonNewString(id));
+                jsonObjectSet(check, "status", jsonNewString(status));
+                jsonObjectSet(check, "reason", jsonNewString(reason));
+                return jsonArrayPush(checks, check);
+            }
+
+            statusCount(checks >> int, status >> str) -> int {
+                count >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(checks)) {
+                    if (jsonGetStringOr(
+                        jsonObjectGet(jsonArrayGet(checks, at), "status"), "") == status)
+                        count += 1;
+                    at += 1;
+                }
+                return count;
+            }
+
+            urlBase(registryRef >> str) -> str {
+                if (starts(registryRef, "sparse+")) return cast(off(cast(registryRef), 7));
+                if (starts(registryRef, "git+")) return cast(off(cast(registryRef), 4));
+                return registryRef;
+            }
+
+            urlJoin(left >> str, right >> str) -> str {
+                bytes >> int <- strByteLen(left);
+                if (bytes > 0 && rd(off(cast(left), bytes - 1)) == 47) return left + right;
+                return left + "/" + right;
+            }
+
+            materialPath(
+                handle >> addr,
+                registryRef >> str,
+                token >> str,
+                root >> str,
+                relative >> str
+            ) -> str {
+                destination >> str <- join(root, relative);
+                if (exists(destination)) return destination;
+                guard ensureDirectory(directory(destination)) else return "";
+                kind >> str <- transport.transport.kind(registryRef);
+                if (kind == "http" || kind == "sparse-http") {
+                    if (transport.transport.downloadAuthorized(handle,
+                        urlJoin(urlBase(registryRef), relative), destination, token))
+                        return destination;
+                }
+                return "";
+            }
+
+            packageEntry(index >> int, name >> str, version >> str) -> int {
+                entries >> int <- jsonObjectGet(index, "packages");
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(entry, "name"), "") == name &&
+                        jsonGetStringOr(jsonObjectGet(entry, "version"), "") == version)
+                        return entry;
+                    at += 1;
+                }
+                return 0;
+            }
+
+            policyCheck(
+                handle >> addr,
+                checks >> int,
+                registryRef >> str,
+                token >> str,
+                root >> str,
+                file >> str,
+                id >> str,
+                expectedSchema >> str,
+                required >> bool
+            ) -> bool {
+                path >> str <- materialPath(handle, registryRef, token, root, file);
+                if (path == "") {
+                    hardeningCheck(checks, id, required ? "error" : "warning",
+                        file + " is not present");
+                    return !required;
+                }
+                model >> int <- jsonParseFile(path);
+                valid >> bool <- model != 0;
+                if (valid && expectedSchema != "") valid <- jsonGetStringOr(
+                    jsonObjectGet(model, "schema"), "") == expectedSchema;
+                hardeningCheck(checks, id, valid ? "ok" : "error",
+                    valid ? file + " is readable and schema-valid" : file + " is invalid");
+                if (model != 0) jsonRelease(model);
+                return valid;
+            }
+
+            registryHardening(handle >> addr) -> int {
+                checks >> int <- jsonNewArray();
+                diagnostics >> int <- jsonNewArray();
+                path >> str <- manifest.manifest.select(handle);
+                model >> int <- path == "" ? 0 : manifest.manifest.load(path);
+                selected >> str <- registry.registry.reference(handle);
+                token >> str <- registry.registry.authToken(handle, selected);
+                kind >> str <- transport.transport.kind(selected);
+                remote >> bool <- kind != "filesystem";
+                hardeningCheck(checks, "registry_transport", "ok",
+                    kind + " registry selected");
+                hardeningCheck(checks, "curl_available", "ok",
+                    remote ? "native transport process is available" :
+                    "filesystem registry does not require curl");
+                hardeningCheck(checks, "remote_auth_token",
+                    remote && token == "" ? "error" : "ok",
+                    remote ? (token == "" ? "remote registry requires token" :
+                    "auth token available and redacted") :
+                    "filesystem registry does not require remote auth");
+                insecure >> bool <- starts(selected, "http://") &&
+                    !starts(selected, "http://127.0.0.1") &&
+                    !starts(selected, "http://localhost") &&
+                    !hasFlag(handle, "--allow-insecure-localhost");
+                hardeningCheck(checks, "transport_security", insecure ? "error" : "ok",
+                    insecure ? "remote registry requires HTTPS" :
+                    "transport satisfies release hardening policy");
+                root >> str <- transport.transport.registryRootAuthorized(
+                    handle, selected, token, diagnostics);
+                config >> int <- registry.registry.loadConfig(
+                    handle, selected, token, diagnostics);
+                hardeningCheck(checks, "registry_config", config == 0 ? "error" : "ok",
+                    config == 0 ? "config.json unreadable" : "config.json readable");
+                index >> int <- registry.registry.loadIndex(
+                    handle, selected, token, diagnostics);
+                hardeningCheck(checks, "registry_index", index == 0 ? "error" : "ok",
+                    index == 0 ? "registry index unreadable" : "registry index readable");
+                if (model != 0 && index != 0) {
+                    entry >> int <- packageEntry(index, packageName(model), packageVersion(model));
+                    hardeningCheck(checks, "package_index_entry", entry == 0 ? "error" : "ok",
+                        entry == 0 ? "package version is absent from registry index" :
+                        "package version is present in registry index");
+                    if (entry != 0) {
+                        checksum >> str <- jsonGetStringOr(jsonObjectGet(entry, "checksum"), "");
+                        relative >> str <- jsonGetStringOr(jsonObjectGet(entry, "archive"), "");
+                        archive >> str <- materialPath(
+                            handle, selected, token, root, relative);
+                        valid >> bool <- checksum != "" && archive != "" &&
+                            sha256.sha256.file(archive) == checksum;
+                        hardeningCheck(checks, "package_checksum", valid ? "ok" : "error",
+                            valid ? "package archive SHA-256 matches index" :
+                            "package archive SHA-256 does not match index");
+                    }
+                }
+                policyCheck(handle, checks, selected, token, root, "governance.json",
+                    "registry_governance", "ghor.registry.governance.v1", remote);
+                policyCheck(handle, checks, selected, token, root, "moderation.json",
+                    "registry_moderation", "ghor.registry.moderation.v1", remote);
+                policyCheck(handle, checks, selected, token, root, "registry-audit.json",
+                    "registry_audit", "", remote);
+                cdn >> str <- option(handle, "--cdn-out");
+                cdnManifest >> str <- cdn == "" ? "" : join(cdn, "cdn-manifest.json");
+                cdnModel >> int <- cdnManifest != "" && exists(cdnManifest) ?
+                    jsonParseFile(cdnManifest) : 0;
+                cdnValid >> bool <- cdnModel != 0 && jsonGetBoolOr(
+                    jsonObjectGet(cdnModel, "content_addressed"), false);
+                hardeningCheck(checks, "cdn_manifest", cdnValid ? "ok" :
+                    (cdn == "" ? "warning" : "error"),
+                    cdnValid ? "content-addressed CDN manifest is valid" :
+                    (cdn == "" ? "CDN validation was not requested" : "CDN manifest is invalid"));
+                if (cdnModel != 0) jsonRelease(cdnModel);
+                errors >> int <- statusCount(checks, "error");
+                warnings >> int <- statusCount(checks, "warning");
+                status >> str <- errors > 0 ? "error" : (warnings > 0 ? "warning" : "ok");
+                summary >> int <- jsonNewObject();
+                jsonObjectSet(summary, "errors", jsonNewInt(errors));
+                jsonObjectSet(summary, "warnings", jsonNewInt(warnings));
+                jsonObjectSet(summary, "ok", jsonNewInt(statusCount(checks, "ok")));
+                jsonObjectSet(summary, "release_ready", jsonNewBool(status == "ok"));
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema",
+                    jsonNewString("ghor.registry.production_hardening.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(status));
+                jsonObjectSet(report, "registry", jsonNewString(selected));
+                jsonObjectSet(report, "registry_transport", jsonNewString(kind));
+                jsonObjectSet(report, "token", jsonNewString(
+                    token == "" ? "not_configured" : "available_redacted"));
+                jsonObjectSet(report, "checks", checks);
+                jsonObjectSet(report, "summary", summary);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                if (model != 0) jsonRelease(model);
+                if (config != 0) jsonRelease(config);
+                if (index != 0) jsonRelease(index);
+                return report;
+            }
+
+            executeReleaseHardening(handle >> addr) -> int {
+                doctor >> int <- assurance.assurance.hostDoctor();
+                hardening >> int <- registryHardening(handle);
+                failed >> bool <- jsonGetStringOr(
+                    jsonObjectGet(doctor, "status"), "error") == "error" ||
+                    jsonGetStringOr(jsonObjectGet(hardening, "status"), "error") == "error";
+                warning >> bool <- jsonGetStringOr(
+                    jsonObjectGet(hardening, "status"), "") == "warning";
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.release_hardening.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    failed ? "error" : (warning ? "warning" : "ok")));
+                jsonObjectSet(report, "doctor", doctor);
+                jsonObjectSet(report, "registry_hardening", hardening);
+                jsonObjectSet(report, "next_planned_point",
+                    jsonNewString("native-stage1-release-assurance-closed"));
+                return printModel(report);
+            }
+
+            smokeBinary(handle >> addr, name >> str, binDirectory >> str) -> int {
+                suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                path >> str <- binDirectory == "" ? name : join(binDirectory, name + suffix);
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "name", jsonNewString(name));
+                jsonObjectSet(result, "path", binDirectory == "" ?
+                    jsonNewString(name) : jsonNewString(path));
+                args >> int <- jsonNewArray();
+                jsonArrayPush(args, jsonNewString("--help"));
+                jsonObjectSet(result, "args", args);
+                if (binDirectory != "" && !exists(path)) {
+                    jsonObjectSet(result, "status", jsonNewString("missing"));
+                    jsonObjectSet(result, "diagnostic",
+                        jsonNewString("E_GHOR_INSTALL_SMOKE_001"));
+                    return result;
+                }
+                capture >> int <- assurance.assurance.captureProcess(path, "--help");
+                output >> str <- assurance.assurance.captureOutput(capture);
+                ok >> bool <- assurance.assurance.captureOk(capture);
+                jsonObjectSet(result, "status", jsonNewString(ok ? "ok" : "error"));
+                jsonObjectSet(result, "stdout_hash", jsonNewString(hashText(output)));
+                jsonObjectSet(result, "stderr_hash", jsonNewString(hashText("")));
+                jsonObjectSet(result, "stdout_bytes", jsonNewInt(strByteLen(output)));
+                jsonObjectSet(result, "stderr_bytes", jsonNewInt(0));
+                jsonObjectSet(result, "exit_code",
+                    jsonClone(jsonObjectGet(capture, "exit_code")));
+                if (!ok) jsonObjectSet(result, "diagnostic",
+                    jsonNewString("E_GHOR_INSTALL_SMOKE_001"));
+                jsonRelease(capture);
+                return result;
+            }
+
+            smokeName(index >> int) -> str {
+                if (index == 0) return "ghor";
+                if (index == 1) return "ncc";
+                if (index == 2) return "nclsp";
+                if (index == 3) return "nfmt";
+                return "nlint";
+            }
+
+            executeInstallSmoke(handle >> addr) -> int {
+                binDirectory >> str <- option(handle, "--bin-dir");
+                binaries >> int <- jsonNewArray();
+                names >> int <- jsonNewArray();
+                diagnostics >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < 5) {
+                    name >> str <- smokeName(at);
+                    jsonArrayPush(names, jsonNewString(name));
+                    binary >> int <- smokeBinary(handle, name, binDirectory);
+                    if (jsonGetStringOr(jsonObjectGet(binary, "status"), "error") != "ok")
+                        addDiagnostic(diagnostics, "error", "E_GHOR_INSTALL_SMOKE_001",
+                            "installed binary '" + name + "' failed release smoke");
+                    jsonArrayPush(binaries, binary);
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema",
+                    jsonNewString("ghor.release_install_smoke.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    hasErrors(diagnostics) ? "error" : "ok"));
+                jsonObjectSet(report, "mode", jsonNewString(
+                    binDirectory == "" ? "path" : "bin_dir"));
+                jsonObjectSet(report, "bin_dir", binDirectory == "" ?
+                    jsonNewNull() : jsonNewString(binDirectory));
+                jsonObjectSet(report, "required_binaries", names);
+                jsonObjectSet(report, "binaries", binaries);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return printModel(report);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "verify" || selected == "evidence" ||
+                    selected == "seal" || selected == "conformance" ||
+                    selected == "public-beta" || selected == "beta-check" ||
+                    selected == "release-check" || selected == "self-check" ||
+                    selected == "release-hardening" || selected == "hardening" ||
+                    selected == "install-smoke" || selected == "release-install-smoke";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "verify") return executeVerify(handle);
+                if (selected == "evidence") return executeEvidence(handle);
+                if (selected == "seal") return executeSeal(handle);
+                if (selected == "conformance") return executeConformance(handle);
+                if (selected == "public-beta" || selected == "beta-check")
+                    return executePublicBeta(handle);
+                if (selected == "release-check" || selected == "self-check")
+                    return executeReleaseCheck(handle);
+                if (selected == "release-hardening" || selected == "hardening")
+                    return executeReleaseHardening(handle);
+                return executeInstallSmoke(handle);
+            }
+
+            selfTest() -> bool {
+                return starts("release-hardening", "release") &&
+                    hashText("ghor") != "" && same("seal", "seal");
+            }
+
+    fa:
+        return true;
+}

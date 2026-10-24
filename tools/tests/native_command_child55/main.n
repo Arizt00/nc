@@ -1,0 +1,41 @@
+use <process:command>;
+use <io:std>;
+nativeCommandChild55 {
+    write(pipe >> addr, buffer >> p<byte>, bytes >> int) -> bool {
+        at >> int <- 0;
+        while (at < bytes) {
+            written >> int <- commandPipeWrite(pipe,adr(off(buffer,at)),bytes-at);
+            if (written <= 0) return false;
+            at += written;
+        }
+        return true;
+    }
+    run() -> int {
+        buffer >> p<byte> <- cast<byte>(alloc(1024));
+        guard buffer != null else return 1;
+        slots >> p<byte> <- cast<byte>(calloc(1,24)); guard slots != null else return 7;
+        pipe >> addr <- adr(slots);
+        wr<addr>(slots,stdIn()); wr<addr>(off(slots,8),stdOut());
+        count >> int <- 0;
+        while (count < 16) {
+            received >> int <- commandPipeRead(pipe,adr(off(buffer,count)),16-count);
+            guard received > 0 else return 2;
+            count += received;
+        }
+        at >> int <- 0;
+        while (at < 16) { guard rd(off(buffer,at)) == (at*17) % 256 else return 3; at += 1; }
+        guard commandPipeRead(pipe,adr(buffer),1) <= 0 else return 4;
+        at <- 0;
+        while (at < 1024) { wr(off(buffer,at),(at*17) % 256); at += 1; }
+        chunk >> int <- 0;
+        while (chunk < 256) {
+            guard write(pipe,buffer,1024) else return 5;
+            chunk += 1;
+        }
+        wr<addr>(off(slots,8),stdErr());
+        guard write(pipe,buffer,257) else return 6;
+        free(slots); free(buffer); return 73;
+    }
+    ref main ->> run;
+    fa: return true;
+}

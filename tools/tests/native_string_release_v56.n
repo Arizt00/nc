@@ -1,0 +1,34 @@
+use <io:output, render>;
+nativeStringReleaseV56 {
+    const:
+        ROUNDS >> int <- 512;
+    release(value >> str) -> bool { return strRelease(value); }
+    run() -> int {
+        empty >> str <- null;
+        guard strRelease(empty) && release(empty) else return 1;
+        at >> int <- 0;
+        while (at < ROUNDS) {
+            data >> p<byte> <- cast<byte>(alloc(at+1));
+            guard data != null else return 2;
+            index >> int <- 0;
+            while (index < at) { wr(off(data,index),65+(index%26)); index += 1; }
+            wr(off(data,at),0);
+            text >> str <- cast(data);
+            guard strByteLen(text) == at && release(text) else return 3;
+            at += 1;
+        }
+        data >> p<byte> <- cast<byte>(alloc(4)); guard data != null else return 4;
+        wr(data,65); wr(off(data,1),66); wr(off(data,2),67); wr(off(data,3),0);
+        grown >> p<byte> <- cast<byte>(realloc(data,65537)); guard grown != null else { free(data); return 5; }
+        value >> str <- cast(grown);
+        guard value == "ABC" && strRelease(value) else return 6;
+        number >> str <- renderInt(-2147483647-1);
+        guard number == "-2147483648" else return 7;
+        println(number); guard strRelease(number) else return 8;
+        letter >> str <- renderChar('Q');
+        guard letter == "Q" && strRelease(letter) else return 9;
+        println("native string release ok"); return 136;
+    }
+    ref main ->> run;
+    fa: return true;
+}

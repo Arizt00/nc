@@ -1,0 +1,136 @@
+use <io:output, render>;
+use <memory:ptr, heap>;
+
+swapOverflowPunteros :: runtime {
+    stc:
+        pFirst >> p<int>;
+        pSecond >> p<int>;
+
+        first >> int;
+        second >> int;
+        valorIntermedio >> int;
+
+        maxInt32 >> int;
+        minInt32 >> int;
+        rangoInt32 >> int;
+
+        overflowDetectado >> bool;
+        ok >> bool;
+        liberado >> bool;
+
+    fn:
+        boot() -> bool {
+            maxInt32 >> int <- 2147483647;
+            minInt32 >> int <- -2147483648;
+            rangoInt32 >> int <- 4294967296;
+
+            overflowDetectado >> bool <- false;
+            ok >> bool <- false;
+            liberado >> bool <- false;
+
+            /*
+             * Reservamos dos enteros en heap:
+             * pFirst apunta al primer slot y pSecond al siguiente.
+             */
+            pFirst !> p<int> : alloc(16);
+            pSecond >> p<int> <- pFirst.offset(1);
+
+            /*
+             * 2147483640 + 10 supera maxInt32.
+             * Ese sera el overflow que forzamos durante el swap implicito.
+             */
+            pFirst.write(2147483640);
+            pSecond.write(10);
+            return true;
+        }
+
+        /*
+     * wrapInt32 simula aritmetica de 32 bits con overflow modular.
+     * nC runtime puede representar enteros mayores, por eso hacemos el
+     * wrap manualmente para enseñar el desbordamiento de forma visible.
+     */
+    fn:
+        wrapInt32(value >> int) -> int {
+            if (value > maxInt32) {
+                overflowDetectado >> bool <- true;
+                return value - rangoInt32;
+            }
+
+            if (value < minInt32) {
+                overflowDetectado >> bool <- true;
+                return value + rangoInt32;
+            }
+
+            return value;
+        }
+
+        add32(a >> int, b >> int) -> int {
+            return wrapInt32(a + b);
+        }
+
+        sub32(a >> int, b >> int) -> int {
+            return wrapInt32(a - b);
+        }
+
+        leerPunteros() -> bool {
+            first >> int <- pFirst.read();
+            second >> int <- pSecond.read();
+            return true;
+        }
+
+        imprimirEstado(titulo >> str) -> bool {
+            leerPunteros();
+            println(colorBold(titulo, "cyan"));
+            println("*pFirst  = " + renderInt(first));
+            println("*pSecond = " + renderInt(second));
+            return true;
+        }
+
+        /*
+     * Swap implicito con punteros:
+     * no usamos temporary, todo pasa leyendo/escribiendo memoria apuntada.
+     *
+     * Paso 1 provoca overflow:
+     *   *pFirst <- wrap32(*pFirst + *pSecond)
+     */
+    fn:
+        intercambiarOverflowPorPunteros() -> bool {
+            pFirst.write(add32(pFirst.read(), pSecond.read()));
+            valorIntermedio >> int <- pFirst.read();
+
+            pSecond.write(sub32(pFirst.read(), pSecond.read()));
+            pFirst.write(sub32(pFirst.read(), pSecond.read()));
+            return true;
+        }
+
+        liberar() -> bool {
+            liberado >> bool <- free(pFirst);
+            return liberado;
+        }
+
+        run() -> bool {
+            boot();
+
+            imprimirEstado("--Before pointer overflow swap--");
+            intercambiarOverflowPorPunteros();
+
+            println("");
+            println(colorBold("Overflow int32 intermedio", "yellow"));
+            println("valor escrito en *pFirst tras suma = " + renderInt(valorIntermedio));
+            println("overflow detectado = " + renderBool(overflowDetectado));
+
+            println("");
+            imprimirEstado("--After pointer overflow swap--");
+            ok >> bool <- first == 10 && second == 2147483640;
+            println("Swap con punteros correcto = " + renderBool(ok));
+            println("Memoria liberada = " + renderBool(liberar()));
+
+            return ok && liberado;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

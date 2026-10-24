@@ -1,0 +1,281 @@
+use <data:json>;
+use <project:release_io, frontend_material, sha256>;
+
+modulesJson {
+    fn:
+        private:
+            hex(code >> int) -> int {
+                if (code >= 48 && code <= 57) return code-48;
+                if (code >= 65 && code <= 70) return code-55;
+                if (code >= 97 && code <= 102) return code-87;
+                return -1;
+            }
+            unit(data >> p<byte>, at >> int, end >> int) -> int {
+                if (at+4 > end) return -1;
+                result >> int <- 0;
+                cursor >> int <- at;
+                while (cursor < at+4) {
+                    digit >> int <- hex(rd(off(data,cursor)));
+                    if (digit < 0) return -1;
+                    result <- result*16+digit; cursor += 1;
+                }
+                return result;
+            }
+            utf8(bytes >> int, code >> int) -> void {
+                if (code < 128) jsonArrayPush(bytes,jsonNewInt(code));
+                else if (code < 2048) {
+                    jsonArrayPush(bytes,jsonNewInt(192+(code/64)));
+                    jsonArrayPush(bytes,jsonNewInt(128+(code%64)));
+                } else if (code < 65536) {
+                    jsonArrayPush(bytes,jsonNewInt(224+(code/4096)));
+                    jsonArrayPush(bytes,jsonNewInt(128+((code/64)%64)));
+                    jsonArrayPush(bytes,jsonNewInt(128+(code%64)));
+                } else {
+                    jsonArrayPush(bytes,jsonNewInt(240+(code/262144)));
+                    jsonArrayPush(bytes,jsonNewInt(128+((code/4096)%64)));
+                    jsonArrayPush(bytes,jsonNewInt(128+((code/64)%64)));
+                    jsonArrayPush(bytes,jsonNewInt(128+(code%64)));
+                }
+            }
+            stringEnd(data >> p<byte>, at >> int, size >> int) -> int {
+                at += 1;
+                while (at < size) {
+                    code >> int <- rd(off(data,at));
+                    if (code == 34) return at+1;
+                    if (code == 92) at += 1;
+                    at += 1;
+                }
+                return -1;
+            }
+            whitespace(data >> p<byte>, at >> int, size >> int) -> int {
+                while (at < size) {
+                    code >> int <- rd(off(data,at));
+                    if (code != 32 && code != 9 && code != 10 && code != 13) break;
+                    at += 1;
+                }
+                return at;
+            }
+            valueEnd(data >> p<byte>, at >> int, size >> int) -> int {
+                if (at >= size) return -1;
+                code >> int <- rd(off(data,at));
+                if (code == 34) return stringEnd(data,at,size);
+                if (code != 91 && code != 123) {
+                    while (at < size) {
+                        code <- rd(off(data,at));
+                        if (code == 44 || code == 93 || code == 125 || code == 32 || code == 9 || code == 10 || code == 13) break;
+                        at += 1;
+                    }
+                    return at;
+                }
+                depth >> int <- 1; at += 1;
+                while (at < size) {
+                    code <- rd(off(data,at));
+                    if (code == 34) { at <- stringEnd(data,at,size); if (at < 0) return -1; continue; }
+                    if (code == 91 || code == 123) depth += 1;
+                    if (code == 93 || code == 125) depth -= 1;
+                    at += 1;
+                    if (depth == 0) return at;
+                }
+                return -1;
+            }
+            arrayItems(source >> str, start >> int, end >> int) -> int {
+                data >> p<byte> <- cast(source);
+                if (end <= start || rd(off(data,end-1)) != 93) return 0;
+                result >> int <- jsonNewArray();
+                at >> int <- whitespace(data,start+1,end-1);
+                while (at < end-1) {
+                    next >> int <- valueEnd(data,at,end-1);
+                    if (next <= at) { jsonRelease(result); return 0; }
+                    fragment >> str <- slice(source,at,next-at);
+                    item >> int <- jsonParse(fragment); strRelease(fragment);
+                    if (item == 0) { jsonRelease(result); return 0; }
+                    jsonArrayPush(result,item); jsonRelease(item);
+                    at <- whitespace(data,next,end-1);
+                    if (at == end-1) break;
+                    if (rd(off(data,at)) != 44) { jsonRelease(result); return 0; }
+                    at <- whitespace(data,at+1,end-1);
+                    if (at == end-1) { jsonRelease(result); return 0; }
+                }
+                return result;
+            }
+        public:
+            material(source >> str) -> int {
+                // Bound json.n's remaining-input string allocations to one arena record.
+                data >> p<byte> <- cast(source); size >> int <- strByteLen(source);
+                at >> int <- whitespace(data,0,size);
+                if (at >= size || rd(off(data,at)) != 123) return 0;
+                result >> int <- jsonNewObject(); at <- whitespace(data,at+1,size);
+                while (at < size && rd(off(data,at)) != 125) {
+                    if (rd(off(data,at)) != 34) { jsonRelease(result); return 0; }
+                    end >> int <- stringEnd(data,at,size);
+                    if (end < 0) { jsonRelease(result); return 0; }
+                    fragment >> str <- slice(source,at,end-at); key >> int <- jsonParse(fragment); strRelease(fragment);
+                    if (jsonKind(key) != 4) { jsonRelease(key); jsonRelease(result); return 0; }
+                    name >> str <- slice(jsonStringView(key,""),0,strByteLen(jsonStringView(key,""))); jsonRelease(key);
+                    at <- whitespace(data,end,size);
+                    if (at >= size || rd(off(data,at)) != 58) { strRelease(name); jsonRelease(result); return 0; }
+                    at <- whitespace(data,at+1,size); end <- valueEnd(data,at,size);
+                    if (end <= at) { strRelease(name); jsonRelease(result); return 0; }
+                    item >> int <- 0;
+                    if (rd(off(data,at)) == 91) item <- arrayItems(source,at,end);
+                    else { fragment <- slice(source,at,end-at); item <- jsonParse(fragment); strRelease(fragment); }
+                    if (item == 0 || jsonObjectHas(result,name)) { strRelease(name); jsonRelease(item); jsonRelease(result); return 0; }
+                    jsonObjectSet(result,name,item); strRelease(name); jsonRelease(item);
+                    at <- whitespace(data,end,size);
+                    if (at < size && rd(off(data,at)) == 125) break;
+                    if (at >= size || rd(off(data,at)) != 44) { jsonRelease(result); return 0; }
+                    at <- whitespace(data,at+1,size);
+                    if (at >= size || rd(off(data,at)) != 34) { jsonRelease(result); return 0; }
+                }
+                if (at >= size || rd(off(data,at)) != 125 || whitespace(data,at+1,size) != size) { jsonRelease(result); return 0; }
+                return result;
+            }
+            slice(source >> str, at >> int, count >> int) -> str {
+                if (at < 0 || count < 0 || at+count > strByteLen(source)) return "";
+                return strSubstring(source,at,count);
+            }
+            decoded(quoted >> str) -> int {
+                size >> int <- strByteLen(quoted);
+                data >> p<byte> <- cast(quoted);
+                if (size < 2 || rd(data) != 34 || rd(off(data,size-1)) != 34) return 0;
+                bytes >> int <- jsonNewArray();
+                at >> int <- 1;
+                valid >> bool <- true;
+                while (at < size-1 && valid) {
+                    code >> int <- rd(off(data,at)) & 255; at += 1;
+                    if (code < 32 || code == 34) { valid <- false; break; }
+                    if (code != 92) { jsonArrayPush(bytes,jsonNewInt(code)); continue; }
+                    if (at >= size-1) { valid <- false; break; }
+                    code <- rd(off(data,at)); at += 1;
+                    if (code == 34 || code == 92 || code == 47) jsonArrayPush(bytes,jsonNewInt(code));
+                    else if (code == 98) jsonArrayPush(bytes,jsonNewInt(8));
+                    else if (code == 102) jsonArrayPush(bytes,jsonNewInt(12));
+                    else if (code == 110) jsonArrayPush(bytes,jsonNewInt(10));
+                    else if (code == 114) jsonArrayPush(bytes,jsonNewInt(13));
+                    else if (code == 116) jsonArrayPush(bytes,jsonNewInt(9));
+                    else if (code == 117) {
+                        value >> int <- unit(data,at,size-1); at += 4;
+                        if (value >= 55296 && value <= 56319) {
+                            if (at+6 > size-1) { valid <- false; break; }
+                            if (rd(off(data,at)) != 92 || rd(off(data,at+1)) != 117) { valid <- false; break; }
+                            low >> int <- unit(data,at+2,size-1); at += 6;
+                            if (low < 56320 || low > 57343) { valid <- false; break; }
+                            value <- 65536+(value-55296)*1024+low-56320;
+                        } else if (value >= 56320 && value <= 57343) { valid <- false; break; }
+                        if (value < 0) { valid <- false; break; }
+                        utf8(bytes,value);
+                    } else valid <- false;
+                }
+                if (!valid) { jsonRelease(bytes); return 0; }
+                return bytes;
+            }
+            normalize(source >> str) -> int {
+                // Transform version strings before jsonParse can truncate their embedded NUL.
+                data >> p<byte> <- cast(source);
+                size >> int <- strByteLen(source);
+                at >> int <- 0;
+                copied >> int <- 0;
+                text >> str <- "";
+                while (at < size) {
+                    if (rd(off(data,at)) != 34) { at += 1; continue; }
+                    end >> int <- stringEnd(data,at,size);
+                    if (end < 0) { strRelease(text); return 0; }
+                    token >> str <- slice(source,at,end-at);
+                    key >> int <- jsonParse(token);
+                    after >> int <- whitespace(data,end,size);
+                    version >> bool <- jsonKind(key) == 4 && jsonStringView(key,"") == "version" && after < size;
+                    if (version) version <- rd(off(data,after)) == 58;
+                    jsonRelease(key); strRelease(token);
+                    at <- end;
+                    if (!version) continue;
+                    start >> int <- whitespace(data,after+1,size);
+                    if (start >= size) { strRelease(text); return 0; }
+                    if (rd(off(data,start)) != 34) continue;
+                    end <- stringEnd(data,start,size);
+                    if (end < 0) { strRelease(text); return 0; }
+                    token <- slice(source,start,end-start);
+                    bytes >> int <- decoded(token); strRelease(token);
+                    if (bytes == 0) { strRelease(text); return 0; }
+                    prefix >> str <- slice(source,copied,start-copied);
+                    encoded >> str <- jsonStringify(bytes);
+                    next >> str <- text+prefix+encoded;
+                    strRelease(text); strRelease(prefix); free(cast<byte>(encoded)); jsonRelease(bytes);
+                    text <- next; copied <- end; at <- end;
+                }
+                suffix >> str <- slice(source,copied,size-copied);
+                full >> str <- text+suffix;
+                result >> int <- jsonParse(full);
+                strRelease(text); strRelease(suffix); strRelease(full);
+                return result;
+            }
+            quotedBytes(bytes >> int) -> str {
+                count >> int <- jsonArrayLen(bytes);
+                data >> p<byte> <- cast(alloc(count*6+3));
+                if (data == null) return "";
+                wr(data,34);
+                at >> int <- 1;
+                index >> int <- 0;
+                digits >> p<byte> <- cast("0123456789abcdef");
+                while (index < count) {
+                    code >> int <- frontend_material.frontendMaterial.indexAt(bytes,index);
+                    if (code < 0 || code > 255) { free(data); return ""; }
+                    if (code == 34 || code == 92) { wr(off(data,at),92); at += 1; }
+                    if (code == 8 || code == 9 || code == 10 || code == 12 || code == 13) {
+                        wr(off(data,at),92); at += 1;
+                        code <- code == 8 ? 98 : (code == 9 ? 116 : (code == 10 ? 110 : (code == 12 ? 102 : 114)));
+                    } else if (code < 32) {
+                        wr(off(data,at),92); wr(off(data,at+1),117); wr(off(data,at+2),48); wr(off(data,at+3),48);
+                        wr(off(data,at+4),rd(off(digits,code/16))); at += 5;
+                        code <- rd(off(digits,code%16));
+                    }
+                    wr(off(data,at),code); at += 1; index += 1;
+                }
+                wr(off(data,at),34); wr(off(data,at+1),0);
+                rawText >> str <- cast(data);
+                result >> str <- strSubstring(rawText,0,at+1);
+                free(data); return result;
+            }
+            canonical(value >> int, versionBytes >> bool) -> str {
+                kind >> int <- jsonKind(value);
+                if (kind == 4) {
+                    text >> str <- jsonStringView(value,"");
+                    data >> p<byte> <- cast(text); bytes >> int <- jsonNewArray(); at >> int <- 0;
+                    while (at < strByteLen(text)) { jsonArrayPush(bytes,jsonNewInt(rd(off(data,at)) & 255)); at += 1; }
+                    result >> str <- quotedBytes(bytes); jsonRelease(bytes); return result;
+                }
+                if (kind != 5 && kind != 6) {
+                    if (kind == 0) return "";
+                    encoded >> str <- jsonStringify(value);
+                    result >> str <- strSubstring(encoded,0,strByteLen(encoded));
+                    if (encoded != "") free(cast<byte>(encoded));
+                    return result;
+                }
+                keys >> int <- jsonNewArray();
+                if (kind == 6) {
+                    index >> int <- 0;
+                    while (index < jsonObjectLen(value)) { jsonArrayPush(keys,jsonNewString(jsonObjectKeyAt(value,index))); index += 1; }
+                    ordered >> int <- release_io.releaseIo.sorted(keys); jsonRelease(keys); keys <- ordered;
+                }
+                result >> str <- kind == 5 ? "[" : "{";
+                count >> int <- kind == 5 ? jsonArrayLen(value) : jsonArrayLen(keys);
+                index >> int <- 0;
+                while (index < count) {
+                    key >> int <- kind == 6 ? jsonArrayGet(keys,index) : jsonNewNull();
+                    child >> int <- kind == 6 ? jsonObjectGet(value,jsonStringView(key,"")) : jsonArrayGet(value,index);
+                    encoded >> str <- versionBytes && kind == 6 && jsonStringView(key,"") == "version" && jsonKind(child) == 5 ?
+                        quotedBytes(child) : canonical(child,versionBytes);
+                    label >> str <- kind == 6 ? canonical(key,false)+":" : "";
+                    next >> str <- result+(index > 0 ? "," : "")+label+encoded;
+                    strRelease(result); strRelease(label); strRelease(encoded); jsonRelease(key); jsonRelease(child);
+                    result <- next; index += 1;
+                }
+                finished >> str <- result+(kind == 5 ? "]" : "}");
+                strRelease(result); jsonRelease(keys); return finished;
+            }
+            hash(value >> int) -> str {
+                encoded >> str <- canonical(value,false);
+                result >> str <- sha256.nccSha256.bytes(cast<byte>(encoded),strByteLen(encoded));
+                strRelease(encoded); return result;
+            }
+    fa: return true;
+}

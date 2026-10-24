@@ -1,0 +1,53 @@
+use <data:json>;
+use <io:output>;
+use <project:cert_matrix, contract_checks, sha256, cert_json>;
+
+certMatrixV42 {
+    fn:
+        public:
+            run() -> int {
+                actual >> int <- cert_matrix.certMatrix.testNames("  alpha::one: test  \r\nbeta: test\nignored: benchmark\nnested: test: test\n3 tests, 0 benchmarks\n");
+                expected >> int <- jsonParse("[\"alpha::one\",\"beta\",\"nested: test\"]");
+                ok >> bool <- contract_checks.contractChecks.equal(actual,expected);
+                jsonRelease(actual); jsonRelease(expected);
+                ok <- cert_matrix.certMatrix.tail("abcdef",3) == "def" && ok;
+                ok <- cert_matrix.certMatrix.tail("abc",10) == "abc" && ok;
+                ok <- cert_matrix.certMatrix.tail("",3) == "" && ok;
+                ok <- cert_matrix.certMatrix.tail("A\u{1F642}B\u{E9}",3) == "\u{1F642}B\u{E9}" && ok;
+                ok <- cert_matrix.certMatrix.newlines("a\r\nb\rc\n") == "a\nb\nc\n" && ok;
+                ok <- cert_json.certJson.quote("\u{E9}\u{1F642}") == "\"\\u00e9\\ud83d\\ude42\"" && ok;
+                ok <- cert_json.certJson.quote("a\n\"\\") == "\"a\\u000a\\\"\\\\\"" && ok;
+                invalid >> p<byte> <- cast(alloc(4));
+                guard invalid != null else return 1;
+                wr(invalid,192); wr(off(invalid,1),128); wr(off(invalid,2),0);
+                invalidText >> str <- cast(invalid);
+                ok <- cert_json.certJson.quote(invalidText) == "" && ok;
+                wr(invalid,237); wr(off(invalid,1),160); wr(off(invalid,2),128); wr(off(invalid,3),0);
+                ok <- cert_json.certJson.quote(invalidText) == "" && ok;
+                free(invalid);
+                owner >> int <- jsonParse("{\"message\":\"retained\",\"array\":[true,17,null]}");
+                cycle >> int <- 0;
+                while (cycle < 2000) {
+                    borrowed >> int <- jsonObjectBorrow(owner,"message");
+                    view >> str <- jsonStringView(borrowed,"");
+                    ok <- view == "retained" && ok;
+                    jsonRelease(borrowed);
+                    serialized >> str <- cert_json.certJson.stringify(owner);
+                    ok <- serialized == "{\"message\":\"retained\",\"array\":[true,17,null]}" && ok;
+                    strRelease(serialized);
+                    cycle += 1;
+                }
+                jsonRelease(owner);
+                rows >> int <- cert_matrix.certMatrix.commands(false);
+                ok <- jsonArrayLen(rows) == 6 && ok; jsonRelease(rows);
+                rows <- cert_matrix.certMatrix.commands(true);
+                ok <- jsonArrayLen(rows) == 10 && ok; jsonRelease(rows);
+                rows <- cert_matrix.certMatrix.suites();
+                ok <- jsonArrayLen(rows) == 4 && ok; jsonRelease(rows);
+                ok <- sha256.nccSha256.selfTest() && ok;
+                println(ok ? "PASS cert matrix unit v42" : "FAIL cert matrix unit v42");
+                return ok ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

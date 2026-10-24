@@ -1,0 +1,53 @@
+
+argsHost {
+    fn:
+        private:
+            errorCode() -> int { return rd<i32>(from<i32>(osL__errno_location())); }
+        public:
+            capture(data >> p<byte>) -> int {
+                fd >> int <- osLopen(adr("/proc/self/cmdline"),0,0);
+                if (fd < 0) return errorCode();
+                capacity >> u64 <- 4096; used >> u64 <- 0; status >> int <- 0;
+                buffer >> p<byte> <- cast<byte>(alloc(capacity));
+                if (buffer == null) { osLclose(fd); return 12; }
+                while (status == 0) {
+                    if (used == capacity) {
+                        if (capacity >= 1073741824) { status <- 75; break; }
+                        grown >> p<byte> <- cast<byte>(alloc(capacity*2));
+                        if (grown == null) { status <- 12; break; }
+                        cp(grown,buffer,used); free(buffer);
+                        buffer <- grown; capacity *= 2;
+                    }
+                    received >> i64 <- osLread(fd,adr(off(buffer,used)),capacity-used);
+                    if (received < 0) { status <- errorCode(); if (status == 4) { status <- 0; continue; } break; }
+                    if (received == 0) break;
+                    used += received;
+                }
+                osLclose(fd);
+                if (status != 0) { free(buffer); return status; }
+                if (used > 0 && rd(off(buffer,used-1)) != 0) { free(buffer); return 5; }
+                count >> u64 <- 0; at >> u64 <- 0;
+                while (at < used) { if (rd(off(buffer,at)) == 0) count += 1; at += 1; }
+                vector >> p<addr> <- cast<addr>(calloc(count == 0 ? 1 : count,8));
+                if (vector == null) { free(buffer); return 12; }
+                index >> u64 <- 0; start >> u64 <- 0; at <- 0;
+                while (at < used) {
+                    if (rd(off(buffer,at)) == 0) {
+                        bytes >> u64 <- at-start+1;
+                        text >> p<byte> <- cast<byte>(alloc(bytes));
+                        if (text == null) { status <- 12; break; }
+                        cp(text,off(buffer,start),bytes); wr(off(vector,index),adr(text));
+                        index += 1; start <- at+1;
+                    }
+                    at += 1;
+                }
+                free(buffer);
+                if (status != 0) {
+                    while (index > 0) { index -= 1; free(from<byte>(rd(off(vector,index)))); }
+                    free(vector); return status;
+                }
+                wr<u64>(data,count); wr<addr>(off(data,8),adr(vector)); wr<u64>(off(data,16),used);
+                return 0;
+            }
+    fa: return true;
+}

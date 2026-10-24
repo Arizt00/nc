@@ -1,0 +1,169 @@
+use <data:json>;
+use <io:output>;
+use <project:release_io, sha256>;
+
+machineCiVerify {
+    fn:
+        public:
+            lanes() -> int {
+                return jsonParse("[\"linux-clang-x86_64\",\"linux-gnu-aarch64\",\"linux-gnu-x86_64\",\"linux-riscv64-qemu\",\"macos-clang-x86_64\",\"windows-msvc-x86_64\"]");
+            }
+            spec(lane >> str) -> int {
+                if (lane == "windows-msvc-x86_64") return jsonParse("{\"host\":\"windows\",\"arch\":\"x86_64\",\"toolchain\":\"msvc\",\"target\":\"x86_64-pc-windows-msvc\",\"loader\":true}");
+                if (lane == "macos-clang-x86_64") return jsonParse("{\"host\":\"macos\",\"arch\":\"x86_64\",\"toolchain\":\"clang\",\"target\":\"x86_64-apple-darwin\",\"loader\":true}");
+                if (lane == "linux-riscv64-qemu") return jsonParse("{\"host\":\"linux\",\"arch\":\"riscv64\",\"toolchain\":\"qemu-riscv64\",\"target\":\"riscv64-unknown-elf\",\"loader\":false}");
+                if (lane == "linux-gnu-aarch64") return jsonParse("{\"host\":\"linux\",\"arch\":\"aarch64\",\"toolchain\":\"gnu\",\"target\":\"aarch64-unknown-linux-gnu\",\"loader\":false}");
+                if (lane == "linux-gnu-x86_64") return jsonParse("{\"host\":\"linux\",\"arch\":\"x86_64\",\"toolchain\":\"gnu\",\"target\":\"x86_64-unknown-linux-gnu\",\"loader\":true}");
+                if (lane == "linux-clang-x86_64") return jsonParse("{\"host\":\"linux\",\"arch\":\"x86_64\",\"toolchain\":\"clang\",\"target\":\"x86_64-unknown-linux-gnu\",\"loader\":true}");
+                return 0;
+            }
+            requiredStatus(row >> int, kind >> str, target >> str) -> str {
+                requirements >> int <- jsonObjectGet(row,"required");
+                index >> int <- 0;
+                status >> str <- "missing";
+                found >> int <- 0;
+                while (index < jsonArrayLen(requirements)) {
+                    entry >> int <- jsonArrayGet(requirements,index);
+                    if (release_io.releaseIo.field(entry,"kind") == kind && release_io.releaseIo.field(entry,"target") == target) {
+                        status <- release_io.releaseIo.field(entry,"status");
+                        found += 1;
+                    }
+                    jsonRelease(entry);
+                    index += 1;
+                }
+                jsonRelease(requirements);
+                return found > 1 ? "duplicate" : status;
+            }
+            validate(lane >> str, row >> int, head >> str, errors >> int) -> void {
+                expected >> int <- spec(lane);
+                fields >> int <- jsonParse("[\"host\",\"arch\",\"toolchain\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(fields)) {
+                    key >> str <- jsonGetString(jsonArrayGet(fields,index));
+                    if (release_io.releaseIo.field(row,key) != release_io.releaseIo.field(expected,key)) jsonArrayPush(errors,jsonNewString(lane+": inconsistent "+key));
+                    index += 1;
+                }
+                if (release_io.releaseIo.field(row,"status") != "passed") jsonArrayPush(errors,jsonNewString(lane+": row not passed"));
+                target >> str <- release_io.releaseIo.field(expected,"target");
+                if (requiredStatus(row,"link_smoke",target) != "passed") jsonArrayPush(errors,jsonNewString(lane+": native link_smoke not passed"));
+                if (requiredStatus(row,"link_smoke","wasm32-unknown-unknown") != "passed") jsonArrayPush(errors,jsonNewString(lane+": WASM link_smoke not passed"));
+                if (jsonGetBoolOr(jsonObjectGet(expected,"loader"),false)) {
+                    if (requiredStatus(row,"system_loader_smoke",target) != "passed") jsonArrayPush(errors,jsonNewString(lane+": system loader not passed"));
+                }
+                if (release_io.releaseIo.field(row,"evidence_hash") == "") jsonArrayPush(errors,jsonNewString(lane+": missing evidence_hash"));
+                if (head != "" && release_io.releaseIo.field(row,"head_sha") != head) jsonArrayPush(errors,jsonNewString(lane+": head_sha mismatch"));
+                jsonRelease(expected); jsonRelease(fields);
+            }
+            collect(root >> str, rows >> int, errors >> int, depth >> int) -> void {
+                if (depth > 128) { jsonArrayPush(errors,jsonNewString("evidence directory depth exceeded")); return; }
+                names >> int <- release_io.releaseIo.names(root);
+                if (jsonKind(names) != 5) { jsonArrayPush(errors,jsonNewString("cannot list evidence directory: "+root)); return; }
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> str <- jsonGetString(jsonArrayGet(names,index));
+                    path >> str <- release_io.releaseIo.path(root,name);
+                    kind >> int <- release_io.releaseIo.fileType(path);
+                    if (kind == 2) collect(path,rows,errors,depth+1);
+                    else if (name == "machine_ci_evidence.json") {
+                        row >> int <- jsonParseFile(path);
+                        if (jsonKind(row) != 6) { jsonArrayPush(errors,jsonNewString("invalid evidence JSON: "+path)); jsonRelease(row); }
+                        else {
+                            lane >> str <- release_io.releaseIo.field(row,"lane_id");
+                            if (lane == "") jsonRelease(row);
+                            else if (jsonObjectHas(rows,lane)) { jsonArrayPush(errors,jsonNewString("duplicate retained lane: "+lane)); jsonRelease(row); }
+                            else {
+                                jsonObjectSet(row,"_path",jsonNewString(path));
+                                digest >> str <- sha256.nccSha256.file(path);
+                                if (strLen(digest) != 64) jsonArrayPush(errors,jsonNewString("could not hash evidence: "+path));
+                                jsonObjectSet(row,"_file_sha256",jsonNewString(digest));
+                                jsonObjectSet(rows,lane,row);
+                            }
+                        }
+                    }
+                    else if (kind == 0) jsonArrayPush(errors,jsonNewString("unreadable evidence entry: "+path));
+                    index += 1;
+                }
+                jsonRelease(names);
+            }
+            aggregate(root >> str, head >> str, stamp >> str) -> int {
+                rows >> int <- jsonNewObject();
+                errors >> int <- jsonNewArray();
+                collect(root,rows,errors,0);
+                expected >> int <- lanes();
+                summaryRows >> int <- jsonNewObject();
+                index >> int <- 0;
+                while (index < jsonArrayLen(expected)) {
+                    lane >> str <- jsonGetString(jsonArrayGet(expected,index));
+                    row >> int <- jsonObjectGet(rows,lane);
+                    if (jsonKind(row) != 6) jsonArrayPush(errors,jsonNewString(lane+": missing retained machine_ci_evidence.json"));
+                    else {
+                        validate(lane,row,head,errors);
+                        item >> int <- jsonNewObject();
+                        keys >> int <- jsonParse("[\"status\",\"host\",\"arch\",\"toolchain\",\"evidence_hash\",\"run_url\",\"head_sha\"]");
+                        cursor >> int <- 0;
+                        while (cursor < jsonArrayLen(keys)) {
+                            key >> str <- jsonGetString(jsonArrayGet(keys,cursor));
+                            jsonObjectSet(item,key,jsonObjectGet(row,key));
+                            cursor += 1;
+                        }
+                        jsonObjectSet(item,"path",jsonObjectGet(row,"_path"));
+                        jsonObjectSet(item,"file_sha256",jsonObjectGet(row,"_file_sha256"));
+                        jsonObjectSet(summaryRows,lane,item);
+                        jsonRelease(keys);
+                    }
+                    jsonRelease(row);
+                    index += 1;
+                }
+                summary >> int <- jsonNewObject();
+                jsonObjectSet(summary,"schema",jsonNewString("nC.machine.ci.retained.aggregate.v2"));
+                jsonObjectSet(summary,"generated_at",jsonNewString(stamp));
+                jsonObjectSet(summary,"status",jsonNewString(jsonArrayLen(errors) == 0 ? "passed" : "failed"));
+                jsonObjectSet(summary,"required_lanes",expected);
+                jsonObjectSet(summary,"rows",summaryRows);
+                jsonObjectSet(summary,"errors",errors);
+                jsonObjectSet(summary,"implementation_language",jsonNewString("nC"));
+                jsonObjectSet(summary,"verification_scope",jsonNewString("retained metadata and file hashes; no CI or hardware execution performed"));
+                jsonObjectSet(summary,"evidence_hash_encoding",jsonNewString("compact insertion-order JSON without evidence_hash, UTF-8"));
+                serialized >> str <- jsonStringify(summary);
+                jsonObjectSet(summary,"evidence_hash",jsonNewString(sha256.nccSha256.bytes(cast<byte>(serialized),strByteLen(serialized))));
+                strRelease(serialized); jsonRelease(rows);
+                return summary;
+            }
+            markdown(summary >> int) -> str {
+                content >> str <- "# Machine CI Multi-Host Retained Evidence\n\nstatus: `"+release_io.releaseIo.field(summary,"status")+"`\ngenerated_at: `"+release_io.releaseIo.field(summary,"generated_at")+"`\nevidence_hash: `"+release_io.releaseIo.field(summary,"evidence_hash")+"`\n\n## Rows\n";
+                expected >> int <- lanes();
+                rows >> int <- jsonObjectGet(summary,"rows");
+                index >> int <- 0;
+                while (index < jsonArrayLen(expected)) {
+                    lane >> str <- jsonGetString(jsonArrayGet(expected,index));
+                    row >> int <- jsonObjectGet(rows,lane);
+                    content += "- `"+lane+"` status=`"+(jsonKind(row) == 6 ? release_io.releaseIo.field(row,"status") : "missing")+"` sha256=`"+release_io.releaseIo.field(row,"file_sha256")+"`\n";
+                    jsonRelease(row); index += 1;
+                }
+                errors >> int <- jsonObjectGet(summary,"errors");
+                if (jsonArrayLen(errors) > 0) content += "\n## Errors\n";
+                index <- 0;
+                while (index < jsonArrayLen(errors)) { content += "- "+jsonGetString(jsonArrayGet(errors,index))+"\n"; index += 1; }
+                jsonRelease(errors); jsonRelease(expected); jsonRelease(rows);
+                return content;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) { println("ncc-release verify-machine-ci --root DIR --out JSON --markdown-out MD [--head SHA] [--timestamp ISO]"); return 0; }
+                guard release_io.releaseIo.optionsValid(arguments,"|--root|--out|--markdown-out|--head|--timestamp|") else { println("Invalid verify-machine-ci options; use --help"); return 2; }
+                root >> str <- release_io.releaseIo.option(arguments,"--root","");
+                output >> str <- release_io.releaseIo.option(arguments,"--out","");
+                md >> str <- release_io.releaseIo.option(arguments,"--markdown-out","");
+                guard root != "" && output != "" && md != "" else { println("Require --root, --out and --markdown-out"); return 2; }
+                head >> str <- release_io.releaseIo.option(arguments,"--head","");
+                stamp >> str <- release_io.releaseIo.option(arguments,"--timestamp",release_io.releaseIo.utc(timestamp()));
+                summary >> int <- aggregate(root,head,stamp);
+                valid >> bool <- release_io.releaseIo.field(summary,"status") == "passed";
+                written >> bool <- release_io.releaseIo.save(output,summary);
+                written <- release_io.releaseIo.atomicWrite(md,markdown(summary)) && written;
+                println(jsonStringifyPretty(summary,2));
+                jsonRelease(summary);
+                return valid && written ? 0 : 1;
+            }
+    fa:
+        return true;
+}

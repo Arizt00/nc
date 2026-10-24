@@ -1,0 +1,56 @@
+use <process:args>;
+use <io:output, render>;
+use <data:json>;
+use <project:release43_common, release43_host, release43_distribution, release43_manifest, release43_toml, release_io, cert_json>;
+
+release43Probe {
+    fn:
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) < 3) return 2;
+                command >> str <- argsAt(args,1); path >> str <- argsAt(args,2);
+                if (command == "path") {
+                    result >> str <- release43_common.release43Common.absolute(path); println("absolute="+result);
+                    println("kind="+renderInt(release43_common.release43Common.fileType(path))+" size="+renderInt(release43_common.release43Common.fileSize(path)));
+                    println("parent="+release_io.releaseIo.directory(result));
+                    if (argsCount(args) > 3) println("relative="+release43_common.release43Common.relativePath(path,argsAt(args,3))); return 0;
+                }
+                if (command == "write") {
+                    println("static="+release43_host.release43Host.roundTrip("文字.txt"));
+                    println("roundtrip="+release43_host.release43Host.roundTrip(path));
+                    good >> bool <- release43_common.release43Common.writeText(path,"probe\n");
+                    println("write="+renderInt(good ? 1 : 0)+" error="+renderInt(release43_host.release43Host.lastError())); return good ? 0 : 1;
+                }
+                if (command == "metadata") {
+                    data >> p<byte> <- cast(alloc(4096)); count >> int <- fsMetadataInto(path,data,4095); wr(off(data,count < 0 ? 0 : count),0);
+                    text >> str <- cast(data); println("metadata="+text+" count="+renderInt(count)+" type="+renderInt(release_io.releaseIo.fileType(path))); free(data); return 0;
+                }
+                if (command == "toml") {
+                    doc >> int <- release43_toml.release43Toml.parse(release_io.releaseIo.text(path));
+                    if (doc == 0) return 1; println(cert_json.certJson.stringify(doc)); jsonRelease(doc); return 0;
+                }
+                options >> int <- jsonNewObject(); release43_common.release43Common.put(options,"--root",jsonNewString("."));
+                if (!release43_common.release43Common.initialize(options)) { println(release43_common.release43Common.message()); return 2; }
+                if (command == "manifest") {
+                    release43_manifest.release43Manifest.inspect(path,true);
+                    println(cert_json.certJson.stringify(release43_common.release43Common.checkRows())); return release_io.releaseIo.allTrue(release43_common.release43Common.checkRows()) ? 0 : 1;
+                }
+                if (command == "fixture") {
+                    if (argsCount(args) != 5) return 2;
+                    path <- release43_common.release43Common.absolute(path); destination >> str <- release43_common.release43Common.absolute(argsAt(args,3)); key >> str <- argsAt(args,4);
+                    if (!release43_common.release43Common.copyTree(path,destination)) return 1;
+                    sums >> str <- release43_common.release43Common.text(destination+"/integrity/SHA256SUMS");
+                    signature >> str <- release43_distribution.release43Distribution.hmac(key,cast<byte>(sums),strByteLen(sums))+"\n";
+                    if (!release43_common.release43Common.writeText(destination+"/integrity/SHA256SUMS.sig",signature)) return 1;
+                    valid >> bool <- release43_distribution.release43Distribution.verify(destination,key); if (!valid) println(release43_distribution.release43Distribution.verificationMessage()); return valid ? 0 : 1;
+                }
+                if (command == "distribution") {
+                    good >> bool <- release43_distribution.release43Distribution.build(release43_common.release43Common.absolute(path),argsCount(args) > 3 ? argsAt(args,3) : "test-key");
+                    println(cert_json.certJson.stringify(release43_common.release43Common.commandRows())); println(release43_common.release43Common.message()); return good ? 0 : 1;
+                }
+                if (command == "integrity") return release43_distribution.release43Distribution.verify(path,argsCount(args) > 3 ? argsAt(args,3) : "test-key") ? 0 : 1;
+                return 2;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,33 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+use <project:tool_cli>;
+
+nativeToolPath79 {
+    field(row >> int, key >> str) -> str {
+        value >> int <- jsonObjectBorrow(row,key);
+        text >> str <- jsonStringView(value,""); jsonRelease(value); return text;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        model >> int <- jsonParseFile(argsAt(arguments,1));
+        if (model == 0) return 65;
+        rows >> int <- jsonObjectBorrow(model,"vectors");
+        at >> int <- 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at);
+            text >> str <- tool_cli.toolCli.absolute(field(row,"path"));
+            valid >> bool <- strEq(text,field(row,"expected"));
+            if (text != "") strRelease(text);
+            jsonRelease(row);
+            if (!valid) return 1;
+            at += 1;
+        }
+        if (tool_cli.toolCli.absolute("") != "" || tool_cli.toolCli.absolute(cast<str>(null)) != "") return 2;
+        print("native-tool-path-ok vectors="); println(at);
+        jsonRelease(rows); jsonRelease(model); argsRelease(arguments); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

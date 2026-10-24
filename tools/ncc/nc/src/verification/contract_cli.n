@@ -1,0 +1,111 @@
+use <io:output>;
+use <process:env>;
+use <data:json>;
+use <project:release_io, tool_cli, contract_checks, support_policy, documentation_check, final_closure, sha256>;
+
+contractCli {
+    fn:
+        private:
+            invoke(binary >> str, tail >> str, root >> str) -> int {
+                command >> int <- jsonNewArray();
+                tool_cli.toolCli.append(command,binary);
+                words >> int <- jsonParse(tail);
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    value >> int <- jsonArrayGet(words,index);
+                    jsonArrayPush(command,value);
+                    index += 1;
+                }
+                result >> int <- tool_cli.toolCli.execute(command,root,600000);
+                jsonRelease(command); jsonRelease(words);
+                return result;
+            }
+        public:
+            modelJson(text >> str) -> int {
+                result >> int <- jsonParse(text);
+                if (jsonKind(result) == 6) return result;
+                jsonRelease(result);
+                trimmed >> str <- strTrim(text);
+                data >> p<byte> <- cast(trimmed);
+                at >> int <- strByteLen(trimmed)-1;
+                while (at >= 0) {
+                    if (rd(off(data,at)) == 10) {
+                        suffix >> str <- cast(off(data,at+1));
+                        return jsonParse(suffix);
+                    }
+                    at -= 1;
+                }
+                return 0;
+            }
+            execute(arguments >> addr, mode >> str) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--report|--candidate|--cargo|","|--help|-h|");
+                if (options == 0) { println("release contract: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools release-policy|release-docs|release-final [--root REPO] [--report JSON] [--candidate NCC | --cargo CARGO]");
+                    jsonRelease(options); return 0;
+                }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                candidate >> str <- tool_cli.toolCli.value(options,"--candidate","");
+                buildRequested >> bool <- candidate == "";
+                commands >> int <- jsonNewArray();
+                buildReady >> bool <- false;
+                if (buildRequested) {
+                    cargo >> str <- tool_cli.toolCli.value(options,"--cargo","cargo");
+                    build >> int <- invoke(cargo,"[\"build\",\"-p\",\"ncc-cli\",\"--bin\",\"ncc\"]",root);
+                    buildReady <- tool_cli.toolCli.hasFlag(build,"ok");
+                    jsonArrayPush(commands,build);
+                    candidate <- root+"/target/debug/ncc"+(envHas("WINDIR") ? ".exe" : "");
+                } else {
+                    candidate <- tool_cli.toolCli.absolute(candidate);
+                    buildReady <- release_io.releaseIo.fileType(candidate) == 1;
+                }
+                model >> int <- 0;
+                helpReady >> bool <- false;
+                if (buildReady) {
+                    if (mode == "policy") {
+                        query >> int <- invoke(candidate,"[\"phase10-toolchain-model\",\"--json\"]",root);
+                        if (tool_cli.toolCli.hasFlag(query,"ok")) model <- modelJson(release_io.releaseIo.field(query,"stdout"));
+                        jsonArrayPush(commands,query);
+                    } else if (mode == "docs") {
+                        first >> int <- invoke(candidate,"[\"ncup-init\",\"--help\"]",root);
+                        second >> int <- invoke(candidate,"[\"ncup\",\"--help\"]",root);
+                        helpReady <- tool_cli.toolCli.hasFlag(first,"ok") && tool_cli.toolCli.hasFlag(second,"ok");
+                        jsonArrayPush(commands,first); jsonArrayPush(commands,second);
+                    } else {
+                        query >> int <- invoke(candidate,"[\"release-train\",\"--help\"]",root);
+                        helpReady <- tool_cli.toolCli.hasFlag(query,"ok");
+                        jsonArrayPush(commands,query);
+                    }
+                }
+                checks >> int <- 0;
+                schema >> str <- "nc.phase10.support.policy.report.v1";
+                destination >> str <- root+"/docs/status/F10_P17_support_policy_report.json";
+                if (mode == "policy") checks <- support_policy.supportPolicy.inspect(root,model);
+                else if (mode == "docs") {
+                    checks <- documentation_check.documentationCheck.inspect(root,helpReady);
+                    schema <- "nc.phase10.documentation.report.v1";
+                    destination <- root+"/docs/status/F10_P18_documentation_report.json";
+                } else {
+                    checks <- final_closure.finalClosure.inspect(root,helpReady);
+                    schema <- "nc.phase10.final.closure.report.v1";
+                    destination <- root+"/docs/status/F10_P19_final_closure_report.json";
+                }
+                jsonRelease(model);
+                passed >> bool <- buildReady && release_io.releaseIo.allTrue(checks);
+                report >> int <- release_io.releaseIo.report(schema);
+                jsonObjectSet(report,"status",jsonNewString(passed ? "ok" : "error"));
+                jsonObjectSet(report,"checks",checks);
+                jsonObjectSet(report,"commands",commands);
+                jsonObjectSet(report,"stage0_retained",jsonNewBool(true));
+                jsonObjectSet(report,"stage0_build_requested",jsonNewBool(buildRequested));
+                jsonObjectSet(report,"candidate_available",jsonNewBool(buildReady));
+                jsonObjectSet(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                destination <- tool_cli.toolCli.value(options,"--report",destination);
+                written >> bool <- release_io.releaseIo.save(destination,report);
+                println((passed && written ? "OK: " : "FAIL: ")+mode+" report "+destination);
+                jsonRelease(report); jsonRelease(options);
+                return passed && written ? 0 : 1;
+            }
+    fa:
+        return true;
+}

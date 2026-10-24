@@ -1,0 +1,491 @@
+use <data:json>;
+use <fs:dir>;
+use <collections:result>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:release_io, tool_cli, cert_json, sha256, stream_sha43, physical43_json, physical43_deep_json, physical43_numeric, physical43_capture, portable43_repr, release43_host>;
+
+physical43Common {
+    stc:
+        error >> str <- "";
+        writes >> int <- 0;
+    fn:
+        public:
+            reset() -> void { error <- ""; }
+            fail(message >> str) -> bool { if (error == "") error <- message; return false; }
+            diagnostic() -> str { return error; }
+            hostSystem() -> str {
+                if (envHas("WINDIR")) return "Windows";
+                row >> int <- invoke("[\"-s\"]","uname",".",15000); value >> str <- stdoutText(row); valid >> bool <- succeeded(row); jsonRelease(row); return valid ? value : "Unknown";
+            }
+            hostArchitecture() -> str {
+                if (envHas("WINDIR")) return env("PROCESSOR_ARCHITECTURE");
+                row >> int <- invoke("[\"-m\"]","uname",".",15000); value >> str <- stdoutText(row); valid >> bool <- succeeded(row); jsonRelease(row); return valid ? value : "unknown";
+            }
+            hostRelease() -> str {
+                words >> int <- jsonNewArray();
+                if (envHas("WINDIR")) {
+                    push(words,jsonNewString("powershell.exe")); push(words,jsonNewString("-NoProfile")); push(words,jsonNewString("-NonInteractive")); push(words,jsonNewString("-Command"));
+                    push(words,jsonNewString("$v=[Environment]::OSVersion.Version; if($v.Major -eq 10){if($v.Build -ge 22000){'11'}else{'10'}}elseif($v.Major -eq 6){@{0='Vista';1='7';2='8';3='8.1'}[$v.Minor]}else{$v.ToString()}"));
+                } else { push(words,jsonNewString("uname")); push(words,jsonNewString("-r")); }
+                row >> int <- command(words,".",15000); value >> str <- stdoutText(row); jsonRelease(row); jsonRelease(words); return value;
+            }
+            field(model >> int, name >> str) -> str {
+                if (model == 0) return "";
+                value >> int <- jsonObjectBorrow(model,name); if (physical43_deep_json.physical43DeepJson.isNumber(value)) { jsonRelease(value); return ""; }
+                text >> str <- jsonStringView(value,""); result >> str <- strSubstring(text,0,strByteLen(text)); jsonRelease(value); return result;
+            }
+            integerEqual(model >> int, expected >> i64) -> bool {
+                if (!physical43_deep_json.physical43DeepJson.isNumber(model)) return physical43_numeric.physical43Numeric.integerEqual(model,expected);
+                text >> str <- physical43_deep_json.physical43DeepJson.numberText(model); result >> bool <- physical43_numeric.physical43Numeric.integerTextEqual(text,expected); strRelease(text); return result;
+            }
+            isString(model >> int) -> bool { return jsonKind(model) == 4 && !physical43_deep_json.physical43DeepJson.isNumber(model); }
+            truthy(model >> int) -> bool {
+                if (physical43_deep_json.physical43DeepJson.isNumber(model)) { text >> str <- physical43_deep_json.physical43DeepJson.numberText(model); canonical >> str <- physical43_numeric.physical43Numeric.canonicalText(text); result >> bool <- canonical != "0" && canonical != "0.0" && canonical != "-0.0"; strRelease(text); strRelease(canonical); return result; }
+                kind >> int <- jsonKind(model); if (kind == 0 || kind == 1) return false; if (kind == 2) return jsonGetBoolOr(model,false); if (kind == 4) return physical43_json.physical43Json.rawLength(jsonStringView(model,"")) > 0; if (kind == 5) return jsonArrayLen(model) > 0; return jsonObjectLen(model) > 0;
+            }
+            truthyAt(model >> int, pointer >> str) -> bool { value >> int <- jsonPointer(model,pointer); result >> bool <- truthy(value); if (value != 0) jsonRelease(value); return result; }
+            integer64(value >> i64) -> int { return jsonParse(renderInt(value)); }
+            put(model >> int, name >> str, value >> int) -> void { cert_json.certJson.put(model,name,value); }
+            push(model >> int, value >> int) -> void { cert_json.certJson.push(model,value); }
+            boolAt(model >> int, pointer >> str) -> bool {
+                child >> int <- jsonPointer(model,pointer);
+                result >> bool <- jsonKind(child) == 2 && jsonGetBoolOr(child,false);
+                jsonRelease(child); return result;
+            }
+            textAt(model >> int, pointer >> str) -> str {
+                child >> int <- jsonPointer(model,pointer);
+                if (physical43_deep_json.physical43DeepJson.isNumber(child)) { jsonRelease(child); return ""; }
+                text >> str <- jsonStringView(child,"");
+                result >> str <- strSubstring(text,0,strByteLen(text));
+                jsonRelease(child); return result;
+            }
+            equal(a >> int, b >> int) -> bool {
+                left >> str <- canonical(a,true,0); right >> str <- canonical(b,true,0);
+                result >> bool <- left != "" && left == right;
+                strRelease(left); strRelease(right); return result;
+            }
+            rawSorted(values >> int) -> int {
+                result >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    item >> int <- jsonArrayBorrow(values,at); text >> str <- jsonStringView(item,""); position >> int <- 0;
+                    while (position < jsonArrayLen(result)) { other >> int <- jsonArrayBorrow(result,position); comparison >> int <- physical43_json.physical43Json.rawCompare(text,jsonStringView(other,"")); jsonRelease(other); if (comparison < 0) break; position += 1; }
+                    jsonArrayInsert(result,position,item); jsonRelease(item); at += 1;
+                }
+                return result;
+            }
+            quote(text >> str, ascii >> bool) -> str {
+                source >> str <- physical43_json.physical43Json.quote(text);
+                if (source == "") { fail("invalid UTF-8 in JSON string"); return ""; }
+                result >> str <- "";
+                at >> int <- 0;
+                while (at < strByteLen(source)) {
+                    if (strSubstring(source,at,2) == "\\\\") { result <- cert_json.certJson.append(result,"\\\\"); at += 2; continue; }
+                    piece >> str <- strSubstring(source,at,6);
+                    short >> str <- "";
+                    if (piece == "\\u0008") short <- "\\b";
+                    if (piece == "\\u0009") short <- "\\t";
+                    if (piece == "\\u000a") short <- "\\n";
+                    if (piece == "\\u000c") short <- "\\f";
+                    if (piece == "\\u000d") short <- "\\r";
+                    if (short != "") { result <- cert_json.certJson.append(result,short); at += 6; }
+                    else { result <- cert_json.certJson.append(result,strSubstring(source,at,1)); at += 1; }
+                    strRelease(piece);
+                }
+                strRelease(source);
+                if (ascii) return result;
+                // Decode only non-ASCII escapes. JSON control and quote escapes stay escaped.
+                decoded >> str <- ""; at <- 0;
+                while (at < strByteLen(result)) {
+                    if (strSubstring(result,at,2) == "\\u" && at+6 <= strByteLen(result)) {
+                        scalar >> int <- hexValue(strSubstring(result,at+2,4));
+                        if (scalar >= 128) {
+                            width >> int <- 6;
+                            if (scalar >= 55296 && scalar <= 56319 && strSubstring(result,at+6,2) == "\\u") {
+                                low >> int <- hexValue(strSubstring(result,at+8,4));
+                                if (low >= 56320 && low <= 57343) { scalar <- 65536+(scalar-55296)*1024+low-56320; width <- 12; }
+                            }
+                            if (scalar >= 55296 && scalar <= 57343) { strRelease(result); strRelease(decoded); fail("unpaired surrogate cannot be encoded as UTF-8 JSON"); return ""; }
+                            scalarText >> str <- physical43_json.physical43Json.scalarText(scalar);
+                            decoded <- cert_json.certJson.append(decoded,scalarText); strRelease(scalarText); at += width; continue;
+                        }
+                    }
+                    // An escaped backslash must not turn a following literal 'u' into an escape.
+                    take >> int <- strSubstring(result,at,2) == "\\\\" ? 2 : 1;
+                    decoded <- cert_json.certJson.append(decoded,strSubstring(result,at,take)); at += take;
+                }
+                strRelease(result); return decoded;
+            }
+            canonical(model >> int, ascii >> bool, depth >> int) -> str {
+                if (depth > 1024) { fail("JSON nesting exceeds process recursion limit"); return ""; }
+                if (physical43_deep_json.physical43DeepJson.isNumber(model)) { number >> str <- physical43_deep_json.physical43DeepJson.numberText(model); result >> str <- physical43_numeric.physical43Numeric.canonicalText(number); strRelease(number); return result; }
+                kind >> int <- jsonKind(model);
+                if (kind == 0 || kind == 1) return "null";
+                if (kind == 4) return quote(jsonStringView(model,""),ascii);
+                if (kind == 3) return physical43_numeric.physical43Numeric.canonical(model);
+                if (kind != 5 && kind != 6) return cert_json.certJson.stringify(model);
+                keys >> int <- jsonNewArray(); index >> int <- 0;
+                if (kind == 6) {
+                    while (index < jsonObjectLen(model)) { name >> str <- jsonObjectKeyAt(model,index); push(keys,jsonNewString(name)); strRelease(name); index += 1; }
+                    sorted >> int <- rawSorted(keys); jsonRelease(keys); keys <- sorted;
+                }
+                count >> int <- kind == 5 ? jsonArrayLen(model) : jsonArrayLen(keys);
+                result >> str <- kind == 5 ? "[" : "{"; index <- 0;
+                while (index < count) {
+                    if (index > 0) result <- cert_json.certJson.append(result,",");
+                    child >> int <- 0;
+                    if (kind == 6) {
+                        key >> int <- jsonArrayBorrow(keys,index); name >> str <- jsonStringView(key,"");
+                        encoded >> str <- quote(name,ascii); result <- cert_json.certJson.append(result,encoded); strRelease(encoded);
+                        result <- cert_json.certJson.append(result,":"); child <- jsonObjectBorrow(model,name); jsonRelease(key);
+                    } else child <- jsonArrayBorrow(model,index);
+                    encoded >> str <- canonical(child,ascii,depth+1); jsonRelease(child);
+                    if (encoded == "") { strRelease(result); jsonRelease(keys); return ""; }
+                    result <- cert_json.certJson.append(result,encoded); strRelease(encoded); index += 1;
+                }
+                jsonRelease(keys); return cert_json.certJson.append(result,kind == 5 ? "]" : "}");
+            }
+            save(path >> str, model >> int) -> bool {
+                text >> str <- canonical(model,true,0);
+                guard text != "" else return false;
+                result >> bool <- atomicWrite(path,text+"\n"); strRelease(text);
+                if (!result) fail("cannot write JSON "+path); return result;
+            }
+            print(model >> int) -> void { text >> str <- canonical(model,true,0); println(text); strRelease(text); }
+            hex(text >> str, minimum >> int, maximum >> int) -> bool {
+                length >> int <- strByteLen(text); if (length < minimum || length > maximum) return false;
+                data >> p<byte> <- cast(text); index >> int <- 0;
+                while (index < length) { code >> int <- rd(off(data,index)); if (!((code >= 48 && code <= 57) || (code >= 97 && code <= 102))) return false; index += 1; }
+                return true;
+            }
+            hexValue(text >> str) -> int {
+                result >> int <- 0; data >> p<byte> <- cast(text); index >> int <- 0;
+                while (index < strByteLen(text)) { code >> int <- rd(off(data,index)); digit >> int <- code <= 57 ? code-48 : code-87; if (digit < 0 || digit > 15) return -1; result <- result*16+digit; index += 1; }
+                return result;
+            }
+            digest(domain >> str, model >> int, ascii >> bool, sized >> bool) -> str {
+                encoded >> str <- canonical(model,ascii,0); guard encoded != "" else return "";
+                dlen >> int <- strByteLen(domain); length >> int <- strByteLen(encoded); extra >> int <- sized ? 9 : 1;
+                data >> p<byte> <- cast(alloc(dlen+extra+length)); guard data != null else return "";
+                cp(data,cast<byte>(domain),dlen); wr(off(data,dlen),0);
+                if (sized) { at >> int <- 0; rest >> int <- length; while (at < 8) { wr(off(data,dlen+1+at),rest & 255); rest <- rest >>> 8; at += 1; } }
+                cp(off(data,dlen+extra),cast<byte>(encoded),length);
+                result >> str <- sha256.nccSha256.bytes(data,dlen+extra+length); free(data); strRelease(encoded); return result;
+            }
+            hmac(domain >> str, model >> int, key >> str) -> str {
+                encoded >> str <- canonical(model,true,0); guard encoded != "" else return "";
+                bytes >> p<byte> <- cast(key); length >> int <- strByteLen(key); owned >> p<byte> <- null;
+                if (length > 64) {
+                    hashed >> str <- sha256.nccSha256.bytes(bytes,length); owned <- cast(alloc(32));
+                    at >> int <- 0; while (at < 32) { wr(off(owned,at),hexValue(strSubstring(hashed,at*2,2))); at += 1; }
+                    strRelease(hashed); bytes <- owned; length <- 32;
+                }
+                dlen >> int <- strByteLen(domain); size >> int <- 64+dlen+1+strByteLen(encoded);
+                inner >> p<byte> <- cast(alloc(size)); outer >> p<byte> <- cast(alloc(96));
+                guard inner != null && outer != null else { free(inner); free(outer); free(owned); strRelease(encoded); return ""; }
+                at >> int <- 0; while (at < 64) { code >> int <- at < length ? rd(off(bytes,at)) & 255 : 0; wr(off(inner,at),code ^ 54); wr(off(outer,at),code ^ 92); at += 1; }
+                cp(off(inner,64),cast<byte>(domain),dlen); wr(off(inner,64+dlen),0); cp(off(inner,65+dlen),cast<byte>(encoded),strByteLen(encoded));
+                hashed >> str <- sha256.nccSha256.bytes(inner,size); at <- 0;
+                while (at < 32) { wr(off(outer,64+at),hexValue(strSubstring(hashed,at*2,2))); at += 1; }
+                result >> str <- sha256.nccSha256.bytes(outer,96); free(inner); free(outer); free(owned); strRelease(encoded); strRelease(hashed); return result;
+            }
+            constantEqual(a >> str, b >> str) -> bool {
+                left >> p<byte> <- cast(a); right >> p<byte> <- cast(b); diff >> int <- strByteLen(a) ^ strByteLen(b);
+                at >> int <- 0; while (at < strByteLen(a) && at < strByteLen(b)) { diff <- diff | ((rd(off(left,at)) & 255) ^ (rd(off(right,at)) & 255)); at += 1; } return diff == 0;
+            }
+            parse(arguments >> addr, start >> int, values >> str, flags >> str, repeated >> str) -> int {
+                result >> int <- jsonNewObject(); at >> int <- start;
+                while (at < argsCount(arguments)) {
+                    key >> str <- argsAt(arguments,at); value >> str <- ""; inlineValue >> bool <- false; separator >> int <- 0; rawKey >> p<byte> <- cast(key);
+                    while (separator < strByteLen(key) && rd(off(rawKey,separator)) != 61) { separator += 1; }
+                    if (separator < strByteLen(key)) { value <- strSubstring(key,separator+1,strByteLen(key)-separator-1); key <- strSubstring(key,0,separator); inlineValue <- true; }
+                    if (strContains(key,"|") || key == "") { jsonRelease(result); return 0; }
+                    if (!strContains(flags,"|"+key+"|") && !strContains(values,"|"+key+"|")) {
+                        if (!strStartsWith(key,"--")) { jsonRelease(result); return 0; }
+                        candidates >> str <- flags+values; cursor >> int <- 0; begin >> int <- 0; matches >> int <- 0; matched >> str <- "";
+                        while (cursor <= strByteLen(candidates)) {
+                            if (cursor == strByteLen(candidates) || strSubstring(candidates,cursor,1) == "|") {
+                                option >> str <- strSubstring(candidates,begin,cursor-begin);
+                                if (option != "" && strStartsWith(option,key)) { matches += 1; matched <- option; } else strRelease(option);
+                                begin <- cursor+1;
+                            }
+                            cursor += 1;
+                        }
+                        if (matches != 1) { strRelease(matched); jsonRelease(result); return 0; }
+                        key <- matched;
+                    }
+                    if (strContains(flags,"|"+key+"|")) { if (inlineValue) { jsonRelease(result); return 0; } put(result,key,jsonNewBool(true)); at += 1; continue; }
+                    if (!strContains(values,"|"+key+"|") || (!inlineValue && at+1 >= argsCount(arguments))) { jsonRelease(result); return 0; }
+                    if (!inlineValue) { value <- argsAt(arguments,at+1); if (strByteLen(value) > 1 && strStartsWith(value,"-") && !negativeNumber(value)) { jsonRelease(result); return 0; } }
+                    if (strContains(repeated,"|"+key+"|")) {
+                        array >> int <- jsonObjectGet(result,key); if (jsonKind(array) != 5) { jsonRelease(array); array <- jsonNewArray(); }
+                        push(array,jsonNewString(value)); put(result,key,array);
+                    } else put(result,key,jsonNewString(value));
+                    at += inlineValue ? 1 : 2;
+                }
+                return result;
+            }
+            negativeNumber(text >> str) -> bool {
+                if (!strStartsWith(text,"-") || strByteLen(text) < 2) return false;
+                data >> p<byte> <- cast(text); at >> int <- 1; before >> int <- 0; after >> int <- 0; point >> bool <- false;
+                while (at < strByteLen(text)) { code >> int <- rd(off(data,at)); if (code == 46 && !point) point <- true; else if (code >= 48 && code <= 57) { if (point) after += 1; else before += 1; } else return false; at += 1; }
+                return point ? after > 0 : before > 0;
+            }
+            help(arguments >> addr) -> bool { at >> int <- 2; while (at < argsCount(arguments)) { word >> str <- argsAt(arguments,at); if (word == "--help" || word == "-h" || word == "--hel" || word == "--he" || (word == "--h" && argsAt(arguments,1) != "exact-head-evidence")) return true; at += 1; } return false; }
+            env(name >> str) -> str {
+                data >> p<byte> <- cast(alloc(1048577)); guard data != null else return strSubstring("",0,0);
+                count >> int <- envGet(name,adr(data),1048576); if (count < 0 || count >= 1048576) { free(data); return strSubstring("",0,0); }
+                wr(off(data,count),0); envRaw >> str <- cast(data); value >> str <- strSubstring(envRaw,0,count); free(data); return value;
+            }
+            read(path >> str, bom >> bool) -> int {
+                size >> i64 <- fileSize(path); if (size < 0 || size > 134217728) return 0;
+                data >> p<byte> <- cast(alloc(size+1)); if (data == null) return 0;
+                got >> int <- readBytes(path,data,size); if (got != size) { free(data); return 0; }
+                skip >> int <- 0;
+                if (bom && got >= 3) { if ((rd(data) & 255) == 239 && (rd(off(data,1)) & 255) == 187 && (rd(off(data,2)) & 255) == 191) skip <- 3; }
+                value >> int <- physical43_deep_json.physical43DeepJson.parseBytes(off(data,skip),got-skip); free(data); return value;
+            }
+            readText(path >> str, bom >> bool) -> str {
+                size >> i64 <- fileSize(path); if (size < 0 || size > 134217728) { fail("text report exceeds 128 MiB or cannot be read: "+path); return ""; }
+                textData >> p<byte> <- cast(alloc(size+1)); if (textData == null) return "";
+                got >> int <- release43_host.release43Host.read(path,textData,size);
+                if (got != size) { free(textData); fail("cannot read text report: "+path); return ""; }
+                wr(off(textData,got),0); text >> str <- cast(textData);
+                if (bom && strByteLen(text) >= 3) {
+                    data >> p<byte> <- cast(text);
+                    if ((rd(data) & 255) == 239 && (rd(off(data,1)) & 255) == 187 && (rd(off(data,2)) & 255) == 191) {
+                        stripped >> str <- strSubstring(text,3,strByteLen(text)-3); strRelease(text); text <- stripped;
+                    }
+                }
+                return text;
+            }
+            readDecoded(path >> str) -> p<byte> {
+                size >> i64 <- fileSize(path); if (size < 0 || size > 134217728) return null;
+                data >> p<byte> <- cast(alloc(size+1)); if (data == null) return null;
+                got >> int <- readBytes(path,data,size); if (got != size) { free(data); return null; }
+                decoded >> p<byte> <- physical43_json.physical43Json.decodeReplace(data,got,true); free(data); return decoded;
+            }
+            lines(text >> str) -> int {
+                return portable43_repr.portable43Repr.lines(text);
+            }
+            basename(path >> str) -> str {
+                return portable43_repr.portable43Repr.basename(path);
+            }
+            directory(path >> str) -> str { return portable43_repr.portable43Repr.parent(path); }
+            joinPath(root >> str, path >> str) -> str {
+                if (hasNul(path) || hasNul(root)) return "";
+                base >> str <- plainText(root); candidate >> str <- plainText(path); combined >> str <- portable43_repr.portable43Repr.joinPath(base,candidate); strRelease(base); strRelease(candidate); return nativePath(combined);
+            }
+            safeRelative(path >> str) -> bool {
+                return normalRelative(path) != "";
+            }
+            normalRelative(path >> str) -> str {
+                if (hasNul(path)) { fail("unsafe evidence path contains NUL"); return ""; }
+                path <- plainText(path);
+                if (path == "" || strStartsWith(path,"/") || strContains(path,"\\")) { fail("unsafe evidence path: "+path); return ""; }
+                data >> p<byte> <- cast(path); at >> int <- 0; start >> int <- 0; result >> str <- "";
+                while (at <= strByteLen(path)) {
+                    if (at == strByteLen(path) || rd(off(data,at)) == 47) {
+                        part >> str <- strSubstring(path,start,at-start);
+                        if (part != "" && part != ".") { if (part == ".." || (result == "" && strContains(part,":"))) { fail("unsafe evidence path: "+path); return ""; } result <- result+(result == "" ? "" : "/")+part; }
+                        start <- at+1; strRelease(part);
+                    }
+                    at += 1;
+                }
+                if (result == "") fail("unsafe evidence path: "+path); return result;
+            }
+            isAbsolute(path >> str) -> bool { return strStartsWith(path,"/") || (envHas("WINDIR") && (strStartsWith(path,"\\") || (strByteLen(path) > 2 && strSubstring(path,1,1) == ":" && (strSubstring(path,2,1) == "/" || strSubstring(path,2,1) == "\\")))); }
+            nativePath(path >> str) -> str { return envHas("WINDIR") ? replace(path,"/","\\") : path; }
+            hasNul(text >> str) -> bool { data >> p<byte> <- physical43_json.physical43Json.rawData(text); length >> int <- physical43_json.physical43Json.rawLength(text); at >> int <- 0; while (at < length) { if (rd(off(data,at)) == 0) return true; at += 1; } return false; }
+            plainText(text >> str) -> str {
+                if (hasNul(text)) return "";
+                length >> int <- physical43_json.physical43Json.rawLength(text); data >> p<byte> <- cast(alloc(length+1)); if (data == null) return ""; cp(data,physical43_json.physical43Json.rawData(text),length); wr(off(data,length),0); return physical43_json.physical43Json.asText(data);
+            }
+            absolutePath(path >> str) -> str { if (hasNul(path)) { fail("filesystem path contains NUL"); return ""; } path <- plainText(path); return nativePath(release43_host.release43Host.absolute(path)); }
+            nativeFs(path >> str) -> str {
+                if (!envHas("WINDIR")) return path;
+                normal >> str <- nativePath(path); if (strStartsWith(normal,"\\\\?\\")) return normal;
+                normal <- nativePath(absolutePath(normal)); if (normal == "") return "";
+                if (strStartsWith(normal,"\\\\")) return "\\\\?\\UNC\\"+strSubstring(normal,2,strByteLen(normal)-2);
+                return "\\\\?\\"+normal;
+            }
+            fileType(path >> str) -> int { if (hasNul(path)) return 0; return release43_host.release43Host.kind(path); }
+            fileSize(path >> str) -> i64 { if (hasNul(path)) return -1; return release43_host.release43Host.size64(path); }
+            fileHash(path >> str) -> str { if (hasNul(path)) return ""; return stream_sha43.streamSha43.file(path); }
+            directories(path >> str) -> bool {
+                if (fileType(path) == 2) return true;
+                if (path == "" || strByteLen(path) >= 8192) return false;
+                parent >> str <- directory(path);
+                if (envHas("WINDIR") && strEndsWith(parent,":")) parent <- parent+"/";
+                if (parent == path) return false;
+                if (!directories(parent)) return false;
+                release43_host.release43Host.mkdir(path); return fileType(path) == 2;
+            }
+            write(path >> str, content >> str) -> bool {
+                if (!directories(directory(path))) return false;
+                return writeBytes(path,physical43_json.physical43Json.rawData(content),physical43_json.physical43Json.rawLength(content));
+            }
+            writeBytes(path >> str, content >> p<byte>, length >> int) -> bool {
+                if (!directories(directory(path))) return false;
+                return release43_host.release43Host.writeRaw(path,content,length,false) == length;
+            }
+            writeText(path >> str, content >> str) -> bool {
+                return writeTextBytes(path,physical43_json.physical43Json.rawData(content),physical43_json.physical43Json.rawLength(content));
+            }
+            writeTextBytes(path >> str, content >> p<byte>, length >> int) -> bool {
+                if (!envHas("WINDIR")) return writeBytes(path,content,length);
+                extra >> int <- 0; at >> int <- 0;
+                while (at < length) { if (rd(off(content,at)) == 10) extra += 1; at += 1; }
+                if (extra == 0) return writeBytes(path,content,length);
+                data >> p<byte> <- cast(alloc(length+extra)); if (data == null) return false;
+                at <- 0; written >> int <- 0;
+                while (at < length) { code >> int <- rd(off(content,at)); if (code == 10) { wr(off(data,written),13); written += 1; } wr(off(data,written),code); written += 1; at += 1; }
+                result >> bool <- writeBytes(path,data,written); free(data); return result;
+            }
+            atomicWrite(path >> str, content >> str) -> bool {
+                if (!directories(directory(path))) return false;
+                temporaryDirectory >> str <- ""; reserved >> bool <- false; attempt >> int <- 0;
+                // Normalize each operation after appending its suffix, including extended Windows paths.
+                while (attempt < 64 && !reserved) {
+                    writes += 1; temporaryDirectory <- directory(path)+"/.nc-pending."+renderInt(nowMs())+"."+renderInt(writes);
+                    reserved <- release43_host.release43Host.mkdir(temporaryDirectory); attempt += 1;
+                }
+                if (!reserved) return false;
+                temporary >> str <- temporaryDirectory+"/payload";
+                if (!write(temporary,content)) { release43_host.release43Host.deleteFile(temporary); release43_host.release43Host.rmdir(temporaryDirectory); return false; }
+                attempt <- 0; moved >> bool <- false;
+                while (attempt < 8 && !moved) { moved <- release43_host.release43Host.rename(temporary,path); if (!moved) sleepMs(50*(attempt+1)); attempt += 1; }
+                if (!moved) release43_host.release43Host.deleteFile(temporary); release43_host.release43Host.rmdir(temporaryDirectory); return moved;
+            }
+            copy(source >> str, destination >> str) -> bool { return release43_host.release43Host.copy(source,destination); }
+            deleteFile(path >> str) -> bool { return release43_host.release43Host.deleteFile(path); }
+            readBytes(path >> str, data >> p<byte>, size >> int) -> int { return release43_host.release43Host.read(path,data,size); }
+            names(path >> str) -> int { unsorted >> int <- release43_host.release43Host.names(path); if (jsonKind(unsorted) != 5) return 0; result >> int <- release_io.releaseIo.sorted(unsorted); jsonRelease(unsorted); return result; }
+            replace(text >> str, needle >> str, replacement >> str) -> str {
+                if (needle == "") return strSubstring(text,0,strByteLen(text));
+                length >> int <- strByteLen(text); nlen >> int <- strByteLen(needle); rlen >> int <- strByteLen(replacement);
+                capacity >> int <- length+(rlen > nlen ? length/nlen*(rlen-nlen) : 0)+1;
+                data >> p<byte> <- cast(alloc(capacity)); guard data != null else return "";
+                source >> p<byte> <- cast(text); search >> p<byte> <- cast(needle); value >> p<byte> <- cast(replacement); at >> int <- 0; written >> int <- 0;
+                while (at < length) {
+                    same >> bool <- at+nlen <= length; index >> int <- 0;
+                    while (same && index < nlen) { if (rd(off(source,at+index)) != rd(off(search,index))) same <- false; index += 1; }
+                    if (same) { if (rlen > 0) cp(off(data,written),value,rlen); written += rlen; at += nlen; }
+                    else { wr(off(data,written),rd(off(source,at))); written += 1; at += 1; }
+                }
+                wr(off(data,written),0); replaceRaw >> str <- cast(data); result >> str <- strSubstring(replaceRaw,0,written); free(data); return result;
+            }
+            command(words >> int, cwd >> str, timeout >> int) -> int { line >> str <- tool_cli.toolCli.arrayLine(words); result >> int <- physical43_capture.physical43Capture.capture(line,cwd,timeout,16777216); strRelease(line); return result; }
+            invoke(tail >> str, exe >> str, cwd >> str, timeout >> int) -> int {
+                words >> int <- jsonParse(tail); cert_json.certJson.insert(words,0,jsonNewString(exe));
+                result >> int <- command(words,cwd,timeout); jsonRelease(words); return result;
+            }
+            invokeMerged(tail >> str, exe >> str, cwd >> str, timeout >> int) -> int {
+                words >> int <- jsonParse(tail); cert_json.certJson.insert(words,0,jsonNewString(exe)); line >> str <- tool_cli.toolCli.arrayLine(words);
+                result >> int <- physical43_capture.physical43Capture.captureMerged(line,cwd,timeout,16777216); strRelease(line); jsonRelease(words); return result;
+            }
+            stdoutText(row >> int) -> str { capturedText >> str <- field(row,"stdout"); text >> str <- portable43_repr.portable43Repr.trim(capturedText); strRelease(capturedText); return text; }
+            succeeded(row >> int) -> bool { return tool_cli.toolCli.hasFlag(row,"ok"); }
+            resolveCommand(exe >> str) -> str {
+                if (strContains(exe,"/") || strContains(exe,"\\")) return fileType(exe) == 1 ? strSubstring(exe,0,strByteLen(exe)) : strSubstring("",0,0);
+                windows >> bool <- envHas("WINDIR"); path >> str <- env("PATH"); split >> str <- replace(path,windows ? ";" : ":","\n"); entries >> int <- lines(split); strRelease(path); strRelease(split);
+                extensions >> str <- windows ? env("PATHEXT") : strSubstring("",0,0); if (windows && extensions == "") { strRelease(extensions); extensions <- strSubstring(".COM;.EXE;.BAT;.CMD",0,19); }
+                separated >> str <- replace(extensions,";","\n"); suffixes >> int <- lines(separated); strRelease(separated); strRelease(extensions); result >> str <- strSubstring("",0,0); at >> int <- 0;
+                while (at < jsonArrayLen(entries) && result == "") {
+                    entry >> int <- jsonArrayBorrow(entries,at); base >> str <- jsonStringView(entry,""); candidate >> str <- joinPath(base,exe);
+                    if (fileType(candidate) == 1) { strRelease(result); result <- strSubstring(candidate,0,strByteLen(candidate)); }
+                    index >> int <- 0; while (windows && result == "" && index < jsonArrayLen(suffixes)) { suffix >> int <- jsonArrayBorrow(suffixes,index); full >> str <- candidate+jsonStringView(suffix,""); if (fileType(full) == 1) { strRelease(result); result <- full; } else strRelease(full); jsonRelease(suffix); index += 1; }
+                    strRelease(candidate); jsonRelease(entry); at += 1;
+                }
+                jsonRelease(suffixes); jsonRelease(entries); return result;
+            }
+            available(exe >> str) -> bool {
+                if (fileType(exe) == 1) return true;
+                if (strContains(exe,"/") || strContains(exe,"\\")) return false;
+                path >> str <- env("PATH"); entries >> int <- lines(replace(path,envHas("WINDIR") ? ";" : ":","\n")); strRelease(path);
+                at >> int <- 0; found >> bool <- false;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayBorrow(entries,at); base >> str <- jsonStringView(entry,""); candidate >> str <- joinPath(base,exe);
+                    if (fileType(candidate) == 1 || (envHas("WINDIR") && fileType(candidate+".exe") == 1)) found <- true;
+                    jsonRelease(entry); at += 1;
+                }
+                jsonRelease(entries); return found;
+            }
+            noLinks(root >> str) -> bool { return noLinksTree(root,0); }
+            noLinksTree(path >> str, depth >> int) -> bool {
+                if (depth > 1024) return fail("directory nesting exceeds process recursion limit");
+                if (release43_host.release43Host.link(path)) return fail("symbolic links are forbidden in evidence: "+path);
+                kind >> int <- fileType(path); if (kind == 1) return true;
+                if (kind != 2) return fail("cannot inspect evidence directory: "+path);
+                entries >> int <- names(path); if (jsonKind(entries) != 5) return fail("cannot list evidence directory: "+path);
+                at >> int <- 0; valid >> bool <- true;
+                while (at < jsonArrayLen(entries) && valid) {
+                    entry >> int <- jsonArrayBorrow(entries,at); valid <- noLinksTree(joinPath(path,jsonStringView(entry,"")),depth+1);
+                    jsonRelease(entry); at += 1;
+                }
+                jsonRelease(entries); return valid;
+            }
+            directoryFiles(root >> str, prefix >> str, result >> int) -> bool {
+                names >> int <- release43_host.release43Host.names(joinPath(root,prefix));
+                if (jsonKind(names) != 5) return fail("cannot list evidence directory: "+joinPath(root,prefix));
+                at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); relative >> str <- prefix == "" ? name : prefix+"/"+name;
+                    kind >> int <- fileType(joinPath(root,relative));
+                    if (kind == 1) push(result,jsonNewString(relative));
+                    jsonRelease(item); at += 1;
+                }
+                jsonRelease(names); return true;
+            }
+            walk(root >> str, prefix >> str, result >> int, depth >> int) -> bool {
+                if (!directoryFiles(root,prefix,result)) return false;
+                pending >> int <- jsonNewArray(); push(pending,jsonNewString(prefix)); valid >> bool <- true;
+                // Path.rglob visits every immediate child before descending into those children.
+                while (jsonArrayLen(pending) > 0 && valid) {
+                    current >> int <- jsonArrayRemove(pending,jsonArrayLen(pending)-1); parent >> str <- jsonStringView(current,""); names >> int <- release43_host.release43Host.names(joinPath(root,parent)); children >> int <- jsonNewArray();
+                    if (jsonKind(names) != 5) { valid <- fail("cannot list evidence directory: "+joinPath(root,parent)); }
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(names) && valid) {
+                        item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); relative >> str <- parent == "" ? name : parent+"/"+name; path >> str <- joinPath(root,relative);
+                        if (fileType(path) == 2 && !release43_host.release43Host.link(path)) { push(children,jsonNewString(relative)); valid <- directoryFiles(root,relative,result); }
+                        jsonRelease(item); at += 1;
+                    }
+                    at <- jsonArrayLen(children)-1;
+                    while (at >= 0) { child >> int <- jsonArrayBorrow(children,at); jsonArrayPush(pending,child); jsonRelease(child); at -= 1; }
+                    jsonRelease(children); jsonRelease(names); jsonRelease(current);
+                }
+                jsonRelease(pending); return valid;
+            }
+            files(root >> str, rejectLinks >> bool) -> int {
+                if (rejectLinks && !noLinks(root)) return 0;
+                result >> int <- jsonNewArray(); if (!walk(root,"",result,0)) { jsonRelease(result); return 0; }
+                return result;
+            }
+            role(path >> str) -> str {
+                name >> str <- portable43_repr.portable43Repr.lower(basename(path));
+                if (strContains(name,"disasm") || strEndsWith(name,".asm") || strEndsWith(name,".s")) return "disassembly";
+                extensions >> int <- jsonParse("[\".elf\",\".exe\",\".efi\",\".bin\",\".img\",\".iso\",\".hex\",\".obj\",\".o\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(extensions)) { item >> int <- jsonArrayBorrow(extensions,at); found >> bool <- strEndsWith(name,jsonStringView(item,"")); jsonRelease(item); if (found) { jsonRelease(extensions); return "image"; } at += 1; } jsonRelease(extensions);
+                if (strEndsWith(name,".log") || strEndsWith(name,".txt") || strContains(name,"serial") || strContains(name,"boot")) return "log";
+                if (strContains(name,"certificate") || strContains(name,"attestation")) return "certificate";
+                return strEndsWith(name,".json") ? "metadata" : "artifact";
+            }
+            inventory(root >> str, excluded >> int, roles >> bool, rejectLinks >> bool) -> int { return orderedInventory(root,excluded,roles,rejectLinks,false); }
+            orderedInventory(root >> str, excluded >> int, roles >> bool, rejectLinks >> bool, flatOrder >> bool) -> int {
+                names >> int <- files(root,rejectLinks); if (jsonKind(names) != 5) return 0;
+                sortedNames >> int <- flatOrder ? rawSorted(names) : portable43_repr.portable43Repr.sortedPaths(names); jsonRelease(names); names <- sortedNames;
+                result >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,"");
+                    if (!release_io.releaseIo.contains(excluded,name) && !release_io.releaseIo.contains(excluded,"*/"+basename(name))) {
+                        path >> str <- joinPath(root,name); hash >> str <- fileHash(path);
+                        if (!hex(hash,64,64)) { fail("cannot hash evidence file: "+path); jsonRelease(result); jsonRelease(item); jsonRelease(names); return 0; }
+                        row >> int <- jsonNewObject(); put(row,"path",jsonNewString(name)); put(row,"bytes",integer64(fileSize(path))); put(row,"sha256",jsonNewString(hash)); strRelease(hash);
+                        if (roles) put(row,"role",jsonNewString(role(name))); push(result,row);
+                    }
+                    jsonRelease(item); at += 1;
+                }
+                jsonRelease(names); return result;
+            }
+    fa: return true;
+}

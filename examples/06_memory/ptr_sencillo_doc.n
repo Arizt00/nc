@@ -1,0 +1,123 @@
+use <io:output, render>;
+use <memory:ptr, heap>;
+
+punterosSencilloComentado {
+    stc:
+        /*
+         * Un puntero no guarda directamente el dato: guarda una direccion.
+         * pA apuntara a la primera celda de memoria reservada en heap.
+         * pB apuntara a la siguiente celda, calculada con pA.offset(1).
+         */
+        pA >> p<int>;
+        pB >> p<int>;
+
+        /*
+         * Variables normales para copiar lo que leemos desde los punteros.
+         * Esto ayuda a ver la diferencia entre "direccion" y "valor".
+         */
+        valorA >> int;
+        valorB >> int;
+        suma >> int;
+        ok >> bool;
+        liberado >> bool;
+
+    /*
+     * escribirValores guarda datos usando direcciones.
+     * Finalidad: demostrar la sintaxis compacta de escritura:
+     *   pA.write(10);
+     * Eso no cambia el puntero; cambia la celda apuntada por el puntero.
+     */
+    fn:
+        escribirValores() -> bool {
+            pA.write(10);
+            pB.write(25);
+            return true;
+        }
+
+        /*
+     * leerValores copia desde memoria heap hacia variables normales.
+     * Finalidad: mostrar la sintaxis compacta de lectura:
+     *   pA.read()
+     * Lee el contenido de la direccion, no la direccion en si.
+     */
+    fn:
+        leerValores() -> bool {
+            valorA >> int <- pA.read();
+            valorB >> int <- pB.read();
+            return true;
+        }
+
+        /*
+     * calcularSuma usa los valores ya leidos.
+     * Finalidad: una vez que el dato sale del puntero, se trabaja con el
+     * como con cualquier entero normal.
+     */
+    fn:
+        calcularSuma() -> bool {
+            suma >> int <- valorA + valorB;
+            return true;
+        }
+
+        /*
+     * imprimirEstado muestra el resultado del recorrido completo.
+     * Finalidad: comprobar visualmente direccion conceptual, lectura,
+     * escritura y aritmetica basica.
+     */
+    fn:
+        imprimirEstado() -> bool {
+            println(colorBold("===== PUNTEROS SENCILLOS =====", "cyan"));
+            println("pA apunta al primer int del bloque.");
+            println("pB apunta al siguiente int: pA.offset(1).");
+            println("");
+            println("Valor leido desde pA: " + renderInt(valorA));
+            println("Valor leido desde pB: " + renderInt(valorB));
+            println("Distancia pB - pA: " + renderInt(pB.diff(pA)));
+            println("Suma de ambos valores: " + renderInt(suma));
+            return true;
+        }
+
+        /*
+     * liberarMemoria devuelve el bloque al heap.
+     * Finalidad: todo alloc debe tener un free para evitar memoria viva
+     * que ya no se usa.
+     */
+    fn:
+        liberarMemoria(p >> p<int>) -> bool {
+            liberado >> bool <- free(p);
+            println("Memoria liberada: " + renderBool(liberado));
+            return liberado;
+        }
+
+        /*
+     * run ordena el ejemplo completo.
+     * Finalidad: reservar -> escribir -> leer -> calcular -> imprimir -> liberar.
+     */
+    fn:
+        run() -> bool {
+            /*
+             * En este ejemplo el owner es run:
+             * aqui se reserva y aqui se libera.
+             */
+            pA !> p<int> : alloc(16);
+            pB >> p<int> <- pA.offset(1);
+
+            escribirValores();
+            leerValores();
+            calcularSuma();
+            imprimirEstado();
+            liberarMemoria(pA);
+            return true;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+            /*
+             * No liberamos aqui porque liberarMemoria ya hace el free.
+             * Duplicar un free sobre el mismo puntero seria un error de propiedad.
+             */
+            return true;
+        }
+
+}

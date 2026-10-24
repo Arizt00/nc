@@ -1,0 +1,208 @@
+use <data:json>;
+use <io:output, render>;
+use <fs:dir>;
+use <collections:result>;
+use <process:env>;
+use <project:release_io, tool_cli, contract_checks, sha256>;
+
+distSession {
+    const:
+        TIMEOUT_MS >> int <- 600000;
+    local:
+        root >> str;
+        work >> str;
+        candidate >> str;
+        shell >> str;
+        notes >> str;
+        checks >> int;
+        commands >> int;
+        errors >> int;
+    fn:
+        public:
+            rootPath() -> str { return root; }
+            workPath() -> str { return work; }
+            good() -> bool { return jsonArrayLen(errors) == 0; }
+            homePath() -> str { return work+"/home"; }
+            isField(object >> int, key >> str, expected >> str) -> bool {
+                value >> int <- jsonObjectGet(object,key);
+                same >> bool <- jsonKind(value) == 4 && jsonStringView(value,"") == expected;
+                jsonRelease(value); return same;
+            }
+            fieldCopy(object >> int, key >> str) -> str {
+                value >> int <- jsonObjectGet(object,key);
+                view >> str <- jsonStringView(value,"");
+                copy >> str <- strSubstring(view,0,strLen(view));
+                jsonRelease(value); return copy;
+            }
+            environment(key >> str) -> str {
+                size >> int <- envGet(key,null,0);
+                guard size >= 0 && size < 1048576 else return "";
+                bytes >> p<byte> <- cast(alloc(size+1));
+                guard bytes != null else return "";
+                count >> int <- envGet(key,adr(bytes),size+1);
+                if (count < 0 || count > size) { free(bytes); return ""; }
+                wr(off(bytes,count),0);
+                return cast(bytes);
+            }
+            open(options >> int) -> bool {
+                root <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                candidate <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",root+"/target/debug/ncc"+(envHas("WINDIR") ? ".exe" : "")));
+                shell <- tool_cli.toolCli.value(options,"--bash","bash");
+                notes <- tool_cli.toolCli.value(options,"--release-verify",environment("NCC_RELEASE_VERIFY"));
+                if (notes == "") notes <- "ncc-release";
+                checks <- jsonNewObject(); commands <- jsonNewArray(); errors <- jsonNewArray();
+                work <- tool_cli.toolCli.value(options,"--work","");
+                automatic >> bool <- work == "";
+                attempt >> int <- 0;
+                while (attempt < 64) {
+                    if (automatic) work <- root+"/target/tmp/dist-v42-"+renderInt(nowMs())+"-"+renderInt(attempt);
+                    work <- tool_cli.toolCli.absolute(work);
+                    guard release_io.releaseIo.makeDirectories(release_io.releaseIo.directory(work)) else return false;
+                    reserved >> Result<bool, FsError> <- createDir(work);
+                    if (isOk(reserved)) return true;
+                    if (!automatic) return false;
+                    attempt += 1;
+                }
+                return false;
+            }
+            initialize(names >> str) -> void {
+                values >> int <- jsonParse(names);
+                index >> int <- 0;
+                while (index < jsonArrayLen(values)) {
+                    value >> int <- jsonArrayGet(values,index);
+                    record(jsonStringView(value,""),false);
+                    jsonRelease(value); index += 1;
+                }
+                jsonRelease(values);
+            }
+            record(key >> str, value >> bool) -> void { contract_checks.contractChecks.record(checks,key,value); }
+            require(value >> bool, message >> str) -> bool {
+                if (!value) jsonArrayPush(errors,jsonNewString(message));
+                return value;
+            }
+            read(path >> str) -> int {
+                result >> int <- jsonParseFile(path);
+                if (!require(jsonKind(result) == 6,"invalid JSON object: "+path)) {
+                    jsonRelease(result); return jsonNewObject();
+                }
+                return result;
+            }
+            modelJson(content >> str) -> int {
+                parsed >> int <- jsonParse(content);
+                if (jsonKind(parsed) == 6) return parsed;
+                jsonRelease(parsed); parsed <- 0;
+                text >> str <- strTrim(content);
+                data >> p<byte> <- cast(text);
+                at >> int <- strByteLen(text)-1;
+                while (at >= 0) {
+                    if (rd(off(data,at)) == 10) {
+                        suffix >> str <- cast(off(data,at+1));
+                        parsed <- jsonParse(suffix);
+                        break;
+                    }
+                    at -= 1;
+                }
+                strRelease(text);
+                if (jsonKind(parsed) == 6) return parsed;
+                jsonRelease(parsed); return 0;
+            }
+            document(row >> int) -> int {
+                content >> int <- jsonObjectGet(row,"stdout");
+                model >> int <- modelJson(jsonStringView(content,""));
+                jsonRelease(content);
+                if (!require(jsonKind(model) == 6,"command returned invalid JSON")) {
+                    jsonRelease(model); return jsonNewObject();
+                }
+                return model;
+            }
+            ok(row >> int) -> bool { return tool_cli.toolCli.hasFlag(row,"ok"); }
+            processText(content >> str) -> str {
+                // Match subprocess text=True universal newline decoding before strip().
+                count >> int <- strByteLen(content);
+                input >> p<byte> <- cast(content);
+                buffer >> p<byte> <- cast(alloc(count+1));
+                guard buffer != null else return "";
+                at >> int <- 0;
+                used >> int <- 0;
+                while (at < count) {
+                    value >> int <- rd(off(input,at));
+                    if (value == 13) {
+                        value <- 10;
+                        if (at+1 < count && rd(off(input,at+1)) == 10) at += 1;
+                    }
+                    wr(off(buffer,used),value); used += 1; at += 1;
+                }
+                wr(off(buffer,used),0);
+                text >> str <- cast(buffer);
+                result >> str <- strTrim(text);
+                free(buffer); return result;
+            }
+            invoke(binary >> str, words >> int) -> int {
+                argv >> int <- jsonNewArray();
+                tool_cli.toolCli.append(argv,binary);
+                display >> str <- binary;
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    word >> int <- jsonArrayGet(words,index);
+                    value >> str <- jsonStringView(word,"");
+                    if (value == "$home") value <- homePath();
+                    if (value == "$work") value <- work+"/work";
+                    if (value == "$dist") value <- work+"/dist";
+                    tool_cli.toolCli.append(argv,value);
+                    display <- display+" "+value;
+                    jsonRelease(word); index += 1;
+                }
+                row >> int <- tool_cli.toolCli.execute(argv,root,TIMEOUT_MS);
+                jsonObjectSet(row,"argv",jsonClone(argv));
+                jsonObjectSet(row,"cmd",jsonNewString(display));
+                out >> str <- fieldCopy(row,"stdout");
+                err >> str <- fieldCopy(row,"stderr");
+                outText >> str <- processText(out);
+                errText >> str <- processText(err);
+                jsonObjectSet(row,"stdout",jsonNewString(outText));
+                jsonObjectSet(row,"stderr",jsonNewString(errText));
+                strRelease(outText); strRelease(errText);
+                strRelease(out); strRelease(err);
+                jsonArrayPush(commands,jsonClone(row));
+                jsonRelease(argv); jsonRelease(words);
+                return row;
+            }
+            run(tail >> str) -> int { return invoke(candidate,jsonParse(tail)); }
+            bash(tail >> str) -> int { return invoke(shell,jsonParse(tail)); }
+            releaseNotes() -> int { return invoke(notes,jsonParse("[\"release-notes\"]")); }
+            compiler(words >> int) -> int { return invoke(candidate,words); }
+            required(paths >> str, nonempty >> bool) -> int {
+                names >> int <- jsonParse(paths);
+                missing >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayGet(names,index);
+                    path >> str <- root+"/"+jsonStringView(item,"");
+                    if (release_io.releaseIo.fileType(path) != 1 || (nonempty && fsSize(path) <= 0)) tool_cli.toolCli.append(missing,path);
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(names); return missing;
+            }
+            finish(schema >> str, destination >> str, extra >> int) -> int {
+                passed >> bool <- release_io.releaseIo.allTrue(checks) && jsonArrayLen(errors) == 0;
+                report >> int <- release_io.releaseIo.report(schema);
+                jsonObjectSet(report,"status",jsonNewString(passed ? "ok" : "error"));
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"commands",commands);
+                jsonObjectSet(report,"errors",errors);
+                jsonObjectSet(report,"work_root",jsonNewString(work));
+                jsonObjectSet(report,"work_retained",jsonNewBool(true));
+                jsonObjectSet(report,"stage0_retained",jsonNewBool(true));
+                jsonObjectSet(report,"direct_stage0_build_requested",jsonNewBool(false));
+                jsonObjectSet(report,"candidate_sha256",jsonNewString(sha256.nccSha256.file(candidate)));
+                index >> int <- 0;
+                while (index < jsonObjectLen(extra)) {
+                    key >> str <- jsonObjectKeyAt(extra,index);
+                    jsonObjectSet(report,key,jsonObjectGet(extra,key)); index += 1;
+                }
+                saved >> bool <- release_io.releaseIo.save(destination,report);
+                println((passed && saved ? "OK: " : "FAIL: ")+destination);
+                jsonRelease(extra); jsonRelease(report);
+                return passed && saved ? 0 : 1;
+            }
+    fa: return true;
+}

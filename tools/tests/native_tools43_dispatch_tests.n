@@ -1,0 +1,77 @@
+use <data:json>;
+use <io:output>;
+use <process:args, env>;
+use <project:tool_cli, release_io, cert_json, sha256>;
+
+nativeTools43DispatchTests {
+    stc:
+        cases >> int;
+        failed >> bool <- false;
+        tools >> str;
+        root >> str;
+    fn:
+        private:
+            invoke(command >> str, help >> bool, expected >> int) -> void {
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,tools);
+                tool_cli.toolCli.append(words,command);
+                if (help) tool_cli.toolCli.append(words,"--help");
+                result >> int <- tool_cli.toolCli.execute(words,root,30000);
+                output >> str <- cert_json.certJson.field(result,"stdout");
+                errors >> str <- cert_json.certJson.field(result,"stderr");
+                code >> int <- release_io.releaseIo.number(result,"code",-1);
+                good >> bool <- tool_cli.toolCli.hasFlag(result,"capture_ok") &&
+                    code == expected && strByteLen(output) > 0 && strByteLen(errors) == 0;
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"command",jsonNewString(command));
+                cert_json.certJson.put(row,"expected_exit",jsonNewInt(expected));
+                cert_json.certJson.put(row,"actual_exit",jsonNewInt(code));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.put(row,"stdout",jsonNewString(output));
+                cert_json.certJson.put(row,"stderr",jsonNewString(errors));
+                cert_json.certJson.push(cases,row);
+                if (!good) { failed <- true; println("FAIL dispatch "+command); }
+                strRelease(output); strRelease(errors); jsonRelease(result); jsonRelease(words);
+            }
+            digest(path >> str) -> str {
+                return release_io.releaseIo.fileType(path) == 1 ? sha256.nccSha256.file(path) : "";
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                root <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--root","."));
+                tools <- tool_cli.toolCli.absolute(release_io.releaseIo.option(arguments,"--tools",""));
+                out >> str <- release_io.releaseIo.option(arguments,"--out","target/tmp/native43-dispatch-tests.json");
+                cases <- jsonNewArray();
+                manual >> str <- root+"/docs/manual/Manual_completo_nC.docx";
+                before >> str <- digest(manual);
+                commands >> int <- jsonParse("[\"prepare-public-beta-layout\",\"package-public-beta\",\"release-cicd-compat\",\"release-installer-matrix\",\"release-manifest-format\",\"release-supply-chain\",\"release-updates\",\"ide43-jetbrains\",\"ide43-vscode\",\"ide43-ghidra\",\"ide43-association\",\"ide43-fullstack\",\"generate-compiler-closure\",\"generate-machine-closure\",\"generate-primitive-real-closure\",\"generate-runtime-closure\",\"build_nc_manual\",\"build_public_pdf_library\",\"exact-head-evidence\",\"portable-hypervisor-iommu\",\"primitive-release-evidence\",\"certify-final-pipeline\",\"certify-raw-optimizer\",\"blockmaster\",\"blockmaster-protocol\",\"build-mobile-tools\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(commands)) {
+                    item >> int <- jsonArrayGet(commands,index);
+                    invoke(jsonStringView(item,""),true,0);
+                    jsonRelease(item); index += 1;
+                }
+                invoke("--help",false,0);
+                invoke("unknown-native43-command",false,2);
+                after >> str <- digest(manual);
+                row >> int <- jsonNewObject();
+                unchanged >> bool <- before == after;
+                cert_json.certJson.put(row,"command",jsonNewString("help leaves canonical manual unchanged"));
+                cert_json.certJson.put(row,"passed",jsonNewBool(unchanged));
+                cert_json.certJson.push(cases,row);
+                if (!unchanged) { failed <- true; println("FAIL help wrote the manual"); }
+                jsonRelease(commands);
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.native-tools.dispatch.tests.v43"));
+                cert_json.certJson.put(report,"host",jsonNewString(envHas("WINDIR") ? "windows" : "linux"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(!failed));
+                cert_json.certJson.put(report,"cases",cases);
+                if (!cert_json.certJson.save(out,report)) failed <- true;
+                jsonRelease(report); strRelease(before); strRelease(after); argsRelease(arguments);
+                println(failed ? "FAILED: native family dispatch" : "OK: native family dispatch");
+                return failed ? 1 : 0;
+            }
+    ref main ->> run;
+    fa: return true;
+}

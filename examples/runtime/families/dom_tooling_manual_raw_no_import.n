@@ -1,0 +1,33 @@
+use <io:output>;
+
+domToolingManualRawNoImport :: runtime {
+    fn:
+        run() -> bool {
+            path >> addr <- adr(b"x.n");
+            data >> addr <- adr(b"a\nb");
+            destination >> p<byte> <- stackAlloc(3, 1);
+            table >> p<byte> <- stackAlloc(toolingStride() * 2, 8);
+            hash >> int <- toolingHashBytes(data, 3);
+            written >> bool <- toolingWrite(table, 0, 5, path, data, 3, 7, 8, hash, 9);
+            copied >> bool <- toolingCopy(table, 1, table, 0);
+            pathView >> addr <- toolingPath(table, 1);
+            dataView >> addr <- toolingData(table, 1);
+            fields >> bool <- toolingKind(table, 1) == 5 && toolingBytes(table, 1) == 3 &&
+                toolingFlags(table, 1) == 7 && toolingStatus(table, 1) == 8 &&
+                toolingHash(table, 1) == hash && toolingState(table, 1) == 9;
+            lines >> int <- toolingCountLines(dataView, 3);
+            byteCount >> int <- toolingCopyBytes(destination, dataView, 3);
+            newline >> int <- toolingFindByte(destination, byteCount, 10);
+            cleared >> bool <- toolingClear(table, 1);
+            ok >> bool <- toolingStride() == 64 && written && copied && fields &&
+                pathView == path && lines == 2 && byteCount == 3 && newline == 1 &&
+                cleared && toolingState(table, 1) == 0;
+            println("manual DOM tooling backend without import: " + (ok ? "true" : "false"));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

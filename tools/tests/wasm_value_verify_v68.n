@@ -1,0 +1,51 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, command>;
+use <text:parse>;
+
+wasmValueVerify68 {
+    quote(text >> str) -> str {
+        if (strContains(text, "\"") || strContains(text, "\n") || strContains(text, "\r")) return "";
+        return "\"" + text + "\"";
+    }
+    verify(engine >> str, image >> str, expected >> int) -> int {
+        if (quote(engine) == "" || quote(image) == "" || !exists(engine) || !exists(image)) return 64;
+        pipe >> addr <- commandPipeOpen(false, true);
+        data >> p<byte> <- cast(alloc(129));
+        if (pipe == null || data == null || commandPipeError(pipe) != 0) { if (pipe != null) commandPipeRelease(pipe); free(data); return 71; }
+        line >> str <- quote(engine) + " run --invoke _start " + quote(image);
+        child >> addr <- commandOpen(line, ".", null, commandPipeWriteHandle(pipe), null, 0);
+        commandPipeCloseWrite(pipe);
+        started >> bool <- child != null && commandStarted(child);
+        waited >> int <- started ? commandWait(child, 30000) : -1;
+        if (started && waited != 0) { commandTerminate(child, 15); commandWait(child, 3000); }
+        code >> int <- child == null ? -1 : commandExitCode(child);
+        bytes >> int <- started ? commandPipeRead(pipe, adr(data), 128) : -1;
+        if (bytes >= 0 && bytes < 128) wr(off(data, bytes), 0);
+        view >> str <- cast(data);
+        text >> str <- bytes > 0 && bytes < 128 ? view : "";
+        trimmed >> str <- strTrim(text);
+        exact >> bool <- trimmed == renderInt(expected);
+        good >> bool <- started && waited == 0 && code == 0 && exact;
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report, "passed", jsonNewBool(good));
+        jsonObjectSet(report, "process_exit", jsonNewInt(code));
+        jsonObjectSet(report, "module_value", jsonNewInt(parseInt(trimmed)));
+        jsonObjectSet(report, "expected_value", jsonNewInt(expected));
+        jsonObjectSet(report, "stdout", jsonNewString(text));
+        println(jsonStringify(report));
+        jsonRelease(report); strRelease(trimmed); strRelease(line);
+        if (child != null) commandRelease(child);
+        commandPipeRelease(pipe); free(data);
+        return good ? 0 : 1;
+    }
+    run() -> int {
+        args >> addr <- argsOpen();
+        if (argsCount(args) != 4) { argsRelease(args); return 64; }
+        code >> int <- verify(argsAt(args, 1), argsAt(args, 2), parseInt(argsAt(args, 3)));
+        argsRelease(args);
+        return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,77 @@
+use <data:json>;
+use <project:release43_common, release43_archive, release_io, sha256>;
+
+release43Ci {
+    fn:
+        private:
+            run(words >> int) -> bool { return release43_common.release43Common.succeeded(release43_common.release43Common.command(words,true)); }
+            add(words >> int, value >> str) -> void { release43_common.release43Common.arg(words,value); }
+            setup(home >> str, cache >> str, id >> str, target >> str, manifest >> str, offline >> str) -> int {
+                words >> int <- jsonParse("[\"ncup\",\"init\",\"--home\"]"); add(words,home); add(words,"--default-toolchain"); add(words,id); add(words,"--profile"); add(words,"default"); add(words,"--yes"); add(words,"--skip-first-run");
+                if (!run(words)) return 0;
+                words <- jsonParse("[\"ncup\",\"toolchain\",\"install\"]"); add(words,id); add(words,"--home"); add(words,home); add(words,"--profile"); add(words,"default"); add(words,"--set-default"); if (!run(words)) return 0;
+                hash >> str <- release43_common.release43Common.hashFile(manifest); key >> str <- "ncup-"+id+"-default-"+hash;
+                cacheDir >> str <- cache+"/"+key; archive >> str <- cacheDir+"/toolchain.tgz";
+                hit >> bool <- offline == "" && release43_common.release43Common.fileType(archive) == 1;
+                if (hit || offline != "") {
+                    if (!release43_common.release43Common.remove(home+"/toolchains/"+id,home)) return 0;
+                    if (!release43_archive.release43Archive.extract(hit ? archive : offline,home+"/toolchains")) return 0;
+                }
+                words <- jsonParse("[\"ncup\",\"target\",\"add\"]"); add(words,target); add(words,"--toolchain"); add(words,id); add(words,"--home"); add(words,home); if (!run(words)) return 0;
+                components >> int <- jsonParse("[\"compiler\",\"lsp\",\"fmt\"]"); at >> int <- 0;
+                while (at < 3) {
+                    words <- jsonParse("[\"ncup\",\"component\",\"add\"]"); add(words,release43_common.release43Common.stringAt(components,at)); add(words,"--toolchain"); add(words,id); add(words,"--home"); add(words,home); if (!run(words)) { release43_common.release43Common.release(components); return 0; } at += 1;
+                }
+                release43_common.release43Common.release(components);
+                words <- jsonParse("[\"ncup\",\"toolchain\",\"default\"]"); add(words,id); add(words,"--home"); add(words,home); if (!run(words)) return 0;
+                words <- jsonParse("[\"ncup\",\"doctor\",\"--home\"]"); add(words,home); if (!run(words)) return 0;
+                if (offline == "" && !hit) {
+                    if (!release43_common.release43Common.makeDirectories(cacheDir) || !release43_archive.release43Archive.tarGz(home+"/toolchains/"+id,archive,id,true)) return 0;
+                }
+                result >> int <- jsonNewObject(); release43_common.release43Common.put(result,"status",jsonNewString("ok")); release43_common.release43Common.put(result,"channel",jsonNewString(strSubstring(id,0,strIndexOf(id,"-")))); release43_common.release43Common.put(result,"target",jsonNewString(target)); release43_common.release43Common.put(result,"toolchain_id",jsonNewString(id));
+                cacheData >> int <- jsonNewObject(); release43_common.release43Common.put(cacheData,"hit",jsonNewBool(hit)); release43_common.release43Common.put(cacheData,"key",jsonNewString(key)); release43_common.release43Common.put(result,"cache",cacheData);
+                manifestData >> int <- jsonNewObject(); release43_common.release43Common.put(manifestData,"sha256",jsonNewString(hash)); release43_common.release43Common.put(result,"manifest",manifestData);
+                offlineData >> int <- jsonNewObject(); release43_common.release43Common.put(offlineData,"enabled",jsonNewBool(offline != "")); release43_common.release43Common.put(offlineData,"bundle_used",jsonNewBool(offline != "")); release43_common.release43Common.put(result,"offline",offlineData); return result;
+            }
+            phrases(path >> str, tokens >> str) -> bool {
+                text >> str <- release43_common.release43Common.text(path); rows >> int <- jsonParse(tokens); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(rows)) { good <- good && strContains(text,release43_common.release43Common.stringAt(rows,at)); at += 1; }
+                release43_common.release43Common.release(rows); return good;
+            }
+        public:
+            inspect() -> void {
+                keys >> int <- jsonParse("[\"artifacts_present\",\"contract_consistent\",\"ci_setup_online_ok\",\"ci_cache_miss_then_hit\",\"ci_offline_bundle_ok\",\"github_action_wired\",\"gitlab_template_wired\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(keys)) { release43_common.release43Common.record(release43_common.release43Common.stringAt(keys,at),false); at += 1; } release43_common.release43Common.release(keys);
+                root >> str <- release43_common.release43Common.rootPath();
+                required >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_cicd_compat_spec.md\",\"docs/spec/release/v2_0_0_phase10_cicd_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_cicd_compat_contract.json\",\"docs/status/STATUS_PHASE10_punto14_cicd_compat_v2_0_0.md\",\"tools/ci/setup_ncup_ci_v2_0_0.sh\",\"tools/ci/github/setup_ncup_ci_v2_0_0.sh\",\"tools/ci/gitlab/setup_ncup_ci_v2_0_0.sh\",\".github/actions/setup-nc/action.yml\",\".gitlab-ci.ncup.yml\",\"tools/ncc/nc/src/verification/release43_ci.n\",\"tools/release/qa_phase10_p14_v2_0_0.sh\"]");
+                artifacts >> bool <- true; at <- 0;
+                while (at < jsonArrayLen(required)) { path >> str <- root+"/"+release43_common.release43Common.stringAt(required,at); artifacts <- artifacts && release43_common.release43Common.fileType(path) == 1 && release43_common.release43Common.fileSize(path) > 0; at += 1; } release43_common.release43Common.release(required);
+                release43_common.release43Common.record("artifacts_present",artifacts); if (!artifacts) { release43_common.release43Common.fail("phase10 p14 required artifacts are missing"); return; }
+                if (!release43_common.release43Common.build()) return;
+                row >> int <- release43_common.release43Common.command(jsonParse("[\"phase10-toolchain-model\",\"--json\"]"),true);
+                if (!release43_common.release43Common.succeeded(row)) { release43_common.release43Common.fail("cannot resolve stable channel/target for p14"); return; }
+                model >> int <- release43_common.release43Common.doc(row); rows >> int <- jsonObjectGet(model,"toolchains"); id >> str <- ""; at <- 0;
+                while (at < jsonArrayLen(rows) && id == "") { item >> int <- jsonArrayGet(rows,at); value >> str <- release43_common.release43Common.field(item,"id"); if (strStartsWith(value,"stable-")) id <- value; release43_common.release43Common.release(item); at += 1; } release43_common.release43Common.release(rows); release43_common.release43Common.release(model);
+                if (id == "") { release43_common.release43Common.fail("cannot resolve stable channel/target for p14"); return; }
+                target >> str <- strSubstring(id,7,strByteLen(id)-7); manifest >> str <- root+"/docs/spec/release/v2_0_0_phase10_manifest_format_contract.json";
+                if (release43_common.release43Common.fileType(manifest) != 1) { release43_common.release43Common.fail("manifest fallback for p14 does not exist"); return; }
+                work >> str <- release43_common.release43Common.workPath();
+                first >> int <- setup(work+"/home-a",work+"/cache",id,target,manifest,"");
+                if (first == 0) { release43_common.release43Common.fail("first ci setup run failed"); return; }
+                firstCache >> int <- jsonObjectGet(first,"cache"); firstManifest >> int <- jsonObjectGet(first,"manifest");
+                release43_common.release43Common.record("ci_setup_online_ok",release43_common.release43Common.field(first,"status") == "ok" && release43_common.release43Common.field(first,"channel") == "stable" && release43_common.release43Common.field(first,"target") == target && release43_common.release43Common.field(first,"toolchain_id") == id && !toolFlag(firstCache,"hit") && release43_common.release43Common.field(firstManifest,"sha256") == release43_common.release43Common.hashFile(manifest));
+                second >> int <- setup(work+"/home-b",work+"/cache",id,target,manifest,""); if (second == 0) { release43_common.release43Common.fail("second ci setup run failed"); return; }
+                secondCache >> int <- jsonObjectGet(second,"cache"); release43_common.release43Common.record("ci_cache_miss_then_hit",!toolFlag(firstCache,"hit") && toolFlag(secondCache,"hit") && release43_common.release43Common.field(secondCache,"key") == release43_common.release43Common.field(firstCache,"key"));
+                bundle >> str <- work+"/offline-toolchain.tgz";
+                if (!release43_archive.release43Archive.tarGz(work+"/home-a/toolchains/"+id,bundle,id,true)) { release43_common.release43Common.fail("cannot create offline bundle"); return; }
+                offline >> int <- setup(work+"/home-c",work+"/cache",id,target,manifest,bundle); if (offline == 0) { release43_common.release43Common.fail("offline ci setup run failed"); return; }
+                offlineData >> int <- jsonObjectGet(offline,"offline"); release43_common.release43Common.record("ci_offline_bundle_ok",release43_common.release43Common.field(offline,"status") == "ok" && toolFlag(offlineData,"enabled") && toolFlag(offlineData,"bundle_used"));
+                release43_common.release43Common.record("github_action_wired",phrases(root+"/.github/actions/setup-nc/action.yml","[\"tools/ci/github/setup_ncup_ci_v2_0_0.sh\",\"channel\",\"target\",\"components\",\"offline\",\"manifest-hash\",\"cache-key\"]"));
+                release43_common.release43Common.record("gitlab_template_wired",phrases(root+"/.gitlab-ci.ncup.yml","[\"tools/ci/gitlab/setup_ncup_ci_v2_0_0.sh\",\"cache:\",\"key:\",\"files:\",\"NC_MANIFEST_PATH\",\"NC_OFFLINE\",\"NC_OFFLINE_BUNDLE\"]"));
+                contract >> int <- release43_common.release43Common.load(root+"/docs/spec/release/v2_0_0_phase10_cicd_compat_contract.json");
+                release43_common.release43Common.record("contract_consistent",release43_common.release43Common.field(contract,"schema") == "nc.phase10.cicd.compat.contract.v1" && release43_common.release43Common.field(contract,"state") == "frozen" && release_io.releaseIo.member(contract,"required_gates","release_phase10_cicd_compat_gate_tests"));
+                release43_common.release43Common.release(contract); release43_common.release43Common.release(first); release43_common.release43Common.release(firstCache); release43_common.release43Common.release(firstManifest); release43_common.release43Common.release(second); release43_common.release43Common.release(secondCache); release43_common.release43Common.release(offline); release43_common.release43Common.release(offlineData);
+            }
+            toolFlag(object >> int, key >> str) -> bool { value >> int <- jsonObjectGet(object,key); good >> bool <- jsonGetBoolOr(value,false); release43_common.release43Common.release(value); return good; }
+    fa: return true;
+}

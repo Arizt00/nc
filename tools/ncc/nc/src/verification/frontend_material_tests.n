@@ -1,0 +1,73 @@
+use <data:json>;
+use <project:frontend_material>;
+
+frontendMaterialTests {
+    const:
+        VALID >> str <- "{\"schema\":\"nc.parser.ast-material.v1\",\"nodes\":[{\"kind\":\"Program\",\"parent\":-1,\"first_token\":0,\"end_token\":1,\"origin_token\":0,\"start\":0,\"end\":1,\"first_child\":1,\"next_sibling\":-1},{\"kind\":\"ExprName\",\"parent\":0,\"first_token\":0,\"end_token\":0,\"origin_token\":0,\"start\":0,\"end\":1,\"first_child\":-1,\"next_sibling\":-1}],\"tokens\":[{\"kind\":1,\"start\":0,\"end\":1,\"payload\":[97]},{\"kind\":99,\"start\":1,\"end\":1,\"payload\":[]}]}";
+    fn:
+        private:
+            replaceAt(values >> int, index >> int, value >> int) -> void {
+                removed >> int <- jsonArrayRemove(values,index);
+                jsonRelease(removed);
+                jsonArrayInsert(values,index,value);
+                jsonRelease(value);
+            }
+            mutation(index >> int, key >> str, value >> int) -> bool {
+                model >> int <- jsonParse(VALID);
+                nodes >> int <- jsonObjectGet(model,"nodes");
+                node >> int <- jsonArrayGet(nodes,index);
+                jsonObjectSet(node,key,jsonNewInt(value));
+                replaceAt(nodes,index,node); jsonObjectSet(model,"nodes",nodes);
+                rejected >> bool <- !frontend_material.frontendMaterial.validate(model,1);
+                jsonRelease(model);
+                return rejected;
+            }
+        public:
+            run() -> bool {
+                model >> int <- jsonParse(VALID);
+                ok >> bool <- frontend_material.frontendMaterial.validate(model,1);
+                jsonRelease(model);
+                ok <- mutation(0,"first_child",5) && ok;
+                ok <- mutation(1,"parent",5) && ok;
+                ok <- mutation(1,"parent",-2) && ok;
+                ok <- mutation(1,"next_sibling",1) && ok;
+                ok <- mutation(1,"first_child",1) && ok;
+                ok <- mutation(1,"first_token",-1) && ok;
+                ok <- mutation(1,"end_token",2) && ok;
+                ok <- mutation(1,"origin_token",2) && ok;
+                ok <- mutation(1,"start",-1) && ok;
+                ok <- mutation(1,"end",2) && ok;
+                ok <- mutation(0,"first_child",-1) && ok;
+                ok <- mutation(1,"parent",-1) && ok;
+                model <- jsonParse(VALID);
+                jsonObjectRemove(model,"tokens");
+                ok <- !frontend_material.frontendMaterial.validate(model,1) && ok;
+                jsonRelease(model);
+                model <- jsonParse(VALID);
+                tokens >> int <- jsonObjectGet(model,"tokens");
+                token >> int <- jsonArrayGet(tokens,0);
+                jsonObjectSet(token,"payload",jsonParse("[256]"));
+                replaceAt(tokens,0,token); jsonObjectSet(model,"tokens",tokens);
+                ok <- !frontend_material.frontendMaterial.validate(model,1) && ok;
+                jsonRelease(model);
+                model <- jsonParse(VALID);
+                nodes >> int <- jsonObjectGet(model,"nodes");
+                node >> int <- jsonArrayGet(nodes,1);
+                jsonObjectSet(node,"parent",jsonNewFloat(0.5)); replaceAt(nodes,1,node);
+                jsonObjectSet(model,"nodes",nodes);
+                ok <- !frontend_material.frontendMaterial.validate(model,1) && ok;
+                jsonRelease(model);
+                // Reciprocal child edges can be locally consistent but form a cycle.
+                model <- jsonParse(VALID);
+                nodes <- jsonObjectGet(model,"nodes");
+                node <- jsonArrayGet(nodes,0);
+                jsonObjectSet(node,"parent",jsonNewInt(1)); replaceAt(nodes,0,node);
+                node <- jsonArrayGet(nodes,1);
+                jsonObjectSet(node,"first_child",jsonNewInt(0)); replaceAt(nodes,1,node);
+                jsonObjectSet(model,"nodes",nodes);
+                ok <- !frontend_material.frontendMaterial.validate(model,1) && ok;
+                jsonRelease(model);
+                return ok && !frontend_material.frontendMaterial.validate(0,1);
+            }
+    fa: return true;
+}

@@ -1,0 +1,686 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:text, manifest, resolver, sha256>;
+
+dependency_ops[@runtime] {
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            length(value >> p<byte>) -> int {
+                width >> int <- 0;
+                while (rd(off(value, width)) != 0) { width += 1; }
+                return width;
+            }
+
+            white(value >> byte) -> bool {
+                return value == 32 || value == 9 || value == 10 || value == 13;
+            }
+
+            trimStart(data >> p<byte>, start >> int, end >> int) -> int {
+                while (start < end && white(rd(off(data, start)))) { start += 1; }
+                return start;
+            }
+
+            trimEnd(data >> p<byte>, start >> int, end >> int) -> int {
+                while (end > start && white(rd(off(data, end - 1)))) { end -= 1; }
+                return end;
+            }
+
+            slice(data >> p<byte>, start >> int, end >> int) -> str {
+                if (end <= start) return "";
+                bytes >> int <- end - start;
+                out >> p<byte> <- cast(alloc(bytes + 1));
+                guard out != null else return "";
+                cp(out, off(data, start), bytes);
+                wr(off(out, bytes), 0);
+                return cast(out);
+            }
+
+            rangeSame(data >> p<byte>, start >> int, end >> int, wanted >> str) -> bool {
+                start <- trimStart(data, start, end);
+                end <- trimEnd(data, start, end);
+                expected >> p<byte> <- cast(wanted);
+                at >> int <- 0;
+                while (start + at < end && rd(off(expected, at)) != 0) {
+                    if (rd(off(data, start + at)) != rd(off(expected, at))) return false;
+                    at += 1;
+                }
+                return start + at == end && rd(off(expected, at)) == 0;
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                expected >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(expected, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(expected, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionWithValue(value >> str) -> bool {
+                return value == "--manifest" || value == "--manifest-path" ||
+                    value == "--path" || value == "--version" || value == "--vers" ||
+                    value == "--checksum" || value == "--registry" || value == "--git" ||
+                    value == "--branch" || value == "--tag" || value == "--rev" ||
+                    value == "--rename" || value == "--features" || value == "--target" ||
+                    value == "--lock" || value == "--depth" || value == "-p" ||
+                    value == "--package";
+            }
+
+            firstPositional(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (optionWithValue(value)) { at += 2; continue; }
+                    if (!starts(value, "-")) return value;
+                    at += 1;
+                }
+                return "";
+            }
+
+            quoted(value >> str) -> str {
+                node >> int <- jsonNewString(value);
+                rendered >> str <- jsonStringify(node);
+                jsonRelease(node);
+                return rendered;
+            }
+
+            appendField(fields >> str, field >> str) -> str {
+                if (fields == "") return field;
+                return fields + ", " + field;
+            }
+
+            featureArray(value >> str) -> str {
+                if (value == "") return "";
+                source >> p<byte> <- cast(value);
+                bytes >> int <- length(source);
+                output >> str <- "[";
+                start >> int <- 0;
+                at >> int <- 0;
+                count >> int <- 0;
+                while (at <= bytes) {
+                    if (at == bytes || rd(off(source, at)) == 44 || rd(off(source, at)) == 32) {
+                        cleanStart >> int <- trimStart(source, start, at);
+                        cleanEnd >> int <- trimEnd(source, cleanStart, at);
+                        if (cleanEnd > cleanStart) {
+                            if (count > 0) output <- output + ", ";
+                            output <- output + quoted(slice(source, cleanStart, cleanEnd));
+                            count += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                return output + "]";
+            }
+
+            specName(spec >> str) -> str {
+                source >> p<byte> <- cast(spec);
+                bytes >> int <- length(source);
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(source, at)) == 64 && at > 0) return slice(source, 0, at);
+                    at += 1;
+                }
+                return spec;
+            }
+
+            specVersion(spec >> str) -> str {
+                source >> p<byte> <- cast(spec);
+                bytes >> int <- length(source);
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd(off(source, at)) == 64 && at + 1 < bytes) return slice(source, at + 1, bytes);
+                    at += 1;
+                }
+                return "";
+            }
+
+            validChecksum(value >> str) -> bool {
+                if (strByteLen(value) != 64) return false;
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (at < 64) {
+                    current >> byte <- rd(off(source, at));
+                    if (!((current >= 48 && current <= 57) ||
+                        (current >= 65 && current <= 70) ||
+                        (current >= 97 && current <= 102))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            section(handle >> addr) -> str {
+                target >> str <- option(handle, "--target");
+                suffix >> str <- "dependencies";
+                if (hasFlag(handle, "--dev")) suffix <- "dev-dependencies";
+                else if (hasFlag(handle, "--build")) suffix <- "build-dependencies";
+                if (target != "") return "target." + target + "." + suffix;
+                return suffix;
+            }
+
+            dependencyLine(handle >> addr, name >> str, key >> str, version >> str) -> str {
+                fields >> str <- "";
+                path >> str <- option(handle, "--path");
+                git >> str <- option(handle, "--git");
+                checksum >> str <- option(handle, "--checksum");
+                registry >> str <- option(handle, "--registry");
+                if (version != "") fields <- appendField(fields, "version = " + quoted(version));
+                if (path != "") fields <- appendField(fields, "path = " + quoted(path));
+                if (git != "") fields <- appendField(fields, "git = " + quoted(git));
+                branch >> str <- option(handle, "--branch");
+                tag >> str <- option(handle, "--tag");
+                revision >> str <- option(handle, "--rev");
+                if (branch != "") fields <- appendField(fields, "branch = " + quoted(branch));
+                if (tag != "") fields <- appendField(fields, "tag = " + quoted(tag));
+                if (revision != "") fields <- appendField(fields, "rev = " + quoted(revision));
+                if (checksum != "") fields <- appendField(fields, "checksum = " + quoted(checksum));
+                if (registry != "") fields <- appendField(fields, "registry = " + quoted(registry));
+                features >> str <- featureArray(option(handle, "--features"));
+                if (features != "") fields <- appendField(fields, "features = " + features);
+                if (hasFlag(handle, "--no-default-features")) {
+                    fields <- appendField(fields, "default-features = false");
+                }
+                if (hasFlag(handle, "--optional")) fields <- appendField(fields, "optional = true");
+                if (key != name) fields <- appendField(fields, "package = " + quoted(name));
+                return quoted(key) + " = { " + fields + " }\n";
+            }
+
+            lineEnd(data >> p<byte>, bytes >> int, start >> int) -> int {
+                at >> int <- start;
+                while (at < bytes && rd(off(data, at)) != 10 && rd(off(data, at)) != 13) { at += 1; }
+                return at;
+            }
+
+            nextLine(data >> p<byte>, bytes >> int, end >> int) -> int {
+                if (end < bytes && rd(off(data, end)) == 13) {
+                    end += 1;
+                    if (end < bytes && rd(off(data, end)) == 10) end += 1;
+                }
+                else if (end < bytes && rd(off(data, end)) == 10) {
+                    end += 1;
+                    if (end < bytes && rd(off(data, end)) == 13) end += 1;
+                }
+                return end;
+            }
+
+            header(data >> p<byte>, start >> int, end >> int, wanted >> str) -> bool {
+                start <- trimStart(data, start, end);
+                end <- trimEnd(data, start, end);
+                if (end - start < 2 || rd(off(data, start)) != 91 || rd(off(data, end - 1)) != 93) return false;
+                return rangeSame(data, start + 1, end - 1, wanted);
+            }
+
+            anyHeader(data >> p<byte>, start >> int, end >> int) -> bool {
+                start <- trimStart(data, start, end);
+                end <- trimEnd(data, start, end);
+                return end - start >= 2 && rd(off(data, start)) == 91 && rd(off(data, end - 1)) == 93;
+            }
+
+            sectionBody(data >> p<byte>, bytes >> int, wanted >> str) -> int {
+                start >> int <- 0;
+                while (start < bytes) {
+                    end >> int <- lineEnd(data, bytes, start);
+                    if (header(data, start, end, wanted)) return nextLine(data, bytes, end);
+                    start <- nextLine(data, bytes, end);
+                }
+                return -1;
+            }
+
+            sectionHeaderStart(data >> p<byte>, bytes >> int, wanted >> str) -> int {
+                start >> int <- 0;
+                while (start < bytes) {
+                    end >> int <- lineEnd(data, bytes, start);
+                    if (header(data, start, end, wanted)) return start;
+                    start <- nextLine(data, bytes, end);
+                }
+                return -1;
+            }
+
+            sectionLimit(data >> p<byte>, bytes >> int, body >> int) -> int {
+                start >> int <- body;
+                emptyStart >> int <- -1;
+                while (start < bytes) {
+                    end >> int <- lineEnd(data, bytes, start);
+                    cleanStart >> int <- trimStart(data, start, end);
+                    cleanEnd >> int <- trimEnd(data, cleanStart, end);
+                    if (anyHeader(data, start, end)) return emptyStart >= 0 ? emptyStart : start;
+                    if (cleanStart == cleanEnd) {
+                        if (emptyStart < 0) emptyStart <- start;
+                    }
+                    else emptyStart <- -1;
+                    start <- nextLine(data, bytes, end);
+                }
+                return emptyStart >= 0 ? emptyStart : bytes;
+            }
+
+            keyMatches(data >> p<byte>, start >> int, end >> int, wanted >> str) -> bool {
+                start <- trimStart(data, start, end);
+                end <- trimEnd(data, start, end);
+                if (start >= end || rd(off(data, start)) == 35) return false;
+                equal >> int <- start;
+                quote >> byte <- 0;
+                while (equal < end) {
+                    current >> byte <- rd(off(data, equal));
+                    if ((current == 34 || current == 39) && quote == 0) quote <- current;
+                    else if (current == quote) quote <- 0;
+                    else if (current == 61 && quote == 0) {
+                        keyStart >> int <- trimStart(data, start, equal);
+                        keyEnd >> int <- trimEnd(data, keyStart, equal);
+                        if (keyEnd - keyStart >= 2 &&
+                            ((rd(off(data, keyStart)) == 34 && rd(off(data, keyEnd - 1)) == 34) ||
+                            (rd(off(data, keyStart)) == 39 && rd(off(data, keyEnd - 1)) == 39))) {
+                            keyStart += 1;
+                            keyEnd -= 1;
+                        }
+                        return rangeSame(data, keyStart, keyEnd, wanted);
+                    }
+                    equal += 1;
+                }
+                return false;
+            }
+
+            logicalEnd(data >> p<byte>, bytes >> int, start >> int) -> int {
+                at >> int <- start;
+                square >> int <- 0;
+                curly >> int <- 0;
+                quote >> byte <- 0;
+                escaped >> bool <- false;
+                comment >> bool <- false;
+                while (at < bytes) {
+                    current >> byte <- rd(off(data, at));
+                    if (current == 10 || current == 13) {
+                        if (square == 0 && curly == 0 && quote == 0) return nextLine(data, bytes, at);
+                        comment <- false;
+                    }
+                    else if (!comment) {
+                        if (escaped) escaped <- false;
+                        else if (current == 92 && quote != 0) escaped <- true;
+                        else if (current == 34 || current == 39) {
+                            if (quote == 0) quote <- current;
+                            else if (quote == current) quote <- 0;
+                        }
+                        else if (quote == 0 && current == 35) comment <- true;
+                        else if (quote == 0 && current == 91) square += 1;
+                        else if (quote == 0 && current == 93) square -= 1;
+                        else if (quote == 0 && current == 123) curly += 1;
+                        else if (quote == 0 && current == 125) curly -= 1;
+                    }
+                    at += 1;
+                }
+                return bytes;
+            }
+
+            entryStart(data >> p<byte>, bytes >> int, body >> int, limit >> int, key >> str) -> int {
+                start >> int <- body;
+                while (start < limit) {
+                    end >> int <- lineEnd(data, bytes, start);
+                    if (keyMatches(data, start, end, key)) return start;
+                    start <- logicalEnd(data, limit, start);
+                }
+                return -1;
+            }
+
+            otherSectionContent(
+                data >> p<byte>,
+                body >> int,
+                limit >> int,
+                removedStart >> int,
+                removedEnd >> int
+            ) -> bool {
+                at >> int <- body;
+                while (at < limit) {
+                    if (at >= removedStart && at < removedEnd) {
+                        at <- removedEnd;
+                        continue;
+                    }
+                    if (!white(rd(off(data, at)))) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            edited(sourceText >> str, sectionName >> str, key >> str, line >> str, removeOnly >> bool) -> str {
+                data >> p<byte> <- cast(sourceText);
+                bytes >> int <- length(data);
+                body >> int <- sectionBody(data, bytes, sectionName);
+                if (body < 0) {
+                    if (removeOnly) return "";
+                    separator >> str <- bytes == 0 || rd(off(data, bytes - 1)) == 10 ? "" : "\n";
+                    return sourceText + separator + "\n[" + sectionName + "]\n" + line;
+                }
+                limit >> int <- sectionLimit(data, bytes, body);
+                found >> int <- entryStart(data, bytes, body, limit, key);
+                if (found >= 0) {
+                    end >> int <- logicalEnd(data, limit, found);
+                    if (removeOnly && !otherSectionContent(data, body, limit, found, end)) {
+                        removeStart >> int <- sectionHeaderStart(data, bytes, sectionName);
+                        if (removeStart > 0 && rd(off(data, removeStart - 1)) == 10) removeStart -= 1;
+                        return slice(data, 0, removeStart) + slice(data, limit, bytes);
+                    }
+                    return slice(data, 0, found) + (removeOnly ? "" : line) + slice(data, end, bytes);
+                }
+                if (removeOnly) return "";
+                return slice(data, 0, limit) + line + slice(data, limit, bytes);
+            }
+
+            loadText(path >> str) -> str {
+                bytes >> int <- fsSize(path);
+                guard bytes >= 0 else return "";
+                data >> p<byte> <- cast(alloc(bytes + 1));
+                guard data != null else return "";
+                read >> int <- fsReadInto(path, data, bytes);
+                guard read >= 0 else { free(data); return ""; }
+                wr(off(data, read), 0);
+                return cast(data);
+            }
+
+            validManifest(path >> str) -> bool {
+                parsed >> int <- manifest.manifest.load(path);
+                guard parsed != 0 else return false;
+                valid >> bool <- jsonArrayLen(jsonObjectGet(parsed, "diagnostics")) == 0;
+                jsonRelease(parsed);
+                return valid;
+            }
+
+            validateText(path >> str, updated >> str) -> bool {
+                temporary >> str <- path + ".ghor.validate.tmp";
+                if (exists(temporary)) delete_file(temporary);
+                guard fswrite(temporary, updated) && fsSize(temporary) == strByteLen(updated) else {
+                    if (exists(temporary)) delete_file(temporary);
+                    return false;
+                }
+                valid >> bool <- validManifest(temporary);
+                delete_file(temporary);
+                return valid;
+            }
+
+            writeValidated(path >> str, updated >> str) -> bool {
+                temporary >> str <- path + ".ghor.tmp";
+                backup >> str <- path + ".ghor.bak";
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                guard fswrite(temporary, updated) && fsSize(temporary) == strByteLen(updated) else {
+                    if (exists(temporary)) delete_file(temporary);
+                    return false;
+                }
+                fsync(temporary);
+                guard validManifest(temporary) else { delete_file(temporary); return false; }
+                originalBytes >> int <- fsSize(path);
+                guard fsCopy(path, backup) == originalBytes else { delete_file(temporary); return false; }
+                guard delete_file(path) else { delete_file(temporary); delete_file(backup); return false; }
+                if (!rename_file(temporary, path)) {
+                    fsCopy(backup, path);
+                    delete_file(temporary);
+                    delete_file(backup);
+                    return false;
+                }
+                fsync(path);
+                delete_file(backup);
+                return true;
+            }
+
+            diagnostic(code >> str, message >> str) -> int {
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "code", jsonNewString(code));
+                jsonObjectSet(entry, "severity", jsonNewString("error"));
+                jsonObjectSet(entry, "message", jsonNewString(message));
+                return entry;
+            }
+
+            printModel(model >> int, ok >> bool) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return ok ? 0 : 2;
+            }
+
+            failure(schema >> str, code >> str, message >> str) -> int {
+                report >> int <- jsonNewObject();
+                diagnostics >> int <- jsonNewArray();
+                jsonArrayPush(diagnostics, diagnostic(code, message));
+                jsonObjectSet(report, "schema", jsonNewString(schema));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString("error"));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return printModel(report, false);
+            }
+
+            executeAdd(handle >> addr) -> int {
+                spec >> str <- firstPositional(handle);
+                guard spec != "" else return failure("ghor.add.v1", "E_GHOR_DEP_RESOLUTION_001",
+                    "add expects <package>");
+                if (hasFlag(handle, "--dev") && hasFlag(handle, "--build")) {
+                    return failure("ghor.add.v1", "E_GHOR_DEP_RESOLUTION_001",
+                        "--dev and --build are mutually exclusive");
+                }
+                pathSource >> str <- option(handle, "--path");
+                gitSource >> str <- option(handle, "--git");
+                if (pathSource != "" && gitSource != "") return failure("ghor.add.v1",
+                    "E_GHOR_DEP_RESOLUTION_001", "--path and --git are mutually exclusive");
+                selectors >> int <- (option(handle, "--branch") != "" ? 1 : 0) +
+                    (option(handle, "--tag") != "" ? 1 : 0) +
+                    (option(handle, "--rev") != "" ? 1 : 0);
+                if (selectors > 1 || (selectors > 0 && gitSource == "")) return failure("ghor.add.v1",
+                    "E_GHOR_DEP_RESOLUTION_001", "branch, tag and rev require one exclusive --git source");
+                checksum >> str <- option(handle, "--checksum");
+                if (pathSource == "" && gitSource == "" && !validChecksum(checksum)) {
+                    return failure("ghor.add.v1", "E_GHOR_CHECKSUM_001",
+                        "registry dependencies require a 64-digit --checksum <sha256>");
+                }
+                name >> str <- specName(spec);
+                key >> str <- option(handle, "--rename");
+                if (key == "") key <- name;
+                version >> str <- option(handle, "--version");
+                if (version == "") version <- option(handle, "--vers");
+                if (version == "") version <- specVersion(spec);
+                if (version == "" && pathSource == "" && gitSource == "") version <- "*";
+                manifestPath >> str <- manifest.manifest.select(handle);
+                guard manifestPath != "" && exists(manifestPath) else return failure("ghor.add.v1",
+                    "E_GHOR_MANIFEST_001", "manifest not found");
+                sourceText >> str <- loadText(manifestPath);
+                before >> str <- sha256.sha256.file(manifestPath);
+                sectionName >> str <- section(handle);
+                data >> p<byte> <- cast(sourceText);
+                body >> int <- sectionBody(data, strByteLen(sourceText), sectionName);
+                replaced >> bool <- body >= 0 && entryStart(data, strByteLen(sourceText), body,
+                    sectionLimit(data, strByteLen(sourceText), body), key) >= 0;
+                line >> str <- dependencyLine(handle, name, key, version);
+                updated >> str <- edited(sourceText, sectionName, key, line, false);
+                after >> str <- sha256.sha256.bytes(cast(updated), strByteLen(updated));
+                dryRun >> bool <- hasFlag(handle, "--dry-run");
+                written >> bool <- false;
+                if (dryRun) written <- validateText(manifestPath, updated);
+                else written <- writeValidated(manifestPath, updated);
+                report >> int <- jsonNewObject();
+                diagnostics >> int <- jsonNewArray();
+                if (!written) jsonArrayPush(diagnostics, diagnostic("E_GHOR_MANIFEST_WRITE_001",
+                    "validated manifest replacement failed"));
+                jsonObjectSet(report, "schema", jsonNewString("ghor.add.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(!written ? "error" :
+                    (dryRun ? "dry_run" : (replaced ? "replaced" : "added"))));
+                jsonObjectSet(report, "manifest", jsonNewString(manifestPath));
+                jsonObjectSet(report, "dependency", jsonNewString(name));
+                jsonObjectSet(report, "key", jsonNewString(key));
+                jsonObjectSet(report, "section", jsonNewString(sectionName));
+                replacedNode >> int <- jsonNewBool(false);
+                if (replaced) {
+                    jsonRelease(replacedNode);
+                    replacedNode <- jsonNewBool(true);
+                }
+                jsonObjectSet(report, "replaced", replacedNode);
+                jsonObjectSet(report, "manifest_sha256_before", jsonNewString(before));
+                jsonObjectSet(report, "manifest_sha256_after", jsonNewString(after));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                free(cast(sourceText));
+                return printModel(report, written);
+            }
+
+            executeRemove(handle >> addr) -> int {
+                spec >> str <- firstPositional(handle);
+                guard spec != "" else return failure("ghor.remove.v1", "E_GHOR_DEP_RESOLUTION_001",
+                    "remove expects <package>");
+                if (hasFlag(handle, "--dev") && hasFlag(handle, "--build")) {
+                    return failure("ghor.remove.v1", "E_GHOR_DEP_RESOLUTION_001",
+                        "--dev and --build are mutually exclusive");
+                }
+                key >> str <- specName(spec);
+                manifestPath >> str <- manifest.manifest.select(handle);
+                guard manifestPath != "" && exists(manifestPath) else return failure("ghor.remove.v1",
+                    "E_GHOR_MANIFEST_001", "manifest not found");
+                sourceText >> str <- loadText(manifestPath);
+                before >> str <- sha256.sha256.file(manifestPath);
+                sectionName >> str <- section(handle);
+                updated >> str <- edited(sourceText, sectionName, key, "", true);
+                guard updated != "" else { free(cast(sourceText)); return failure("ghor.remove.v1",
+                    "E_GHOR_DEP_RESOLUTION_001", "dependency '" + key + "' is not present in [" +
+                    sectionName + "]"); }
+                after >> str <- sha256.sha256.bytes(cast(updated), strByteLen(updated));
+                dryRun >> bool <- hasFlag(handle, "--dry-run");
+                written >> bool <- false;
+                if (dryRun) written <- validateText(manifestPath, updated);
+                else written <- writeValidated(manifestPath, updated);
+                report >> int <- jsonNewObject();
+                diagnostics >> int <- jsonNewArray();
+                if (!written) jsonArrayPush(diagnostics, diagnostic("E_GHOR_MANIFEST_WRITE_001",
+                    "validated manifest replacement failed"));
+                jsonObjectSet(report, "schema", jsonNewString("ghor.remove.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(!written ? "error" :
+                    (dryRun ? "dry_run" : "removed")));
+                jsonObjectSet(report, "manifest", jsonNewString(manifestPath));
+                jsonObjectSet(report, "dependency", jsonNewString(key));
+                jsonObjectSet(report, "section", jsonNewString(sectionName));
+                jsonObjectSet(report, "manifest_sha256_before", jsonNewString(before));
+                jsonObjectSet(report, "manifest_sha256_after", jsonNewString(after));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                free(cast(sourceText));
+                return printModel(report, written);
+            }
+
+            appendRoots(output >> int, source >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    jsonArrayPush(output, jsonClone(jsonArrayGet(source, at)));
+                    at += 1;
+                }
+                return true;
+            }
+
+            rootDependencies(root >> int, includeDev >> bool) -> int {
+                output >> int <- jsonNewArray();
+                appendRoots(output, jsonObjectGet(root, "dependencies"));
+                appendRoots(output, jsonObjectGet(root, "build_dependencies"));
+                appendRoots(output, jsonObjectGet(root, "target_dependencies"));
+                if (includeDev) appendRoots(output, jsonObjectGet(root, "dev_dependencies"));
+                return output;
+            }
+
+            edge(edges >> int, from >> str, dependency >> int, root >> bool) -> bool {
+                to >> str <- jsonGetStringOr(jsonObjectGet(dependency, "name"), "");
+                if (to == "") return false;
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "from", jsonNewString(from));
+                jsonObjectSet(item, "to", jsonNewString(to));
+                jsonObjectSet(item, "kind", jsonClone(jsonObjectGet(dependency, "kind")));
+                jsonObjectSet(item, "target", jsonClone(jsonObjectGet(dependency, "target")));
+                jsonObjectSet(item, "root", jsonNewBool(root));
+                return jsonArrayPush(edges, item);
+            }
+
+            executeTree(handle >> addr) -> int {
+                resolve >> int <- resolver.resolver.model(handle);
+                guard resolve != 0 else return failure("ghor.tree.v2", "E_GHOR_RESOLVER_001",
+                    "dependency graph cannot be resolved");
+                diagnostics >> int <- jsonClone(jsonObjectGet(resolve, "diagnostics"));
+                root >> int <- jsonObjectGet(resolve, "manifest");
+                package >> str <- jsonGetStringOr(jsonObjectGet(jsonObjectGet(root, "package"), "name"), "");
+                roots >> int <- rootDependencies(root, hasFlag(handle, "--include-dev"));
+                edges >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(roots)) {
+                    edge(edges, package, jsonArrayGet(roots, at), true);
+                    at += 1;
+                }
+                nodes >> int <- jsonObjectGet(resolve, "resolved");
+                at <- 0;
+                while (at < jsonArrayLen(nodes)) {
+                    node >> int <- jsonArrayGet(nodes, at);
+                    from >> str <- jsonGetStringOr(jsonObjectGet(node, "name"), "");
+                    dependencies >> int <- jsonObjectGet(node, "dependencies");
+                    depAt >> int <- 0;
+                    while (depAt < jsonArrayLen(dependencies)) {
+                        edge(edges, from, jsonArrayGet(dependencies, depAt), false);
+                        depAt += 1;
+                    }
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.tree.v2"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "package", jsonNewString(package));
+                jsonObjectSet(report, "resolver", jsonClone(jsonObjectGet(resolve, "resolver")));
+                jsonObjectSet(report, "root_dependencies", roots);
+                jsonObjectSet(report, "nodes", jsonClone(nodes));
+                jsonObjectSet(report, "edges", edges);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "resolve", jsonClone(resolve));
+                ok >> bool <- jsonArrayLen(jsonObjectGet(resolve, "diagnostics")) == 0;
+                jsonRelease(resolve);
+                return printModel(report, ok);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "add" || command == "remove" || command == "tree";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "add") return executeAdd(handle);
+                if (command == "remove") return executeRemove(handle);
+                return executeTree(handle);
+            }
+
+            selfTest() -> bool {
+                return length(cast("dependency")) == 10 &&
+                    starts("alpha@1.2.3", "alpha") &&
+                    !starts("alpha@1.2.3", "beta");
+            }
+
+    fa:
+        return true;
+}

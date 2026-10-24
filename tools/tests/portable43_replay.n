@@ -1,0 +1,70 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:physical43_common, physical43_deep_json, portable43_repr, release_io, cert_json>;
+
+portable43Replay {
+    fn:
+        private:
+            argument(value >> int) -> int {
+                input >> str <- jsonStringView(value,""); if (physical43_common.physical43Common.hasNul(input)) return 0;
+                plain >> str <- physical43_common.physical43Common.plainText(input); result >> int <- jsonNewString(plain); free(cast<byte>(plain)); return result;
+            }
+            cli(candidate >> str, repo >> str, fixtures >> str, work >> str, checks >> int) -> bool {
+                definitions >> int <- jsonParse("[[\"no-options\",[],2],[\"help\",[\"--help\"],0],[\"unknown-short\",[\"-z\"],2],[\"ambiguous-root-require\",[\"--r\",\"x\"],2],[\"unknown-long\",[\"--unknown\"],2],[\"bad-value-option\",[\"--require\",\"--unknown\"],2],[\"require-inline-dash\",[\"--require=-x\"],1],[\"empty-inline-require\",[\"--require=\"],0],[\"delimiter-tail\",[\"--\",\"extra\"],2],[\"single-dash-unknown\",[\"-R\"],2],[\"missing-root-value\",[\"--root\"],2],[\"missing-out-value\",[\"--out\"],2],[\"root-inline\",[],0],[\"unique-abbreviations\",[],0]]"); at >> int <- 0; good >> bool <- true;
+                while (at < jsonArrayLen(definitions)) {
+                    definition >> int <- jsonArrayBorrow(definitions,at); idNode >> int <- jsonArrayBorrow(definition,0); id >> str <- jsonStringView(idNode,""); tail >> int <- jsonArrayBorrow(definition,1); codeNode >> int <- jsonArrayBorrow(definition,2); expected >> int <- jsonGetInt(codeNode);
+                    words >> int <- jsonNewArray(); cert_json.certJson.push(words,jsonNewString(candidate)); cert_json.certJson.push(words,jsonNewString("portable-hypervisor-iommu")); out >> str <- work+"/cli-"+id+".json"; md >> str <- work+"/cli-"+id+".md"; root >> str <- fixtures+"/fixtures/base-backend/evidence";
+                    if (id == "root-inline") { cert_json.certJson.push(words,jsonNewString("--root="+root)); cert_json.certJson.push(words,jsonNewString("--out="+out)); cert_json.certJson.push(words,jsonNewString("--markdown-out="+md)); }
+                    else if (id == "unique-abbreviations") { cert_json.certJson.push(words,jsonNewString("--roo")); cert_json.certJson.push(words,jsonNewString(root)); cert_json.certJson.push(words,jsonNewString("--ou")); cert_json.certJson.push(words,jsonNewString(out)); cert_json.certJson.push(words,jsonNewString("--markdown-o")); cert_json.certJson.push(words,jsonNewString(md)); }
+                    else if (id != "no-options" && id != "help" && id != "missing-root-value" && id != "missing-out-value") { cert_json.certJson.push(words,jsonNewString("--root")); cert_json.certJson.push(words,jsonNewString(root)); cert_json.certJson.push(words,jsonNewString("--out")); cert_json.certJson.push(words,jsonNewString(out)); cert_json.certJson.push(words,jsonNewString("--markdown-out")); cert_json.certJson.push(words,jsonNewString(md)); }
+                    index >> int <- 0; while (index < jsonArrayLen(tail)) { cert_json.certJson.push(words,jsonArrayGet(tail,index)); index += 1; }
+                    physical43_common.physical43Common.deleteFile(out); physical43_common.physical43Common.deleteFile(md);
+                    capture >> int <- physical43_common.physical43Common.command(words,repo,30000); jsonRelease(words); actualNode >> int <- jsonObjectBorrow(capture,"code"); actual >> int <- jsonGetIntOr(actualNode,-999); jsonRelease(actualNode);
+                    hasReport >> bool <- expected == 0 && id != "help"; passed >> bool <- actual == expected && physical43_common.physical43Common.boolAt(capture,"/capture_ok") && (physical43_common.physical43Common.fileType(out) == 1) == hasReport && (physical43_common.physical43Common.fileType(md) == 1) == hasReport; good <- good && passed;
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"id",jsonNewString("cli-"+id)); cert_json.certJson.put(row,"passed",jsonNewBool(passed)); cert_json.certJson.put(row,"exit",jsonNewInt(actual)); cert_json.certJson.put(row,"expected_exit",jsonNewInt(expected)); jsonObjectSet(row,"capture",capture); cert_json.certJson.push(checks,row); println((passed ? "PASS " : "FAIL ")+"cli-"+id);
+                    jsonRelease(capture); jsonRelease(definition); jsonRelease(idNode); jsonRelease(tail); jsonRelease(codeNode); strRelease(out); strRelease(md); strRelease(root); at += 1;
+                }
+                jsonRelease(definitions); return good;
+            }
+            normalize(model >> int, evidence >> str) -> bool {
+                root >> str <- envHas("WINDIR") ? physical43_common.physical43Common.nativePath(evidence) : strSubstring(evidence,0,strByteLen(evidence)); keys >> int <- jsonParse("[\"certificates\",\"checksum_files\"]"); at >> int <- 0; good >> bool <- true;
+                while (at < 2) {
+                    keyNode >> int <- jsonArrayBorrow(keys,at); rows >> int <- jsonObjectBorrow(model,jsonStringView(keyNode,"")); normalizedRows >> int <- jsonNewArray(); index >> int <- 0;
+                    while (index < jsonArrayLen(rows)) { row >> int <- jsonArrayBorrow(rows,index); path >> str <- physical43_common.physical43Common.field(row,"path"); if (!strStartsWith(path,root)) good <- false; else { relative >> str <- strSubstring(path,strByteLen(root),strByteLen(path)-strByteLen(root)); normalized >> str <- envHas("WINDIR") ? release_io.releaseIo.forwardPath(relative) : strSubstring(relative,0,strByteLen(relative)); cert_json.certJson.put(row,"path",jsonNewString("$EVIDENCE"+normalized)); strRelease(normalized); strRelease(relative); } strRelease(path); jsonArrayPush(normalizedRows,row); jsonRelease(row); index += 1; }
+                    cert_json.certJson.put(model,jsonStringView(keyNode,""),normalizedRows);
+                    jsonRelease(rows); jsonRelease(keyNode); at += 1;
+                }
+                strRelease(root); jsonRelease(keys); return good;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); repo >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--repo",".")); candidate >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--candidate",""));
+                fixtures >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--fixtures","")); work >> str <- physical43_common.physical43Common.absolutePath(release_io.releaseIo.option(arguments,"--work",""));
+                goldenPath >> str <- release_io.releaseIo.option(arguments,"--goldens",repo+"/bootstrap/portable43-cli-goldens.json"); golden >> int <- physical43_common.physical43Common.read(goldenPath,false); source >> int <- physical43_common.physical43Common.read(fixtures+"/cases.json",false);
+                if (jsonKind(golden) != 6 || jsonKind(source) != 6 || physical43_common.physical43Common.fileType(candidate) != 1) { argsRelease(arguments); return 2; }
+                cases >> int <- jsonObjectBorrow(source,"cases"); frozen >> int <- jsonObjectBorrow(golden,envHas("WINDIR") ? "windows" : "linux"); checks >> int <- jsonNewArray(); passed >> bool <- jsonArrayLen(frozen) == jsonArrayLen(cases) && jsonArrayLen(cases) > 0; index >> int <- 0;
+                physical43_common.physical43Common.directories(work);
+                while (index < jsonArrayLen(cases)) {
+                    spec >> int <- jsonArrayBorrow(cases,index); expected >> int <- jsonArrayBorrow(frozen,index); id >> str <- physical43_common.physical43Common.field(spec,"id"); evidence >> str <- fixtures+"/fixtures/"+id+"/evidence"; out >> str <- work+"/"+id+".json"; md >> str <- work+"/"+id+".md";
+                    words >> int <- jsonNewArray(); cert_json.certJson.push(words,jsonNewString(candidate)); cert_json.certJson.push(words,jsonNewString("portable-hypervisor-iommu")); cert_json.certJson.push(words,jsonNewString("--root")); cert_json.certJson.push(words,jsonNewString(evidence)); cert_json.certJson.push(words,jsonNewString("--out")); cert_json.certJson.push(words,jsonNewString(out)); cert_json.certJson.push(words,jsonNewString("--markdown-out")); cert_json.certJson.push(words,jsonNewString(md));
+                    sha >> int <- jsonObjectBorrow(spec,"expected_sha"); if (jsonKind(sha) == 4) { cert_json.certJson.push(words,jsonNewString("--expected-sha")); cert_json.certJson.push(words,argument(sha)); } jsonRelease(sha);
+                    required >> int <- jsonObjectBorrow(spec,"require"); at >> int <- 0; while (at < jsonArrayLen(required)) { cert_json.certJson.push(words,jsonNewString("--require")); requirement >> int <- jsonArrayBorrow(required,at); cert_json.certJson.push(words,argument(requirement)); jsonRelease(requirement); at += 1; } jsonRelease(required);
+                    physical43_common.physical43Common.deleteFile(out); physical43_common.physical43Common.deleteFile(md);
+                    capture >> int <- physical43_common.physical43Common.command(words,repo,60000); jsonRelease(words); codeNode >> int <- jsonObjectBorrow(capture,"code"); expectedCode >> int <- jsonObjectBorrow(expected,"expected_exit"); code >> int <- jsonGetIntOr(codeNode,-999); wanted >> int <- jsonGetIntOr(expectedCode,-998); jsonRelease(codeNode); jsonRelease(expectedCode);
+                    exists >> bool <- physical43_common.physical43Common.fileType(out) == 1; markdownExists >> bool <- physical43_common.physical43Common.fileType(md) == 1; good >> bool <- code == wanted && exists == (wanted == 0) && markdownExists == (wanted == 0) && physical43_common.physical43Common.boolAt(capture,"/capture_ok") && !physical43_common.physical43Common.boolAt(capture,"/timed_out") && id == physical43_common.physical43Common.field(expected,"id");
+                    inputRel >> str <- physical43_common.physical43Common.field(spec,"certificate_rel"); inputHash >> str <- physical43_common.physical43Common.fileHash(evidence+"/"+inputRel); good <- good && inputHash == physical43_common.physical43Common.field(expected,"input_sha256");
+                    jsonEqual >> bool <- !exists; markdownEqual >> bool <- !markdownExists;
+                    if (exists) { actual >> int <- physical43_common.physical43Common.read(out,false); savedInput >> str <- physical43_common.physical43Common.field(expected,"manifest_input"); frozenManifest >> int <- physical43_deep_json.physical43DeepJson.parse(savedInput); jsonEqual <- normalize(actual,evidence) && physical43_common.physical43Common.equal(actual,frozenManifest); if (!jsonEqual && id == "base-backend") { physical43_common.physical43Common.save(work+"/first-actual.json",actual); physical43_common.physical43Common.save(work+"/first-expected.json",frozenManifest); } jsonRelease(frozenManifest); strRelease(savedInput); jsonRelease(actual); }
+                    if (markdownExists) { hash >> str <- physical43_common.physical43Common.fileHash(md); markdownEqual <- hash == physical43_common.physical43Common.field(expected,"markdown_sha256"); strRelease(hash); }
+                    good <- good && jsonEqual && markdownEqual; passed <- passed && good;
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"id",jsonNewString(id)); cert_json.certJson.put(row,"passed",jsonNewBool(good)); cert_json.certJson.put(row,"exit",jsonNewInt(code)); cert_json.certJson.put(row,"expected_exit",jsonNewInt(wanted)); cert_json.certJson.put(row,"json_equal",jsonNewBool(jsonEqual)); cert_json.certJson.put(row,"markdown_bytes_equal",jsonNewBool(markdownEqual)); cert_json.certJson.put(row,"report_exists",jsonNewBool(exists)); cert_json.certJson.put(row,"markdown_exists",jsonNewBool(markdownExists)); cert_json.certJson.put(row,"input_sha256",jsonNewString(inputHash)); jsonObjectSet(row,"capture",capture); cert_json.certJson.push(checks,row);
+                    println((good ? "PASS " : "FAIL ")+id); strRelease(inputRel); strRelease(inputHash); strRelease(id); strRelease(evidence); strRelease(out); strRelease(md); jsonRelease(capture); jsonRelease(spec); jsonRelease(expected); index += 1;
+                }
+                passed <- cli(candidate,repo,fixtures,work,checks) && passed;
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.portable43.native-replay.v1")); cert_json.certJson.put(report,"passed",jsonNewBool(passed)); cert_json.certJson.put(report,"physical_claims",jsonNewBool(false)); cert_json.certJson.put(report,"candidate",jsonNewString(candidate)); cert_json.certJson.put(report,"candidate_sha256",jsonNewString(physical43_common.physical43Common.fileHash(candidate))); cert_json.certJson.put(report,"goldens_sha256",jsonNewString(physical43_common.physical43Common.fileHash(goldenPath))); jsonObjectSet(report,"cases",checks);
+                savedReport >> bool <- physical43_common.physical43Common.save(work+"/replay.json",report); jsonRelease(report); jsonRelease(checks); jsonRelease(frozen); jsonRelease(cases); jsonRelease(source); jsonRelease(golden); argsRelease(arguments); return passed && savedReport ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

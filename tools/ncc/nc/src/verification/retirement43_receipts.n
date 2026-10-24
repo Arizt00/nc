@@ -1,0 +1,264 @@
+use <data:json>;
+use <project:release_io, sha256, editor_json>;
+
+retirement43Receipts {
+    const:
+        SCHEMA >> str <- "nc.native-tools.equivalence-receipt.v43";
+        MAX_JSON_BYTES >> int <- 16777216;
+        MAX_CANDIDATE_BYTES >> int <- 268435456;
+        MAX_PROOFS >> int <- 1024;
+        MAX_ITEMS >> int <- 1048576;
+    fn:
+        private:
+            relative(path >> str) -> bool {
+                length >> int <- strByteLen(path);
+                if (length == 0 || length > 8192) return false;
+                data >> p<byte> <- cast(path);
+                start >> int <- 0;
+                index >> int <- 0;
+                while (index <= length) {
+                    byte >> int <- index == length ? 47 : rd(off(data,index)) & 255;
+                    if (byte < 32 || byte == 127 || byte == 58 || byte == 92) return false;
+                    if (byte == 47) {
+                        size >> int <- index-start;
+                        if (size == 0) return false;
+                        if (size == 1 && rd(off(data,start)) == 46) return false;
+                        if (size == 2 && rd(off(data,start)) == 46 && rd(off(data,start+1)) == 46) return false;
+                        start <- index+1;
+                    }
+                    index += 1;
+                }
+                return true;
+            }
+            digest(value >> str) -> bool {
+                if (strByteLen(value) != 64) return false;
+                data >> p<byte> <- cast(value);
+                index >> int <- 0;
+                while (index < 64) {
+                    byte >> int <- rd(off(data,index)) & 255;
+                    if (!((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102))) return false;
+                    index += 1;
+                }
+                return true;
+            }
+            stringField(model >> int, name >> str, expected >> str) -> bool {
+                if (model <= 0) return false;
+                if (jsonKind(model) != 6) return false;
+                child >> int <- jsonObjectBorrow(model,name);
+                if (child <= 0) return false;
+                good >> bool <- jsonKind(child) == 4 && jsonStringView(child,"") == expected;
+                jsonRelease(child);
+                return good;
+            }
+            trueField(model >> int, name >> str) -> bool {
+                if (model <= 0) return false;
+                if (jsonKind(model) != 6) return false;
+                child >> int <- jsonObjectBorrow(model,name);
+                if (child <= 0) return false;
+                good >> bool <- jsonKind(child) == 2 && jsonGetBoolOr(child,false);
+                jsonRelease(child);
+                return good;
+            }
+            zeroIfPresent(model >> int, name >> str) -> bool {
+                if (model <= 0) return false;
+                if (jsonKind(model) != 6) return false;
+                if (!jsonObjectHas(model,name)) return true;
+                child >> int <- jsonObjectBorrow(model,name);
+                good >> bool <- jsonKind(child) == 3;
+                if (good) {
+                    // Inspect the lexical integer, not jsonGetInt's truncating conversion.
+                    number >> str <- jsonGetNumberText(child);
+                    good <- number == "0" || number == "-0";
+                    if (number != "") free(cast<byte>(number));
+                }
+                jsonRelease(child);
+                return good;
+            }
+            counter(model >> int, name >> str) -> bool {
+                child >> int <- jsonObjectBorrow(model,name);
+                if (child <= 0) return false;
+                good >> bool <- jsonKind(child) == 3;
+                if (good) {
+                    token >> str <- jsonGetNumberText(child);
+                    size >> int <- strByteLen(token);
+                    good <- size > 0 && size <= 10;
+                    index >> int <- 0; value >> int <- 0;
+                    while (good && index < size) {
+                        digit >> int <- rd(off(cast<byte>(token),index)) & 255;
+                        if (digit < 48 || digit > 57) good <- false;
+                        else { value <- value*10+digit-48; if (value > MAX_ITEMS) good <- false; }
+                        index += 1;
+                    }
+                    if (token != "") free(cast<byte>(token));
+                }
+                jsonRelease(child); return good;
+            }
+            load(root >> str, path >> str, expectedSHA >> str) -> int {
+                absolute >> str <- root+"/"+path;
+                size >> int <- fsSize(absolute);
+                good >> bool <- release_io.releaseIo.fileType(absolute) == 1 && size > 0 && size <= MAX_JSON_BYTES;
+                if (!good) { strRelease(absolute); return 0; }
+                text >> str <- release_io.releaseIo.text(absolute);
+                strRelease(absolute);
+                // Hash the exact buffer subsequently parsed, including any trailing bytes.
+                good <- strByteLen(text) == size;
+                if (good && expectedSHA != "") {
+                    actual >> str <- sha256.nccSha256.bytes(cast<byte>(text),size);
+                    good <- actual == expectedSHA;
+                    strRelease(actual);
+                }
+                model >> int <- good ? editor_json.editorJson.parse(text) : 0;
+                if (text != "") free(cast<byte>(text));
+                return model;
+            }
+            covered(model >> int, original >> str) -> bool {
+                if (model <= 0) return false;
+                if (!jsonObjectHas(model,"covered_originals")) return true;
+                list >> int <- jsonObjectBorrow(model,"covered_originals");
+                if (list <= 0) return false;
+                if (jsonKind(list) != 5) { jsonRelease(list); return false; }
+                count >> int <- jsonArrayLen(list);
+                good >> bool <- jsonKind(list) == 5 && count > 0 && count <= MAX_ITEMS;
+                found >> bool <- false;
+                index >> int <- 0;
+                while (good && index < count) {
+                    child >> int <- jsonArrayBorrow(list,index);
+                    if (child <= 0) { good <- false; break; }
+                    name >> str <- jsonStringView(child,"");
+                    good <- jsonKind(child) == 4 && relative(name) && strEndsWith(name,".py");
+                    if (good && name == original) found <- true;
+                    jsonRelease(child);
+                    index += 1;
+                }
+                jsonRelease(list);
+                return good && found;
+            }
+            collection(model >> int, name >> str) -> bool {
+                list >> int <- jsonObjectBorrow(model,name);
+                if (list <= 0) return false;
+                kind >> int <- jsonKind(list);
+                count >> int <- kind == 5 ? jsonArrayLen(list) : (kind == 6 ? jsonObjectLen(list) : 0);
+                good >> bool <- (kind == 5 || kind == 6) && count > 0 && count <= MAX_ITEMS;
+                index >> int <- 0;
+                while (good && index < count) {
+                    child >> int <- 0;
+                    if (kind == 5) child <- jsonArrayBorrow(list,index);
+                    else {
+                        key >> str <- jsonObjectKeyAt(list,index);
+                        child <- jsonObjectBorrow(list,key);
+                        if (key != "") free(cast<byte>(key));
+                    }
+                    if (child <= 0) { good <- false; break; }
+                    good <- jsonKind(child) == 6 && trueField(child,"passed") &&
+                        zeroIfPresent(child,"failures") && zeroIfPresent(child,"failed");
+                    jsonRelease(child);
+                    index += 1;
+                }
+                jsonRelease(list);
+                return good;
+            }
+            report(model >> int, original >> str, host >> str) -> bool {
+                if (model <= 0) return false;
+                if (jsonKind(model) != 6) return false;
+                if (!trueField(model,"passed") ||
+                    !zeroIfPresent(model,"failures") || !zeroIfPresent(model,"failed")) return false;
+                schema >> int <- jsonObjectBorrow(model,"schema");
+                if (schema <= 0) return false;
+                name >> str <- jsonStringView(schema,"");
+                good >> bool <- jsonKind(schema) == 4 && strStartsWith(name,"nc.") && name != SCHEMA &&
+                    name != "nc.native-tools.batch-check.v43";
+                jsonRelease(schema);
+                if (!good || !covered(model,original)) return false;
+                if (jsonObjectHas(model,"host") && !stringField(model,"host",host)) return false;
+                cases >> bool <- jsonObjectHas(model,"cases");
+                checks >> bool <- jsonObjectHas(model,"checks");
+                rows >> bool <- jsonObjectHas(model,"rows");
+                if (!cases && !checks && !rows) return false;
+                if (cases && !collection(model,"cases")) return false;
+                if (rows) {
+                    list >> int <- jsonObjectBorrow(model,"rows");
+                    array >> bool <- jsonKind(list) == 5; jsonRelease(list);
+                    if (!array || !collection(model,"rows")) return false;
+                }
+                if (checks) {
+                    list >> int <- jsonObjectBorrow(model,"checks");
+                    number >> bool <- jsonKind(list) == 3; jsonRelease(list);
+                    if (number) {
+                        // A counter is metadata; only validated rows/cases supply evidence.
+                        if (!rows && !cases) return false;
+                        if (!counter(model,"checks")) return false;
+                    } else if (!collection(model,"checks")) return false;
+                }
+                return true;
+            }
+            candidate(root >> str, path >> str, expectedSHA >> str) -> bool {
+                absolute >> str <- root+"/"+path;
+                size >> int <- fsSize(absolute);
+                good >> bool <- release_io.releaseIo.fileType(absolute) == 1 && size > 0 && size <= MAX_CANDIDATE_BYTES;
+                if (good) {
+                    actual >> str <- sha256.nccSha256.file(absolute);
+                    good <- actual == expectedSHA;
+                    strRelease(actual);
+                }
+                strRelease(absolute);
+                return good;
+            }
+            validate(model >> int, original >> str, host >> str, candidatePath >> str, candidateSHA >> str, root >> str) -> bool {
+                if (model <= 0) return false;
+                if (jsonKind(model) != 6) return false;
+                if (!stringField(model,"schema",SCHEMA) ||
+                    !stringField(model,"original",original) || !stringField(model,"host",host) ||
+                    !trueField(model,"qualified")) return false;
+                item >> int <- jsonObjectBorrow(model,"candidate");
+                if (item <= 0) return false;
+                good >> bool <- jsonKind(item) == 6 && stringField(item,"path",candidatePath) &&
+                    stringField(item,"sha256",candidateSHA);
+                jsonRelease(item);
+                if (!good || !candidate(root,candidatePath,candidateSHA)) return false;
+                proofs >> int <- jsonObjectBorrow(model,"proof_reports");
+                if (proofs <= 0) return false;
+                if (jsonKind(proofs) != 5) { jsonRelease(proofs); return false; }
+                count >> int <- jsonArrayLen(proofs);
+                good <- jsonKind(proofs) == 5 && count > 0 && count <= MAX_PROOFS;
+                index >> int <- 0;
+                while (good && index < count) {
+                    entry >> int <- jsonArrayBorrow(proofs,index);
+                    if (entry <= 0) { good <- false; break; }
+                    if (jsonKind(entry) != 6) { jsonRelease(entry); good <- false; break; }
+                    pathNode >> int <- jsonObjectBorrow(entry,"path");
+                    hashNode >> int <- jsonObjectBorrow(entry,"sha256");
+                    if (pathNode <= 0 || hashNode <= 0) {
+                        if (pathNode > 0) jsonRelease(pathNode);
+                        if (hashNode > 0) jsonRelease(hashNode);
+                        jsonRelease(entry); good <- false; break;
+                    }
+                    path >> str <- jsonStringView(pathNode,"");
+                    hash >> str <- jsonStringView(hashNode,"");
+                    good <- jsonKind(entry) == 6 && jsonKind(pathNode) == 4 && jsonKind(hashNode) == 4 &&
+                        relative(path) && digest(hash);
+                    if (good) {
+                        proof >> int <- load(root,path,hash);
+                        good <- report(proof,original,host);
+                        if (proof > 0) jsonRelease(proof);
+                    }
+                    if (pathNode > 0) jsonRelease(pathNode);
+                    if (hashNode > 0) jsonRelease(hashNode);
+                    jsonRelease(entry);
+                    index += 1;
+                }
+                jsonRelease(proofs);
+                return good && candidate(root,candidatePath,candidateSHA);
+            }
+        public:
+            check(original >> str, host >> str, receiptPath >> str, candidatePath >> str, candidateSHA >> str, root >> str) -> bool {
+                if (!relative(original) || !strEndsWith(original,".py") ||
+                    (host != "windows" && host != "linux") || !relative(receiptPath) ||
+                    !relative(candidatePath) || !digest(candidateSHA) || root == "") return false;
+                if (!sha256.nccSha256.selfTest()) return false;
+                model >> int <- load(root,receiptPath,"");
+                good >> bool <- validate(model,original,host,candidatePath,candidateSHA,root);
+                if (model > 0) jsonRelease(model);
+                return good;
+            }
+    fa: return true;
+}

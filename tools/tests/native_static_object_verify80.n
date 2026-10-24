@@ -1,0 +1,107 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+
+nativeStaticObjectVerify80 {
+    stc: checks >> int <- 0; failures >> int <- 0;
+    number(data >> p<byte>, at >> int, width >> int) -> u64 {
+        value >> u64 <- 0; index >> int <- 0;
+        while (index < width) { part >> u64 <- rd(off(data,at+index)); value <- value | (part << (index*8)); index += 1; }
+        return value;
+    }
+    inside(at >> u64, bytes >> u64, total >> int) -> bool { return at <= total && bytes <= total-at; }
+    name(data >> p<byte>, at >> int, total >> int, expected >> str) -> bool {
+        width >> int <- strByteLen(expected); index >> int <- 0;
+        if (at < 0 || at > total-width-1) return false;
+        while (index < width) { if (rd(off(data,at+index)) != rd(off(cast<byte>(expected),index))) return false; index += 1; }
+        return rd(off(data,at+width)) == 0;
+    }
+    expect(valid >> bool) -> void { checks += 1; if (!valid) failures += 1; }
+    setInt(object >> int, key >> str, value >> int) -> void {
+        item >> int <- jsonNewInt(value); jsonObjectSet(object,key,item); jsonRelease(item);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 64;
+        bytes >> int <- fsSize(argsAt(arguments,1));
+        if (bytes < 64 || bytes > 16777216) return 65;
+        data >> p<byte> <- alloc(bytes); if (data == null) return 66;
+        if (fsReadInto(argsAt(arguments,1),data,bytes) != bytes) { free(data); return 67; }
+        elf >> bool <- number(data,0,4) == 0x464C457F;
+        coff >> bool <- number(data,0,2) == 0x8664;
+        dataAt >> int <- -1; dataBytes >> int <- -1; relocAt >> int <- -1; relocCount >> int <- -1;
+        if (elf && number(data,4,1) == 2 && number(data,5,1) == 1 && number(data,58,2) == 64) {
+            expect(number(data,16,2) == 1 && number(data,18,2) == 62);
+            table >> u64 <- number(data,40,8); count >> int <- number(data,60,2); names >> int <- number(data,62,2);
+            if (!inside(table,count*64,bytes) || names >= count) { free(data); return 68; }
+            namesAt >> u64 <- number(data,table+names*64+24,8);
+            namesBytes >> u64 <- number(data,table+names*64+32,8);
+            if (!inside(namesAt,namesBytes,bytes)) { free(data); return 69; }
+            index >> int <- 0;
+            while (index < count) {
+                row >> int <- table+index*64; label >> u64 <- number(data,row,4);
+                if (label < namesBytes && name(data,namesAt+label,bytes,".data")) {
+                    dataAt <- number(data,row+24,8); dataBytes <- number(data,row+32,8);
+                    expect(number(data,row+48,8) == 16 && dataAt % 16 == 0);
+                }
+                if (label < namesBytes && name(data,namesAt+label,bytes,".rela.data")) {
+                    relocAt <- number(data,row+24,8); relocBytes >> u64 <- number(data,row+32,8);
+                    expect(number(data,row+56,8) == 24 && relocBytes % 24 == 0); relocCount <- relocBytes/24;
+                }
+                index += 1;
+            }
+        } else if (coff) {
+            count >> int <- number(data,2,2); if (!inside(20,count*40,bytes)) { free(data); return 70; }
+            index >> int <- 0;
+            while (index < count) {
+                row >> int <- 20+index*40;
+                if (name(data,row,bytes,".data")) {
+                    dataBytes <- number(data,row+16,4); dataAt <- number(data,row+20,4);
+                    relocAt <- number(data,row+24,4); relocCount <- number(data,row+32,2);
+                    expect((number(data,row+36,4) & 0x00F00000) == 0x00500000);
+                }
+                index += 1;
+            }
+        } else { free(data); return 71; }
+        if (dataAt < 0 || dataBytes != 328 || relocAt < 0 || relocCount != 15 ||
+            !inside(dataAt,dataBytes,bytes) || !inside(relocAt,relocCount*(elf ? 24 : 10),bytes)) { free(data); return 72; }
+        expect(number(data,dataAt,1) == 73);
+        expect(number(data,dataAt+8,4) == 0xFFFFFFF9);
+        expect(number(data,dataAt+16,8) == 0x3FF4000000000000);
+        expect(number(data,dataAt+24,2) == 0xFFFF && number(data,dataAt+34,2) == 0xFFFA);
+        expect(number(data,dataAt+40,4) == 42 && number(data,dataAt+48,8) == 0x4004000000000000);
+        expect(number(data,dataAt+312,4) == 83 && number(data,dataAt+320,8) == 0x4021000000000000);
+        expect(number(data,dataAt+160,8) == 0);
+        expect(number(data,dataAt+177,8) == 0x1234567890ABCDEF);
+        expect(number(data,dataAt+188,4) == 0x3FC00000 && number(data,dataAt+192,4) == 0xC0100000 && number(data,dataAt+196,4) == 0x40700000);
+        expect(number(data,dataAt+200,8) == 0 && number(data,dataAt+208,8) == 0);
+        expect(number(data,dataAt+216,4) == 37 && number(data,dataAt+232,4) == 41 && number(data,dataAt+248,4) == 43);
+        expect(number(data,dataAt+264,8) == 0x1234567890ABCDEF && number(data,dataAt+280,8) == 0xC00C000000000000);
+        expect(number(data,dataAt+296,4) == 21 && number(data,dataAt+304,8) == 0x4012000000000000);
+        starts >> array<int,14> <- [1,12,36,44,92,185,204,220,236,252,272,288,300,316];
+        ends >> array<int,14> <- [8,16,40,48,96,188,208,224,240,256,280,296,304,320];
+        index >> int <- 0;
+        while (index < 14) {
+            cursor >> int <- starts[index];
+            while (cursor < ends[index]) { expect(number(data,dataAt+cursor,1) == 0); cursor += 1; }
+            index += 1;
+        }
+        slots >> array<int,15> <- [56,64,72,96,104,112,120,128,136,144,152,168,224,240,256];
+        addends >> array<int,15> <- [0,4,0,0,4,8,8,0,20,8,4,0,0,0,0];
+        index <- 0;
+        while (index < relocCount) {
+            row >> int <- relocAt+index*(elf ? 24 : 10);
+            expect(number(data,row,elf ? 8 : 4) == slots[index]);
+            expect(number(data,row+8,elf ? 4 : 2) == 1);
+            expect(number(data,dataAt+slots[index],8) == addends[index]);
+            if (elf) expect(number(data,row+16,8) == addends[index]);
+            index += 1;
+        }
+        report >> int <- jsonNewObject(); setInt(report,"checks",checks); setInt(report,"failures",failures); setInt(report,"data_bytes",dataBytes); setInt(report,"data_file_offset",dataAt); setInt(report,"abs64_relocations",relocCount);
+        value >> int <- jsonNewBool(failures == 0); jsonObjectSet(report,"passed",value); jsonRelease(value);
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,2),2); jsonRelease(report); argsRelease(arguments); free(data);
+        if (!saved || failures != 0) return 1;
+        println("native-static-object-bytes-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

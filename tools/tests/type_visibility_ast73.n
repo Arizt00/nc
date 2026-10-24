@@ -1,0 +1,31 @@
+use <io:output>;
+use <process:args>;
+use <project:parser_ast>;
+
+typeVisibilityAst73 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(argsAt(arguments,1));
+        if (material == null) { argsRelease(arguments); return 65; }
+        valid >> bool <- parser_ast.nccParserAst.materialReady(material) &&
+            parser_ast.nccParserAst.materialTreeValid(material);
+        declarations >> int <- 0;
+        at >> int <- 0;
+        while (valid && at < parser_ast.nccParserAst.materialNodeCount(material)) {
+            if (parser_ast.nccParserAst.materialNodeKind(material,at) == 13) {
+                flags >> int <- parser_ast.nccParserAst.materialNodeFlags(material,at);
+                valid <- (flags & 255) == 1 && ((flags >> 8) & 3) == 2;
+                declarations += 1;
+            }
+            at += 1;
+        }
+        valid <- valid && declarations == 1;
+        parser_ast.nccParserAst.closeMaterial(material);
+        argsRelease(arguments);
+        println(valid ? "type-visibility-ast-ok" : "type-visibility-ast-failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,46 @@
+use <data:json>;
+use <io:render>;
+use <project:physical43_common, physical43_stages, portable43_repr, release_io, tool_cli>;
+
+physical43Boards {
+    fn:
+        private:
+            get(model >> int, name >> str) -> str { return physical43_stages.physical43Stages.get(model,name); }
+            set(model >> int, name >> str, value >> int) -> void { physical43_stages.physical43Stages.set(model,name,value); }
+            failure(name >> str, diagnostic >> str, manifest >> str) -> int { row >> int <- physical43_stages.physical43Stages.failure("physical",name,diagnostic,1); set(row,"manifest",jsonNewString(manifest)); return row; }
+        public:
+            run(manifests >> int, routes >> int, ncc >> str, repo >> str, root >> str, logs >> str) -> int {
+                rows >> int <- jsonNewArray(); index >> int <- 0; physicalRoutes >> int <- jsonNewObject(); search >> int <- 0;
+                while (search < jsonArrayLen(routes)) { candidate >> int <- jsonArrayBorrow(routes,search); if (physical43_common.physical43Common.truthyAt(candidate,"/physical_required")) jsonObjectSet(physicalRoutes,get(candidate,"id"),candidate); jsonRelease(candidate); search += 1; }
+                while (index < jsonArrayLen(manifests)) {
+                    item >> int <- jsonArrayBorrow(manifests,index); specification >> str <- jsonStringView(item,""); label >> str <- "physical-board-"+renderInt(index); routeId >> str <- ""; manifestText >> str <- specification; data >> p<byte> <- cast(specification); at >> int <- 0;
+                    while (at < strByteLen(specification) && rd(off(data,at)) != 61) { at += 1; }
+                    route >> int <- 0;
+                    if (at < strByteLen(specification)) { routeId <- strSubstring(specification,0,at); manifestText <- strSubstring(specification,at+1,strByteLen(specification)-at-1); route <- jsonObjectGet(physicalRoutes,routeId);
+                        if (route == 0) { physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_ROUTE_001: unknown or non-physical route '"+routeId+"'",manifestText)); jsonRelease(item); index += 1; continue; }
+                    }
+                    manifest >> str <- physical43_common.physical43Common.absolutePath(manifestText); model >> int <- physical43_common.physical43Common.read(manifest,false); targetNode >> int <- jsonPointer(model,"/board/target"); target >> str <- portable43_repr.portable43Repr.strValue(targetNode);
+                    if (targetNode == 0) { missing >> str <- jsonObjectHas(model,"board") ? "'target'" : "'board'"; physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_MANIFEST_001: "+missing,manifest)); jsonRelease(route); jsonRelease(model); jsonRelease(item); index += 1; continue; }
+                    if (routeId == "") { count >> int <- 0; search <- 0; while (search < jsonObjectLen(physicalRoutes)) { routeKey >> str <- jsonObjectKeyAt(physicalRoutes,search); candidate >> int <- jsonObjectGet(physicalRoutes,routeKey); strRelease(routeKey); candidateTarget >> int <- jsonObjectBorrow(candidate,"target"); matching >> bool <- physical43_common.physical43Common.equal(candidateTarget,targetNode); jsonRelease(candidateTarget); if (matching) { jsonRelease(route); route <- candidate; count += 1; } else jsonRelease(candidate); search += 1; }
+                        if (count != 1) { physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_ROUTE_002: manifest must use <route-id>=<path> when its target is absent or ambiguous",manifest)); jsonRelease(item); index += 1; continue; } routeId <- get(route,"id");
+                    }
+                    routeTarget >> int <- jsonObjectBorrow(route,"target"); matchesTarget >> bool <- physical43_common.physical43Common.equal(targetNode,routeTarget); routeTargetText >> str <- portable43_repr.portable43Repr.strValue(routeTarget); jsonRelease(routeTarget);
+                    if (!matchesTarget) { physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_TARGET_001: manifest target '"+target+"' does not match route target '"+routeTargetText+"'",manifest)); jsonRelease(item); index += 1; continue; }
+                    if (get(route,"linked_artifact") == "" || get(route,"linked_sha256") == "") { physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_ARTIFACT_001: route has no linked artifact to flash",manifest)); jsonRelease(item); index += 1; continue; }
+                    artifact >> int <- jsonObjectGet(model,"artifact"); if (jsonKind(artifact) != 6) { physical43_stages.physical43Stages.add(rows,failure(label,"E_FINAL_CERT_PHYSICAL_MANIFEST_002: manifest requires an artifact object",manifest)); jsonRelease(item); index += 1; continue; }
+                    set(artifact,"path",jsonNewString(physical43_common.physical43Common.absolutePath(get(route,"linked_artifact")))); set(artifact,"sha256",jsonObjectBorrow(route,"linked_sha256")); set(model,"artifact",artifact);
+                    bundle >> str <- physical43_common.physical43Common.nativePath(root+"/"+routeId); bound >> str <- physical43_common.physical43Common.nativePath(root+"/manifests/"+routeId+".json");
+                    if (!physical43_common.physical43Common.save(bound,model)) { physical43_stages.physical43Stages.add(rows,failure(label,"cannot write bound physical manifest",bound)); index += 1; continue; }
+                    words >> int <- jsonParse("[\"machine\",\"certify-board\",\"--manifest\"]"); jsonArrayInsert(words,0,jsonNewString(ncc)); physical43_stages.physical43Stages.add(words,jsonNewString(bound)); physical43_stages.physical43Stages.add(words,jsonNewString("--bundle")); physical43_stages.physical43Stages.add(words,jsonNewString(bundle)); physical43_stages.physical43Stages.add(words,jsonNewString("--json")); row >> int <- physical43_stages.physical43Stages.runStage("physical","physical-board-"+routeId,words,repo,logs,3600); jsonRelease(words);
+                    set(row,"manifest_template",jsonNewString(manifest)); set(row,"manifest",jsonNewString(bound)); set(row,"bundle",jsonNewString(bundle)); set(row,"route_id",jsonNewString(routeId)); set(row,"target",jsonClone(targetNode));
+                    if (get(row,"status") == "passed") { certificatePath >> str <- physical43_common.physical43Common.nativePath(bundle+"/certificate.json"); certificate >> int <- physical43_common.physical43Common.read(certificatePath,false);
+                        exact >> bool <- get(certificate,"status") == "certified" && physical43_stages.physical43Stages.truth(certificate,"/physical_board") && get(certificate,"execution_class") == "physical_hardware" && physical43_stages.physical43Stages.query(certificate,"/board/target") == get(route,"target") && physical43_stages.physical43Stages.query(certificate,"/artifact/sha256") == get(route,"linked_sha256");
+                        words <- jsonParse("[\"machine\",\"verify-board-certificate\"]"); jsonArrayInsert(words,0,jsonNewString(ncc)); physical43_stages.physical43Stages.add(words,jsonNewString(bundle)); physical43_stages.physical43Stages.add(words,jsonNewString("--json")); verification >> int <- physical43_stages.physical43Stages.runStage("physical","physical-board-"+routeId+"-verify",words,repo,logs,300); jsonRelease(words); verified >> bool <- get(verification,"status") == "passed"; set(row,"verification",verification); set(row,"certificate",jsonNewString(certificatePath)); set(row,"artifact_bound_to_route",jsonNewBool(exact));
+                        if (!exact || !verified) { set(row,"status",jsonNewString("failed")); set(row,"returncode",jsonNewInt(1)); set(row,"diagnostic",jsonNewString("E_FINAL_CERT_PHYSICAL_CERTIFICATE_001: board certificate is not a verified physical execution of this route's exact linked artifact")); } jsonRelease(certificate);
+                    }
+                    physical43_stages.physical43Stages.add(rows,row); jsonRelease(route); jsonRelease(model); jsonRelease(targetNode); jsonRelease(item); index += 1;
+                }
+                jsonRelease(physicalRoutes); return rows;
+            }
+    fa: return true;
+}

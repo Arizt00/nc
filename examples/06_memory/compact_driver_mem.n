@@ -1,0 +1,127 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:ptr, heap, region>;
+
+compactDriverMem :: runtime {
+    stc:
+        ring >> array<int, 8>;
+        packets >> list<int>;
+        regionA >> memRegion<int>;
+        p >> p<int>;
+        pSlot >> p<int>;
+        idx >> int;
+        valueOut >> int;
+        pointerOut >> int;
+        checksum >> int;
+        ok >> bool;
+        freed >> bool;
+        i >> int <- 0;
+
+    fn:
+        boot() -> bool {
+            ring <- [0, 0, 0, 0, 0, 0, 0, 0];
+            packets <- listCreateWithCapacity<int>(4);
+            packets.push(11);
+            packets.push(22);
+            packets.push(33);
+            regionA <- regionCreate<int>(8);
+            p !> p<int> : alloc(32);
+            idx <- 2;
+            checksum <- 0;
+            ok <- true;
+            return true;
+        }
+
+        seleccionarSlot(index >> int) -> bool {
+            pSlot <- p.offset(index);
+            return true;
+        }
+
+        writePtr(index >> int, value >> int) -> bool {
+            seleccionarSlot(index);
+            wr(pSlot, value);
+            return true;
+        }
+
+        readPtr(index >> int) -> int {
+            seleccionarSlot(index);
+            return pSlot.read();
+        }
+
+        cargarRingArray() -> bool {
+            ring[0] <- packets.get(0);
+            ring[1] <- packets.get(1);
+            ring[idx] <- packets.get(2);
+            packets.push(44);
+            ring[3] <- packets.get(3);
+            return true;
+        }
+
+        copiarArrayARegionYPuntero() -> bool {
+            i <- 0;
+            while (i < 4) {
+                regionWrite(regionA, i, ring[i]);
+                writePtr(i, ring[i]);
+                i <- i + 1;
+            }
+            return true;
+        }
+
+        verificarMemoriaReal() -> bool {
+            valueOut <- regionRead(regionA, idx);
+            pointerOut <- readPtr(idx);
+
+            if (valueOut != ring[idx]) {
+                return false;
+            }
+            if (pointerOut != ring[idx]) {
+                return false;
+            }
+            return true;
+        }
+
+        calcularChecksum() -> bool {
+            checksum <- 0;
+            for (i >> int <- 0; i < 4; i += 1) {
+                checksum <- checksum + regionRead(regionA, i);
+            }
+            return checksum == 110;
+        }
+
+        imprimir() -> bool {
+            println("===== compactDriverMem real =====");
+            println("ring[2] = " + renderInt(ring[idx]));
+            println("regionA[2] = " + renderInt(valueOut));
+            println("ptr[2] = " + renderInt(pointerOut));
+            println("checksum = " + renderInt(checksum));
+            println("ok = " + renderBool(ok));
+            return true;
+        }
+
+        liberar() -> bool {
+            freed <- free(p);
+            println(colorBold("heap liberado = " + renderBool(freed), "green"));
+            return freed;
+        }
+
+        run() -> bool {
+            boot();
+            cargarRingArray();
+            copiarArrayARegionYPuntero();
+            ok <- verificarMemoriaReal();
+            if (ok) {
+                ok <- calcularChecksum();
+            }
+            imprimir();
+            if (ok) {
+                ok <- liberar();
+            }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

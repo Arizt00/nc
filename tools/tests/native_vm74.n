@@ -1,0 +1,45 @@
+use <io:output>;
+
+nativeVm74 {
+    run() -> int {
+        page >> int <- vmPageSize();
+        granularity >> int <- vmAllocationGranularity();
+        rw >> int <- vmReadWriteProtection();
+        if (page <= 0 || granularity < page || (rw != 3 && rw != 4)) return 1;
+        if (vmReserve(null,0,0) != null || vmLastError() == 0) return 2;
+        bytes >> u64 <- page*3;
+        base >> p<byte> <- vmReserve(null,bytes,0);
+        if (base == null || (adr(base) % page) != 0) return 3;
+        if (!vmCommit(base,bytes,rw)) return 4;
+        wr<u64>(base,0xFEDCBA9876543210);
+        wr<byte>(off(base,bytes-1),231);
+        if (!vmProtect(base,bytes,rw == 4 ? 2 : 1) ||
+            rd<u64>(base) != 0xFEDCBA9876543210 || rd(off(base,bytes-1)) != 231) return 5;
+        if (!vmProtect(base,bytes,rw) || !vmLock(base,page) || !vmUnlock(base,page)) return 6;
+        if (!vmAdvise(base,page,4)) return 16;
+        if (vmSync(base,page,rw == 4 ? 0 : 4) != (rw == 3)) return 17;
+        if (vmProtect(null,page,rw) || vmLastError() == 0) return 18;
+        if (!vmDecommit(base,bytes) || !vmCommit(base,bytes,rw)) return 7;
+        if (rd<u64>(base) != 0 || rd(off(base,bytes-1)) != 0) return 8;
+        if (!vmGuard(off(base,page),page,rw) || !vmProtect(off(base,page),page,rw)) return 9;
+        wr(base,19);
+        flags >> u64 <- rw == 4 ? 0x3000 : 1;
+        moved >> p<byte> <- vmRemap(base,bytes,page*4,rw,flags,null);
+        if (moved == null || rd(moved) != 19 || !vmRelease(moved,page*4)) return 10;
+        mapped >> p<byte> <- vmMap(null,page,rw,rw == 4 ? 0x3000 : 0x22,0xFFFFFFFFFFFFFFFF,0);
+        if (mapped == null) return 11;
+        wr(mapped,44);
+        if (rd(mapped) != 44 || !vmUnmap(mapped,page)) return 12;
+        code >> p<byte> <- vmReserve(null,page,0);
+        if (code == null || !vmCommit(code,page,rw)) return 13;
+        wr(code,0xB8); wr(off(code,1),42); wr(off(code,2),0);
+        wr(off(code,3),0); wr(off(code,4),0); wr(off(code,5),0xC3);
+        if (!vmExecutable(code,page)) return 14;
+        entry >> fn() -> int <- cast(code);
+        if (entry() != 42 || !vmRelease(code,page)) return 15;
+        println("native-vm-ok");
+        return 248;
+    }
+    ref main ->> run;
+    fa: return true;
+}

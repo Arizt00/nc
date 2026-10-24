@@ -1,0 +1,216 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, erroroutput, render>;
+use <project:physical43_common, physical43_numeric, portable43_repr, release_io, tool_cli, cert_json, sha256>;
+
+physical43Exact {
+    const:
+        CAPTURE >> str <- "ncc.ci.exact_head_capture.v1";
+        CERTIFICATE >> str <- "ncc.ci.exact_head_evidence_certificate.v1";
+    fn:
+        private:
+            git(repo >> str, words >> str) -> str {
+                row >> int <- physical43_common.physical43Common.invoke(words,"git",repo,300000);
+                if (!physical43_common.physical43Common.succeeded(row)) physical43_common.physical43Common.fail("git command failed: "+physical43_common.physical43Common.field(row,"stderr"));
+                result >> str <- physical43_common.physical43Common.stdoutText(row); jsonRelease(row); return result;
+            }
+            version(command >> str) -> int {
+                resolved >> str <- physical43_common.physical43Common.resolveCommand(command); if (resolved == "") { strRelease(resolved); return jsonNewNull(); }
+                row >> int <- physical43_common.physical43Common.invokeMerged("[\"--version\"]",resolved,".",15000); strRelease(resolved);
+                if (!tool_cli.toolCli.clean(row)) { jsonRelease(row); return jsonNewNull(); }
+                text >> str <- physical43_common.physical43Common.field(row,"stdout"); lines >> int <- physical43_common.physical43Common.lines(text);
+                if (text == "") { jsonRelease(lines); jsonRelease(row); strRelease(text); return jsonNewNull(); }
+                first >> int <- jsonArrayGet(lines,0); result >> int <- jsonNewString(portable43_repr.portable43Repr.trim(jsonStringView(first,"")));
+                jsonRelease(first); jsonRelease(lines); jsonRelease(row); strRelease(text); return result;
+            }
+        public:
+            source(repo >> str, expected >> str) -> int {
+                if (!physical43_common.physical43Common.hex(expected,40,64)) { physical43_common.physical43Common.fail("invalid expected git SHA: "+expected); return 0; }
+                head >> str <- strToLower(git(repo,"[\"rev-parse\",\"HEAD\"]"));
+                if (head != expected) { physical43_common.physical43Common.fail("exact-head mismatch: checkout="+head+" expected="+expected); return 0; }
+                status >> str <- git(repo,"[\"status\",\"--porcelain=v1\",\"--untracked-files=all\"]");
+                if (status != "") { physical43_common.physical43Common.fail("working tree is not clean; exact-head capture refused\n"+status); return 0; }
+                tree >> str <- git(repo,"[\"rev-parse\",\"HEAD^{tree}\"]"); parents >> str <- git(repo,"[\"show\",\"-s\",\"--format=%P\",\"HEAD\"]");
+                modules >> str <- git(repo,"[\"submodule\",\"status\",\"--recursive\"]");
+                if (physical43_common.physical43Common.diagnostic() != "") return 0;
+                model >> int <- jsonNewObject(); physical43_common.physical43Common.put(model,"commit",jsonNewString(head)); physical43_common.physical43Common.put(model,"tree",jsonNewString(tree));
+                array >> int <- parents == "" ? jsonNewArray() : physical43_common.physical43Common.lines(physical43_common.physical43Common.replace(parents," ","\n"));
+                physical43_common.physical43Common.put(model,"parents",array); physical43_common.physical43Common.put(model,"status_porcelain",jsonNewString("")); physical43_common.physical43Common.put(model,"clean",jsonNewBool(true));
+                physical43_common.physical43Common.put(model,"submodules",modules == "" ? jsonNewArray() : physical43_common.physical43Common.lines(modules));
+                strRelease(head); strRelease(status); strRelease(tree); strRelease(parents); strRelease(modules); return model;
+            }
+            identity() -> int {
+                model >> int <- jsonNewObject(); names >> int <- jsonParse("[\"runner_id\",\"model\",\"serial\"]"); vars >> int <- jsonParse("[\"NCC_PHYSICAL_RUNNER_ID\",\"NCC_PHYSICAL_RUNNER_MODEL\",\"NCC_PHYSICAL_RUNNER_SERIAL\"]");
+                combined >> str <- ""; missing >> str <- ""; at >> int <- 0;
+                while (at < 3) {
+                    name >> int <- jsonArrayBorrow(names,at); variable >> int <- jsonArrayBorrow(vars,at); envText >> str <- physical43_common.physical43Common.env(jsonStringView(variable,"")); text >> str <- portable43_repr.portable43Repr.trim(envText);
+                    if (text == "") missing <- missing+(missing == "" ? "" : ", ")+jsonStringView(name,"");
+                    physical43_common.physical43Common.put(model,jsonStringView(name,""),jsonNewString(text)); combined <- combined+" "+text;
+                    strRelease(envText); strRelease(text); jsonRelease(name); jsonRelease(variable); at += 1;
+                }
+                jsonRelease(names); jsonRelease(vars);
+                if (missing != "") { physical43_common.physical43Common.fail("physical runner identity is incomplete; missing "+missing); jsonRelease(model); return 0; }
+                lower >> str <- portable43_repr.portable43Repr.lower(combined); tokens >> int <- jsonParse("[\"qemu\",\"tcg\",\"virtualbox\",\"vmware\",\"emulator\",\"simulator\"]"); at <- 0;
+                while (at < jsonArrayLen(tokens)) { token >> int <- jsonArrayBorrow(tokens,at); found >> bool <- strContains(lower,jsonStringView(token,"")); jsonRelease(token); if (found) { jsonRelease(tokens); jsonRelease(model); physical43_common.physical43Common.fail("physical runner identity contains an emulator marker"); return 0; } at += 1; }
+                jsonRelease(tokens); strRelease(lower); strRelease(combined); return model;
+            }
+            envelope(schema >> str, payload >> int, key >> str) -> int {
+                model >> int <- jsonNewObject(); physical43_common.physical43Common.put(model,"schema",jsonNewString(schema)); jsonObjectSet(model,"payload",payload);
+                integrity >> int <- jsonParse("{\"algorithm\":\"sha256\",\"canonicalization\":\"utf8-json-sort-keys-compact\"}");
+                physical43_common.physical43Common.put(integrity,"payload_sha256",jsonNewString(physical43_common.physical43Common.digest(schema,payload,true,false)));
+                physical43_common.physical43Common.put(model,"integrity",integrity);
+                if (key != "") {
+                    attest >> int <- jsonParse("{\"algorithm\":\"hmac-sha256\",\"secret_persisted\":false}"); keyId >> str <- envHas("NCC_CI_EVIDENCE_HMAC_KEY_ID") ? physical43_common.physical43Common.env("NCC_CI_EVIDENCE_HMAC_KEY_ID") : "ci-secret";
+                    physical43_common.physical43Common.put(attest,"key_id",jsonNewString(keyId)); physical43_common.physical43Common.put(attest,"tag",jsonNewString(physical43_common.physical43Common.hmac(schema,payload,key))); physical43_common.physical43Common.put(model,"attestation",attest);
+                }
+                return model;
+            }
+            verifyEnvelope(model >> int, schema >> str, key >> str, required >> bool) -> int {
+                if (jsonKind(model) != 6 || physical43_common.physical43Common.field(model,"schema") != schema) { physical43_common.physical43Common.fail("unexpected evidence schema; expected "+schema); return -1; }
+                integrity >> int <- jsonObjectBorrow(model,"integrity");
+                if (jsonKind(integrity) != 6 || physical43_common.physical43Common.field(integrity,"algorithm") != "sha256") { jsonRelease(integrity); physical43_common.physical43Common.fail("evidence integrity metadata is missing"); return -1; }
+                expected >> str <- physical43_common.physical43Common.field(integrity,"payload_sha256"); payload >> int <- jsonObjectBorrow(model,"payload"); actual >> str <- physical43_common.physical43Common.digest(schema,payload,true,false); jsonRelease(integrity);
+                if (!physical43_common.physical43Common.hex(expected,64,64) || actual != expected) { jsonRelease(payload); physical43_common.physical43Common.fail("evidence payload SHA-256 mismatch"); return -1; }
+                attest >> int <- jsonObjectBorrow(model,"attestation");
+                if (jsonKind(attest) == 0 || jsonKind(attest) == 1) {
+                    jsonRelease(attest); jsonRelease(payload); if (required) { physical43_common.physical43Common.fail("HMAC attestation is required but absent"); return -1; } return 0;
+                }
+                if (key == "") { jsonRelease(attest); jsonRelease(payload); if (required) { physical43_common.physical43Common.fail("HMAC key is required to verify attestation"); return -1; } return 0; }
+                secret >> int <- jsonObjectBorrow(attest,"secret_persisted");
+                valid >> bool <- jsonKind(attest) == 6 && physical43_common.physical43Common.field(attest,"algorithm") == "hmac-sha256" && jsonKind(secret) == 2 && !jsonGetBoolOr(secret,true); jsonRelease(secret);
+                if (!valid) { physical43_common.physical43Common.fail("invalid HMAC attestation metadata"); jsonRelease(payload); jsonRelease(attest); return -1; }
+                tag >> str <- physical43_common.physical43Common.field(attest,"tag"); hash >> str <- physical43_common.physical43Common.hmac(schema,payload,key); valid <- physical43_common.physical43Common.constantEqual(tag,hash);
+                jsonRelease(payload); jsonRelease(attest); strRelease(hash); strRelease(tag); strRelease(expected); strRelease(actual);
+                if (!valid) { physical43_common.physical43Common.fail("HMAC attestation mismatch"); return -1; } return 1;
+            }
+            capture(repo >> str, out >> str, sha >> str, lane >> str, runnerClass >> str, key >> str) -> int {
+                src >> int <- source(repo,sha); if (src == 0) return 0;
+                physical >> int <- runnerClass == "physical" ? identity() : jsonNewNull(); if (physical == 0) { jsonRelease(src); return 0; }
+                payload >> int <- jsonNewObject(); physical43_common.physical43Common.put(payload,"version",jsonNewInt(1)); physical43_common.physical43Common.put(payload,"captured_utc",jsonNewString(release_io.releaseIo.utc(timestamp())));
+                physical43_common.physical43Common.put(payload,"lane",jsonNewString(lane)); physical43_common.physical43Common.put(payload,"runner_class",jsonNewString(runnerClass)); physical43_common.physical43Common.put(payload,"source",src);
+                runner >> int <- jsonNewObject();
+                physical43_common.physical43Common.put(runner,"os",jsonNewString(physical43_common.physical43Common.hostSystem()));
+                physical43_common.physical43Common.put(runner,"release",jsonNewString(physical43_common.physical43Common.hostRelease()));
+                physical43_common.physical43Common.put(runner,"architecture",jsonNewString(physical43_common.physical43Common.hostArchitecture()));
+                // No Python interpreter participates in native capture. Preserve the legacy key as null.
+                physical43_common.physical43Common.put(runner,"python",jsonNewNull());
+                names >> int <- jsonParse("[\"github_runner_os\",\"github_runner_arch\",\"github_run_id\",\"github_run_attempt\"]"); vars >> int <- jsonParse("[\"RUNNER_OS\",\"RUNNER_ARCH\",\"GITHUB_RUN_ID\",\"GITHUB_RUN_ATTEMPT\"]"); at >> int <- 0;
+                while (at < 4) { name >> int <- jsonArrayBorrow(names,at); variable >> int <- jsonArrayBorrow(vars,at); keyName >> str <- jsonStringView(variable,""); physical43_common.physical43Common.put(runner,jsonStringView(name,""),envHas(keyName) ? jsonNewString(physical43_common.physical43Common.env(keyName)) : jsonNewNull()); jsonRelease(name); jsonRelease(variable); at += 1; }
+                jsonRelease(names); jsonRelease(vars); physical43_common.physical43Common.put(runner,"physical_identity",physical); physical43_common.physical43Common.put(payload,"runner",runner);
+                tools >> int <- jsonNewObject(); physical43_common.physical43Common.put(tools,"rustc",version("rustc")); physical43_common.physical43Common.put(tools,"cargo",version("cargo")); physical43_common.physical43Common.put(tools,"clang",version("clang")); physical43_common.physical43Common.put(tools,"gcc",version("gcc")); physical43_common.physical43Common.put(tools,"lld",version("ld.lld")); physical43_common.physical43Common.put(payload,"toolchain",tools);
+                document >> int <- envelope(CAPTURE,payload,key); jsonRelease(payload); if (!physical43_common.physical43Common.save(out,document)) { jsonRelease(document); return 0; } return document;
+            }
+            sealBundle(root >> str, sha >> str, key >> str, repo >> str) -> int {
+                captured >> int <- physical43_common.physical43Common.read(root+"/exact-head.json",false);
+                if (verifyEnvelope(captured,CAPTURE,key,false) < 0) { jsonRelease(captured); return 0; }
+                payload >> int <- jsonObjectBorrow(captured,"payload");
+                if (physical43_common.physical43Common.textAt(payload,"/source/commit") != sha) { physical43_common.physical43Common.fail("capture commit does not match requested exact head"); return 0; }
+                src >> int <- source(repo,sha); if (src == 0) return 0;
+                if (physical43_common.physical43Common.field(src,"tree") != physical43_common.physical43Common.textAt(payload,"/source/tree")) { physical43_common.physical43Common.fail("source tree changed between exact-head capture and seal"); return 0; }
+                excluded >> int <- jsonParse("[\"SHA256SUMS\",\"evidence-certificate.json\"]"); files >> int <- physical43_common.physical43Common.orderedInventory(root,excluded,true,true,true); jsonRelease(excluded);
+                if (jsonArrayLen(files) == 0) { physical43_common.physical43Common.fail("cannot seal an empty evidence bundle"); return 0; }
+                result >> int <- jsonNewObject(); physical43_common.physical43Common.put(result,"version",jsonNewInt(1)); physical43_common.physical43Common.put(result,"sealed_utc",jsonNewString(release_io.releaseIo.utc(timestamp()))); physical43_common.physical43Common.put(result,"exact_head",jsonNewString(sha));
+                physical43_common.physical43Common.put(result,"lane",jsonObjectBorrow(payload,"lane")); physical43_common.physical43Common.put(result,"runner_class",jsonObjectBorrow(payload,"runner_class")); physical43_common.physical43Common.put(result,"capture_payload_sha256",jsonPointer(captured,"/integrity/payload_sha256")); physical43_common.physical43Common.put(result,"source_at_seal",src); physical43_common.physical43Common.put(result,"files",files);
+                boundary >> int <- jsonParse("{\"source_was_clean_before_execution\":true,\"exact_checkout_verified\":true,\"artifact_bytes_retained\":true}"); physical43_common.physical43Common.put(boundary,"physical_execution",jsonNewBool(physical43_common.physical43Common.field(payload,"runner_class") == "physical")); physical43_common.physical43Common.put(result,"truth_boundary",boundary);
+                certificate >> int <- envelope(CERTIFICATE,result,key); jsonRelease(result); jsonRelease(payload); jsonRelease(captured);
+                if (!physical43_common.physical43Common.save(root+"/evidence-certificate.json",certificate)) return 0;
+                if (!writeSums(root)) return 0; return certificate;
+            }
+            writeSums(root >> str) -> bool {
+                excluded >> int <- jsonParse("[\"SHA256SUMS\"]"); files >> int <- physical43_common.physical43Common.orderedInventory(root,excluded,false,true,true); jsonRelease(excluded);
+                if (jsonKind(files) != 5) return false; text >> str <- ""; at >> int <- 0;
+                while (at < jsonArrayLen(files)) { item >> int <- jsonArrayBorrow(files,at); text <- cert_json.certJson.append(text,physical43_common.physical43Common.field(item,"sha256")+"  "+physical43_common.physical43Common.field(item,"path")+"\n"); jsonRelease(item); at += 1; }
+                result >> bool <- physical43_common.physical43Common.write(root+"/SHA256SUMS",text); strRelease(text); jsonRelease(files); if (!result) physical43_common.physical43Common.fail("cannot write SHA256SUMS"); return result;
+            }
+            sums(path >> str) -> int {
+                text >> str <- physical43_common.physical43Common.readText(path,false); if (physical43_common.physical43Common.fileType(path) != 1) { physical43_common.physical43Common.fail("cannot read SHA256SUMS"); return 0; }
+                lines >> int <- physical43_common.physical43Common.lines(text); strRelease(text); result >> int <- jsonNewObject(); at >> int <- 0;
+                while (at < jsonArrayLen(lines)) {
+                    item >> int <- jsonArrayBorrow(lines,at); line >> str <- jsonStringView(item,"");
+                    if (line != "") {
+                        digest >> str <- strSubstring(line,0,64); name >> str <- strSubstring(line,66,strByteLen(line)-66);
+                        if (strByteLen(line) < 67 || strSubstring(line,64,2) != "  " || !physical43_common.physical43Common.hex(digest,64,64)) { physical43_common.physical43Common.fail("invalid SHA256SUMS line "+renderInt(at+1)); return 0; }
+                        name <- physical43_common.physical43Common.normalRelative(name); if (name == "") return 0;
+                        if (jsonObjectHas(result,name)) { physical43_common.physical43Common.fail("duplicate SHA256SUMS path: "+name); return 0; }
+                        physical43_common.physical43Common.put(result,name,jsonNewString(digest)); strRelease(digest); strRelease(name);
+                    }
+                    jsonRelease(item); at += 1;
+                }
+                jsonRelease(lines); return result;
+            }
+            verify(root >> str, sha >> str, key >> str, requireHmac >> bool, requirePhysical >> bool, requiredRoles >> int) -> int {
+                sha <- strToLower(sha);
+                captured >> int <- physical43_common.physical43Common.read(root+"/exact-head.json",false); captureHmac >> int <- verifyEnvelope(captured,CAPTURE,key,requireHmac); if (captureHmac < 0) return 0;
+                certificate >> int <- physical43_common.physical43Common.read(root+"/evidence-certificate.json",false); certificateHmac >> int <- verifyEnvelope(certificate,CERTIFICATE,key,requireHmac); if (certificateHmac < 0) return 0;
+                cpayload >> int <- jsonObjectBorrow(captured,"payload"); payload >> int <- jsonObjectBorrow(certificate,"payload");
+                if (physical43_common.physical43Common.textAt(cpayload,"/source/commit") != sha || !physical43_common.physical43Common.boolAt(cpayload,"/source/clean") || physical43_common.physical43Common.field(payload,"exact_head") != sha || physical43_common.physical43Common.textAt(payload,"/source_at_seal/commit") != sha || !physical43_common.physical43Common.boolAt(payload,"/source_at_seal/clean")) { physical43_common.physical43Common.fail("certificate is not bound to the requested clean exact head"); return 0; }
+                if (physical43_common.physical43Common.textAt(payload,"/source_at_seal/tree") != physical43_common.physical43Common.textAt(cpayload,"/source/tree")) { physical43_common.physical43Common.fail("capture and seal source trees differ"); return 0; }
+                if (physical43_common.physical43Common.field(payload,"capture_payload_sha256") != physical43_common.physical43Common.textAt(captured,"/integrity/payload_sha256")) { physical43_common.physical43Common.fail("certificate does not bind the retained exact-head capture"); return 0; }
+                if (requirePhysical) {
+                    if (physical43_common.physical43Common.field(cpayload,"runner_class") != "physical") { physical43_common.physical43Common.fail("physical runner evidence was required"); return 0; }
+                    physical >> int <- jsonPointer(cpayload,"/runner/physical_identity"); valid >> bool <- jsonKind(physical) == 6; at >> int <- 0;
+                    while (at < jsonObjectLen(physical)) { name >> str <- jsonObjectKeyAt(physical,at); child >> int <- jsonObjectBorrow(physical,name); if (!physical43_common.physical43Common.truthy(child)) valid <- false; jsonRelease(child); strRelease(name); at += 1; }
+                    jsonRelease(physical); if (!valid) { physical43_common.physical43Common.fail("physical runner identity is absent"); return 0; }
+                }
+                indexed >> int <- jsonObjectBorrow(payload,"files"); if (jsonKind(indexed) != 5 || jsonArrayLen(indexed) == 0) { physical43_common.physical43Common.fail("certificate file inventory is empty"); return 0; }
+                if (!physical43_common.physical43Common.noLinks(root)) return 0;
+                seen >> int <- jsonNewArray(); roles >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(indexed)) {
+                    entry >> int <- jsonArrayBorrow(indexed,at); if (jsonKind(entry) != 6) { physical43_common.physical43Common.fail("invalid certificate file entry"); return 0; }
+                    pathNode >> int <- jsonObjectBorrow(entry,"path"); pathText >> str <- pathNode == 0 ? strSubstring("",0,0) : portable43_repr.portable43Repr.strValue(pathNode); name >> str <- physical43_common.physical43Common.normalRelative(pathText); strRelease(pathText); jsonRelease(pathNode); if (name == "") return 0;
+                    if (release_io.releaseIo.contains(seen,name)) { physical43_common.physical43Common.fail("duplicate certificate path: "+name); return 0; } physical43_common.physical43Common.push(seen,jsonNewString(name));
+                    path >> str <- root+"/"+name; if (physical43_common.physical43Common.fileType(path) != 1) { physical43_common.physical43Common.fail("missing or non-regular evidence file: "+name); return 0; }
+                    byteNode >> int <- jsonObjectBorrow(entry,"bytes");
+                    matchingSize >> bool <- physical43_common.physical43Common.integerEqual(byteNode,physical43_common.physical43Common.fileSize(path)); jsonRelease(byteNode);
+                    if (!matchingSize || physical43_common.physical43Common.field(entry,"sha256") != physical43_common.physical43Common.fileHash(path)) { physical43_common.physical43Common.fail("evidence file mismatch: "+name); return 0; }
+                    role >> str <- physical43_common.physical43Common.field(entry,"role"); if (role != physical43_common.physical43Common.role(name)) { physical43_common.physical43Common.fail("evidence role mismatch: "+name); return 0; }
+                    if (!release_io.releaseIo.contains(roles,role)) physical43_common.physical43Common.push(roles,jsonNewString(role)); jsonRelease(entry); at += 1;
+                }
+                excluded >> int <- jsonParse("[\"SHA256SUMS\",\"evidence-certificate.json\"]"); actual >> int <- physical43_common.physical43Common.orderedInventory(root,excluded,false,false,true); jsonRelease(excluded);
+                if (jsonArrayLen(actual) != jsonArrayLen(indexed)) { physical43_common.physical43Common.fail("retained file set differs from certificate inventory"); return 0; }
+                at <- 0; while (at < jsonArrayLen(actual)) { entry >> int <- jsonArrayBorrow(actual,at); originalEntry >> int <- jsonArrayBorrow(indexed,at); actualName >> int <- jsonObjectBorrow(entry,"path"); originalName >> int <- jsonObjectBorrow(originalEntry,"path"); valid >> bool <- physical43_common.physical43Common.equal(actualName,originalName); jsonRelease(actualName); jsonRelease(originalName); jsonRelease(entry); jsonRelease(originalEntry); if (!valid) { physical43_common.physical43Common.fail("retained file set differs from certificate inventory"); return 0; } at += 1; } jsonRelease(actual);
+                at <- 0; while (at < jsonArrayLen(requiredRoles)) { roleNode >> int <- jsonArrayBorrow(requiredRoles,at); valid >> bool <- release_io.releaseIo.contains(roles,jsonStringView(roleNode,"")); jsonRelease(roleNode); if (!valid) { physical43_common.physical43Common.fail("required evidence roles are absent"); return 0; } at += 1; }
+                checksums >> int <- sums(root+"/SHA256SUMS"); if (checksums == 0) return 0;
+                excluded <- jsonParse("[\"SHA256SUMS\"]"); actual <- physical43_common.physical43Common.orderedInventory(root,excluded,false,false,true); jsonRelease(excluded);
+                if (jsonObjectLen(checksums) != jsonArrayLen(actual)) { physical43_common.physical43Common.fail("SHA256SUMS file set is incomplete or contains extras"); return 0; }
+                at <- 0; while (at < jsonArrayLen(actual)) { row >> int <- jsonArrayBorrow(actual,at); name >> str <- physical43_common.physical43Common.field(row,"path"); valid >> bool <- physical43_common.physical43Common.field(checksums,name) == physical43_common.physical43Common.field(row,"sha256"); jsonRelease(row); if (!valid) { physical43_common.physical43Common.fail("SHA256SUMS mismatch: "+name); return 0; } at += 1; }
+                result >> int <- jsonParse("{\"schema\":\"ncc.ci.exact_head_evidence_verification.v1\",\"status\":\"verified\"}"); physical43_common.physical43Common.put(result,"exact_head",jsonNewString(sha)); physical43_common.physical43Common.put(result,"lane",jsonObjectBorrow(payload,"lane")); physical43_common.physical43Common.put(result,"runner_class",jsonObjectBorrow(payload,"runner_class")); physical43_common.physical43Common.put(result,"files",jsonNewInt(jsonArrayLen(indexed))); physical43_common.physical43Common.put(result,"roles",release_io.releaseIo.sorted(roles)); physical43_common.physical43Common.put(result,"capture_hmac_verified",jsonNewBool(captureHmac == 1)); physical43_common.physical43Common.put(result,"certificate_hmac_verified",jsonNewBool(certificateHmac == 1));
+                jsonRelease(actual); jsonRelease(checksums); jsonRelease(roles); jsonRelease(seen); jsonRelease(indexed); jsonRelease(payload); jsonRelease(cpayload); jsonRelease(certificate); jsonRelease(captured); return result;
+            }
+            selftest() -> int {
+                root >> str <- physical43_common.physical43Common.absolutePath("target/tmp/physical43-exact-selftest-"+renderInt(nowMs())); repo >> str <- root+"/repo"; physical43_common.physical43Common.directories(repo);
+                git(repo,"[\"init\",\"-q\"]"); git(repo,"[\"config\",\"user.email\",\"ci@ncc.invalid\"]"); git(repo,"[\"config\",\"user.name\",\"nC CI\"]");
+                physical43_common.physical43Common.write(repo+"/source.n","selftest { main: run; }\n"); physical43_common.physical43Common.write(repo+"/.gitignore","/evidence/\n"); git(repo,"[\"add\",\"source.n\",\".gitignore\"]"); git(repo,"[\"commit\",\"-q\",\"-m\",\"selftest\"]"); sha >> str <- git(repo,"[\"rev-parse\",\"HEAD\"]"); evidence >> str <- repo+"/evidence";
+                model >> int <- capture(repo,evidence+"/exact-head.json",sha,"selftest","hosted","selftest-key"); if (model == 0) return 0; jsonRelease(model);
+                physical43_common.physical43Common.write(evidence+"/boot.log","NCC_BOOT_OK\n"); physical43_common.physical43Common.write(evidence+"/kernel.elf","\x7fELFselftest"); physical43_common.physical43Common.write(evidence+"/kernel.disasm.txt","0000: ret\n");
+                model <- sealBundle(evidence,sha,"selftest-key",repo); if (model == 0) return 0; jsonRelease(model);
+                roles >> int <- jsonParse("[\"image\",\"disassembly\",\"log\"]"); model <- verify(evidence,sha,"selftest-key",true,false,roles); jsonRelease(roles); if (model == 0) return 0;
+                count >> int <- release_io.releaseIo.number(model,"files",0); jsonRelease(model); physical43_common.physical43Common.write(evidence+"/boot.log","tampered\n"); roles <- jsonNewArray(); model <- verify(evidence,sha,"selftest-key",true,false,roles); jsonRelease(roles);
+                tampered >> bool <- model == 0; jsonRelease(model); physical43_common.physical43Common.reset(); physical43_common.physical43Common.write(repo+"/dirty.txt","dirty\n"); model <- capture(repo,repo+"/dirty-evidence.json",sha,"dirty","hosted",""); dirty >> bool <- model == 0; jsonRelease(model); physical43_common.physical43Common.reset();
+                if (!tampered || !dirty) { physical43_common.physical43Common.fail("selftest did not reject tampered evidence or dirty tree"); return 0; }
+                result >> int <- jsonParse("{\"schema\":\"ncc.ci.exact_head_evidence_selftest.v1\",\"status\":\"passed\",\"tamper_rejected\":true,\"dirty_tree_rejected\":true}"); physical43_common.physical43Common.put(result,"verified_files",jsonNewInt(count)); return result;
+            }
+            execute(arguments >> addr) -> int {
+                action >> str <- argsCount(arguments) > 2 ? argsAt(arguments,2) : "";
+                if (physical43_common.physical43Common.help(arguments)) { println("exact-head-evidence capture|seal|verify|selftest [--repo DIR] [--root DIR] [--out JSON] --expected-sha SHA [--lane LANE --runner-class hosted|physical] [--hmac-key-env NAME] [--require-hmac] [--require-physical] [--require-role ROLE]"); return 0; }
+                values >> str <- "|--expected-sha|--hmac-key-env|"; flags >> str <- "";
+                if (action == "capture") values <- values+"--repo|--out|--lane|--runner-class|";
+                else if (action == "seal") values <- values+"--root|--repo|";
+                else if (action == "verify") { values <- values+"--root|--require-role|"; flags <- "|--require-hmac|--require-physical|"; }
+                else if (action == "selftest") values <- "";
+                else { eprintln("exact-head evidence: expected capture, seal, verify or selftest"); return 2; }
+                options >> int <- physical43_common.physical43Common.parse(arguments,3,values,flags,"|--require-role|"); if (options == 0) { eprintln("invalid exact-head options"); return 2; }
+                if (action != "selftest" && (!jsonObjectHas(options,"--expected-sha") || (action == "capture" && (!jsonObjectHas(options,"--out") || !jsonObjectHas(options,"--lane") || !jsonObjectHas(options,"--runner-class"))) || (action != "capture" && !jsonObjectHas(options,"--root")))) { eprintln("required exact-head options are absent"); jsonRelease(options); return 2; }
+                runner >> str <- tool_cli.toolCli.value(options,"--runner-class",""); if (action == "capture" && runner != "hosted" && runner != "physical") { eprintln("invalid runner class"); return 2; }
+                sha >> str <- tool_cli.toolCli.value(options,"--expected-sha",""); repo >> str <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--repo",".")); root >> str <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--root",".")); key >> str <- physical43_common.physical43Common.env(tool_cli.toolCli.value(options,"--hmac-key-env","NCC_CI_EVIDENCE_HMAC"));
+                result >> int <- 0;
+                if (action == "capture") result <- capture(repo,tool_cli.toolCli.value(options,"--out",""),sha,tool_cli.toolCli.value(options,"--lane",""),runner,key);
+                if (action == "seal") result <- sealBundle(root,sha,key,repo);
+                if (action == "verify") { roles >> int <- jsonObjectBorrow(options,"--require-role"); result <- verify(root,sha,key,tool_cli.toolCli.hasFlag(options,"--require-hmac"),tool_cli.toolCli.hasFlag(options,"--require-physical"),roles); jsonRelease(roles); }
+                if (action == "selftest") result <- selftest();
+                jsonRelease(options); strRelease(key);
+                if (result == 0) { eprintln("exact-head evidence error: "+physical43_common.physical43Common.diagnostic()); return 1; }
+                physical43_common.physical43Common.print(result); jsonRelease(result); return 0;
+            }
+    fa: return true;
+}

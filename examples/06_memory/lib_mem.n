@@ -1,0 +1,1017 @@
+use <io:output, render, input>;
+
+bibliotecaMemoria :: runtime {
+    EstadoLibro :: type {
+            codigo >> int;
+            nombre >> str;
+    }
+
+    MenuPrincipal :: type {
+            opcion >> int;
+            titulo >> str;
+    }
+
+    MovimientoLibro :: type {
+            id >> int;
+            estado >> int;
+            detalle >> str;
+    }
+
+    stc:
+        saldo >> int;
+
+        flags >> array<int, 5>;
+        usuarioNombre >> str;
+        usuarioId >> int;
+        tarjetaAlias >> str;
+        tarjetaUlt4 >> int;
+
+        stats >> array<int, 5>;
+        ultimoLibro >> int;
+        ultimoEstado >> str;
+
+        estados >> array<int, 30>;
+        work >> array<int, 12>;
+        entradaTexto >> str;
+
+    fn:
+        iniciarSistema() -> bool {
+            saldo <- 0;
+
+            flags <- [0, 0, 0, 0, 0];
+            usuarioNombre <- "sin.cuenta";
+            usuarioId <- 0;
+            tarjetaAlias <- "sin.tarjeta";
+            tarjetaUlt4 <- 0;
+
+            stats <- [0, 0, 0, 0, 0];
+
+            ultimoLibro <- 0;
+            ultimoEstado <- "boot";
+
+            work <- [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+            entradaTexto <- "";
+
+            estados >> array<int, 30> <- [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ];
+
+            return true;
+        }
+
+        idLibroValido(id >> int) -> bool {
+            if (id < 1) { return false; }
+            if (id > 30) { return false; }
+            return true;
+        }
+
+        estadoLibroPermitido(estado >> int) -> bool {
+            if (estado == 0) { return true; }
+            if (estado == 1) { return true; }
+            if (estado == 2) { return true; }
+            if (estado == 3) { return true; }
+            return false;
+        }
+
+        exigirLibroValido(id >> int) -> bool {
+            if (idLibroValido(id) == false) {
+                println("libro.id.invalido");
+                print("id=");
+                println(id);
+                return false;
+            }
+
+            return true;
+        }
+
+        exigirAppAbierta(mensaje >> str) -> bool {
+            if (flags[3] == 0) {
+                println(mensaje);
+                return false;
+            }
+
+            return true;
+        }
+
+        exigirCuentaCreada(mensaje >> str) -> bool {
+            if (flags[0] == 0) {
+                println(mensaje);
+                return false;
+            }
+
+            return true;
+        }
+
+        exigirSesionActiva(mensaje >> str) -> bool {
+            if (flags[1] == 0) {
+                println(mensaje);
+                return false;
+            }
+
+            return true;
+        }
+
+        exigirTarjetaOk(mensaje >> str) -> bool {
+            if (flags[4] == 0) {
+                println(mensaje);
+                return false;
+            }
+
+            return true;
+        }
+
+        registrarMovimientoLibro(id >> int, nuevo >> int, estado >> str) -> bool {
+            if (setEstadoLibro(id, nuevo) == false) {
+                println("Estado libro no actualizado");
+                return false;
+            }
+
+            ultimoLibro <- id;
+            ultimoEstado <- estado;
+            return true;
+        }
+
+        imprimirLibroBase(id >> int) -> bool {
+            print("id=");
+            print(id);
+            print(" titulo =");
+            print(nombreLibro(id));
+            return true;
+        }
+
+        imprimirLibroEstado(id >> int) -> bool {
+            imprimirLibroBase(id);
+            print(" estado=");
+            println(estadoTexto(id));
+            return true;
+        }
+
+        imprimirLibroPrecio(id >> int) -> bool {
+            imprimirLibroBase(id);
+            print(" precio=");
+            println(precioLibro(id));
+            return true;
+        }
+
+        nombreLibro(id >> int) -> str {
+            if (id == 1) { return "Don Quijote"; }
+            if (id == 2) { return "La Regenta"; }
+            if (id == 3) { return "Fortunata y Jacinta"; }
+            if (id == 4) { return "Niebla"; }
+            if (id == 5) { return "La Celestina"; }
+            if (id == 6) { return "Lazarillo de Tormes"; }
+            if (id == 7) { return "Fuenteovejuna"; }
+            if (id == 8) { return "El Arbol de la Ciencia"; }
+            if (id == 9) { return "Campos de Castilla"; }
+            if (id == 10) { return "Marianela"; }
+            if (id == 11) { return "Bodas de Sangre"; }
+            if (id == 12) { return "La Casa de Bernarda Alba"; }
+            if (id == 13) { return "Platero y Yo"; }
+            if (id == 14) { return "Nada"; }
+            if (id == 15) { return "Los Santos Inocentes"; }
+            if (id == 16) { return "El Camino"; }
+            if (id == 17) { return "Cinco Horas con Mario"; }
+            if (id == 18) { return "La Familia de Pascual Duarte"; }
+            if (id == 19) { return "San Manuel Bueno Martir"; }
+            if (id == 20) { return "Luces de Bohemia"; }
+            if (id == 21) { return "Pepita Jimenez"; }
+            if (id == 22) { return "El Sombrero de Tres Picos"; }
+            if (id == 23) { return "Tirant lo Blanc"; }
+            if (id == 24) { return "El Buscon"; }
+            if (id == 25) { return "Numancia"; }
+            if (id == 26) { return "Sonatas"; }
+            if (id == 27) { return "La Tribuna"; }
+            if (id == 28) { return "Cantar de Mio Cid"; }
+            if (id == 29) { return "Rinconete y Cortadillo"; }
+            if (id == 30) { return "Trafalgar"; }
+            return "libro.desconocido";
+        }
+
+        precioLibro(id >> int) -> int {
+            if (id == 1) { return 32; }
+            if (id == 2) { return 24; }
+            if (id == 3) { return 29; }
+            if (id == 4) { return 18; }
+            if (id == 5) { return 21; }
+            if (id == 6) { return 14; }
+            if (id == 7) { return 17; }
+            if (id == 8) { return 23; }
+            if (id == 9) { return 19; }
+            if (id == 10) { return 16; }
+            if (id == 11) { return 18; }
+            if (id == 12) { return 20; }
+            if (id == 13) { return 15; }
+            if (id == 14) { return 22; }
+            if (id == 15) { return 26; }
+            if (id == 16) { return 19; }
+            if (id == 17) { return 21; }
+            if (id == 18) { return 25; }
+            if (id == 19) { return 17; }
+            if (id == 20) { return 23; }
+            if (id == 21) { return 18; }
+            if (id == 22) { return 16; }
+            if (id == 23) { return 28; }
+            if (id == 24) { return 19; }
+            if (id == 25) { return 24; }
+            if (id == 26) { return 20; }
+            if (id == 27) { return 22; }
+            if (id == 28) { return 27; }
+            if (id == 29) { return 18; }
+            if (id == 30) { return 26; }
+            return 0;
+        }
+
+        estadoLibro(id >> int) -> int {
+            if (idLibroValido(id) == true) {
+                return estados[id - 1];
+            }
+
+            return -1;
+        }
+
+        setEstadoLibro(id >> int, nuevo >> int) -> bool {
+            if (idLibroValido(id) == false) { return false; }
+            if (estadoLibroPermitido(nuevo) == false) { return false; }
+
+            estados[id - 1] <- nuevo;
+            return true;
+        }
+
+        estadoValorTexto(estado >> int) -> str {
+            if (estado == 0) { return "disponible"; }
+            if (estado == 1) { return "reservado"; }
+            if (estado == 2) { return "comprado"; }
+            if (estado == 3) { return "prestado"; }
+            return "desconocido";
+        }
+
+        estadoTexto(id >> int) -> str {
+            work[4] <- estadoLibro(id);
+            return estadoValorTexto(work[4]);
+        }
+
+        contarDisponibles() -> int {
+            work[1] <- 0;
+            work[0] <- 1;
+
+            while (work[0] <= 30) {
+                work[4] <- estadoLibro(work[0]);
+
+                if (work[4] == 0) {
+                    work[1] <- work[1] + 1;
+                }
+
+                work[0] <- work[0] + 1;
+            }
+
+            return work[1];
+        }
+
+        mostrarCatalogoCompleto() -> bool {
+            println("biblioteca.catalogo.total");
+            print("libros.total=");
+            println(30);
+
+            work[0] <- 1;
+            while (work[0] <= 30) {
+                imprimirLibroEstado(work[0]);
+
+                work[0] <- work[0] + 1;
+            }
+
+            return true;
+        }
+
+        mostrarDisponibles() -> bool {
+            println("biblioteca.disponibles");
+            work[0] <- 1;
+
+            while (work[0] <= 30) {
+                work[4] <- estadoLibro(work[0]);
+
+                if (work[4] == 0) {
+                    print("ok ");
+                    imprimirLibroBase(work[0]);
+                    println();
+                }
+
+                work[0] <- work[0] + 1;
+            }
+
+            work[2] <- contarDisponibles();
+            print("disponibles.total=");
+            println(work[2]);
+            return true;
+        }
+
+        mostrarPorEstado(estado >> int, titulo >> str) -> bool {
+            println(titulo);
+            work[10] <- 0;
+            work[0] <- 1;
+
+            while (work[0] <= 30) {
+                work[4] <- estadoLibro(work[0]);
+
+                if (work[4] == estado) {
+                    println("ok");
+                    imprimirLibroEstado(work[0]);
+                    work[10] <- 1;
+                }
+
+                work[0] <- work[0] + 1;
+            }
+
+            if (work[10] == 0) {
+                println("sin.resultados");
+            }
+
+            return true;
+        }
+
+        mostrarReservados() -> bool {
+            return mostrarPorEstado(1, "biblioteca.reservados");
+        }
+
+        mostrarComprados() -> bool {
+            return mostrarPorEstado(2, "biblioteca.comprados");
+        }
+
+        mostrarPrestados() -> bool {
+            return mostrarPorEstado(3, "biblioteca.prestados");
+        }
+
+        mostrarNoDisponibles() -> bool {
+            println("biblioteca.no.disponibles");
+            work[10] <- 0;
+            work[0] <- 1;
+
+            while (work[0] <= 30) {
+                work[4] <- estadoLibro(work[0]);
+
+                if (work[4] != 0) {
+                    println("no.disponible");
+                    imprimirLibroEstado(work[0]);
+                    work[10] <- 1;
+                }
+
+                work[0] <- work[0] + 1;
+            }
+
+            if (work[10] == 0) {
+                println("todos.disponibles");
+            }
+
+            return true;
+        }
+
+        mostrarPreciosYSaldo() -> bool {
+            println("biblioteca.precios");
+            work[0] <- 1;
+
+            while (work[0] <= 30) {
+                imprimirLibroPrecio(work[0]);
+
+                work[0] <- work[0] + 1;
+            }
+
+            print("saldo.actual=");
+            println(saldo);
+            return true;
+        }
+
+        leerLibroMenu(accion >> str) -> int {
+            println(accion);
+        print("id libro [1.." + renderInt(30) + "]: ");
+
+            work[7] <- readInt();
+            return work[7];
+        }
+
+        leerImporteMenu(accion >> str) -> int {
+            println(accion);
+            print("importe: ");
+            work[8] <- readInt();
+            return work[8];
+        }
+
+        crearCuenta(nombre >> str, id >> int, saldoInicial >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.crea.cuenta") == false) { return false; }
+
+            if (id <= 0) {
+                println("usuario.id.invalido");
+                return false;
+            }
+
+            if (saldoInicial < 0) {
+                println("saldo.inicial.invalido");
+                return false;
+            }
+
+            usuarioNombre <- nombre;
+            usuarioId <- id;
+            saldo <- saldoInicial;
+
+            flags[0] <- 1;
+            flags[1] <- 1;
+            flags[2] <- 1;
+
+            ultimoEstado <- "cuenta.creada";
+
+            println("cuenta.creada");
+            print("usuario=");
+            println(usuarioNombre);
+            print("saldo=");
+            println(saldo);
+
+            return true;
+        }
+
+        ponerTarjeta(alias >> str, ult4 >> int) -> bool {
+            if (exigirCuentaCreada("sin.cuenta.no.tarjeta") == false) { return false; }
+
+            if ((ult4 < 1000) || (ult4 > 9999)) {
+                println("ult4.invalido");
+                return false;
+            }
+
+            tarjetaAlias <- alias;
+            tarjetaUlt4 <- ult4;
+            flags[4] <- 1;
+            ultimoEstado <- "tarjeta.guardada";
+
+            println("tarjeta.guardada");
+            print("alias=");
+            println(tarjetaAlias);
+            print("ult4=");
+            println(tarjetaUlt4);
+
+            return true;
+        }
+
+        meterSaldo(importe >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.mete.saldo") == false) { return false; }
+            if (exigirCuentaCreada("sin.cuenta.no.mete.saldo") == false) { return false; }
+
+            if (importe <= 0) {
+                println("importe.invalido");
+                return false;
+            }
+
+            saldo <- saldo + importe;
+            ultimoEstado <- "saldo.metido";
+
+            println("saldo.metido");
+            print("saldo=");
+            println(saldo);
+            return true;
+        }
+
+        sacarSaldo(importe >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.saca.saldo") == false) { return false; }
+            if (exigirCuentaCreada("sin.cuenta.no.saca.saldo") == false) { return false; }
+
+            if (importe <= 0) {
+                println("importe.invalido");
+                return false;
+            }
+
+            if (saldo < importe) {
+                println("saldo.insuficiente");
+                print("saldo=");
+                println(saldo);
+                return false;
+            }
+
+            saldo <- saldo - importe;
+            ultimoEstado <- "saldo.sacado";
+
+            println("saldo.sacado");
+            print("saldo=");
+            println(saldo);
+            return true;
+        }
+
+        reservarLibro(id >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.reserva") == false) { return false; }
+            if (exigirCuentaCreada("sin.cuenta.no.reserva") == false) { return false; }
+            if (exigirSesionActiva("sin.sesion.no.reserva") == false) { return false; }
+            if (exigirLibroValido(id) == false) { return false; }
+
+            work[4] <- estadoLibro(id);
+
+            if (work[4] != 0) {
+                println("libro.no.disponible.para.reserva");
+                return false;
+            }
+
+            if (registrarMovimientoLibro(id, 1, "reservado") == false) { return false; }
+            stats[0] <- stats[0] + 1;
+
+            println("libro.reservado");
+            imprimirLibroBase(id);
+            println();
+
+            return true;
+        }
+
+        confirmarPrestamo(id >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.prestamo") == false) { return false; }
+            if (exigirSesionActiva("sin.sesion.no.prestamo") == false) { return false; }
+            if (exigirLibroValido(id) == false) { return false; }
+
+            work[4] <- estadoLibro(id);
+
+            if (work[4] != 1) {
+                println("prestamo.requiere.reserva");
+                return false;
+            }
+
+            if (registrarMovimientoLibro(id, 3, "prestado") == false) { return false; }
+            stats[2] <- stats[2] + 1;
+
+            println("libro.prestado");
+            imprimirLibroBase(id);
+            println();
+
+            return true;
+        }
+
+        comprarLibro(id >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.compra") == false) { return false; }
+            if (exigirCuentaCreada("sin.cuenta.no.compra") == false) { return false; }
+            if (exigirSesionActiva("sin.sesion.no.compra") == false) { return false; }
+            if (exigirTarjetaOk("sin.tarjeta.no.compra") == false) { return false; }
+            if (exigirLibroValido(id) == false) { return false; }
+
+            work[4] <- estadoLibro(id);
+            if ((work[4] != 0) && (work[4] != 1)) {
+                println("estado.invalido.para.compra");
+                return false;
+            }
+
+            work[2] <- precioLibro(id);
+
+            if (saldo < work[2]) {
+                println("saldo.insuficiente");
+                print("saldo=");
+                println(saldo);
+                print("precio=");
+                println(work[2]);
+                return false;
+            }
+
+            if (registrarMovimientoLibro(id, 2, "comprado") == false) { return false; }
+
+            saldo <- saldo - work[2];
+            stats[1] <- stats[1] + 1;
+
+            println("libro.comprado");
+            imprimirLibroBase(id);
+            print(" precio=");
+            println(work[2]);
+
+            return true;
+        }
+
+        devolverPrestado(id >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.devolucion") == false) { return false; }
+            if (exigirSesionActiva("sin.sesion.no.devolucion") == false) { return false; }
+            if (exigirLibroValido(id) == false) { return false; }
+
+            work[4] <- estadoLibro(id);
+
+            if (work[4] != 3) {
+                println("libro.no.esta.prestado");
+                return false;
+            }
+
+            if (registrarMovimientoLibro(id, 0, "devuelto") == false) { return false; }
+            stats[3] <- stats[3] + 1;
+
+            println("libro.devuelto");
+            imprimirLibroBase(id);
+            println();
+
+            return true;
+        }
+
+        reembolsoLibro(id >> int) -> bool {
+            if (exigirAppAbierta("app.cerrada.no.reembolso") == false) { return false; }
+            if (exigirSesionActiva("sin.sesion.no.reembolso") == false) { return false; }
+            if (exigirLibroValido(id) == false) { return false; }
+
+            work[4] <- estadoLibro(id);
+
+            if (work[4] != 2) {
+                println("libro.no.comprado");
+                return false;
+            }
+
+            work[2] <- precioLibro(id);
+            if (registrarMovimientoLibro(id, 0, "reembolsado") == false) { return false; }
+
+            saldo <- saldo + work[2];
+            stats[4] <- stats[4] + 1;
+
+            println("reembolso.ok");
+            imprimirLibroBase(id);
+            print(" importe=");
+            println(work[2]);
+
+            return true;
+        }
+
+        reembolsoVarios(a >> int, b >> int, c >> int) -> bool {
+            println("reembolso.varios.inicio");
+
+            work[3] <- 0;
+            if (reembolsoLibro(a) == true) { work[3] <- work[3] + 1; }
+            if (reembolsoLibro(b) == true) { work[3] <- work[3] + 1; }
+            if (reembolsoLibro(c) == true) { work[3] <- work[3] + 1; }
+
+            print("reembolsos.ok=");
+            println(work[3]);
+            println("reembolso.varios.fin");
+
+            if (work[3] == 3) { return true; }
+            return false;
+        }
+
+        cerrarAplicacion() -> bool {
+            if (flags[3] == 0) {
+                println("app.ya.cerrada");
+                return false;
+            }
+
+            flags[3] <- 0;
+            flags[1] <- 0;
+
+            if (flags[0] == 1) {
+                flags[2] <- 1;
+            }
+
+            ultimoEstado <- "app.cerrada";
+            println("app.cerrada");
+            return true;
+        }
+
+        abrirAplicacion() -> bool {
+            flags[3] <- 1;
+
+            if ((flags[0] == 1) && (flags[2] == 1)) {
+                flags[1] <- 1;
+                ultimoEstado <- "app.abierta.sesion.restaurada";
+
+                println("sesion.restaurada");
+                print("usuario=");
+                println(usuarioNombre);
+            } else {
+                flags[1] <- 0;
+                ultimoEstado <- "app.abierta.vacia";
+                println("sesion.vacia");
+            }
+
+            return true;
+        }
+
+        resumenCuenta() -> bool {
+            println();
+            println("biblioteca.resumen.cuenta");
+
+            print("usuario=");
+            println(usuarioNombre);
+            print("usuario.id=");
+            println(usuarioId);
+
+            print("saldo=");
+            println(saldo);
+
+            print("reservas=");
+            println(stats[0]);
+            print("compras=");
+            println(stats[1]);
+            print("prestamos=");
+            println(stats[2]);
+            print("devoluciones=");
+            println(stats[3]);
+            print("reembolsos=");
+            println(stats[4]);
+
+            print("ultimo.libro=");
+            println(ultimoLibro);
+            print("ultimo.estado=");
+            println(ultimoEstado);
+
+            if (flags[4] == 1) {
+                print("tarjeta.alias=");
+                println(tarjetaAlias);
+                print("tarjeta.ult4=");
+                println(tarjetaUlt4);
+            } else {
+                println("sin.tarjeta.guardada");
+            }
+
+            work[2] <- contarDisponibles();
+            print("disponibles.finales=");
+            println(work[2]);
+
+            return true;
+        }
+
+        menuCrearCuenta() -> bool {
+            println("crear.cuenta.nombre");
+            print("nombre: ");
+            entradaTexto <- readLine();
+
+            print("usuario.id: ");
+            work[6] <- readInt();
+
+            print("saldo.inicial: ");
+            work[8] <- readInt();
+
+            return crearCuenta(entradaTexto, work[6], work[8]);
+        }
+
+        menuGuardarTarjeta() -> bool {
+            println("tarjeta.alias");
+            print("alias: ");
+            entradaTexto <- readLine();
+
+            print("ult4: ");
+            work[9] <- readInt();
+
+            return ponerTarjeta(entradaTexto, work[9]);
+        }
+
+        menuMeterSaldo() -> bool {
+            work[8] <- leerImporteMenu("meter.saldo");
+            return meterSaldo(work[8]);
+        }
+
+        menuSacarSaldo() -> bool {
+            work[8] <- leerImporteMenu("sacar.saldo");
+            return sacarSaldo(work[8]);
+        }
+
+        menuReservarLibro() -> bool {
+            work[7] <- leerLibroMenu("reservar.libro");
+            return reservarLibro(work[7]);
+        }
+
+        menuSacarLibro() -> bool {
+            work[7] <- leerLibroMenu("sacar.libro.reservado");
+            return confirmarPrestamo(work[7]);
+        }
+
+        menuMeterLibro() -> bool {
+            work[7] <- leerLibroMenu("meter.devolver.libro");
+            return devolverPrestado(work[7]);
+        }
+
+        menuPagarLibro() -> bool {
+            work[7] <- leerLibroMenu("pagar.comprar.libro");
+            return comprarLibro(work[7]);
+        }
+
+        menuReembolsarLibro() -> bool {
+            work[7] <- leerLibroMenu("reembolsar.libro");
+            return reembolsoLibro(work[7]);
+        }
+
+        pintarSubMenuCuenta() -> bool {
+            println();
+            println("menu.cuenta.saldo");
+            println("1 crear cuenta");
+            println("2 guardar tarjeta");
+            println("3 meter saldo");
+            println("4 sacar saldo");
+            println("5 resumen cuenta");
+            println("0 volver");
+            print("> ");
+
+            work[5] <- readInt();
+            return true;
+        }
+
+        ejecutarSubMenuCuenta() -> bool {
+            if (work[5] == 1) { return menuCrearCuenta(); }
+            if (work[5] == 2) { return menuGuardarTarjeta(); }
+            if (work[5] == 3) { return menuMeterSaldo(); }
+            if (work[5] == 4) { return menuSacarSaldo(); }
+            if (work[5] == 5) { return resumenCuenta(); }
+            if (work[5] == 0) { return true; }
+
+            println("menu.cuenta.opcion.invalida");
+            return false;
+        }
+
+        menuCuenta() -> bool {
+            work[5] <- -1;
+
+            while (work[5] != 0) {
+                pintarSubMenuCuenta();
+                ejecutarSubMenuCuenta();
+            }
+
+            return true;
+        }
+
+        pintarSubMenuCatalogo() -> bool {
+            println();
+            println("menu.catalogo");
+            println("1 ver disponibles");
+            println("2 ver reservados");
+            println("3 ver comprados");
+            println("4 ver prestados");
+            println("5 ver no disponibles");
+            println("6 ver catalogo completo");
+            println("7 ver precios y saldo");
+            println("0 volver");
+            print("> ");
+
+            work[5] <- readInt();
+            return true;
+        }
+
+        ejecutarSubMenuCatalogo() -> bool {
+            if (work[5] == 1) { return mostrarDisponibles(); }
+            if (work[5] == 2) { return mostrarReservados(); }
+            if (work[5] == 3) { return mostrarComprados(); }
+            if (work[5] == 4) { return mostrarPrestados(); }
+            if (work[5] == 5) { return mostrarNoDisponibles(); }
+            if (work[5] == 6) { return mostrarCatalogoCompleto(); }
+            if (work[5] == 7) { return mostrarPreciosYSaldo(); }
+            if (work[5] == 0) { return true; }
+
+            println("Menu catalogo opcion invalida");
+            return false;
+        }
+
+        menuCatalogo() -> bool {
+            work[5] <- -1;
+
+            while (work[5] != 0) {
+                pintarSubMenuCatalogo();
+                ejecutarSubMenuCatalogo();
+            }
+
+            return true;
+        }
+
+        pintarSubMenuLibros() -> bool {
+            println();
+            println("menu.libros");
+            println("1 reservar libro");
+            println("2 sacar libro reservado");
+            println("3 meter/devolver libro");
+            println("4 pagar/comprar libro");
+            println("5 reembolsar libro");
+            println("0 volver");
+            print("> ");
+
+            work[5] <- readInt();
+            return true;
+        }
+
+        ejecutarSubMenuLibros() -> bool {
+            if (work[5] == 1) { return menuReservarLibro(); }
+            if (work[5] == 2) { return menuSacarLibro(); }
+            if (work[5] == 3) { return menuMeterLibro(); }
+            if (work[5] == 4) { return menuPagarLibro(); }
+            if (work[5] == 5) { return menuReembolsarLibro(); }
+            if (work[5] == 0) { return true; }
+
+            println("Menu libros opcion invalida");
+            return false;
+        }
+
+        menuLibros() -> bool {
+            work[5] <- -1;
+
+            while (work[5] != 0) {
+                pintarSubMenuLibros();
+                ejecutarSubMenuLibros();
+            }
+
+            return true;
+        }
+
+        pintarMenuPrincipal() -> bool {
+            println();
+            println("Biblioteca.menu.principal");
+            println("1 cuenta y saldo");
+            println("2 catalogo");
+            println("3 libros");
+            println("4 resumen");
+            println("5 ejecutar demo anterior");
+            println("0 salir");
+            print("> ");
+
+            work[5] <- readInt();
+            return true;
+        }
+
+        ejecutarMenuPrincipal() -> bool {
+            if (work[5] == 1) { return menuCuenta(); }
+            if (work[5] == 2) { return menuCatalogo(); }
+            if (work[5] == 3) { return menuLibros(); }
+            if (work[5] == 4) { return resumenCuenta(); }
+
+            if (work[5] == 5) {
+                work[2] <- boot();
+                return true;
+            }
+
+            if (work[5] == 0) {
+                work[11] <- 0;
+                println("Biblioteca menu salida");
+                return true;
+            }
+
+            println("Menu principal opcion invalida");
+            return false;
+        }
+
+        menuInteractivo() -> bool {
+            work[11] <- 1;
+
+            while (work[11] == 1) {
+                pintarMenuPrincipal();
+                ejecutarMenuPrincipal();
+            }
+
+            return true;
+        }
+
+        run() -> int {
+            iniciarSistema();
+            abrirAplicacion();
+
+            println("Biblioteca memoria interactiva");
+            println("Elige opciones, introduce datos y navega hasta salir");
+
+            menuInteractivo();
+            resumenCuenta();
+
+            return saldo;
+        }
+
+        boot() -> int {
+            iniciarSistema();
+
+            abrirAplicacion();
+
+            crearCuenta("Aris", 2605, 220);
+            ponerTarjeta("Visa principal", 4821);
+
+            println();
+            mostrarCatalogoCompleto();
+
+            println();
+            mostrarDisponibles();
+
+            println();
+            mostrarPreciosYSaldo();
+
+            println();
+            reservarLibro(7);
+            confirmarPrestamo(7);
+
+            comprarLibro(12);
+            comprarLibro(18);
+            comprarLibro(21);
+            comprarLibro(25);
+
+            println();
+            println("Estado tras compra y reserva");
+            mostrarDisponibles();
+            mostrarPreciosYSaldo();
+
+            println();
+            devolverPrestado(7);
+            reembolsoLibro(12);
+            reembolsoVarios(18, 21, 25);
+
+            println();
+            println("Estado tras devolucion y reembolsos");
+            mostrarDisponibles();
+            mostrarPreciosYSaldo();
+
+            println();
+            cerrarAplicacion();
+            abrirAplicacion();
+
+            println();
+            resumenCuenta();
+
+            return saldo;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

@@ -1,0 +1,166 @@
+use <data:json>;
+use <io:render>;
+
+editorJson {
+    const:
+        LIMIT >> int <- 16777216;
+    local:
+        cursor >> int <- 0;
+        failed >> bool <- false;
+    fn:
+        private:
+            hex(code >> int) -> int {
+                if (code >= 48 && code <= 57) return code-48;
+                if (code >= 65 && code <= 70) return code-55;
+                if (code >= 97 && code <= 102) return code-87;
+                return -1;
+            }
+            hex4(source >> p<byte>, size >> int) -> int {
+                if (cursor+4 > size) { failed <- true; return 0; }
+                scalar >> int <- 0;
+                end >> int <- cursor+4;
+                while (cursor < end) {
+                    digit >> int <- hex(rd(off(source,cursor)) & 255);
+                    if (digit < 0) failed <- true;
+                    scalar <- scalar*16+digit; cursor += 1;
+                }
+                return scalar;
+            }
+            scalarInto(data >> p<byte>, at >> int, scalar >> int) -> int {
+                if (scalar == 0) { failed <- true; return at; }
+                if (scalar < 128) { wr(off(data,at),scalar); return at+1; }
+                if (scalar < 2048) {
+                    first >> int <- 192 | (scalar >>> 6); second >> int <- 128 | (scalar & 63);
+                    wr(off(data,at),first); wr(off(data,at+1),second); return at+2;
+                }
+                if (scalar < 65536) {
+                    first >> int <- 224 | (scalar >>> 12); second >> int <- 128 | ((scalar >>> 6) & 63); third >> int <- 128 | (scalar & 63);
+                    wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); return at+3;
+                }
+                // Arithmetic remains int; the byte conversion belongs only to the store.
+                first >> int <- 240 | (scalar >>> 18); second >> int <- 128 | ((scalar >>> 12) & 63);
+                third >> int <- 128 | ((scalar >>> 6) & 63); fourth >> int <- 128 | (scalar & 63);
+                wr(off(data,at),first); wr(off(data,at+1),second); wr(off(data,at+2),third); wr(off(data,at+3),fourth);
+                return at+4;
+            }
+            string(source >> p<byte>, size >> int) -> str {
+                data >> p<byte> <- cast(alloc(size-cursor+1));
+                if (data == null) { failed <- true; return ""; }
+                cursor += 1;
+                at >> int <- 0;
+                closed >> bool <- false;
+                while (cursor < size && !failed) {
+                    byte >> int <- rd(off(source,cursor)) & 255; cursor += 1;
+                    if (byte == 34) { closed <- true; break; }
+                    if (byte < 32) { failed <- true; break; }
+                    if (byte == 92) {
+                        if (cursor >= size) { failed <- true; break; }
+                        escaped >> int <- rd(off(source,cursor)) & 255; cursor += 1;
+                        if (escaped == 34 || escaped == 92 || escaped == 47) byte <- escaped;
+                        else if (escaped == 98) byte <- 8;
+                        else if (escaped == 102) byte <- 12;
+                        else if (escaped == 110) byte <- 10;
+                        else if (escaped == 114) byte <- 13;
+                        else if (escaped == 116) byte <- 9;
+                        else if (escaped == 117) {
+                            scalar >> int <- hex4(source,size);
+                            if (scalar >= 55296 && scalar <= 56319) {
+                                if (cursor+2 > size || rd(off(source,cursor)) != 92 || rd(off(source,cursor+1)) != 117) failed <- true;
+                                else {
+                                    cursor += 2; low >> int <- hex4(source,size);
+                                    if (low < 56320 || low > 57343) failed <- true;
+                                    else scalar <- 65536+(scalar-55296)*1024+low-56320;
+                                }
+                            } else if (scalar >= 56320 && scalar <= 57343) failed <- true;
+                            if (!failed) at <- scalarInto(data,at,scalar);
+                            continue;
+                        } else { failed <- true; break; }
+                    } else if (byte >= 128) {
+                        extra >> int <- byte >= 194 && byte <= 223 ? 1 : (byte >= 224 && byte <= 239 ? 2 : (byte >= 240 && byte <= 244 ? 3 : -1));
+                        if (extra < 0 || cursor+extra > size) { failed <- true; break; }
+                        scalar >> int <- byte & (extra == 1 ? 31 : (extra == 2 ? 15 : 7));
+                        index >> int <- 0;
+                        while (index < extra) {
+                            tail >> int <- rd(off(source,cursor)) & 255; cursor += 1;
+                            if (tail < 128 || tail > 191) failed <- true;
+                            scalar <- scalar*64+(tail & 63); index += 1;
+                        }
+                        if ((extra == 1 && scalar < 128) || (extra == 2 && scalar < 2048) || (extra == 3 && scalar < 65536) || scalar > 1114111 || (scalar >= 55296 && scalar <= 57343)) failed <- true;
+                        if (!failed) at <- scalarInto(data,at,scalar);
+                        continue;
+                    }
+                    wr(off(data,at),byte); at += 1;
+                }
+                if (!closed) failed <- true;
+                wr(off(data,at),0); result >> str <- cast(data); return result;
+            }
+            tokenIndex(value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                index >> int <- 0; result >> int <- 0;
+                while (index < strByteLen(value)) { result <- result*10+(rd(off(source,index))-48); index += 1; }
+                return result;
+            }
+            restore(model >> int, strings >> int, depth >> int) -> int {
+                if (depth > 256) { failed <- true; return 0; }
+                kind >> int <- jsonKind(model);
+                if (kind == 4) return jsonArrayGet(strings,tokenIndex(jsonStringView(model,"")));
+                if (kind != 5 && kind != 6) return jsonClone(model);
+                result >> int <- kind == 5 ? jsonNewArray() : jsonNewObject();
+                count >> int <- kind == 5 ? jsonArrayLen(model) : jsonObjectLen(model);
+                index >> int <- 0;
+                while (index < count) {
+                    value >> int <- 0; key >> int <- 0;
+                    if (kind == 5) value <- jsonArrayGet(model,index);
+                    else {
+                        name >> str <- jsonObjectKeyAt(model,index);
+                        key <- jsonArrayGet(strings,tokenIndex(name)); value <- jsonObjectGet(model,name); free(cast<byte>(name));
+                    }
+                    child >> int <- restore(value,strings,depth+1);
+                    if (kind == 5) jsonArrayPush(result,child);
+                    else { jsonObjectSet(result,jsonStringView(key,""),child); jsonRelease(key); }
+                    jsonRelease(value); index += 1;
+                }
+                return result;
+            }
+        public:
+            field(object >> int, key >> str) -> str {
+                if (jsonKind(object) != 6) return "";
+                borrowed >> int <- jsonObjectBorrow(object,key);
+                value >> str <- jsonStringView(borrowed,"");
+                jsonRelease(borrowed); return value;
+            }
+            parse(wire >> str) -> int {
+                // Stage0's shared JSON reader treats high bytes as signed and rejects
+                // surrogate pairs. Decode string tokens here; leave JSON grammar and
+                // numeric values to the existing structured parser.
+                size >> int <- strByteLen(wire);
+                guard size > 0 && size <= LIMIT else return 0;
+                cursor <- 0; failed <- false;
+                source >> p<byte> <- cast(wire);
+                data >> p<byte> <- cast(alloc(size*6+32));
+                guard data != null else return 0;
+                at >> int <- 0; strings >> int <- jsonNewArray();
+                while (cursor < size && !failed) {
+                    byte >> int <- rd(off(source,cursor)) & 255;
+                    if (byte == 34) {
+                        decoded >> str <- string(source,size);
+                        placeholder >> str <- "\""+renderInt(jsonArrayLen(strings))+"\"";
+                        count >> int <- strByteLen(placeholder);
+                        cp(off(data,at),cast<byte>(placeholder),count); at += count;
+                        jsonArrayPush(strings,jsonNewString(decoded)); free(cast<byte>(decoded)); strRelease(placeholder);
+                    } else {
+                        if (byte >= 128) failed <- true;
+                        wr(off(data,at),byte); at += 1; cursor += 1;
+                    }
+                }
+                wr(off(data,at),0);
+                if (failed) { free(data); jsonRelease(strings); return 0; }
+                sanitized >> str <- cast(data);
+                tree >> int <- jsonParse(sanitized);
+                result >> int <- restore(tree,strings,0);
+                free(data); jsonRelease(tree); jsonRelease(strings);
+                if (failed) { jsonRelease(result); return 0; }
+                return result;
+            }
+    fa: return true;
+}

@@ -1,0 +1,30 @@
+use <io:output>;
+
+nativePathDeepLinux79 {
+    run() -> int {
+        base >> p<byte> <- alloc(65536); out >> p<byte> <- alloc(65536);
+        if (base == null || out == null) return 1;
+        initial >> int <- absolutePathInto(".",base,65536);
+        if (initial < 3) return 2;
+        wr(off(base,initial-2),0);
+        component >> str <- "segment012345678901234567";
+        level >> int <- 0;
+        while (level < 240) {
+            if (syscall6(83,adr(component),448,0,0,0,0) != 0 || syscall6(80,adr(component),0,0,0,0,0) != 0) return 3;
+            level += 1;
+        }
+        expected >> int <- initial-2+level*(strByteLen(component)+1)+2;
+        count >> int <- absolutePathInto(".",out,65536);
+        valid >> bool <- count == expected && count > 4096 && strEndsWith(cast<str>(out),"/.");
+        wr(out,165);
+        valid <- valid && absolutePathInto(".",out,count) == -2 && rd(out) == 165;
+        if (syscall6(80,adr("/"),0,0,0,0,0) != 0) return 4;
+        valid <- valid && absolutePathInto("missing",out,65536) == 8 && strEq(cast<str>(out),"/missing");
+        if (syscall6(80,adr(base),0,0,0,0,0) != 0) return 4;
+        free(base); free(out);
+        if (!valid) return 5;
+        print("native-path-deep-ok bytes="); println(count); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

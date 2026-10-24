@@ -1,0 +1,693 @@
+use <data:json>;
+use <io:output>;
+use <process:args>;
+use <project:text>;
+
+manifest {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                width >> int <- 0;
+                while (rd(off(value, width)) != 0) { width += 1; }
+                return width;
+            }
+
+            trim(value >> p<byte>) -> p<byte> {
+                while (rd(value) == 32 || rd(value) == 9) { value <- off(value, 1); }
+                width >> int <- length(value);
+                while (width > 0 && (rd(off(value, width - 1)) == 32 || rd(off(value, width - 1)) == 9)) {
+                    width -= 1;
+                }
+                wr(off(value, width), 0);
+                return value;
+            }
+
+            asText(value >> p<byte>) -> str {
+                textValue >> str <- cast(value);
+                return textValue;
+            }
+
+            qualifiedName(prefix >> p<byte>, key >> p<byte>) -> p<byte> {
+                prefixBytes >> int <- length(prefix);
+                keyBytes >> int <- length(key);
+                out >> p<byte> <- cast(alloc(prefixBytes + keyBytes + 2));
+                guard out != null else return null;
+                at >> int <- 0;
+                while (at < prefixBytes) {
+                    wr(off(out, at), rd(off(prefix, at)));
+                    at += 1;
+                }
+                wr(off(out, at), 46);
+                at += 1;
+                readAt >> int <- 0;
+                while (readAt < keyBytes) {
+                    wr(off(out, at), rd(off(key, readAt)));
+                    at += 1;
+                    readAt += 1;
+                }
+                wr(off(out, at), 0);
+                return out;
+            }
+
+            same(value >> p<byte>, expected >> str) -> bool {
+                right >> p<byte> <- cast(expected);
+                at >> int <- 0;
+                while (true) {
+                    leftByte >> byte <- rd(off(value, at));
+                    rightByte >> byte <- rd(off(right, at));
+                    if (leftByte != rightByte) return false;
+                    if (leftByte == 0) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            starts(value >> p<byte>, expected >> str) -> bool {
+                right >> p<byte> <- cast(expected);
+                at >> int <- 0;
+                while (rd(off(right, at)) != 0) {
+                    if (rd(off(value, at)) != rd(off(right, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            after(value >> p<byte>, prefix >> str) -> p<byte> {
+                return off(value, strByteLen(prefix));
+            }
+
+            unquote(value >> p<byte>) -> p<byte> {
+                value <- trim(value);
+                width >> int <- length(value);
+                if (width >= 2 && ((rd(value) == 34 && rd(off(value, width - 1)) == 34) ||
+                    (rd(value) == 39 && rd(off(value, width - 1)) == 39))) {
+                    wr(off(value, width - 1), 0);
+                    return off(value, 1);
+                }
+                return value;
+            }
+
+            stripComment(value >> p<byte>) -> p<byte> {
+                quote >> byte <- 0;
+                escaped >> bool <- false;
+                at >> int <- 0;
+                while (rd(off(value, at)) != 0) {
+                    current >> byte <- rd(off(value, at));
+                    if (escaped) { escaped <- false; }
+                    else if (current == 92 && quote != 0) { escaped <- true; }
+                    else if (current == 34 || current == 39) {
+                        if (quote == 0) { quote <- current; }
+                        else if (quote == current) { quote <- 0; }
+                    }
+                    else if (current == 35 && quote == 0) {
+                        wr(off(value, at), 0);
+                        return value;
+                    }
+                    at += 1;
+                }
+                return value;
+            }
+
+            delimiter(value >> p<byte>, wanted >> byte) -> int {
+                quote >> byte <- 0;
+                square >> int <- 0;
+                curly >> int <- 0;
+                escaped >> bool <- false;
+                at >> int <- 0;
+                while (rd(off(value, at)) != 0) {
+                    current >> byte <- rd(off(value, at));
+                    if (escaped) { escaped <- false; }
+                    else if (current == 92 && quote != 0) { escaped <- true; }
+                    else if (current == 34 || current == 39) {
+                        if (quote == 0) { quote <- current; }
+                        else if (quote == current) { quote <- 0; }
+                    }
+                    else if (quote == 0) {
+                        if (current == 91) { square += 1; }
+                        else if (current == 93) { square -= 1; }
+                        else if (current == 123) { curly += 1; }
+                        else if (current == 125) { curly -= 1; }
+                        else if (current == wanted && square == 0 && curly == 0) { return at; }
+                    }
+                    at += 1;
+                }
+                return -1;
+            }
+
+            isInteger(value >> p<byte>) -> bool {
+                value <- trim(value);
+                at >> int <- 0;
+                if (rd(value) == 43 || rd(value) == 45) { at += 1; }
+                digits >> int <- 0;
+                while (rd(off(value, at)) != 0) {
+                    current >> byte <- rd(off(value, at));
+                    if (current == 95) { at += 1; continue; }
+                    if (current < 48 || current > 57) return false;
+                    digits += 1;
+                    at += 1;
+                }
+                return digits > 0;
+            }
+
+            integer(value >> p<byte>) -> int {
+                value <- trim(value);
+                negative >> bool <- rd(value) == 45;
+                at >> int <- 0;
+                if (rd(value) == 43 || negative) { at += 1; }
+                result >> int <- 0;
+                while (rd(off(value, at)) != 0) {
+                    current >> byte <- rd(off(value, at));
+                    if (current != 95) { result <- result * 10 + current - 48; }
+                    at += 1;
+                }
+                return negative ? 0 - result : result;
+            }
+
+            scalar(value >> p<byte>) -> int {
+                value <- trim(value);
+                if (rd(value) == 34 || rd(value) == 39) {
+                    return jsonNewString(asText(unquote(value)));
+                }
+                if (same(value, "true")) return jsonNewBool(true);
+                if (same(value, "false")) return jsonNewBool(false);
+                if (isInteger(value)) return jsonNewInt(integer(value));
+                textValue >> str <- cast(value);
+                return jsonNewString(textValue);
+            }
+
+            arrayValue(value >> p<byte>) -> int {
+                result >> int <- jsonNewArray();
+                value <- trim(value);
+                width >> int <- length(value);
+                if (width < 2) return result;
+                wr(off(value, width - 1), 0);
+                item >> p<byte> <- off(value, 1);
+                while (rd(item) != 0) {
+                    comma >> int <- delimiter(item, 44);
+                    if (comma >= 0) { wr(off(item, comma), 0); }
+                    clean >> p<byte> <- trim(item);
+                    if (rd(clean) != 0) { jsonArrayPush(result, valueNode(clean)); }
+                    if (comma < 0) return result;
+                    item <- off(item, comma + 1);
+                }
+                return result;
+            }
+
+            inlineValue(value >> p<byte>) -> int {
+                result >> int <- jsonNewObject();
+                value <- trim(value);
+                width >> int <- length(value);
+                if (width < 2) return result;
+                wr(off(value, width - 1), 0);
+                item >> p<byte> <- off(value, 1);
+                while (rd(item) != 0) {
+                    comma >> int <- delimiter(item, 44);
+                    if (comma >= 0) { wr(off(item, comma), 0); }
+                    equal >> int <- delimiter(item, 61);
+                    if (equal >= 0) {
+                        wr(off(item, equal), 0);
+                        key >> p<byte> <- unquote(trim(item));
+                        sourceValue >> p<byte> <- trim(off(item, equal + 1));
+                        jsonObjectSet(result, asText(key), valueNode(sourceValue));
+                    }
+                    if (comma < 0) return result;
+                    item <- off(item, comma + 1);
+                }
+                return result;
+            }
+
+            valueNode(value >> p<byte>) -> int {
+                value <- trim(value);
+                if (rd(value) == 91) return arrayValue(value);
+                if (rd(value) == 123) return inlineValue(value);
+                return scalar(value);
+            }
+
+            object(root >> int, name >> str) -> int {
+                current >> int <- jsonObjectGet(root, name);
+                if (current != 0) return current;
+                current <- jsonNewObject();
+                jsonObjectSet(root, name, current);
+                return current;
+            }
+
+            array(root >> int, name >> str) -> int {
+                current >> int <- jsonObjectGet(root, name);
+                if (current != 0) return current;
+                current <- jsonNewArray();
+                jsonObjectSet(root, name, current);
+                return current;
+            }
+
+            namedArrayObject(root >> int, listName >> str, name >> str) -> int {
+                entries >> int <- array(root, listName);
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    current >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(current, "name"), "") == name) {
+                        return current;
+                    }
+                    at += 1;
+                }
+                current >> int <- jsonNewObject();
+                jsonObjectSet(current, "name", jsonNewString(name));
+                jsonArrayPush(entries, current);
+                jsonObjectSet(root, listName, entries);
+                return current;
+            }
+
+            commitNamedArrayObject(
+                root >> int,
+                listName >> str,
+                target >> int
+            ) -> bool {
+                entries >> int <- array(root, listName);
+                name >> str <- jsonGetStringOr(jsonObjectGet(target, "name"), "");
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    current >> int <- jsonArrayGet(entries, at);
+                    if (jsonGetStringOr(jsonObjectGet(current, "name"), "") == name) {
+                        removed >> int <- jsonArrayRemove(entries, at);
+                        if (removed != 0) jsonRelease(removed);
+                        jsonArrayInsert(entries, at, target);
+                        return jsonObjectSet(root, listName, entries);
+                    }
+                    at += 1;
+                }
+                jsonArrayPush(entries, target);
+                return jsonObjectSet(root, listName, entries);
+            }
+
+            sectionObject(root >> int, section >> p<byte>) -> int {
+                if (same(section, "package")) return object(root, "package");
+                if (same(section, "lib")) return object(root, "cargo_lib");
+                if (same(section, "bin")) return object(root, "cargo_bin");
+                if (same(section, "target.default")) return object(root, "target_default");
+                if (starts(section, "profiles.")) {
+                    profiles >> int <- object(root, "profiles");
+                    return object(profiles, asText(after(section, "profiles.")));
+                }
+                if (starts(section, "targets.")) {
+                    targets >> int <- object(root, "targets");
+                    return object(targets, asText(after(section, "targets.")));
+                }
+                if (starts(section, "language_adapter.")) {
+                    adapters >> int <- object(root, "language_adapters");
+                    return object(adapters, asText(after(section, "language_adapter.")));
+                }
+                if (starts(section, "source.")) {
+                    sources >> int <- object(root, "source_replacements");
+                    return object(sources, asText(after(section, "source.")));
+                }
+                if (starts(section, "registries.")) {
+                    registries >> int <- object(root, "registries");
+                    return object(registries, asText(after(section, "registries.")));
+                }
+                if (starts(section, "native-dependencies.")) {
+                    return namedArrayObject(root, "native_dependencies",
+                        asText(after(section, "native-dependencies.")));
+                }
+                if (starts(section, "native-deps.")) {
+                    return namedArrayObject(root, "native_dependencies",
+                        asText(after(section, "native-deps.")));
+                }
+                if (starts(section, "workspace.lints")) return object(root, "workspace_lints");
+                if (same(section, "workspace.package")) return object(root, "workspace_package");
+                if (starts(section, "lints")) return object(root, "lints");
+                if (starts(section, "package.metadata")) return object(root, "package_metadata");
+                return object(root, asText(section));
+            }
+
+            commitSection(root >> int, section >> p<byte>, target >> int) -> bool {
+                if (same(section, "lib")) return jsonObjectSet(root, "cargo_lib", target);
+                if (same(section, "bin")) return jsonObjectSet(root, "cargo_bin", target);
+                if (same(section, "target.default")) return jsonObjectSet(root, "target_default", target);
+                if (starts(section, "profiles.")) {
+                    profiles >> int <- object(root, "profiles");
+                    jsonObjectSet(profiles, asText(after(section, "profiles.")), target);
+                    return jsonObjectSet(root, "profiles", profiles);
+                }
+                if (starts(section, "targets.")) {
+                    targets >> int <- object(root, "targets");
+                    jsonObjectSet(targets, asText(after(section, "targets.")), target);
+                    return jsonObjectSet(root, "targets", targets);
+                }
+                if (starts(section, "language_adapter.")) {
+                    adapters >> int <- object(root, "language_adapters");
+                    jsonObjectSet(adapters, asText(after(section, "language_adapter.")), target);
+                    return jsonObjectSet(root, "language_adapters", adapters);
+                }
+                if (starts(section, "source.")) {
+                    sources >> int <- object(root, "source_replacements");
+                    jsonObjectSet(sources, asText(after(section, "source.")), target);
+                    return jsonObjectSet(root, "source_replacements", sources);
+                }
+                if (starts(section, "registries.")) {
+                    registries >> int <- object(root, "registries");
+                    jsonObjectSet(registries, asText(after(section, "registries.")), target);
+                    return jsonObjectSet(root, "registries", registries);
+                }
+                if (starts(section, "native-dependencies.") ||
+                    starts(section, "native-deps.")) {
+                    return commitNamedArrayObject(root, "native_dependencies", target);
+                }
+                if (starts(section, "workspace.lints")) return jsonObjectSet(root, "workspace_lints", target);
+                if (same(section, "workspace.package")) return jsonObjectSet(root, "workspace_package", target);
+                if (starts(section, "lints")) return jsonObjectSet(root, "lints", target);
+                if (starts(section, "package.metadata")) return jsonObjectSet(root, "package_metadata", target);
+                return jsonObjectSet(root, asText(section), target);
+            }
+
+            dependency(
+                root >> int,
+                listName >> str,
+                key >> p<byte>,
+                sourceValue >> p<byte>,
+                kind >> str,
+                targetValue >> str
+            ) -> bool {
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "name", jsonNewString(asText(unquote(key))));
+                jsonObjectSet(entry, "kind", jsonNewString(kind));
+                if (targetValue != "") jsonObjectSet(entry, "target", jsonNewString(targetValue));
+                jsonObjectSet(entry, "source", jsonNewString(
+                    kind == "basal" ? "basal-registry" : "registry"));
+                jsonObjectSet(entry, "features", jsonNewArray());
+                jsonObjectSet(entry, "default_features", jsonNewBool(true));
+                jsonObjectSet(entry, "uses_default_features", jsonNewBool(true));
+                jsonObjectSet(entry, "optional", jsonNewBool(false));
+                jsonObjectSet(entry, "workspace_inherited", jsonNewBool(false));
+                sourceValue <- trim(sourceValue);
+                if (rd(sourceValue) == 123) {
+                    fields >> int <- inlineValue(sourceValue);
+                    at >> int <- 0;
+                    while (at < jsonObjectLen(fields)) {
+                        field >> str <- jsonObjectKeyAt(fields, at);
+                        jsonObjectSet(entry, field, jsonObjectGet(fields, field));
+                        at += 1;
+                    }
+                    if (jsonObjectHas(entry, "version")) {
+                        jsonObjectSet(entry, "req", jsonObjectGet(entry, "version"));
+                    }
+                    if (jsonObjectHas(entry, "default-features")) {
+                        enabled >> int <- jsonObjectGet(entry, "default-features");
+                        jsonObjectSet(entry, "default_features", enabled);
+                        jsonObjectSet(entry, "uses_default_features", enabled);
+                    }
+                    if (jsonObjectHas(entry, "package")) {
+                        jsonObjectSet(entry, "rename", jsonObjectGet(entry, "package"));
+                    }
+                    if (jsonObjectHas(entry, "path")) {
+                        jsonObjectSet(entry, "source", jsonNewString("path"));
+                    }
+                    else if (jsonObjectHas(entry, "git")) {
+                        jsonObjectSet(entry, "source", jsonNewString("git"));
+                    }
+                }
+                else {
+                    version >> int <- scalar(sourceValue);
+                    jsonObjectSet(entry, "version", version);
+                    jsonObjectSet(entry, "req", version);
+                }
+                entries >> int <- array(root, listName);
+                added >> bool <- jsonArrayPush(entries, entry);
+                jsonObjectSet(root, listName, entries);
+                return added;
+            }
+
+            rootObject(path >> str) -> int {
+                root >> int <- jsonNewObject();
+                jsonObjectSet(root, "schema", jsonNewString("ghor.manifest.v1"));
+                jsonObjectSet(root, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(root, "path", jsonNewString(path));
+                object(root, "package"); object(root, "cargo_lib"); object(root, "cargo_bin");
+                object(root, "toolchain"); object(root, "target_default"); object(root, "machine");
+                object(root, "basal"); object(root, "runtime"); object(root, "compiler");
+                object(root, "primitive"); object(root, "languages"); object(root, "language_adapters");
+                array(root, "dependencies"); array(root, "dev_dependencies");
+                array(root, "build_dependencies"); array(root, "target_dependencies");
+                array(root, "rust_dependencies"); array(root, "c_dependencies");
+                array(root, "cpp_dependencies"); array(root, "asm_dependencies");
+                array(root, "basal_dependencies"); array(root, "native_dependencies");
+                object(root, "profiles"); object(root, "targets"); object(root, "build");
+                object(root, "features"); object(root, "capabilities"); object(root, "artifact");
+                object(root, "workspace"); array(root, "workspace_members");
+                array(root, "workspace_exclude"); array(root, "workspace_default_members");
+                object(root, "workspace_package"); array(root, "workspace_dependencies");
+                object(root, "workspace_lints"); object(root, "lints");
+                array(root, "patch_overrides"); array(root, "replace_overrides");
+                object(root, "registries"); object(root, "source_replacements");
+                array(root, "diagnostics");
+                return root;
+            }
+
+            parseLine(root >> int, line >> p<byte>, section >> p<byte>) -> p<byte> {
+                line <- trim(stripComment(line));
+                if (rd(line) == 0) return section;
+                width >> int <- length(line);
+                if (width >= 2 && rd(line) == 91 && rd(off(line, width - 1)) == 93) {
+                    wr(off(line, width - 1), 0);
+                    return trim(off(line, 1));
+                }
+                equal >> int <- delimiter(line, 61);
+                if (equal < 0) return section;
+                wr(off(line, equal), 0);
+                key >> p<byte> <- trim(line);
+                sourceValue >> p<byte> <- trim(off(line, equal + 1));
+
+                if (same(section, "dependencies")) { dependency(root, "dependencies", key, sourceValue, "normal", ""); return section; }
+                if (same(section, "dev-dependencies")) { dependency(root, "dev_dependencies", key, sourceValue, "dev", ""); return section; }
+                if (same(section, "build-dependencies")) { dependency(root, "build_dependencies", key, sourceValue, "build", ""); return section; }
+                if (same(section, "rust-dependencies")) { dependency(root, "rust_dependencies", key, sourceValue, "normal", ""); return section; }
+                if (same(section, "c-dependencies")) { dependency(root, "c_dependencies", key, sourceValue, "normal", ""); return section; }
+                if (same(section, "cpp-dependencies")) { dependency(root, "cpp_dependencies", key, sourceValue, "normal", ""); return section; }
+                if (same(section, "asm-dependencies")) { dependency(root, "asm_dependencies", key, sourceValue, "normal", ""); return section; }
+                if (same(section, "native-dependencies") || same(section, "native-deps")) {
+                    dependency(root, "native_dependencies", key, sourceValue, "native", "");
+                    return section;
+                }
+                if (same(section, "basal-dependencies") || same(section, "basal-deps")) {
+                    dependency(root, "basal_dependencies", key, sourceValue, "basal", ""); return section;
+                }
+                if (starts(section, "target.") &&
+                    (strEndsWith(asText(section), ".dependencies") ||
+                    strEndsWith(asText(section), ".dev-dependencies") ||
+                    strEndsWith(asText(section), ".build-dependencies"))) {
+                    suffixBytes >> int <- 13;
+                    kind >> str <- "normal";
+                    if (strEndsWith(asText(section), ".dev-dependencies")) {
+                        suffixBytes <- 17;
+                        kind <- "dev";
+                    }
+                    else if (strEndsWith(asText(section), ".build-dependencies")) {
+                        suffixBytes <- 19;
+                        kind <- "build";
+                    }
+                    targetWidth >> int <- length(section) - 7 - suffixBytes;
+                    targetValue >> str <- "";
+                    if (targetWidth > 0) targetValue <- strSubstring(asText(section), 7, targetWidth);
+                    dependency(root, "target_dependencies", key, sourceValue, kind, targetValue);
+                    return section;
+                }
+                if (same(section, "workspace.dependencies")) {
+                    dependency(root, "workspace_dependencies", key, sourceValue, "normal", ""); return section;
+                }
+                if (starts(section, "patch.")) {
+                    dependency(root, "patch_overrides", key, sourceValue, "normal", ""); return section;
+                }
+                if (same(section, "replace")) {
+                    dependency(root, "replace_overrides", key, sourceValue, "normal", ""); return section;
+                }
+                if (same(section, "workspace") && same(key, "members")) {
+                    parsed >> int <- arrayValue(sourceValue);
+                    jsonObjectSet(root, "workspace_members", parsed);
+                    target >> int <- sectionObject(root, section);
+                    jsonObjectSet(target, asText(unquote(key)), parsed);
+                    commitSection(root, section, target);
+                    return section;
+                }
+                else if (same(section, "workspace") && same(key, "exclude")) {
+                    parsed >> int <- arrayValue(sourceValue);
+                    jsonObjectSet(root, "workspace_exclude", parsed);
+                    target >> int <- sectionObject(root, section);
+                    jsonObjectSet(target, asText(unquote(key)), parsed);
+                    commitSection(root, section, target);
+                    return section;
+                }
+                else if (same(section, "workspace") &&
+                    (same(key, "default-members") || same(key, "default_members"))) {
+                    parsed >> int <- arrayValue(sourceValue);
+                    jsonObjectSet(root, "workspace_default_members", parsed);
+                    target >> int <- sectionObject(root, section);
+                    jsonObjectSet(target, asText(unquote(key)), parsed);
+                    commitSection(root, section, target);
+                    return section;
+                }
+                if (starts(section, "workspace.lints.")) {
+                    target >> int <- object(root, "workspace_lints");
+                    fullKey >> p<byte> <- qualifiedName(after(section, "workspace.lints."), unquote(key));
+                    if (fullKey != null) {
+                        jsonObjectSet(target, asText(fullKey), valueNode(sourceValue));
+                        free(fullKey);
+                    }
+                    jsonObjectSet(root, "workspace_lints", target);
+                    return section;
+                }
+                if (starts(section, "lints.")) {
+                    target >> int <- object(root, "lints");
+                    fullKey >> p<byte> <- qualifiedName(after(section, "lints."), unquote(key));
+                    if (fullKey != null) {
+                        jsonObjectSet(target, asText(fullKey), valueNode(sourceValue));
+                        free(fullKey);
+                    }
+                    jsonObjectSet(root, "lints", target);
+                    return section;
+                }
+                if (starts(section, "package.metadata.")) {
+                    target >> int <- object(root, "package_metadata");
+                    fullKey >> p<byte> <- qualifiedName(after(section, "package.metadata."), unquote(key));
+                    if (fullKey != null) {
+                        jsonObjectSet(target, asText(fullKey), valueNode(sourceValue));
+                        free(fullKey);
+                    }
+                    jsonObjectSet(root, "package_metadata", target);
+                    return section;
+                }
+                target >> int <- sectionObject(root, section);
+                jsonObjectSet(target, asText(unquote(key)), valueNode(sourceValue));
+                commitSection(root, section, target);
+                return section;
+            }
+
+            parseBuffer(path >> str, data >> p<byte>, bytes >> int) -> int {
+                root >> int <- rootObject(path);
+                section >> p<byte> <- cast("");
+                start >> int <- 0;
+                at >> int <- 0;
+                square >> int <- 0;
+                curly >> int <- 0;
+                quote >> byte <- 0;
+                escaped >> bool <- false;
+                comment >> bool <- false;
+                while (at <= bytes) {
+                    current >> byte <- rd(off(data, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        if (current != 0 && (square > 0 || curly > 0 || quote != 0)) {
+                            wr(off(data, at), 32);
+                            comment <- false;
+                            escaped <- false;
+                            at += 1;
+                            continue;
+                        }
+                        wr(off(data, at), 0);
+                        if (at > start) { section <- parseLine(root, off(data, start), section); }
+                        while (at < bytes && (rd(off(data, at + 1)) == 10 || rd(off(data, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                        comment <- false;
+                        escaped <- false;
+                    }
+                    else if (!comment) {
+                        if (escaped) { escaped <- false; }
+                        else if (current == 92 && quote != 0) { escaped <- true; }
+                        else if (current == 34 || current == 39) {
+                            if (quote == 0) { quote <- current; }
+                            else if (quote == current) { quote <- 0; }
+                        }
+                        else if (quote == 0 && current == 35) { comment <- true; }
+                        else if (quote == 0 && current == 91) { square += 1; }
+                        else if (quote == 0 && current == 93) { square -= 1; }
+                        else if (quote == 0 && current == 123) { curly += 1; }
+                        else if (quote == 0 && current == 125) { curly -= 1; }
+                    }
+                    at += 1;
+                }
+                package >> int <- jsonObjectGet(root, "package");
+                if (!jsonObjectHas(package, "name") && jsonObjectLen(jsonObjectGet(root, "workspace")) == 0) {
+                    diagnostics >> int <- jsonObjectGet(root, "diagnostics");
+                    diagnostic >> int <- jsonNewObject();
+                    jsonObjectSet(diagnostic, "code", jsonNewString("E_GHOR_MANIFEST_MISSING_001"));
+                    jsonObjectSet(diagnostic, "message", jsonNewString("manifest requires package.name or workspace"));
+                    jsonArrayPush(diagnostics, diagnostic);
+                    jsonObjectSet(root, "diagnostics", diagnostics);
+                }
+                return root;
+            }
+
+            selectedPath(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                command >> str <- count > 1 ? argsAt(handle, 1) : "";
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if ((text.ghorText.same(current, "--manifest") ||
+                        text.ghorText.same(current, "--manifest-path")) && at + 1 < count) {
+                        return argsAt(handle, at + 1);
+                    }
+                    if (!text.ghorText.same(command, "add") &&
+                        text.ghorText.same(current, "--path") && at + 1 < count) {
+                        root >> str <- argsAt(handle, at + 1);
+                        if (strEndsWith(root, "ghor.toml")) return root;
+                        return root + "/ghor.toml";
+                    }
+                    at += 1;
+                }
+                if (exists("ghor.toml")) return "ghor.toml";
+                if (exists("nc.toml")) return "nc.toml";
+                if (exists("Cargo.toml")) return "Cargo.toml";
+                return "";
+            }
+
+        public:
+            select(handle >> addr) -> str {
+                return selectedPath(handle);
+            }
+
+            load(path >> str) -> int {
+                bytes >> int <- fsSize(path);
+                guard bytes >= 0 else return 0;
+                data >> p<byte> <- cast(alloc(bytes + 1));
+                guard data != null else return 0;
+                readBytes >> int <- fsReadInto(path, data, bytes);
+                guard readBytes >= 0 else { free(data); return 0; }
+                wr(off(data, readBytes), 0);
+                root >> int <- parseBuffer(path, data, readBytes);
+                free(data);
+                return root;
+            }
+
+            packageAccepted(nameBytes >> int, versionParts >> int, targetCount >> int) -> bool {
+                guard nameBytes > 0 else return false;
+                guard versionParts == 3 else return false;
+                return targetCount > 0;
+            }
+
+            execute(handle >> addr) -> int {
+                path >> str <- selectedPath(handle);
+                guard path != "" else {
+                    println("error[E_GHOR_MANIFEST_001]: ghor.toml not found");
+                    return 2;
+                }
+                root >> int <- load(path);
+                guard root != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be read");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(root, 2);
+                println(rendered);
+                errors >> int <- jsonArrayLen(jsonObjectGet(root, "diagnostics"));
+                strRelease(rendered);
+                jsonRelease(root);
+                return errors == 0 ? 0 : 1;
+            }
+
+            selfTest() -> bool {
+                return packageAccepted(4, 3, 1) &&
+                    !packageAccepted(0, 3, 1) &&
+                    !packageAccepted(4, 2, 1);
+            }
+
+    fa:
+        return true;
+}

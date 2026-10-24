@@ -1,0 +1,92 @@
+use <io:output>;
+use <memory:buffer, stack>;
+
+memoryBufferManual :: runtime {
+    fn:
+        writeWidths(descriptor >> addr) -> bool {
+            wrote8 >> bool <- bufferWrite8(descriptor, 0, 17);
+            wrote16 >> bool <- bufferWrite16(descriptor, 1, 8755);
+            wrote32 >> bool <- bufferWrite32(descriptor, 3, 1146447479);
+            wrote64 >> bool <- bufferWrite64(descriptor, 7, 1234605616436508552);
+            return wrote8 && wrote16 && wrote32 && wrote64;
+        }
+
+        readWidths(descriptor >> addr) -> bool {
+            value8 >> int <- bufferRead8(descriptor, 0);
+            value16 >> int <- bufferRead16(descriptor, 1);
+            value32 >> int <- bufferRead32(descriptor, 3);
+            value64 >> u64 <- bufferRead64(descriptor, 7);
+            return value8 == 17 && value16 == 8755 &&
+                value32 == 1146447479 && value64 == 1234605616436508552;
+        }
+
+        bulk(descriptor >> addr, view >> addr) -> bool {
+            filled >> bool <- bufferFill(descriptor, 16, 8, 90);
+            copied >> bool <- bufferCopy(descriptor, 20, descriptor, 16, 8);
+            viewed >> bool <- bufferView(view, descriptor, 20, 8);
+            resized >> bool <- bufferSetLen(descriptor, 48);
+            return filled && copied && viewed && resized;
+        }
+
+        strideCheck() -> bool {
+            stride >> int <- bufferStride();
+            return stride == 32;
+        }
+
+        bindBuffer(descriptor >> addr, data >> addr) -> bool {
+            return bufferAt(descriptor, data, 32, 64, 7);
+        }
+
+        descriptorShape(descriptor >> addr) -> bool {
+            length >> int <- bufferLen(descriptor);
+            capacity >> int <- bufferCapacity(descriptor);
+            flags >> int <- bufferFlags(descriptor);
+            return length == 48 && capacity == 64 && flags == 7;
+        }
+
+        viewShape(view >> addr) -> bool {
+            viewLength >> int <- bufferLen(view);
+            viewCapacity >> int <- bufferCapacity(view);
+            viewFirst >> int <- bufferRead8(view, 0);
+            return viewLength == 8 && viewCapacity == 8 &&
+                viewFirst == 90;
+        }
+
+        dataProbe(view >> addr) -> bool {
+            viewData >> addr <- bufferData(view);
+            return true;
+        }
+
+        clearView(view >> addr) -> bool {
+            viewCleared >> bool <- bufferClear(view);
+            return viewCleared;
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            data >> p<byte> <- stackAlloc(64, 16);
+            stride >> int <- bufferStride();
+            descriptor >> p<byte> <- stackAlloc(stride, 8);
+            view >> p<byte> <- stackAlloc(stride, 8);
+            ready >> bool <- bindBuffer(adr(descriptor), adr(data));
+            wrote >> bool <- writeWidths(adr(descriptor));
+            widths >> bool <- readWidths(adr(descriptor));
+            moved >> bool <- bulk(adr(descriptor), adr(view));
+            descriptorOk >> bool <- descriptorShape(adr(descriptor));
+            viewOk >> bool <- viewShape(adr(view));
+            dataOk >> bool <- dataProbe(adr(view));
+            cleared >> bool <- clearView(adr(view));
+            strideOk >> bool <- strideCheck();
+            ok >> bool <- ready && wrote && widths && moved && descriptorOk &&
+                viewOk && dataOk && cleared && strideOk;
+            print("manual nC memory buffer backend: ");
+            if (ok) { println("true"); } else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

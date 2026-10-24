@@ -1,0 +1,154 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output, errorOutput, render>;
+use <project:release43_archive, release43_common, release43_host, cert_json>;
+
+release43Zip64Tests {
+    stc:
+        failures >> int <- 0;
+        checks >> int;
+        samples >> int;
+    fn:
+        private:
+            put(object >> int, key >> str, value >> int) -> void { release43_common.release43Common.put(object,key,value); }
+            number(object >> int, key >> str, value >> i64) -> void { put(object,key,release43_common.release43Common.integer64(value)); }
+            expect(key >> str, passed >> bool) -> void {
+                put(checks,key,jsonNewBool(passed)); println((passed ? "PASS " : "FAIL ")+key);
+                if (!passed) failures += 1;
+            }
+            little(data >> p<byte>, at >> int, count >> int) -> i64 {
+                value >> i64 <- 0; factor >> i64 <- 1; index >> int <- 0;
+                while (index < count) {
+                    part >> i64 <- rd<byte>(off<byte>(data,at+index)) & 255;
+                    value += part*factor; index += 1; if (index < count) factor *= 256;
+                }
+                return value;
+            }
+            read(path >> str, data >> p<byte>, count >> int, position >> i64) -> bool {
+                return release43_host.release43Host.readRange(path,data,count,position) == count;
+            }
+            fixture(path >> str, size >> i64) -> bool {
+                if (!release43_common.release43Common.writeText(path,"ZIP64-FIRST-V43!")) return false;
+                if (!release43_host.release43Host.resize(path,size-16)) return false;
+                tail >> str <- "ZIP64-LAST--V43!";
+                return release43_common.release43Common.writeBytes(path,cast<byte>(tail),16,true) == 16 && release43_common.release43Common.fileSize64(path) == size;
+            }
+            prefixFor(mode >> str) -> str {
+                if (mode != "central-size") return "ncc";
+                prefix >> str <- "p/";
+                while (strByteLen(prefix) < 65489) { next >> str <- prefix+prefix; strRelease(prefix); prefix <- next; }
+                result >> str <- strSubstring(prefix,0,65489); strRelease(prefix); return result;
+            }
+            countFor(mode >> str) -> int {
+                if (mode == "count-limit") return 65535;
+                if (mode == "count-over") return 65536;
+                if (mode == "central-size") return 32768;
+                return mode == "size-offset" ? 2 : 1;
+            }
+            sizeFor(mode >> str) -> i64 {
+                if (mode == "local-before") return 2045222520;
+                if (mode == "local-after") return 2045222521;
+                if (mode == "size-offset") return 2308544922;
+                return 0;
+            }
+            entries(source >> str, count >> int) -> bool {
+                index >> int <- 0;
+                while (index < count) {
+                    digits >> str <- renderInt(index);
+                    while (strByteLen(digits) < 5) { next >> str <- "0"+digits; strRelease(digits); digits <- next; }
+                    name >> str <- source+"/f"+digits+".bin"; strRelease(digits);
+                    good >> bool <- release43_common.release43Common.writeBytes(name,cast<byte>(""),0,false) == 0; strRelease(name);
+                    if (!good) return false;
+                    index += 1; if (index%8192 == 0) println("fixture entries="+renderInt(index));
+                }
+                return true;
+            }
+            audit(path >> str, mode >> str, prefix >> str, report >> int) -> bool {
+                size >> i64 <- release43_common.release43Common.fileSize64(path);
+                data >> p<byte> <- cast(alloc(128)); local >> p<byte> <- cast(alloc(128));
+                if (data == null || local == null || size < 22) { free(data); free(local); return false; }
+                good >> bool <- read(path,data,22,size-22); expect("classic-end-readable",good);
+                if (!good) { free(data); free(local); return false; }
+                expect("classic-end-signature",little(data,0,4) == 101010256);
+                expect("single-disk-and-no-comment",little(data,4,2) == 0 && little(data,6,2) == 0 && little(data,20,2) == 0);
+                count >> int <- countFor(mode); classicCount >> i64 <- little(data,10,2);
+                centralSize >> i64 <- little(data,12,4); centralStart >> i64 <- little(data,16,4);
+                expect("classic-entry-count",little(data,8,2) == classicCount && classicCount == (count > 65535 ? 65535 : count));
+                end64 >> bool <- size >= 98 && read(path,data,76,size-98) && little(data,0,4) == 101075792;
+                expected64 >> bool <- mode == "size-offset" || mode == "count-over" || mode == "central-size";
+                expect("zip64-end-presence",end64 == expected64);
+                if (end64) {
+                    expect("zip64-end-size-and-versions",little(data,4,8) == 44 && little(data,12,2) == 45 && little(data,14,2) == 45);
+                    expect("zip64-entry-count",little(data,24,8) == count && little(data,32,8) == count);
+                    expect("zip64-central-fields-match-classic",little(data,40,8) == centralSize && little(data,48,8) == centralStart);
+                    expect("zip64-locator",little(data,56,4) == 117853008 && little(data,60,4) == 0 && little(data,64,8) == size-98 && little(data,72,4) == 1);
+                }
+                expect("central-range-exact",centralStart+centralSize == size-(end64 ? 98 : 22));
+                if (mode == "central-size") expect("central-size-only-boundary",centralSize > 2147483647 && centralStart <= 2147483647 && count < 65535);
+                if (mode == "size-offset") expect("central-offset-boundary",centralStart > 2147483647);
+                number(report,"archive_bytes",size); number(report,"entry_count",count); number(report,"central_size",centralSize); number(report,"central_offset",centralStart); put(report,"zip64_end",jsonNewBool(end64));
+                cursor >> i64 <- centralStart; nextLocal >> i64 <- 0; index >> int <- 0; valid >> bool <- true;
+                while (index < count && valid) {
+                    if (!read(path,data,46,cursor)) { valid <- false; break; }
+                    nameLength >> int <- little(data,28,2); extra >> int <- little(data,30,2); version >> i64 <- little(data,6,2);
+                    memberSize >> i64 <- little(data,24,4); compressed >> i64 <- little(data,20,4); location >> i64 <- little(data,42,4); crc >> i64 <- little(data,16,4);
+                    rawSize >> i64 <- memberSize; rawOffset >> i64 <- location;
+                    valid <- little(data,0,4) == 33639248 && little(data,8,2) == 0 && little(data,10,2) == 0 && little(data,12,2) == 0 && little(data,14,2) == 23585 && little(data,38,4) == 27525120 && little(data,32,2) == 0 && little(data,34,2) == 0;
+                    valid <- valid && little(data,4,2) == version+(envHas("WINDIR") ? 0 : 768);
+                    if (extra > 0) {
+                        if (extra > 32 || !read(path,data,extra,cursor+46+nameLength)) { valid <- false; break; }
+                        valid <- valid && little(data,0,2) == 1 && little(data,2,2) == extra-4; at >> int <- 4;
+                        if (rawSize == 4294967295) { memberSize <- little(data,at,8); compressed <- little(data,at+8,8); at += 16; }
+                        if (rawOffset == 4294967295) { location <- little(data,at,8); at += 8; }
+                        valid <- valid && at == extra;
+                    }
+                    expectedSize >> i64 <- index == 0 ? sizeFor(mode) : 0;
+                    if (mode == "size-offset" && index == 1) expectedSize <- 31;
+                    extended >> bool <- expectedSize*105 > 214748364700;
+                    expectedExtra >> int <- (expectedSize > 2147483647 ? 16 : 0)+(location > 2147483647 ? 8 : 0); if (expectedExtra > 0) expectedExtra += 4;
+                    valid <- valid && memberSize == expectedSize && compressed == memberSize && location == nextLocal && extra == expectedExtra && version == (extended || expectedExtra > 0 ? 45 : 20);
+                    if (mode == "central-size") valid <- valid && nameLength == 65500;
+                    if (!read(path,local,30,location)) { valid <- false; break; }
+                    localExtra >> int <- little(local,28,2);
+                    valid <- valid && little(local,0,4) == 67324752 && little(local,4,2) == (extended ? 45 : 20) && little(local,6,2) == 0 && little(local,8,2) == 0 && little(local,10,2) == 0 && little(local,12,2) == 23585 && little(local,14,4) == crc && little(local,26,2) == nameLength;
+                    valid <- valid && localExtra == (extended ? 20 : 0) && little(local,18,4) == (extended ? 4294967295 : memberSize) && little(local,22,4) == (extended ? 4294967295 : memberSize);
+                    if (extended) {
+                        valid <- valid && read(path,local,20,location+30+nameLength);
+                        valid <- valid && little(local,0,2) == 1 && little(local,2,2) == 16 && little(local,4,8) == memberSize && little(local,12,8) == memberSize;
+                    }
+                    if (index < 2 || index == count-1) {
+                        sample >> int <- jsonNewObject(); number(sample,"index",index); number(sample,"name_bytes",nameLength); number(sample,"size",memberSize); number(sample,"local_offset",location); number(sample,"crc32",crc); number(sample,"central_extra_bytes",extra); number(sample,"local_extra_bytes",localExtra); number(sample,"version",version); release43_common.release43Common.push(samples,sample);
+                    }
+                    nextLocal <- location+30+nameLength+localExtra+memberSize; cursor += 46+nameLength+extra; index += 1;
+                    if (index%8192 == 0) println("audited entries="+renderInt(index));
+                }
+                expect("all-local-and-central-records",valid && index == count && cursor == centralStart+centralSize && nextLocal == centralStart);
+                free(data); free(local); return true;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                if (argsCount(args) == 2 && (argsAt(args,1) == "--help" || argsAt(args,1) == "-h")) {
+                    println("release43_zip64_tests <new-scratch-path> <local-before|local-after|size-offset|count-limit|count-over|central-size>"); argsRelease(args); return 0;
+                }
+                if (argsCount(args) != 3) { eprintln("expected a new owned scratch path and explicit case"); argsRelease(args); return 2; }
+                work >> str <- release43_common.release43Common.absolute(argsAt(args,1)); mode >> str <- argsAt(args,2);
+                if (!strContains(work,"/target/tmp/release43-zip64-docs/") || strContains(work,"/../") || !(mode == "local-before" || mode == "local-after" || mode == "size-offset" || mode == "count-limit" || mode == "count-over" || mode == "central-size")) { eprintln("refusing a non-owned scratch path or unknown case"); argsRelease(args); return 2; }
+                if (!release43_common.release43Common.makeDirectories(work) || release43_common.release43Common.fileType(work+"/zip64-owner.txt") != 0 || release43_common.release43Common.fileType(work+"/native.zip") != 0) { eprintln("scratch must not contain an earlier run"); argsRelease(args); return 2; }
+                checks <- jsonNewObject(); samples <- jsonNewArray(); report >> int <- jsonNewObject(); prefix >> str <- prefixFor(mode); source >> str <- work+"/source";
+                expect("owner-marker",release43_common.release43Common.writeText(work+"/zip64-owner.txt","release43_zip64_tests v43 owned scratch\n"));
+                expect("source-directory",release43_common.release43Common.makeDirectories(source)); count >> int <- countFor(mode); memberSize >> i64 <- sizeFor(mode);
+                if (memberSize > 0) {
+                    expect("sparse-i64-fixture",fixture(source+"/a-payload.bin",memberSize));
+                    if (mode == "size-offset") expect("second-entry",release43_common.release43Common.writeText(source+"/z-tail.bin","ZIP64 tail after giant payload\n"));
+                } else expect("entry-fixtures",entries(source,count));
+                println("writing real archive="+work+"/native.zip");
+                if (failures == 0) expect("native-archive-write",release43_archive.release43Archive.zip(source,work+"/native.zip",prefix));
+                if (failures == 0) expect("native-audit-readable",audit(work+"/native.zip",mode,prefix,report));
+                put(report,"schema",jsonNewString("nc.release43.zip64.native-case.v1")); put(report,"case",jsonNewString(mode)); put(report,"host",jsonNewString(envHas("WINDIR") ? "windows-x64" : "ubuntu-wsl-x64")); put(report,"archive",jsonNewString(work+"/native.zip")); put(report,"source",jsonNewString(source)); number(report,"prefix_bytes",strByteLen(prefix)); number(report,"failures",failures); put(report,"checks",checks); put(report,"samples",samples);
+                text >> str <- cert_json.certJson.stringify(report); saved >> bool <- release43_common.release43Common.writeText(work+"/native-result.json",text+"\n"); strRelease(text); strRelease(prefix); jsonRelease(report); argsRelease(args);
+                println("failures="+renderInt(failures)); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

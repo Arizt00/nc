@@ -1,0 +1,198 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <auth.system:thread>;
+use <collections:result>;
+use <net:net, socket>;
+use <project:mobile43_peer, mobile43_client, mobile43_transport, tool_cli, release_io, cert_json, sha256>;
+
+mobile43Conformance {
+    const:
+        TOKEN >> str <- "nc-conformance-token-0123456789";
+        COMMANDS >> str <- "[\"PING\",\"AYUDA\",\"AGREGAR +34620123456\",\"ELIMINAR +34620123456\",\"BLOQUEAR_POR_PATRON +34\",\"DESBLOQUEAR_PATRON +34\",\"LISTAR\",\"ESTADO\",\"LIMPIAR\",\"DESCONOCIDA\",\"APAGAR_SERVIDOR\"]";
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+        cases >> int;
+    fn:
+        private:
+            serverWorker() -> int { return mobile43_peer.mobile43Peer.run(); }
+            record(name >> str, good >> bool) -> void {
+                checks += 1;
+                if (!good) { failures += 1; println("FAIL: "+name); }
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"name",jsonNewString(name));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.push(cases,row);
+            }
+            command(controller >> str, secure >> bool, framing >> str, port >> int, cert >> str, value >> str) -> str {
+                if (controller == "") return mobile43_client.mobile43Client.reconnecting(value,3);
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,controller);
+                tool_cli.toolCli.append(words,"127.0.0.1");
+                tool_cli.toolCli.append(words,value); tool_cli.toolCli.append(words,"--port");
+                tool_cli.toolCli.append(words,renderInt(port)); tool_cli.toolCli.append(words,"--framing");
+                tool_cli.toolCli.append(words,framing); tool_cli.toolCli.append(words,"--timeout");
+                tool_cli.toolCli.append(words,"3");
+                if (secure) {
+                    tool_cli.toolCli.append(words,"--token"); tool_cli.toolCli.append(words,TOKEN);
+                    tool_cli.toolCli.append(words,"--cert"); tool_cli.toolCli.append(words,cert);
+                } else tool_cli.toolCli.append(words,"--raw");
+                result >> int <- tool_cli.toolCli.execute(words,".",30000); jsonRelease(words);
+                text >> str <- cert_json.certJson.field(result,"stdout");
+                reply >> str <- tool_cli.toolCli.hasFlag(result,"ok") ? strTrim(text) : "";
+                jsonRelease(result); strRelease(text); return reply;
+            }
+            matrix(controller >> str, cert >> str, key >> str, base >> int) -> void {
+                commands >> int <- jsonParse(COMMANDS);
+                mode >> int <- 0;
+                while (mode < 4) {
+                    secure >> bool <- mode < 2; framing >> str <- mode%2 == 0 ? "LINE" : "FRAME";
+                    port >> int <- base+mode;
+                    opened >> bool <- mobile43_peer.mobile43Peer.open(port,secure,cert,key,11,"");
+                    record("listener-"+renderInt(mode),opened);
+                    if (!opened) { mode += 1; continue; }
+                    worker >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(serverWorker));
+                    if (!isOk(worker)) { mobile43_peer.mobile43Peer.stop(); record("thread",false); mode += 1; continue; }
+                    ready >> bool <- true;
+                    if (controller == "") ready <- mobile43_client.mobile43Client.configure("127.0.0.1",port,framing,!secure,TOKEN,secure ? cert : "","",3000);
+                    record("configure-"+renderInt(mode),ready);
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(commands) && ready) {
+                        item >> int <- jsonArrayBorrow(commands,index);
+                        value >> str <- jsonStringView(item,"");
+                        actual >> str <- command(controller,secure,framing,port,cert,value);
+                        expected >> str <- mobile43_peer.mobile43Peer.commandResponse(value);
+                        passed >> bool <- actual == expected;
+                        record((secure ? "TLS-" : "RAW-")+framing+"-"+value,passed);
+                        if (!passed && controller == "") println(mobile43_client.mobile43Client.error());
+                        strRelease(actual); jsonRelease(item); index += 1;
+                        if (!passed) { ready <- false; }
+                    }
+                    mobile43_client.mobile43Client.close();
+                    // Wake a pending accept on failure; all normal cases consume 11 sessions.
+                    if (index != 11 || failures > 0) {
+                        wake >> addr <- socketCreate(2,1,6);
+                        if (wake != null) { socketConnect(wake,"127.0.0.1",port,200); socketClose(wake); }
+                        mobile43_peer.mobile43Peer.interrupt();
+                    }
+                    joined >> Result<int, ThreadError> <- threadJoin(worker);
+                    record("worker-"+renderInt(mode),isOk(joined) && mobile43_peer.mobile43Peer.failureCount() == 0);
+                    record("sessions-"+renderInt(mode),mobile43_peer.mobile43Peer.accepted() == 11);
+                    mobile43_peer.mobile43Peer.stop(); mode += 1;
+                }
+                jsonRelease(commands);
+            }
+            rejection(cert >> str, key >> str, port >> int, mutation >> str,
+                secret >> str, pin >> str, expectedError >> str, connections >> int) -> void {
+                opened >> bool <- mobile43_peer.mobile43Peer.open(port,true,cert,key,connections,mutation);
+                record("reject-listener-"+expectedError,opened);
+                if (!opened) return;
+                worker >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(serverWorker));
+                if (!isOk(worker)) { mobile43_peer.mobile43Peer.stop(); record("reject-thread",false); return; }
+                ready >> bool <- mobile43_client.mobile43Client.configure("127.0.0.1",port,"FRAME",false,secret,
+                    pin == "" ? cert : "",pin,1000);
+                answer >> str <- ready ? mobile43_client.mobile43Client.reconnecting("PING",connections-1) : "";
+                record("reject-"+expectedError,answer == "" && mobile43_client.mobile43Client.error() == expectedError);
+                strRelease(answer); mobile43_client.mobile43Client.close();
+                mobile43_peer.mobile43Peer.interrupt();
+                joined >> Result<int, ThreadError> <- threadJoin(worker);
+                record("reject-joined-"+expectedError,isOk(joined));
+                record("reject-retries-"+expectedError,mobile43_peer.mobile43Peer.accepted() == connections);
+                mobile43_peer.mobile43Peer.stop();
+            }
+            pinCase(cert >> str, key >> str, port >> int, pin >> str) -> void {
+                opened >> bool <- mobile43_peer.mobile43Peer.open(port,true,cert,key,1,"");
+                record("pin-listener",opened);
+                if (!opened) return;
+                worker >> Result<ThreadHandle, ThreadError> <- threadSpawn(@fn(serverWorker));
+                if (!isOk(worker)) { mobile43_peer.mobile43Peer.stop(); record("pin-thread",false); return; }
+                ready >> bool <- mobile43_client.mobile43Client.configure("127.0.0.1",port,"FRAME",false,TOKEN,"",pin,2000);
+                answer >> str <- ready ? mobile43_client.mobile43Client.reconnecting("PING",0) : "";
+                record("certificate-pin",answer == "OK|PONG");
+                strRelease(answer); mobile43_client.mobile43Client.close();
+                mobile43_peer.mobile43Peer.interrupt();
+                joined >> Result<int, ThreadError> <- threadJoin(worker);
+                record("pin-joined",isOk(joined)); mobile43_peer.mobile43Peer.stop();
+            }
+        public:
+            execute(arguments >> addr, start >> int) -> int {
+                cases <- jsonNewArray(); checks <- 0; failures <- 0;
+                controller >> str <- ""; openssl >> str <- "openssl"; report >> str <- "";
+                index >> int <- start;
+                while (index < argsCount(arguments)) {
+                    name >> str <- argsAt(arguments,index);
+                    if (name == "--help" || name == "-h") {
+                        println("blockmaster-protocol [--controller EXE] [--openssl EXE] [--report JSON]");
+                        jsonRelease(cases); return 0;
+                    }
+                    if ((name != "--controller" && name != "--openssl" && name != "--report") || index+1 >= argsCount(arguments)) {
+                        println("blockmaster-protocol: invalid arguments"); jsonRelease(cases); return 2;
+                    }
+                    index += 1;
+                    if (name == "--controller") controller <- argsAt(arguments,index);
+                    else if (name == "--openssl") openssl <- argsAt(arguments,index);
+                    else report <- argsAt(arguments,index);
+                    index += 1;
+                }
+                if (controller != "" && release_io.releaseIo.fileType(controller) != 1) {
+                    println("blockmaster-protocol: controller executable missing"); jsonRelease(cases); return 2;
+                }
+                mobile43_transport.mobile43Transport.ignoreBrokenPipe();
+                root >> str <- "target/tmp/mobile43-pki-"+renderInt(nowMs());
+                if (!release_io.releaseIo.makeDirectories(root)) { jsonRelease(cases); return 2; }
+                cert >> str <- root+"/cert.pem"; key >> str <- root+"/key.pem";
+                words >> int <- jsonParse("[\"req\",\"-x509\",\"-newkey\",\"rsa:2048\",\"-sha256\",\"-nodes\",\"-days\",\"1\",\"-subj\",\"/CN=127.0.0.1\",\"-keyout\"]");
+                cert_json.certJson.insert(words,0,jsonNewString(openssl));
+                tool_cli.toolCli.append(words,key); tool_cli.toolCli.append(words,"-out"); tool_cli.toolCli.append(words,cert);
+                process >> int <- tool_cli.toolCli.execute(words,".",30000); jsonRelease(words);
+                generated >> bool <- tool_cli.toolCli.hasFlag(process,"ok"); jsonRelease(process);
+                record("ephemeral-certificate",generated);
+                started >> bool <- netStartup() == 0;
+                record("network-startup",started);
+                base >> int <- 36000+nowMs()%14000;
+                if (generated && started) {
+                    matrix(controller,cert,key,base);
+                    if (controller == "") {
+                        rejection(cert,key,base+4,"auth",TOKEN,"","server AUTH_OK signature mismatch",2);
+                        rejection(cert,key,base+5,"hmac",TOKEN,"","response HMAC mismatch",2);
+                        rejection(cert,key,base+6,"sequence",TOKEN,"","invalid response envelope",2);
+                        rejection(cert,key,base+7,"","wrong-token","","authentication rejected",2);
+                        rejection(cert,key,base+9,"oversize",TOKEN,"","frame length exceeds limit",1);
+                        rejection(cert,key,base+10,"short",TOKEN,"","peer closed inside frame or receive timeout",2);
+                        rejection(cert,key,base+11,"utf8",TOKEN,"","invalid UTF-8 or NUL in protocol text",1);
+                        rejection(cert,key,base+12,"base64",TOKEN,"","invalid Base64 or UTF-8 response",1);
+                        rejection(cert,key,base+13,"",TOKEN,"0000000000000000000000000000000000000000000000000000000000000000","certificate pin mismatch",2);
+                        der >> str <- root+"/cert.der";
+                        words <- jsonParse("[\"x509\",\"-in\"]");
+                        cert_json.certJson.insert(words,0,jsonNewString(openssl));
+                        tool_cli.toolCli.append(words,cert); tool_cli.toolCli.append(words,"-outform");
+                        tool_cli.toolCli.append(words,"DER"); tool_cli.toolCli.append(words,"-out"); tool_cli.toolCli.append(words,der);
+                        process <- tool_cli.toolCli.execute(words,".",30000); jsonRelease(words);
+                        converted >> bool <- tool_cli.toolCli.hasFlag(process,"ok"); jsonRelease(process);
+                        record("certificate-der",converted);
+                        if (converted) {
+                            digest >> str <- sha256.nccSha256.file(der);
+                            pinCase(cert,key,base+8,digest); strRelease(digest);
+                        }
+                    }
+                }
+                if (started) netShutdown();
+                if (report != "") {
+                    result >> int <- jsonNewObject();
+                    cert_json.certJson.put(result,"schema",jsonNewString("nc.blockmaster.protocol.v43"));
+                    cert_json.certJson.put(result,"checks",jsonNewInt(checks));
+                    cert_json.certJson.put(result,"failures",jsonNewInt(failures));
+                    cert_json.certJson.put(result,"passed",jsonNewBool(failures == 0));
+                    cert_json.certJson.put(result,"cases",jsonClone(cases));
+                    cert_json.certJson.put(result,"physical_phone",jsonNewBool(false));
+                    text >> str <- cert_json.certJson.stringify(result);
+                    if (!release_io.releaseIo.atomicWrite(report,text+"\n")) failures += 1;
+                    strRelease(text); jsonRelease(result);
+                }
+                jsonRelease(cases);
+                if (failures == 0) println("OK: NCBM1 secure/raw LINE/FRAME command and forced-reconnect matrix");
+                return failures == 0 ? 0 : 1;
+            }
+    fa: return true;
+}

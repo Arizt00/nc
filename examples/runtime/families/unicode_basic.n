@@ -1,0 +1,50 @@
+use <io:output>;
+use <text:string>;
+use <text:unicode>;
+
+unicodeBasic :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            invalid >> p<byte> <- stackAlloc(4, 1);
+            wr(off(invalid, 0), 0x66);
+            wr(off(invalid, 1), 0x80);
+            wr(off(invalid, 2), 0x6F);
+            wr(off(invalid, 3), 0);
+            invalidText >> str <- cast(invalid);
+
+            nfc >> str <- normalizeNfc("Café");
+            nfd >> str <- normalizeNfd("Café");
+            compatibility >> str <- normalizeNfkc("①");
+            clean >> str <- stripInvalidUnicode(invalidText);
+            family >> str <- graphemeSlice("👨‍👩‍👧‍👦á", 0, 1);
+
+            ok >> bool <-
+                isValidUtf8("Café") &&
+                !isValidUtf8(invalidText) &&
+                nfc == "Café" &&
+                nfd == "Café" &&
+                compatibility == "1" &&
+                clean == "fo" &&
+                supportsGrapheme() &&
+                graphemeCount("👨‍👩‍👧‍👦á") == 2 &&
+                graphemeCount(family) == 1 &&
+                unicodeMode() == "Unicode-17.0.0/NFC/UAX15+UAX29/manual-nC";
+
+            print("manual nC Unicode 17 provider: ");
+            println(ok ? "true" : "false");
+
+            unicodeRelease(family);
+            unicodeRelease(clean);
+            unicodeRelease(compatibility);
+            unicodeRelease(nfd);
+            unicodeRelease(nfc);
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

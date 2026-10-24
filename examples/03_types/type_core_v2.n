@@ -1,0 +1,70 @@
+use <io:output, render>;
+use <memory:region>;
+
+typeCoreMejorado :: runtime {
+    /*
+     * RegionInfo describe el contrato pedagogico:
+     * trabajamos con una region de enteros, leemos un slot concreto y
+     * esperamos un valor conocido. Es documentacion tipada del ejemplo.
+     */
+    RegionInfo :: type {
+            lenRegion >> int;
+            indiceRegion >> int;
+            valorEsperado >> int;
+    }
+
+    stc:
+        /*
+         * mem debe vivir en stc porque representa memoria estable del modulo.
+         * No basta declararla: antes de leer hay que crearla con regionCreate.
+         */
+        mem >> memRegion<int>;
+        ok >> bool;
+        /*
+         * value es scratch de ejecucion. No necesita vivir en stc.
+         */
+        value >> int <- 0;
+
+    fn:
+        boot() -> bool {
+            value >> int <- 0;
+            ok >> bool <- false;
+
+            /*
+             * Sustituye el antiguo region.bind(...) por una region real.
+             * regionCreate<int>(4) crea 4 celdas int indexables.
+             */
+            mem >> memRegion<int> <- regionCreate<int>(8);
+            regionWrite(mem, 0, 65);
+            return true;
+        }
+
+        test() -> int {
+            /*
+             * El codigo original leia en x, pero x no existia.
+             * Aqui la lectura se guarda en local.value y se devuelve.
+             */
+            value >> int <- regionRead(mem, 8);
+            return value;
+        }
+
+        validar() -> bool {
+            return test() == 0;
+        }
+
+        run() -> bool {
+            boot();
+            ok >> bool <- validar();
+
+            println(colorBold("===== typeCore mejorado =====", "cyan"));
+            println("mem[0] = " + renderInt(test()));
+            println("validacion = " + renderBool(ok));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

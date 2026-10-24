@@ -1,0 +1,58 @@
+use <data:json>;
+use <io:output>;
+use <project:release43_common, release_io>;
+
+release43Updates {
+    fn:
+        private:
+            words(home >> str, verb >> str) -> int {
+                args >> int <- release43_common.release43Common.array("[\"ncup\"]");
+                release43_common.release43Common.arg(args,verb); release43_common.release43Common.arg(args,"--home"); release43_common.release43Common.arg(args,home); return args;
+            }
+            run(words >> int) -> int { return release43_common.release43Common.command(words,false); }
+        public:
+            inspect() -> void {
+                release43_common.release43Common.record("update_active_only",false);
+                release43_common.release43Common.record("rollback_on_failure",false);
+                release43_common.release43Common.record("history_manifest_written",false);
+                release43_common.release43Common.record("history_contains_success_and_rollback",false);
+                home >> str <- release43_common.release43Common.workPath()+"/home";
+                project >> str <- release43_common.release43Common.workPath()+"/project";
+                if (!release43_common.release43Common.makeDirectories(project)) { release43_common.release43Common.fail("cannot create updates project"); return; }
+                stable >> str <- "stable-x86_64-unknown-linux-gnu"; beta >> str <- "beta-x86_64-unknown-linux-gnu";
+                args >> int <- words(home,"init"); release43_common.release43Common.arg(args,"--profile"); release43_common.release43Common.arg(args,"minimal"); release43_common.release43Common.arg(args,"--force");
+                if (!release43_common.release43Common.succeeded(run(args))) { release43_common.release43Common.fail("ncup init failed"); return; }
+                args <- release43_common.release43Common.array("[\"ncup\",\"toolchain\",\"install\"]"); release43_common.release43Common.arg(args,beta); release43_common.release43Common.arg(args,"--home"); release43_common.release43Common.arg(args,home);
+                release43_common.release43Common.arg(args,"--profile"); release43_common.release43Common.arg(args,"minimal");
+                if (!release43_common.release43Common.succeeded(run(args))) { release43_common.release43Common.fail("beta toolchain install failed"); return; }
+                state0 >> int <- release43_common.release43Common.load(home+"/manifests/toolchains.v1.json"); stable0 >> int <- release43_common.release43Common.rowById(state0,stable); beta0 >> int <- release43_common.release43Common.rowById(state0,beta);
+                if (stable0 == 0 || beta0 == 0) { release43_common.release43Common.fail("expected stable and beta toolchains to be installed"); return; }
+                sleepMs(1100);
+                if (!release43_common.release43Common.succeeded(run(words(home,"update")))) { release43_common.release43Common.fail("ncup update on active stable failed"); return; }
+                state1 >> int <- release43_common.release43Common.load(home+"/manifests/toolchains.v1.json"); stable1 >> int <- release43_common.release43Common.rowById(state1,stable); beta1 >> int <- release43_common.release43Common.rowById(state1,beta);
+                if (stable1 == 0 || beta1 == 0) { release43_common.release43Common.fail("missing stable/beta rows after update"); return; }
+                // Exact Python comparison, including its Linux-only IDs on a Windows host.
+                release43_common.release43Common.record("update_active_only",release_io.releaseIo.number(beta1,"installed_at_epoch",-1) == release_io.releaseIo.number(beta0,"installed_at_epoch",-1) && release_io.releaseIo.number(stable1,"installed_at_epoch",-1) != release_io.releaseIo.number(stable0,"installed_at_epoch",-1));
+                before >> str <- release43_common.release43Common.revision(home,beta);
+                if (!release43_common.release43Common.breakTrust(home,true)) return;
+                args <- words(home,"update"); release43_common.release43Common.arg(args,"--cwd"); release43_common.release43Common.arg(args,project);
+                row >> int <- release43_common.release43Common.commandEnv(args,false,"NCUP_TOOLCHAIN",beta);
+                if (release43_common.release43Common.succeeded(row)) { release43_common.release43Common.fail("expected update failure with missing enterprise trust key to fail"); return; }
+                release43_common.release43Common.record("rollback_on_failure",before == release43_common.release43Common.revision(home,beta));
+                path >> str <- home+"/manifests/update-history.v1.json";
+                release43_common.release43Common.record("history_manifest_written",release43_common.release43Common.fileType(path) == 1);
+                if (release43_common.release43Common.fileType(path) == 1) {
+                    history >> int <- release43_common.release43Common.load(path); entries >> int <- jsonObjectGet(history,"entries"); at >> int <- 0; success >> bool <- false; rolledBack >> bool <- false; snapshot >> bool <- false;
+                    while (at < jsonArrayLen(entries)) {
+                        entry >> int <- jsonArrayGet(entries,at); status >> str <- release43_common.release43Common.field(entry,"status");
+                        success <- success || status == "ok"; rolledBack <- rolledBack || status == "rolled_back";
+                        directory >> str <- release43_common.release43Common.field(entry,"snapshot_dir");
+                        snapshot <- snapshot || release43_common.release43Common.fileType(directory == "" ? "." : directory) != 0;
+                        release43_common.release43Common.release(entry); at += 1;
+                    }
+                    release43_common.release43Common.record("history_contains_success_and_rollback",success && rolledBack && snapshot); release43_common.release43Common.release(entries); release43_common.release43Common.release(history);
+                }
+                release43_common.release43Common.release(stable0); release43_common.release43Common.release(beta0); release43_common.release43Common.release(stable1); release43_common.release43Common.release(beta1); release43_common.release43Common.release(state0); release43_common.release43Common.release(state1);
+            }
+    fa: return true;
+}

@@ -1,0 +1,139 @@
+use <io:output, render>;
+use <project:json, fault_heap>;
+
+nativeJsonOom78 {
+    textRelease(value >> str) -> void {
+        if (cast<byte>(value) != null && value != "") fault_heap.runtimeFaultHeap78.release(cast<byte>(value));
+    }
+    runCase(kind >> int, failAt >> int, persistent >> bool) -> int {
+        source >> int <- json.jsonProvider54.jsonParse("{\"n\":0.125,\"a\":[1,\"value\",true]}");
+        value >> int <- json.jsonProvider54.jsonNewFloat(0.75);
+        array >> int <- json.jsonProvider54.jsonNewArray();
+        stringValue >> int <- json.jsonProvider54.jsonNewString("raw storage");
+        if (source == 0 || value == 0 || array == 0 || stringValue == 0 || !json.jsonProvider54.jsonObjectSet(source,"f",value)) return 1;
+        if (kind == 13 && !json.jsonProvider54.jsonArrayPush(array,stringValue)) return 1;
+        base >> int <- fault_heap.runtimeFaultHeap78.outstanding();
+        baseBytes >> u64 <- fault_heap.runtimeFaultHeap78.outstandingBytes();
+        json.jsonProvider54.jsonClearError();
+        fault_heap.runtimeFaultHeap78.configure(failAt,persistent);
+        result >> int <- 0; text >> str <- ""; changed >> bool <- false;
+        if (kind == 0) result <- json.jsonProvider54.jsonNewFloat(1.5);
+        if (kind == 1) result <- json.jsonProvider54.jsonParse("{\"x\":[1.25,{\"s\":\"a\\u0000b\"}],\"b\":false}");
+        if (kind == 2) text <- json.jsonProvider54.jsonStringify(source);
+        if (kind == 3) result <- json.jsonProvider54.jsonClone(source);
+        if (kind == 4) changed <- json.jsonProvider54.jsonObjectSet(source,"n",value);
+        if (kind == 5) changed <- json.jsonProvider54.jsonArrayInsert(array,0,value);
+        if (kind == 6) result <- json.jsonProvider54.jsonPointer(source,"/a/1");
+        if (kind == 7) changed <- json.jsonProvider54.jsonEquals(source,source);
+        if (kind == 8) result <- json.jsonProvider54.jsonNewString("new text");
+        if (kind == 9) text <- json.jsonProvider54.jsonGetNumberText(value);
+        if (kind == 10) text <- json.jsonProvider54.jsonGetString(stringValue);
+        if (kind == 11) changed <- json.jsonProvider54.jsonArrayPush(array,value);
+        if (kind == 12) result <- json.jsonProvider54.jsonObjectGet(source,"a");
+        if (kind == 13) result <- json.jsonProvider54.jsonArrayGet(array,0);
+        if (kind == 14) text <- json.jsonProvider54.jsonObjectKeyAt(source,0);
+        if (kind == 15) text <- json.jsonProvider54.jsonStringifyPretty(source,2);
+        if (kind == 16) changed <- json.jsonProvider54.jsonValidate("[1.0,{\"key\":\"value\"},true]");
+        if (kind == 17) result <- json.jsonProvider54.jsonNewInt(42);
+        if (kind == 18) result <- json.jsonProvider54.jsonNewBool(true);
+        if (kind == 19) result <- json.jsonProvider54.jsonNewArray();
+        if (kind == 20) result <- json.jsonProvider54.jsonNewObject();
+        if (kind == 21) result <- json.jsonProvider54.jsonNewNull();
+        if (kind == 22) text <- json.jsonProvider54.jsonGetStringOr(stringValue,"fallback");
+        failed >> bool <- fault_heap.runtimeFaultHeap78.didFail();
+        count >> int <- fault_heap.runtimeFaultHeap78.allocations();
+        error >> int <- json.jsonProvider54.jsonErrorCode();
+        fault_heap.runtimeFaultHeap78.configure(0,false);
+        valid >> bool <- !failed || (result == 0 && (cast<byte>(text) == null || text == "") && !changed);
+        if (failAt > 0 && !failed) valid <- false;
+        if (!failed) {
+            if (kind == 0 || kind == 1 || kind == 3 || kind == 6 || kind == 8 || kind == 12 || kind == 13 ||
+                (kind >= 17 && kind <= 21)) valid <- valid && result != 0;
+            if (kind == 4 || kind == 5 || kind == 7 || kind == 11 || kind == 16) valid <- valid && changed;
+            if (kind == 2 || kind == 15) valid <- valid && text != "" && json.jsonProvider54.jsonValidate(text);
+            if (kind == 9) valid <- valid && text == "0.75";
+            if (kind == 10 || kind == 22) valid <- valid && text == "raw storage";
+            if (kind == 14) valid <- valid && text == "n";
+        }
+        if (failed && error != 3) valid <- false;
+        json.jsonProvider54.jsonRelease(result); textRelease(text);
+        if (failed && (fault_heap.runtimeFaultHeap78.outstanding() != base ||
+            fault_heap.runtimeFaultHeap78.outstandingBytes() != baseBytes)) valid <- false;
+        if (failed && kind == 4) {
+            old >> int <- json.jsonProvider54.jsonObjectBorrow(source,"n");
+            if (json.jsonProvider54.jsonGetFloat(old) != 0.125) valid <- false;
+            json.jsonProvider54.jsonRelease(old);
+        }
+        if (failed && kind == 5 && json.jsonProvider54.jsonArrayLen(array) != 0) valid <- false;
+        json.jsonProvider54.jsonRelease(source); json.jsonProvider54.jsonRelease(value);
+        json.jsonProvider54.jsonRelease(array);
+        json.jsonProvider54.jsonRelease(stringValue);
+        if (!valid || fault_heap.runtimeFaultHeap78.invalidFrees() != 0) {
+            print("oom case="); print(renderInt(kind)); print(" allocation="); print(renderInt(failAt));
+            print(" persistent="); print(renderBool(persistent)); print(" error="); println(renderInt(error));
+            return -1;
+        }
+        return count;
+    }
+    run() -> int {
+        if (!fault_heap.runtimeFaultHeap78.open()) return 1;
+        // Fail initial node allocation and both allocations of the handle table.
+        at >> int <- 1;
+        while (at <= 3) {
+            fault_heap.runtimeFaultHeap78.configure(at,false);
+            value >> int <- json.jsonProvider54.jsonNewFloat(0.25);
+            fault_heap.runtimeFaultHeap78.configure(0,false);
+            if (value != 0 || json.jsonProvider54.jsonErrorCode() != 3 || fault_heap.runtimeFaultHeap78.outstanding() != 0) return 2;
+            at += 1;
+        }
+        warm >> int <- json.jsonProvider54.jsonNewNull();
+        if (warm == 0) return 3;
+        json.jsonProvider54.jsonRelease(warm);
+        wide >> int <- json.jsonProvider54.jsonParse("{\"a\":[1,2]}");
+        impossible >> str <- json.jsonProvider54.jsonStringifyPretty(wide,2147483647);
+        if (impossible != "" || json.jsonProvider54.jsonErrorCode() != 3) return 7;
+        json.jsonProvider54.jsonRelease(wide);
+        base >> int <- fault_heap.runtimeFaultHeap78.outstanding();
+        baseBytes >> u64 <- fault_heap.runtimeFaultHeap78.outstandingBytes();
+        kind >> int <- 0; checks >> int <- 4;
+        while (kind < 23) {
+            count >> int <- runCase(kind,0,false);
+            if (count <= 0) return 4;
+            checks += 1;
+            at <- 1;
+            while (at <= count) {
+                if (runCase(kind,at,false) < 0 || runCase(kind,at,true) < 0) return 5;
+                if (fault_heap.runtimeFaultHeap78.outstanding() != base ||
+                    fault_heap.runtimeFaultHeap78.outstandingBytes() != baseBytes) return 6;
+                checks += 2; at += 1;
+            }
+            kind += 1;
+        }
+        held >> array<int,63>; at <- 0;
+        while (at < 63) { held[at] <- json.jsonProvider54.jsonNewInt(at); if (held[at] == 0) return 8; at += 1; }
+        base <- fault_heap.runtimeFaultHeap78.outstanding(); baseBytes <- fault_heap.runtimeFaultHeap78.outstandingBytes();
+        at <- 1;
+        while (at <= 3) {
+            fault_heap.runtimeFaultHeap78.configure(at,false);
+            value >> int <- json.jsonProvider54.jsonNewFloat(0.5);
+            failed >> bool <- fault_heap.runtimeFaultHeap78.didFail();
+            fault_heap.runtimeFaultHeap78.configure(0,false);
+            if (!failed || value != 0 || json.jsonProvider54.jsonErrorCode() != 3 ||
+                fault_heap.runtimeFaultHeap78.outstanding() != base ||
+                fault_heap.runtimeFaultHeap78.outstandingBytes() != baseBytes) return 9;
+            index >> int <- 0;
+            while (index < 63) { if (json.jsonProvider54.jsonGetInt(held[index]) != index) return 10; index += 1; }
+            checks += 1; at += 1;
+        }
+        grown >> int <- json.jsonProvider54.jsonNewFloat(0.5);
+        if (grown == 0 || json.jsonProvider54.jsonGetFloat(grown) != 0.5) return 11;
+        json.jsonProvider54.jsonRelease(grown); at <- 0;
+        while (at < 63) { json.jsonProvider54.jsonRelease(held[at]); at += 1; }
+        if (fault_heap.runtimeFaultHeap78.outstanding() != 2 || fault_heap.runtimeFaultHeap78.invalidFrees() != 0) return 12;
+        checks += 1;
+        fault_heap.runtimeFaultHeap78.close();
+        print("native-json-oom-ok checks="); println(renderInt(checks)); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

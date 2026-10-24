@@ -1,0 +1,123 @@
+use <project:release_io, cert_json, docs43_utf8>;
+
+docs43Font {
+    stc:
+        data >> p<byte>;
+        fileBytes >> int <- 0;
+        cmap >> int <- 0;
+        metrics >> int <- 0;
+        metricCount >> int <- 0;
+        units >> int <- 1000;
+        ascent >> int <- 0;
+        descent >> int <- 0;
+        head >> int <- 0;
+        points >> array<int,4096>;
+        glyphs >> array<int,4096>;
+        count >> int <- 1;
+    fn:
+        private:
+            u16(at >> int) -> int { return (rd(off(data,at)) & 255)*256+(rd(off(data,at+1)) & 255); }
+            u32(at >> int) -> int { return u16(at)*65536+u16(at+2); }
+            signed(at >> int) -> int { value >> int <- u16(at); return value > 32767 ? value-65536 : value; }
+            table(tag >> int) -> int {
+                n >> int <- u16(4); i >> int <- 0;
+                while (i < n) { at >> int <- 12+i*16; if (u32(at) == tag) return u32(at+8); i += 1; }
+                return 0;
+            }
+            glyph(code >> int) -> int {
+                if (u16(cmap) == 12) {
+                    groups >> int <- u32(cmap+12); i >> int <- 0;
+                    while (i < groups) {
+                        at >> int <- cmap+16+i*12; first >> int <- u32(at); last >> int <- u32(at+4);
+                        if (code >= first && code <= last) return u32(at+8)+code-first;
+                        i += 1;
+                    }
+                    return 0;
+                }
+                if (code > 65535) return 0;
+                n >> int <- u16(cmap+6)/2; i >> int <- 0;
+                endBase >> int <- cmap+14; startBase >> int <- endBase+2*n+2; deltaBase >> int <- startBase+2*n; rangeBase >> int <- deltaBase+2*n;
+                while (i < n) {
+                    if (code <= u16(endBase+i*2) && code >= u16(startBase+i*2)) {
+                        delta >> int <- signed(deltaBase+i*2); range >> int <- u16(rangeBase+i*2);
+                        if (range == 0) return (code+delta) & 65535;
+                        value >> int <- u16(rangeBase+i*2+range+(code-u16(startBase+i*2))*2);
+                        return value == 0 ? 0 : (value+delta) & 65535;
+                    }
+                    i += 1;
+                }
+                return 0;
+            }
+            advance(gid >> int) -> int { return u16(metrics+(gid < metricCount ? gid : metricCount-1)*4); }
+        public:
+            supports(code >> int) -> bool { return load() && glyph(code) > 0; }
+            reset() -> void { if (data != null) free(data); data <- null; count <- 1; points[0] <- 0; glyphs[0] <- 0; }
+            load() -> bool {
+                if (data != null) return true;
+                path >> str <- "C:/Windows/Fonts/segoeui.ttf";
+                if (release_io.releaseIo.fileType(path) != 1) path <- "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+                fileBytes <- fsSize(path); guard fileBytes > 0 && fileBytes < 16777216 else return false;
+                data <- cast(alloc(fileBytes)); guard data != null else return false;
+                if (fsReadInto(path,data,fileBytes) != fileBytes) { reset(); return false; }
+                head <- table(1751474532); metrics <- table(1752003704); hhea >> int <- table(1751672161); cmaps >> int <- table(1668112752);
+                if (head == 0 || metrics == 0 || hhea == 0 || cmaps == 0) { reset(); return false; }
+                units <- u16(head+18); metricCount <- u16(hhea+34); ascent <- signed(hhea+4)*1000/units; descent <- signed(hhea+6)*1000/units;
+                cmap <- 0; i >> int <- 0;
+                while (i < u16(cmaps+2)) {
+                    entry >> int <- cmaps+4+i*8; sub >> int <- cmaps+u32(entry+4); format >> int <- u16(sub);
+                    if ((u16(entry) == 0 || u16(entry) == 3) && (format == 4 || format == 12)) {
+                        if (cmap == 0 || format == 12) cmap <- sub;
+                    }
+                    i += 1;
+                }
+                if (cmap == 0) { reset(); return false; } return true;
+            }
+            cid(code >> int) -> int {
+                i >> int <- 1; while (i < count) { if (points[i] == code) return i; i += 1; }
+                if (count >= 4096) return 0;
+                points[count] <- code; glyphs[count] <- glyph(code); count += 1; return count-1;
+            }
+            encode(text >> str) -> str {
+                output >> str <- "<"; bytes >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) {
+                    output <- cert_json.certJson.append(output,docs43_utf8.docs43Utf8.hex(cid(docs43_utf8.docs43Utf8.point(bytes,at)),4));
+                    at += docs43_utf8.docs43Utf8.span(rd(off(bytes,at)) & 255);
+                }
+                return cert_json.certJson.append(output,">");
+            }
+            measure(text >> str, size >> int) -> int {
+                if (!load()) return 0;
+                bytes >> p<byte> <- cast(text); at >> int <- 0; total >> int <- 0;
+                while (at < strByteLen(text)) { total += advance(glyph(docs43_utf8.docs43Utf8.point(bytes,at))); at += docs43_utf8.docs43Utf8.span(rd(off(bytes,at)) & 255); }
+                return total*size/units;
+            }
+            pointer() -> p<byte> { return data; }
+            size() -> int { return fileBytes; }
+            mapping() -> str {
+                output >> str <- ""; i >> int <- 0;
+                while (i < count) { gid >> int <- glyphs[i]; output <- cert_json.certJson.append(output,docs43_utf8.docs43Utf8.hex(gid,4)); i += 1; }
+                return output+">";
+            }
+            widths() -> str {
+                output >> str <- "[0 ["; i >> int <- 0;
+                while (i < count) { output <- cert_json.certJson.append(output,renderInt(advance(glyphs[i])*1000/units)+" "); i += 1; }
+                return cert_json.certJson.append(output,"]]");
+            }
+            descriptor(fileId >> int) -> str {
+                return "<< /Type /FontDescriptor /FontName /Docs43Unicode /Flags 32 /FontBBox ["+renderInt(signed(head+36)*1000/units)+" "+renderInt(signed(head+38)*1000/units)+" "+renderInt(signed(head+40)*1000/units)+" "+renderInt(signed(head+42)*1000/units)+"] /ItalicAngle 0 /Ascent "+renderInt(ascent)+" /Descent "+renderInt(descent)+" /CapHeight "+renderInt(ascent)+" /StemV 80 /FontFile2 "+renderInt(fileId)+" 0 R >>";
+            }
+            unicodeMap() -> str {
+                output >> str <- "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Docs43Unicode def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange\n";
+                i >> int <- 1;
+                while (i < count) {
+                    n >> int <- count-i; if (n > 100) n <- 100;
+                    output <- cert_json.certJson.append(output,renderInt(n)+" beginbfchar\n"); j >> int <- 0;
+                    while (j < n) {
+                        output <- cert_json.certJson.append(output,"<"+docs43_utf8.docs43Utf8.hex(i,4)+"> <"+docs43_utf8.docs43Utf8.utf16(points[i])+">\n"); i += 1; j += 1;
+                    }
+                    output <- cert_json.certJson.append(output,"endbfchar\n");
+                }
+                return cert_json.certJson.append(output,"endcmap CMapName currentdict /CMap defineresource pop end end");
+            }
+    fa: return true;
+}

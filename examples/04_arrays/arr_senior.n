@@ -1,0 +1,464 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:ptr, heap, region>;
+
+ejercicioArraySenior :: runtime {
+    /*
+     * Contrato del resultado logico del ejercicio.
+     * El backend actual materializa mejor arrays/regiones/punteros que
+     * records complejos, asi que los datos reales viven en estructuras
+     * planas; este type documenta la forma semantica esperada.
+     */
+    ResultadoArray :: type {
+            maximo >> int;
+            minimo >> int;
+            mediaX100 >> int;
+        stable:
+            deterministic;
+    }
+
+    /*
+     * Contrato de las metricas que guardamos en metrics:
+     * checksum, iteraciones, distancia de puntero y clasificacion final.
+     */
+    RuntimeAudit :: type {
+            checksumArray >> int;
+            checksumRegion >> int;
+            checksumPtr >> int;
+            hotIterations >> int;
+            syncIterations >> int;
+            ptrDistance >> int;
+            categoria >> int;
+        stable:
+            deterministic;
+    }
+
+    stc:
+        /*
+         * Memoria principal del ejercicio:
+         * - tres arrays de entrada para comparar int, ft32 y ft64;
+         * - dos arrays de salida;
+         * - una region de metricas para no inflar local;
+         * - una region vista desde heap y un puntero real.
+         */
+        numeros >> array<int, 50>;
+        numerosFt32 >> array<ft32, 50>;
+        numerosFt64 >> array<ft64, 50>;
+
+        resultados >> array<int, 3>;
+        resultadosFt64 >> array<ft64, 3>;
+        estado >> array<bool, 3>;
+
+        metrics >> memRegion<int>;
+        resultadosRegion >> memRegion<int>;
+        resultadoPtr >> p<int>;
+        resultadoSlot >> p<int>;
+        iterTrace >> list<int>;
+        /*
+         * local queda reducido a scratch real de ejecucion.
+         * Todo lo persistente o auditable se mueve a stc/region/list.
+         */
+        i >> int <- 0;
+        valorFt32 >> ft32;
+        valorFt64 >> ft64;
+        sumaFt32 >> ft32;
+        mediaFt32 >> ft32;
+
+    fn:
+        boot() -> bool {
+            materializarArrays();
+            initEstado();
+            initRuntime();
+            initIterTrace();
+            limpiarResultadosRuntimeDoWhile();
+            auditarSameFor();
+            return true;
+        }
+
+        /*
+     * El runner actual exige materializar la dimension del array antes de
+     * escribir por indice. Despues, procesarUnaPasada reescribe los datos.
+     */
+    fn:
+        materializarArrays() -> bool {
+            numeros <- [0];
+            numerosFt32 <- [0.0];
+            numerosFt64 <- [0.0];
+            resultados <- [0, 0, 0];
+            resultadosFt64 <- [0.0, 0.0, 0.0];
+            return true;
+        }
+
+        initEstado() -> bool {
+            estado <- [false, false, false];
+            return true;
+        }
+
+        initRuntime() -> bool {
+            metrics <- regionCreate<int>(16);
+            initMetricasForRange();
+
+            resultadoPtr !> p<int> : alloc(32);
+            resultadosRegion <- pRegion(resultadoPtr, 3);
+            return true;
+        }
+
+        initIterTrace() -> bool {
+            iterTrace <- [49, 0, 2450];
+            return true;
+        }
+
+        /*
+     * for-in sobre rango: inicializa 16 slots de metricas.
+     * Slots principales:
+     * 0 checksumArray, 1 checksumRegion, 2 checksumPtr,
+     * 3 hotIterations, 4 syncIterations, 5 ptrDistance, 6 categoria,
+     * 7 whileBreakContinue, 8 doWhile, 9 rangeInclusivo,
+     * 10 classicFor, 11 forInList, 12 sameFor.
+     */
+    fn:
+        initMetricasForRange() -> bool {
+            for metricSlot in 0..16 {
+                metricWrite(metricSlot, 0);
+            }
+            return true;
+        }
+
+        metricRead(metricSlot >> int) -> int {
+            return regionRead(metrics, metricSlot);
+        }
+
+        metricWrite(metricSlot >> int, value >> int) -> bool {
+            regionWrite(metrics, metricSlot, value);
+            return true;
+        }
+
+        metricInc(metricSlot >> int, value >> int) -> bool {
+            metricWrite(metricSlot, metricRead(metricSlot) + value);
+            return true;
+        }
+
+        stateRead(flagSlot >> int) -> bool {
+            return estado[flagSlot];
+        }
+
+        stateWrite(flagSlot >> int, value >> bool) -> bool {
+            estado[flagSlot] <- value;
+            return true;
+        }
+
+        seleccionarResultadoSlot(index >> int) -> bool {
+            resultadoSlot <- pAt(resultadosRegion, index);
+            return true;
+        }
+
+        escribirResultadoPtr(index >> int, value >> int) -> bool {
+            seleccionarResultadoSlot(index);
+            wr(resultadoSlot, value);
+            return true;
+        }
+
+        leerResultadoPtr(index >> int) -> int {
+            seleccionarResultadoSlot(index);
+            return resultadoSlot.read();
+        }
+
+        /*
+     * do-while: limpia la vista runtime al menos una vez.
+     * Es adecuado aqui porque sabemos que hay tres slots de resultado.
+     */
+    fn:
+        limpiarResultadosRuntimeDoWhile() -> bool {
+            i <- 0;
+            metricWrite(8, 0);
+
+            do {
+                regionWrite(resultadosRegion, i, 0);
+                escribirResultadoPtr(i, 0);
+                metricInc(8, 1);
+                i <- i + 1;
+            } while (i < 3);
+
+            return true;
+        }
+
+        /*
+     * same for: repeticion fija, buena para auditorias pequenas.
+     */
+    fn:
+        auditarSameFor() -> bool {
+            metricWrite(12, 0);
+            same for (3) {
+                metricInc(12, 1);
+            }
+            return true;
+        }
+
+        /*
+     * while + break + continue: muestra control manual del cursor.
+     */
+    fn:
+        auditarWhileBreakContinue() -> bool {
+            i <- 0;
+            metricWrite(7, 0);
+
+            while (i < 8) {
+                i <- i + 1;
+                if (i == 2) {
+                    continue;
+                }
+                if (i > 5) {
+                    break;
+                }
+                metricInc(7, i);
+            }
+
+            return metricRead(7) == 13;
+        }
+
+        /*
+     * for-in con rango inclusivo: 0, 1 y 2 producen tres iteraciones.
+     */
+    fn:
+        auditarRangeInclusivo() -> bool {
+            metricWrite(9, 0);
+            for rangeStep in 0 ..= 2 {
+                metricInc(9, 1);
+            }
+            return metricRead(9) == 3;
+        }
+
+        /*
+     * for-in sobre list<int>: suma una traza de resultados esperados.
+     */
+    fn:
+        auditarForInLista() -> bool {
+            metricWrite(11, 0);
+            for item in iterTrace {
+                metricInc(11, item);
+            }
+            return metricRead(11) == 2499;
+        }
+
+        resetResultados() -> bool {
+            resultados[0] <- 0;
+            resultados[1] <- 0;
+            resultados[2] <- 0;
+            resultadosFt64[0] <- 0.0;
+            resultadosFt64[1] <- 0.0;
+            resultadosFt64[2] <- 0.0;
+            return true;
+        }
+
+        /*
+     * while: hot path real. En una sola pasada escribe arrays int/ft32/ft64
+     * y calcula max/min/media, evitando recorridos extra.
+     */
+    fn:
+        procesarUnaPasada() -> bool {
+            i <- 0;
+            valorFt32 !> ft32 : 0.0;
+            valorFt64 <- 0.0;
+            sumaFt32 !> ft32 : 0.0;
+            mediaFt32 !> ft32 : 0.0;
+            metricWrite(3, 0);
+            resetResultados();
+
+            while (i < 50) {
+                numeros[i] <- i;
+                numerosFt32[i] <- valorFt32;
+                numerosFt64[i] <- valorFt64;
+
+                if (i > resultados[0]) {
+                    resultados[0] <- i;
+                }
+
+                if (i < resultados[1]) {
+                    resultados[1] <- i;
+                }
+
+                if (valorFt64 > resultadosFt64[0]) {
+                    resultadosFt64[0] <- valorFt64;
+                }
+
+                if (valorFt64 < resultadosFt64[1]) {
+                    resultadosFt64[1] <- valorFt64;
+                }
+
+                resultados[2] <- resultados[2] + i;
+                sumaFt32 !> ft32 : sumaFt32 + valorFt32;
+                resultadosFt64[2] <- resultadosFt64[2] + valorFt64;
+
+                valorFt32 !> ft32 : valorFt32 + 1.0;
+                valorFt64 <- valorFt64 + 1.0;
+                metricInc(3, 1);
+                i <- i + 1;
+            }
+
+            resultados[2] <- (resultados[2] * 100) / 50;
+            mediaFt32 !> ft32 : sumaFt32 / 50.0;
+            resultadosFt64[2] <- resultadosFt64[2] / 50.0;
+            return true;
+        }
+
+        /*
+     * for clasico: sincroniza array -> region -> puntero y calcula huellas.
+     */
+    fn:
+        sincronizarYVerificarResultados() -> bool {
+            metricWrite(0, 0);
+            metricWrite(1, 0);
+            metricWrite(2, 0);
+            metricWrite(4, 0);
+            metricWrite(10, 0);
+
+            for (i >> int <- 0; i < 3; i += 1) {
+                regionWrite(resultadosRegion, i, resultados[i]);
+                escribirResultadoPtr(i, resultados[i]);
+
+                metricInc(0, resultados[i]);
+                metricInc(1, regionRead(resultadosRegion, i));
+                metricInc(2, leerResultadoPtr(i));
+                metricInc(4, 1);
+                metricInc(10, 1);
+            }
+
+            return true;
+        }
+
+        validarPunteroLayout() -> bool {
+            seleccionarResultadoSlot(2);
+            metricWrite(5, resultadoSlot.diff(resultadoPtr));
+            return metricRead(5) == 2;
+        }
+
+        /*
+     * match numerico: el enum runtime todavia no esta listo para ncc run,
+     * pero match sobre enteros si baja y ejecuta correctamente.
+     */
+    fn:
+        clasificarValidacion() -> bool {
+            match (metricRead(0)) {
+                case 2499 => {
+                    metricWrite(6, 2);
+                }
+                case 0 => {
+                    metricWrite(6, 0);
+                }
+                default => {
+                    metricWrite(6, 1);
+                }
+            }
+            return metricRead(6) == 2;
+        }
+
+        validarMemoriaRuntime() -> bool {
+            guard (resultados[0] == 49) else { return false; }
+            guard (resultados[1] == 0) else { return false; }
+            guard (resultados[2] == 2450) else { return false; }
+            guard (metricRead(0) == 2499) else { return false; }
+            guard (metricRead(1) == metricRead(0)) else { return false; }
+            guard (metricRead(2) == metricRead(0)) else { return false; }
+            guard (regionRead(resultadosRegion, 0) == resultados[0]) else { return false; }
+            guard (leerResultadoPtr(2) == resultados[2]) else { return false; }
+            guard (metricRead(3) == 50) else { return false; }
+            guard (metricRead(4) == 3) else { return false; }
+            guard (validarPunteroLayout()) else { return false; }
+            guard (clasificarValidacion()) else { return false; }
+            guard (metricRead(7) == 13) else { return false; }
+            guard (metricRead(8) == 3) else { return false; }
+            guard (metricRead(9) == 3) else { return false; }
+            guard (metricRead(10) == 3) else { return false; }
+            guard (metricRead(11) == 2499) else { return false; }
+            guard (metricRead(12) == 3) else { return false; }
+            return true;
+        }
+
+        calcularTodo() -> bool {
+            procesarUnaPasada();
+            sincronizarYVerificarResultados();
+
+            guard (auditarWhileBreakContinue()) else { return false; }
+            guard (auditarRangeInclusivo()) else { return false; }
+            guard (auditarForInLista()) else { return false; }
+
+            stateWrite(1, validarMemoriaRuntime());
+            if (!stateRead(1)) {
+                return false;
+            }
+
+            stateWrite(0, true);
+            return true;
+        }
+
+        imprimirCabecera() -> bool {
+            println(colorBold("===== ARRAYS SENIOR BACKEND =====", "cyan"));
+            println("type: ResultadoArray + RuntimeAudit");
+            println("memoria: array + memRegion + ptr + heap + list");
+            println("bucles: while, do-while, for clasico, for-in rango, for-in list, same for");
+            println("");
+            return true;
+        }
+
+        imprimirMuestra() -> bool {
+            println(colorBold("Muestra de posiciones:", "magenta"));
+            println("numeros[0]  = " + renderInt(numeros[0]));
+            println("numeros[25] = " + renderInt(numeros[25]));
+            println("numeros[49] = " + renderInt(numeros[49]));
+            println("");
+            return true;
+        }
+
+        imprimirResultados() -> bool {
+            if (!stateRead(0)) {
+                dev(runtime.RuntimeStateError);
+            }
+
+            imprimirCabecera();
+            imprimirMuestra();
+
+            println(colorBold("Resultados:", "0, 180, 216"));
+            println("maximo     = " + renderInt(resultados[0]));
+            println("minimo     = " + renderInt(resultados[1]));
+            println("media x100 = " + renderInt(resultados[2]));
+            println("media ft32 = " + renderFloat(mediaFt32, 2));
+            println("media ft64 = " + renderFloat(resultadosFt64[2], 2));
+            println("");
+
+            println(colorBold("Runtime audit:", "0, 180, 216"));
+            println("checksum array/region/ptr = " + renderInt(metricRead(0)) + "/" + renderInt(metricRead(1)) + "/" + renderInt(metricRead(2)));
+            println("hot while iterations       = " + renderInt(metricRead(3)));
+            println("sync classic-for           = " + renderInt(metricRead(4)));
+            println("ptr distance               = " + renderInt(metricRead(5)));
+            println("match category             = " + renderInt(metricRead(6)));
+            println("while break/continue audit = " + renderInt(metricRead(7)));
+            println("do-while audit             = " + renderInt(metricRead(8)));
+            println("range inclusive audit      = " + renderInt(metricRead(9)));
+            println("classic-for audit          = " + renderInt(metricRead(10)));
+            println("for-in list audit          = " + renderInt(metricRead(11)));
+            println("same-for audit             = " + renderInt(metricRead(12)));
+            println("validacion runtime         = " + renderBool(stateRead(1)));
+            return true;
+        }
+
+        liberarMemoriaRuntime() -> bool {
+            stateWrite(2, free(resultadoPtr));
+            println(colorBold("heap liberado = " + renderBool(stateRead(2)), "green"));
+            return stateRead(2);
+        }
+
+        run() -> bool {
+            boot();
+            if (!calcularTodo()) {
+                return false;
+            }
+            imprimirResultados();
+            return liberarMemoriaRuntime();
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

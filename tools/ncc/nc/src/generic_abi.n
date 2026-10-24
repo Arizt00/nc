@@ -1,0 +1,949 @@
+use <io:output, render>;
+use <project:parser_ast, diagnostics, intrinsics>;
+
+nccGenericAbi {
+    const:
+        CONTEXT_BYTES >> int <- 144;
+        TRAIT_BYTES >> int <- 16;
+        METHOD_BYTES >> int <- 12;
+        ASSOC_BYTES >> int <- 8;
+        GENERIC_BYTES >> int <- 24;
+        IMPL_BYTES >> int <- 16;
+        ABI_BYTES >> int <- 12;
+
+        C_MATERIAL >> int <- 0;
+        C_TRAITS >> int <- 8;
+        C_METHODS >> int <- 16;
+        C_ASSOC >> int <- 24;
+        C_GENERICS >> int <- 32;
+        C_IMPLS >> int <- 40;
+        C_ABIS >> int <- 48;
+        C_TRAIT_COUNT >> int <- 56;
+        C_METHOD_COUNT >> int <- 60;
+        C_ASSOC_COUNT >> int <- 64;
+        C_GENERIC_COUNT >> int <- 68;
+        C_IMPL_COUNT >> int <- 72;
+        C_ABI_COUNT >> int <- 76;
+        C_GENERIC_PARAMS >> int <- 80;
+        C_CONST_PARAMS >> int <- 84;
+        C_BOUNDS >> int <- 88;
+        C_ASSOC_BINDINGS >> int <- 92;
+        C_METHOD_IMPLS >> int <- 96;
+        C_MONOMORPHS >> int <- 100;
+        C_STATIC_DISPATCH >> int <- 104;
+        C_ASSOC_PROJECTIONS >> int <- 108;
+        C_ABI_FIELDS >> int <- 112;
+        C_ABI_BINDINGS >> int <- 116;
+        C_DYNAMIC_DISPATCH >> int <- 120;
+        C_ERROR >> int <- 124;
+        C_ERROR_TOKEN >> int <- 128;
+        C_FINGERPRINT >> int <- 132;
+
+        R_NAME >> int <- 0;
+        R_PARAMS >> int <- 4;
+        R_AUX >> int <- 8;
+        R_TOKEN >> int <- 12;
+        G_CONSTS >> int <- 8;
+        G_BOUNDS >> int <- 12;
+        G_CONST_MAX >> int <- 16;
+        G_TOKEN >> int <- 20;
+        I_TRAIT >> int <- 0;
+        I_TARGET >> int <- 4;
+        I_METHODS >> int <- 8;
+        I_TOKEN >> int <- 12;
+        A_NAME >> int <- 0;
+        A_MASK >> int <- 4;
+        A_TOKEN >> int <- 8;
+
+        T_IDENTIFIER >> int <- 1;
+        T_NUMBER >> int <- 2;
+        T_STRING >> int <- 3;
+        T_LBRACE >> int <- 5;
+        T_RBRACE >> int <- 6;
+        T_LPAREN >> int <- 7;
+        T_RPAREN >> int <- 8;
+        T_LBRACKET >> int <- 9;
+        T_RBRACKET >> int <- 10;
+        T_COLON >> int <- 13;
+        T_SEMICOLON >> int <- 14;
+        T_COMMA >> int <- 15;
+        T_DOT >> int <- 16;
+        T_ARROW >> int <- 19;
+        T_LESS_DASH >> int <- 24;
+        T_SHIFT2 >> int <- 21;
+        T_SHIFT3 >> int <- 22;
+        T_GREATER >> int <- 26;
+        T_LESS >> int <- 27;
+        T_EQ >> int <- 30;
+        T_PLUS >> int <- 35;
+        AST_ABI_BIND >> int <- 80;
+
+        MODE_NONE >> int <- 0;
+        MODE_TRAIT >> int <- 1;
+        MODE_IMPL >> int <- 2;
+        MODE_FN >> int <- 3;
+
+        ABI_TARGET >> int <- 1;
+        ABI_POINTER >> int <- 2;
+        ABI_STACK_ALIGN >> int <- 4;
+        ABI_STACK_SHADOW >> int <- 8;
+        ABI_STACK_REDZONE >> int <- 16;
+        ABI_ARGS_INT >> int <- 32;
+        ABI_ARGS_FLOAT >> int <- 64;
+        ABI_RETURNS_INT >> int <- 128;
+        ABI_RETURNS_FLOAT >> int <- 256;
+        ABI_PRESERVE >> int <- 512;
+        ABI_CLOBBER >> int <- 1024;
+        ABI_SRET >> int <- 2048;
+        ABI_REQUIRED >> int <- 4095;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            pointer(base >> p<byte>, at >> int) -> p<byte> {
+                return from<byte>(rd<addr>(off(base, at)));
+            }
+
+            putPointer(base >> p<byte>, at >> int, value >> p<byte>) -> void {
+                wr<addr>(off(base, at), adr(value));
+            }
+
+            material(context >> p<byte>) -> p<byte> {
+                return pointer(context, C_MATERIAL);
+            }
+
+            tokenCount(context >> p<byte>) -> int {
+                return parser_ast.nccParserAst.materialTokenCount(material(context));
+            }
+
+            kind(context >> p<byte>, at >> int) -> int {
+                if (at < 0 || at >= tokenCount(context)) return 101;
+                return parser_ast.nccParserAst.materialTokenKind(material(context), at);
+            }
+
+            same(context >> p<byte>, at >> int, value >> str) -> bool {
+                if (at < 0 || at >= tokenCount(context)) return false;
+                return parser_ast.nccParserAst.materialTokenSame(material(context), at, value);
+            }
+
+            hash(context >> p<byte>, at >> int) -> int {
+                return parser_ast.nccParserAst.materialTokenHash(material(context), at);
+            }
+
+            mix(context >> p<byte>, value >> int) -> bool {
+                current >> int <- integer(context, C_FINGERPRINT);
+                next >> int <- (current * 31 + (value < 0 ? -value : value)) % 10000019;
+                putInteger(context, C_FINGERPRINT, next);
+                return true;
+            }
+
+            fail(context >> p<byte>, error >> int, token >> int) -> bool {
+                if (integer(context, C_ERROR) == 0) {
+                    putInteger(context, C_ERROR, error);
+                    putInteger(context, C_ERROR_TOKEN, token);
+                }
+                return false;
+            }
+
+            matching(context >> p<byte>, open >> int, openKind >> int,
+                closeKind >> int) -> int {
+                depth >> int <- 0;
+                at >> int <- open;
+                while (at < tokenCount(context)) {
+                    if (kind(context, at) == openKind) depth += 1;
+                    if (kind(context, at) == closeKind) {
+                        depth -= 1;
+                        if (depth == 0) return at;
+                    }
+                    at += 1;
+                }
+                return -1;
+            }
+
+            genericClose(context >> p<byte>, open >> int) -> int {
+                depth >> int <- 0;
+                at >> int <- open;
+                while (at < tokenCount(context)) {
+                    token >> int <- kind(context, at);
+                    if (token == T_LESS) depth += 1;
+                    else if (token == T_GREATER) depth -= 1;
+                    else if (token == T_SHIFT2) depth -= 2;
+                    else if (token == T_SHIFT3) depth -= 3;
+                    if (depth <= 0 && at > open) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            number(context >> p<byte>, token >> int) -> int {
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(
+                    material(context), token);
+                bytes >> int <- parser_ast.nccParserAst.materialTokenBytes(
+                    material(context), token);
+                value >> int <- 0;
+                at >> int <- 0;
+                while (at < bytes) {
+                    item >> byte <- rd<byte>(off(data, at));
+                    if (item >= 48 && item <= 57) value <- value * 10 + item - 48;
+                    at += 1;
+                }
+                return value;
+            }
+
+            powerOfTwo(value >> int) -> bool {
+                return value > 0 && (value & (value - 1)) == 0;
+            }
+
+            record(base >> p<byte>, bytes >> int, index >> int) -> p<byte> {
+                return off(base, index * bytes);
+            }
+
+            traitAt(context >> p<byte>, nameHash >> int) -> int {
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_TRAITS);
+                while (at < integer(context, C_TRAIT_COUNT)) {
+                    if (integer(record(base, TRAIT_BYTES, at), R_NAME) == nameHash) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            genericAt(context >> p<byte>, nameHash >> int) -> int {
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_GENERICS);
+                while (at < integer(context, C_GENERIC_COUNT)) {
+                    if (integer(record(base, GENERIC_BYTES, at), R_NAME) == nameHash) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            abiAt(context >> p<byte>, nameHash >> int) -> int {
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_ABIS);
+                while (at < integer(context, C_ABI_COUNT)) {
+                    if (integer(record(base, ABI_BYTES, at), A_NAME) == nameHash) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            traitMethod(context >> p<byte>, traitHash >> int, methodHash >> int) -> bool {
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_METHODS);
+                while (at < integer(context, C_METHOD_COUNT)) {
+                    item >> p<byte> <- record(base, METHOD_BYTES, at);
+                    if (integer(item, 0) == traitHash && integer(item, 4) == methodHash) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            traitAssociated(context >> p<byte>, traitHash >> int, assocHash >> int) -> bool {
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_ASSOC);
+                while (at < integer(context, C_ASSOC_COUNT)) {
+                    item >> p<byte> <- record(base, ASSOC_BYTES, at);
+                    if (integer(item, 0) == traitHash && integer(item, 4) == assocHash) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            sectionMode(context >> p<byte>, at >> int) -> int {
+                if (kind(context, at + 1) != T_COLON) return MODE_NONE;
+                if (same(context, at, "trait") || same(context, at, "interface")) return MODE_TRAIT;
+                if (same(context, at, "impl")) return MODE_IMPL;
+                if (same(context, at, "fn")) return MODE_FN;
+                if (same(context, at, "const") || same(context, at, "type") ||
+                    same(context, at, "stc") || same(context, at, "local") ||
+                    same(context, at, "fa")) return MODE_NONE;
+                return -1;
+            }
+
+            genericHeaderClose(context >> p<byte>, nameToken >> int) -> int {
+                guard kind(context, nameToken) == T_IDENTIFIER &&
+                    kind(context, nameToken + 1) == T_LESS else return -1;
+                return genericClose(context, nameToken + 1);
+            }
+
+            genericParamCount(context >> p<byte>, first >> int, end >> int) -> int {
+                if (first >= end) return 0;
+                total >> int <- 1;
+                depth >> int <- 0;
+                at >> int <- first;
+                while (at < end) {
+                    if (kind(context, at) == T_LESS) depth += 1;
+                    else if (kind(context, at) == T_GREATER) depth -= 1;
+                    else if (kind(context, at) == T_COMMA && depth == 0) total += 1;
+                    at += 1;
+                }
+                return total;
+            }
+
+            functionArity(context >> p<byte>, open >> int, close >> int) -> int {
+                if (open + 1 >= close) return 0;
+                total >> int <- 1;
+                depth >> int <- 0;
+                at >> int <- open + 1;
+                while (at < close) {
+                    if (kind(context, at) == T_LPAREN || kind(context, at) == T_LESS ||
+                        kind(context, at) == T_LBRACKET) depth += 1;
+                    else if (kind(context, at) == T_RPAREN || kind(context, at) == T_GREATER ||
+                        kind(context, at) == T_RBRACKET) depth -= 1;
+                    else if (kind(context, at) == T_COMMA && depth == 0) total += 1;
+                    at += 1;
+                }
+                return total;
+            }
+
+            constMaximum(context >> p<byte>, token >> int) -> int {
+                if (same(context, token, "byte") || same(context, token, "u8")) return 255;
+                if (same(context, token, "i8")) return 127;
+                if (same(context, token, "u16")) return 65535;
+                if (same(context, token, "i16")) return 32767;
+                if (same(context, token, "int") || same(context, token, "i32") ||
+                    same(context, token, "u32") || same(context, token, "usize") ||
+                    same(context, token, "u64") || same(context, token, "i64")) return 2147483647;
+                return -1;
+            }
+
+            scanTraitBody(context >> p<byte>, traitHash >> int,
+                open >> int, close >> int) -> bool {
+                depth >> int <- 0;
+                at >> int <- open + 1;
+                while (at < close) {
+                    if (kind(context, at) == T_LBRACE) depth += 1;
+                    else if (kind(context, at) == T_RBRACE) depth -= 1;
+                    if (depth == 0 && same(context, at, "type") &&
+                        kind(context, at + 1) == T_IDENTIFIER &&
+                        kind(context, at + 2) == T_SEMICOLON) {
+                        guard !traitAssociated(context, traitHash, hash(context, at + 1)) else
+                            return fail(context, 4, at + 1);
+                        index >> int <- integer(context, C_ASSOC_COUNT);
+                        item >> p<byte> <- record(pointer(context, C_ASSOC), ASSOC_BYTES, index);
+                        putInteger(item, 0, traitHash);
+                        putInteger(item, 4, hash(context, at + 1));
+                        putInteger(context, C_ASSOC_COUNT, index + 1);
+                    }
+                    methodToken >> int <- same(context, at, "fn") ? at + 1 : at;
+                    if (depth == 0 && kind(context, methodToken) == T_IDENTIFIER &&
+                        !same(context, at - 1, "fn") &&
+                        kind(context, methodToken + 1) == T_LPAREN) {
+                        end >> int <- matching(context, methodToken + 1, T_LPAREN, T_RPAREN);
+                        if (end > methodToken) {
+                            methodHash >> int <- hash(context, methodToken);
+                            guard !traitMethod(context, traitHash, methodHash) else
+                                return fail(context, 4, methodToken);
+                            index >> int <- integer(context, C_METHOD_COUNT);
+                            item >> p<byte> <- record(pointer(context, C_METHODS), METHOD_BYTES, index);
+                            putInteger(item, 0, traitHash);
+                            putInteger(item, 4, methodHash);
+                            putInteger(item, 8, functionArity(context, methodToken + 1, end));
+                            putInteger(context, C_METHOD_COUNT, index + 1);
+                        }
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            addTrait(context >> p<byte>, nameToken >> int, open >> int) -> bool {
+                nameHash >> int <- hash(context, nameToken);
+                guard traitAt(context, nameHash) < 0 else return fail(context, 4, nameToken);
+                close >> int <- matching(context, open, T_LBRACE, T_RBRACE);
+                guard close > open else return fail(context, 4, open);
+                params >> int <- 0;
+                if (kind(context, nameToken + 1) == T_LESS) {
+                    genericEnd >> int <- genericClose(context, nameToken + 1);
+                    params <- genericParamCount(context, nameToken + 2, genericEnd);
+                }
+                index >> int <- integer(context, C_TRAIT_COUNT);
+                item >> p<byte> <- record(pointer(context, C_TRAITS), TRAIT_BYTES, index);
+                putInteger(item, R_NAME, nameHash);
+                putInteger(item, R_PARAMS, params);
+                putInteger(item, R_AUX, 0);
+                putInteger(item, R_TOKEN, nameToken);
+                putInteger(context, C_TRAIT_COUNT, index + 1);
+                mix(context, nameHash); mix(context, params);
+                return scanTraitBody(context, nameHash, open, close);
+            }
+
+            scanTraits(context >> p<byte>) -> bool {
+                mode >> int <- MODE_NONE;
+                braces >> int <- 0;
+                at >> int <- 0;
+                while (at < tokenCount(context) && integer(context, C_ERROR) == 0) {
+                    if (kind(context, at) == T_LBRACE) braces += 1;
+                    else if (kind(context, at) == T_RBRACE) braces -= 1;
+                    if (braces == 1) {
+                        nextMode >> int <- sectionMode(context, at);
+                        if (nextMode >= 0 && kind(context, at + 1) == T_COLON) mode <- nextMode;
+                        if (mode == MODE_TRAIT && kind(context, at) == T_IDENTIFIER) {
+                            genericEnd >> int <- genericHeaderClose(context, at);
+                            open >> int <- genericEnd >= 0 ? genericEnd + 1 : at + 1;
+                            if (kind(context, open) == T_LBRACE) addTrait(context, at, open);
+                        }
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            parameterKnown(params >> p<int>, count >> int, wanted >> int) -> bool {
+                at >> int <- 0;
+                while (at < count) {
+                    if (rd<int>(off(params, at)) == wanted) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            addGeneric(context >> p<byte>, nameToken >> int, close >> int) -> bool {
+                params >> p<int> <- cast<int>(alloc(64 * sizeOf(int)));
+                guard params != null else return fail(context, 1, nameToken);
+                count >> int <- 0;
+                consts >> int <- 0;
+                bounds >> int <- 0;
+                maximum >> int <- 2147483647;
+                at >> int <- nameToken + 2;
+                while (at < close && integer(context, C_ERROR) == 0) {
+                    isConst >> bool <- same(context, at, "const");
+                    if (isConst) at += 1;
+                    guard kind(context, at) == T_IDENTIFIER else {
+                        fail(context, 1, at); break;
+                    }
+                    parameterHash >> int <- hash(context, at);
+                    if (parameterKnown(params, count, parameterHash)) {
+                        fail(context, 1, at); break;
+                    }
+                    wr<int>(off(params, count), parameterHash);
+                    count += 1;
+                    at += 1;
+                    if (isConst) {
+                        consts += 1;
+                        guard kind(context, at) == T_COLON else {
+                            fail(context, 18, at); break;
+                        }
+                        at += 1;
+                        currentMax >> int <- constMaximum(context, at);
+                        if (currentMax < 0) { fail(context, 18, at); break; }
+                        if (currentMax < maximum) maximum <- currentMax;
+                        at += 1;
+                    } else if (kind(context, at) == T_COLON) {
+                        at += 1;
+                        while (at < close) {
+                            boundHash >> int <- hash(context, at);
+                            if (traitAt(context, boundHash) < 0) {
+                                fail(context, 2, at); break;
+                            }
+                            bounds += 1;
+                            genericEnd >> int <- kind(context, at + 1) == T_LESS ?
+                                genericClose(context, at + 1) : -1;
+                            at <- genericEnd >= 0 ? genericEnd + 1 : at + 1;
+                            if (kind(context, at) != T_PLUS) break;
+                            at += 1;
+                        }
+                    }
+                    if (kind(context, at) == T_COMMA) at += 1;
+                }
+                if (integer(context, C_ERROR) == 0) {
+                    index >> int <- integer(context, C_GENERIC_COUNT);
+                    item >> p<byte> <- record(pointer(context, C_GENERICS), GENERIC_BYTES, index);
+                    putInteger(item, R_NAME, hash(context, nameToken));
+                    putInteger(item, R_PARAMS, count);
+                    putInteger(item, G_CONSTS, consts);
+                    putInteger(item, G_BOUNDS, bounds);
+                    putInteger(item, G_CONST_MAX, maximum);
+                    putInteger(item, G_TOKEN, nameToken);
+                    putInteger(context, C_GENERIC_COUNT, index + 1);
+                    putInteger(context, C_GENERIC_PARAMS,
+                        integer(context, C_GENERIC_PARAMS) + count);
+                    putInteger(context, C_CONST_PARAMS,
+                        integer(context, C_CONST_PARAMS) + consts);
+                    putInteger(context, C_BOUNDS, integer(context, C_BOUNDS) + bounds);
+                    mix(context, hash(context, nameToken)); mix(context, count);
+                    mix(context, consts); mix(context, bounds);
+                }
+                free(params);
+                return integer(context, C_ERROR) == 0;
+            }
+
+            scanGenerics(context >> p<byte>) -> bool {
+                mode >> int <- MODE_NONE;
+                braces >> int <- 0;
+                at >> int <- 0;
+                while (at < tokenCount(context) && integer(context, C_ERROR) == 0) {
+                    if (kind(context, at) == T_LBRACE) braces += 1;
+                    else if (kind(context, at) == T_RBRACE) braces -= 1;
+                    if (braces == 1) {
+                        nextMode >> int <- sectionMode(context, at);
+                        if (nextMode >= 0 && kind(context, at + 1) == T_COLON) mode <- nextMode;
+                        if (mode == MODE_FN && kind(context, at) == T_IDENTIFIER &&
+                            kind(context, at + 1) == T_LESS) {
+                            close >> int <- genericClose(context, at + 1);
+                            if (close > at && kind(context, close + 1) == T_LPAREN) {
+                                callClose >> int <- matching(context, close + 1, T_LPAREN, T_RPAREN);
+                                if (callClose > close && kind(context, callClose + 1) == T_ARROW) {
+                                    addGeneric(context, at, close);
+                                    at <- close;
+                                }
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            implContains(context >> p<byte>, open >> int, close >> int,
+                wanted >> int, associated >> bool) -> bool {
+                depth >> int <- 0;
+                at >> int <- open + 1;
+                while (at < close) {
+                    if (kind(context, at) == T_LBRACE) depth += 1;
+                    else if (kind(context, at) == T_RBRACE) depth -= 1;
+                    if (depth == 0) {
+                        if (associated && same(context, at, "type") &&
+                            hash(context, at + 1) == wanted &&
+                            (kind(context, at + 2) == T_EQ || kind(context, at + 2) == T_LESS_DASH)) {
+                            return true;
+                        }
+                        methodToken >> int <- same(context, at, "fn") ? at + 1 : at;
+                        if (!associated && kind(context, methodToken) == T_IDENTIFIER &&
+                            hash(context, methodToken) == wanted &&
+                            kind(context, methodToken + 1) == T_LPAREN) return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            addImpl(context >> p<byte>, traitToken >> int, open >> int,
+                targetToken >> int) -> bool {
+                traitHash >> int <- hash(context, traitToken);
+                targetHash >> int <- hash(context, targetToken);
+                guard traitAt(context, traitHash) >= 0 else return fail(context, 5, traitToken);
+                at >> int <- 0;
+                base >> p<byte> <- pointer(context, C_IMPLS);
+                while (at < integer(context, C_IMPL_COUNT)) {
+                    item >> p<byte> <- record(base, IMPL_BYTES, at);
+                    if (integer(item, I_TRAIT) == traitHash && integer(item, I_TARGET) == targetHash) {
+                        return fail(context, 7, traitToken);
+                    }
+                    at += 1;
+                }
+                close >> int <- matching(context, open, T_LBRACE, T_RBRACE);
+                guard close > open else return fail(context, 5, open);
+                assocAt >> int <- 0;
+                while (assocAt < integer(context, C_ASSOC_COUNT)) {
+                    assoc >> p<byte> <- record(pointer(context, C_ASSOC), ASSOC_BYTES, assocAt);
+                    if (integer(assoc, 0) == traitHash) {
+                        guard implContains(context, open, close, integer(assoc, 4), true) else
+                            return fail(context, 6, traitToken);
+                        putInteger(context, C_ASSOC_BINDINGS,
+                            integer(context, C_ASSOC_BINDINGS) + 1);
+                    }
+                    assocAt += 1;
+                }
+                methodAt >> int <- 0;
+                implemented >> int <- 0;
+                while (methodAt < integer(context, C_METHOD_COUNT)) {
+                    method >> p<byte> <- record(pointer(context, C_METHODS), METHOD_BYTES, methodAt);
+                    if (integer(method, 0) == traitHash) {
+                        guard implContains(context, open, close, integer(method, 4), false) else
+                            return fail(context, 6, traitToken);
+                        implemented += 1;
+                    }
+                    methodAt += 1;
+                }
+                index >> int <- integer(context, C_IMPL_COUNT);
+                item >> p<byte> <- record(base, IMPL_BYTES, index);
+                putInteger(item, I_TRAIT, traitHash);
+                putInteger(item, I_TARGET, targetHash);
+                putInteger(item, I_METHODS, implemented);
+                putInteger(item, I_TOKEN, traitToken);
+                putInteger(context, C_IMPL_COUNT, index + 1);
+                putInteger(context, C_METHOD_IMPLS,
+                    integer(context, C_METHOD_IMPLS) + implemented);
+                mix(context, traitHash); mix(context, targetHash); mix(context, implemented);
+                return true;
+            }
+
+            scanImpls(context >> p<byte>) -> bool {
+                mode >> int <- MODE_NONE;
+                braces >> int <- 0;
+                at >> int <- 0;
+                while (at < tokenCount(context) && integer(context, C_ERROR) == 0) {
+                    if (kind(context, at) == T_LBRACE) braces += 1;
+                    else if (kind(context, at) == T_RBRACE) braces -= 1;
+                    if (braces == 1) {
+                        nextMode >> int <- sectionMode(context, at);
+                        if (nextMode >= 0 && kind(context, at + 1) == T_COLON) mode <- nextMode;
+                        if (mode == MODE_IMPL && kind(context, at) == T_IDENTIFIER) {
+                            genericEnd >> int <- genericHeaderClose(context, at);
+                            afterTrait >> int <- genericEnd >= 0 ? genericEnd + 1 : at + 1;
+                            if (same(context, afterTrait, "for") &&
+                                kind(context, afterTrait + 1) == T_IDENTIFIER) {
+                                targetToken >> int <- afterTrait + 1;
+                                open >> int <- targetToken + 1;
+                                if (kind(context, open) == T_LESS) open <- genericClose(context, open) + 1;
+                                if (kind(context, open) == T_LBRACE) {
+                                    addImpl(context, at, open, targetToken);
+                                }
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            abiField(context >> p<byte>, at >> int) -> int {
+                if (same(context, at, "target")) return ABI_TARGET;
+                if (same(context, at, "pointer") && kind(context, at + 1) == T_DOT &&
+                    same(context, at + 2, "bits")) return ABI_POINTER;
+                if (same(context, at, "stack") && kind(context, at + 1) == T_DOT) {
+                    if (same(context, at + 2, "align")) return ABI_STACK_ALIGN;
+                    if (same(context, at + 2, "shadow")) return ABI_STACK_SHADOW;
+                    if (same(context, at + 2, "redzone")) return ABI_STACK_REDZONE;
+                }
+                if (same(context, at, "args") && kind(context, at + 1) == T_DOT) {
+                    if (same(context, at + 2, "int")) return ABI_ARGS_INT;
+                    if (same(context, at + 2, "float")) return ABI_ARGS_FLOAT;
+                }
+                if (same(context, at, "returns") && kind(context, at + 1) == T_DOT) {
+                    if (same(context, at + 2, "int")) return ABI_RETURNS_INT;
+                    if (same(context, at + 2, "float")) return ABI_RETURNS_FLOAT;
+                }
+                if (same(context, at, "preserve")) return ABI_PRESERVE;
+                if (same(context, at, "clobber")) return ABI_CLOBBER;
+                if (same(context, at, "sret")) return ABI_SRET;
+                return 0;
+            }
+
+            assignmentAt(context >> p<byte>, fieldToken >> int) -> int {
+                at >> int <- fieldToken;
+                while (at < tokenCount(context) && kind(context, at) != T_SEMICOLON &&
+                    kind(context, at) != T_RBRACE) {
+                    if (kind(context, at) == T_LESS_DASH) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            validateRegisterList(context >> p<byte>, open >> int) -> bool {
+                close >> int <- matching(context, open, T_LBRACKET, T_RBRACKET);
+                guard close > open else return fail(context, 17, open);
+                at >> int <- open + 1;
+                while (at < close) {
+                    if (kind(context, at) != T_IDENTIFIER && kind(context, at) != T_COMMA) {
+                        return fail(context, 17, at);
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            addAbi(context >> p<byte>, nameToken >> int, open >> int) -> bool {
+                nameHash >> int <- hash(context, nameToken);
+                guard abiAt(context, nameHash) < 0 else return fail(context, 10, nameToken);
+                close >> int <- matching(context, open, T_LBRACE, T_RBRACE);
+                guard close > open else return fail(context, 8, open);
+                mask >> int <- 0;
+                depth >> int <- 0;
+                at >> int <- open + 1;
+                while (at < close && integer(context, C_ERROR) == 0) {
+                    if (kind(context, at) == T_LBRACE || kind(context, at) == T_LBRACKET) depth += 1;
+                    else if (kind(context, at) == T_RBRACE || kind(context, at) == T_RBRACKET) depth -= 1;
+                    if (depth == 0 && kind(context, at) == T_IDENTIFIER &&
+                        (at == open + 1 || kind(context, at - 1) == T_SEMICOLON)) {
+                        field >> int <- abiField(context, at);
+                        if (field == 0) { fail(context, 9, at); break; }
+                        if ((mask & field) != 0) { fail(context, 10, at); break; }
+                        assign >> int <- assignmentAt(context, at);
+                        if (assign < 0) { fail(context, 9, at); break; }
+                        if (field == ABI_POINTER) {
+                            bits >> int <- number(context, assign + 1);
+                            if (bits != 16 && bits != 32 && bits != 64 && bits != 128) {
+                                fail(context, 12, assign + 1); break;
+                            }
+                        }
+                        if (field == ABI_STACK_ALIGN) {
+                            if (!powerOfTwo(number(context, assign + 1))) {
+                                fail(context, 11, assign + 1); break;
+                            }
+                        }
+                        if (field == ABI_ARGS_INT || field == ABI_ARGS_FLOAT ||
+                            field == ABI_RETURNS_INT || field == ABI_RETURNS_FLOAT ||
+                            field == ABI_PRESERVE || field == ABI_CLOBBER) {
+                            if (kind(context, assign + 1) != T_LBRACKET ||
+                                !validateRegisterList(context, assign + 1)) break;
+                        }
+                        mask <- mask | field;
+                        putInteger(context, C_ABI_FIELDS, integer(context, C_ABI_FIELDS) + 1);
+                        mix(context, field);
+                    }
+                    at += 1;
+                }
+                guard integer(context, C_ERROR) == 0 else return false;
+                guard mask == ABI_REQUIRED else return fail(context, 8, nameToken);
+                index >> int <- integer(context, C_ABI_COUNT);
+                item >> p<byte> <- record(pointer(context, C_ABIS), ABI_BYTES, index);
+                putInteger(item, A_NAME, nameHash);
+                putInteger(item, A_MASK, mask);
+                putInteger(item, A_TOKEN, nameToken);
+                putInteger(context, C_ABI_COUNT, index + 1);
+                mix(context, nameHash); mix(context, mask);
+                return true;
+            }
+
+            scanAbis(context >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < tokenCount(context) && integer(context, C_ERROR) == 0) {
+                    if (kind(context, at) == T_IDENTIFIER && kind(context, at + 1) == T_COLON &&
+                        kind(context, at + 2) == T_COLON && same(context, at + 3, "abi") &&
+                        kind(context, at + 4) == T_LBRACE) {
+                        addAbi(context, at, at + 4);
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(material(context)) && integer(context, C_ERROR) == 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material(context),at) == AST_ABI_BIND) {
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material(context),at);
+                        using >> int <- token + 1;
+                        while (using < tokenCount(context) &&
+                            kind(context, using) != T_SEMICOLON && kind(context,using) != T_RBRACE &&
+                            !same(context, using, "using")) {
+                            using += 1;
+                        }
+                        if (!same(context, using, "using")) {
+                            fail(context, 13, token);
+                        } else if (abiAt(context, hash(context, using + 1)) < 0) {
+                            fail(context, 13, using + 1);
+                        } else {
+                            putInteger(context, C_ABI_BINDINGS,
+                                integer(context, C_ABI_BINDINGS) + 1);
+                            mix(context, hash(context, using + 1));
+                        }
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            scanApplications(context >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < tokenCount(context) && integer(context, C_ERROR) == 0) {
+                    if (kind(context,at) == T_IDENTIFIER && same(context, at, "dyn")) return fail(context, 14, at);
+                    if (kind(context, at) == T_IDENTIFIER && kind(context, at + 1) == T_LESS) {
+                        genericIndex >> int <- genericAt(context, hash(context, at));
+                        if (genericIndex >= 0) {
+                            close >> int <- genericClose(context, at + 1);
+                            if (close > at && kind(context, close + 1) == T_LPAREN) {
+                                callClose >> int <- matching(context, close + 1, T_LPAREN, T_RPAREN);
+                                declaration >> bool <- callClose > close &&
+                                    kind(context, callClose + 1) == T_ARROW;
+                                if (!declaration) {
+                                    item >> p<byte> <- record(pointer(context, C_GENERICS),
+                                        GENERIC_BYTES, genericIndex);
+                                    supplied >> int <- genericParamCount(context, at + 2, close);
+                                    if (supplied != integer(item, R_PARAMS)) return fail(context, 15, at);
+                                    if (integer(item, G_CONSTS) > 0 && kind(context, at + 2) == T_NUMBER &&
+                                        number(context, at + 2) > integer(item, G_CONST_MAX)) {
+                                        return fail(context, 3, at + 2);
+                                    }
+                                    putInteger(context, C_MONOMORPHS,
+                                        integer(context, C_MONOMORPHS) + 1);
+                                    mix(context, hash(context, at)); mix(context, supplied);
+                                }
+                            }
+                        }
+                    } else if (kind(context, at) == T_IDENTIFIER &&
+                        kind(context, at + 1) == T_LPAREN &&
+                        genericAt(context, hash(context, at)) >= 0 &&
+                        !same(context, at - 1, "fn")) {
+                        putInteger(context, C_MONOMORPHS,
+                            integer(context, C_MONOMORPHS) + 1);
+                        mix(context, hash(context, at));
+                    }
+                    if (kind(context, at) == T_IDENTIFIER && kind(context, at + 1) == T_LPAREN &&
+                        !same(context, at - 1, "fn")) {
+                        methodAt >> int <- 0;
+                        while (methodAt < integer(context, C_METHOD_COUNT)) {
+                            method >> p<byte> <- record(pointer(context, C_METHODS),
+                                METHOD_BYTES, methodAt);
+                            if (integer(method, 4) == hash(context, at)) {
+                                putInteger(context, C_STATIC_DISPATCH,
+                                    integer(context, C_STATIC_DISPATCH) + 1);
+                                mix(context, hash(context, at));
+                                methodAt <- integer(context, C_METHOD_COUNT);
+                            }
+                            methodAt += 1;
+                        }
+                    }
+                    if (kind(context, at) == T_DOT && kind(context, at + 1) == T_IDENTIFIER) {
+                        assocAt >> int <- 0;
+                        while (assocAt < integer(context, C_ASSOC_COUNT)) {
+                            assoc >> p<byte> <- record(pointer(context, C_ASSOC), ASSOC_BYTES, assocAt);
+                            if (integer(assoc, 4) == hash(context, at + 1)) {
+                                putInteger(context, C_ASSOC_PROJECTIONS,
+                                    integer(context, C_ASSOC_PROJECTIONS) + 1);
+                                assocAt <- integer(context, C_ASSOC_COUNT);
+                            }
+                            assocAt += 1;
+                        }
+                    }
+                    at += 1;
+                }
+                return integer(context, C_ERROR) == 0;
+            }
+
+            makeContext(materialValue >> p<byte>) -> p<byte> {
+                context >> p<byte> <- cast<byte>(alloc(CONTEXT_BYTES));
+                guard context != null else return null;
+                at >> int <- 0;
+                while (at < CONTEXT_BYTES) { wr<byte>(off(context, at), 0); at += 1; }
+                traits >> p<byte> <- cast<byte>(alloc(128 * TRAIT_BYTES));
+                methods >> p<byte> <- cast<byte>(alloc(512 * METHOD_BYTES));
+                assoc >> p<byte> <- cast<byte>(alloc(512 * ASSOC_BYTES));
+                generics >> p<byte> <- cast<byte>(alloc(256 * GENERIC_BYTES));
+                impls >> p<byte> <- cast<byte>(alloc(256 * IMPL_BYTES));
+                abis >> p<byte> <- cast<byte>(alloc(64 * ABI_BYTES));
+                guard traits != null && methods != null && assoc != null && generics != null &&
+                    impls != null && abis != null else {
+                    free(traits); free(methods); free(assoc); free(generics); free(impls); free(abis);
+                    free(context); return null;
+                }
+                putPointer(context, C_MATERIAL, materialValue);
+                putPointer(context, C_TRAITS, traits);
+                putPointer(context, C_METHODS, methods);
+                putPointer(context, C_ASSOC, assoc);
+                putPointer(context, C_GENERICS, generics);
+                putPointer(context, C_IMPLS, impls);
+                putPointer(context, C_ABIS, abis);
+                putInteger(context, C_ERROR_TOKEN, -1);
+                return context;
+            }
+
+            releaseContext(context >> p<byte>) -> bool {
+                if (context != null) {
+                    free(pointer(context, C_TRAITS));
+                    free(pointer(context, C_METHODS));
+                    free(pointer(context, C_ASSOC));
+                    free(pointer(context, C_GENERICS));
+                    free(pointer(context, C_IMPLS));
+                    free(pointer(context, C_ABIS));
+                    free(context);
+                }
+                return true;
+            }
+
+            scan(context >> p<byte>) -> bool {
+                return scanTraits(context) && scanGenerics(context) && scanImpls(context) &&
+                    scanAbis(context) && scanApplications(context);
+            }
+
+            emitSummary(context >> p<byte>) -> bool {
+                println("{\"schema\":\"nc.bootstrap.sema.generic-trait-abi.v1\",");
+                print("\"traits\":"); print(renderInt(integer(context, C_TRAIT_COUNT)));
+                print(",\"trait_methods\":"); print(renderInt(integer(context, C_METHOD_COUNT)));
+                print(",\"associated_types\":"); print(renderInt(integer(context, C_ASSOC_COUNT)));
+                print(",\"impls\":"); print(renderInt(integer(context, C_IMPL_COUNT)));
+                print(",\"implemented_methods\":"); print(renderInt(integer(context, C_METHOD_IMPLS)));
+                print(",\"associated_bindings\":"); print(renderInt(integer(context, C_ASSOC_BINDINGS)));
+                print(",\"generic_templates\":"); print(renderInt(integer(context, C_GENERIC_COUNT)));
+                print(",\"generic_parameters\":"); print(renderInt(integer(context, C_GENERIC_PARAMS)));
+                print(",\"const_parameters\":"); print(renderInt(integer(context, C_CONST_PARAMS)));
+                print(",\"bounds\":"); print(renderInt(integer(context, C_BOUNDS)));
+                print(",\"monomorphizations\":"); print(renderInt(integer(context, C_MONOMORPHS)));
+                print(",\"static_dispatches\":"); print(renderInt(integer(context, C_STATIC_DISPATCH)));
+                print(",\"associated_projections\":"); print(renderInt(integer(context, C_ASSOC_PROJECTIONS)));
+                print(",\"abi_contracts\":"); print(renderInt(integer(context, C_ABI_COUNT)));
+                print(",\"abi_fields\":"); print(renderInt(integer(context, C_ABI_FIELDS)));
+                print(",\"abi_bindings\":"); print(renderInt(integer(context, C_ABI_BINDINGS)));
+                print(",\"dynamic_dispatches\":"); print(renderInt(integer(context, C_DYNAMIC_DISPATCH)));
+                print(",\"fingerprint\":"); print(renderInt(integer(context, C_FINGERPRINT)));
+                println("}");
+                return true;
+            }
+
+            emitError(context >> p<byte>, path >> str) -> int {
+                token >> int <- integer(context, C_ERROR_TOKEN);
+                line >> int <- parser_ast.nccParserAst.materialTokenLine(material(context), token);
+                column >> int <- parser_ast.nccParserAst.materialTokenColumn(material(context), token);
+                return diagnostics.nccDiagnostics.emitGenericAbi(
+                    integer(context, C_ERROR), line, column, path);
+            }
+
+        public:
+            contains(materialValue >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(materialValue)) {
+                    nodeKind >> int <- parser_ast.nccParserAst.materialNodeKind(materialValue,at);
+                    if (nodeKind == 74) {
+                        callee >> int <- parser_ast.nccParserAst.materialNodeFirstChild(materialValue,at);
+                        token >> int <- parser_ast.nccParserAst.materialNodeFirstToken(materialValue,callee);
+                        rawId >> int <- intrinsics.nccIntrinsics.resolve(
+                            parser_ast.nccParserAst.materialTokenData(materialValue,token),
+                            parser_ast.nccParserAst.materialTokenBytes(materialValue,token));
+                        if (rawId != 0) { at += 1; continue; }
+                    }
+                    if (nodeKind == 72 || nodeKind == 74 || nodeKind == 75 || nodeKind == 76 ||
+                        nodeKind == 78 || nodeKind == AST_ABI_BIND) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            analyzeMaterial(materialValue >> p<byte>, path >> str,
+                json >> bool, quiet >> bool) -> int {
+                context >> p<byte> <- makeContext(materialValue);
+                guard context != null else return 70;
+                scan(context);
+                code >> int <- integer(context, C_ERROR) == 0 ? 0 : emitError(context, path);
+                if (code == 0 && !quiet) emitSummary(context);
+                releaseContext(context);
+                return code;
+            }
+
+            analyzeFile(path >> str, json >> bool, quiet >> bool) -> int {
+                materialValue >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard materialValue != null else return 66;
+                if (parser_ast.nccParserAst.materialLexerError(materialValue) != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitDiagnostic(
+                        parser_ast.nccParserAst.materialLexerError(materialValue),
+                        parser_ast.nccParserAst.materialErrorLine(materialValue),
+                        parser_ast.nccParserAst.materialErrorColumn(materialValue), path);
+                    parser_ast.nccParserAst.closeMaterial(materialValue);
+                    return code;
+                }
+                if (parser_ast.nccParserAst.materialParserError(materialValue) != 0) {
+                    code >> int <- diagnostics.nccDiagnostics.emitParser(
+                        parser_ast.nccParserAst.materialParserError(materialValue),
+                        parser_ast.nccParserAst.materialErrorLine(materialValue),
+                        parser_ast.nccParserAst.materialErrorColumn(materialValue), path);
+                    parser_ast.nccParserAst.closeMaterial(materialValue);
+                    return code;
+                }
+                code >> int <- analyzeMaterial(materialValue, path, json, quiet);
+                parser_ast.nccParserAst.closeMaterial(materialValue);
+                return code;
+            }
+
+            selfTest() -> bool {
+                return ABI_REQUIRED == 4095 && CONTEXT_BYTES >= 136 &&
+                    TRAIT_BYTES == 16 && GENERIC_BYTES == 24 && ABI_BYTES == 12;
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,32 @@
+use <collections:result>;
+use <memory:ptr, map>;
+
+memoryMapFileVariants :: runtime {
+    stc:
+        p >> p<byte>;
+        ok >> bool <- true;
+
+    fn:
+        verify(p >> p<byte>) -> bool {
+            return mapLen(p) == 4096 && rd(p) > 0;
+        }
+
+        run() -> bool {
+            p <- unwrap(mapFile("Cargo.lock", 0, 4096, 1, 2));
+            ok <- ok && verify(p) && unwrap(unmap(p));
+
+            p <- unwrap(mapFileShared("Cargo.lock", 0, 4096, 1));
+            ok <- ok && verify(p) && unwrap(mapSync(p, 1));
+            ok <- ok && unwrap(unmap(p));
+
+            p <- unwrap(mapFilePrivate("Cargo.lock", 0, 4096, 1));
+            ok <- ok && verify(p) && unwrap(unmap(p));
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

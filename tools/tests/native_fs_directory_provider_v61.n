@@ -1,0 +1,20 @@
+use <io:output>;
+use <process:args>;
+use <project:fs_directory_provider>;
+
+nativeFsDirectoryProviderV61 {
+    run() -> int {
+        args >> addr <- argsOpen();
+        guard argsCount(args) == 2 else { argsRelease(args); return 64; }
+        path >> str <- argsAt(args,1);
+        guard !fs_directory_provider.fsDirectoryProvider.provider_fs_exists(path) else { argsRelease(args); return 1; }
+        result >> u64 <- fs_directory_provider.fsDirectoryProvider.provider_dir_createDir(path);
+        guard result == 3 && fs_directory_provider.fsDirectoryProvider.provider_result_isOk(result) &&
+            fs_directory_provider.fsDirectoryProvider.provider_fs_exists(path) else { argsRelease(args); return 2; }
+        failed >> u64 <- fs_directory_provider.fsDirectoryProvider.provider_fs_createDir(path);
+        guard failed == 2 && fs_directory_provider.fsDirectoryProvider.provider_result_isErr(failed) else { argsRelease(args); return 3; }
+        argsRelease(args); println("fs provider ok"); return 162;
+    }
+    ref main ->> run;
+    fa: return true;
+}

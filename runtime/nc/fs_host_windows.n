@@ -1,0 +1,33 @@
+
+fsHost {
+    fn:
+        private:
+            wide(path >> str) -> p<u16> {
+                chars >> int <- osWMultiByteToWideChar(65001,8,adr(path),-1,null,0);
+                if (chars <= 0) return null;
+                text >> p<u16> <- cast<u16>(alloc(chars*2));
+                if (text == null) { osWSetLastError(8); return null; }
+                if (osWMultiByteToWideChar(65001,8,adr(path),-1,adr(text),chars) != chars) {
+                    code >> u32 <- osWGetLastError(); free(text); osWSetLastError(code); return null;
+                }
+                return text;
+            }
+        public:
+            exists(path >> str) -> bool {
+                if (cast<byte>(path) == null) { osWSetLastError(87); return false; }
+                text >> p<u16> <- wide(path); if (text == null) return false;
+                attributes >> u32 <- osWGetFileAttributesW(adr(text));
+                invalid >> u32 <- 0xFFFFFFFF;
+                ok >> bool <- attributes != invalid;
+                code >> u32 <- ok ? 0 : osWGetLastError();
+                free(text); osWSetLastError(code); return ok;
+            }
+            create(path >> str) -> bool {
+                if (cast<byte>(path) == null) { osWSetLastError(87); return false; }
+                text >> p<u16> <- wide(path); if (text == null) return false;
+                ok >> bool <- osWCreateDirectoryW(adr(text),null) != 0;
+                code >> u32 <- ok ? 0 : osWGetLastError();
+                free(text); osWSetLastError(code); return ok;
+            }
+    fa: return true;
+}

@@ -1,0 +1,82 @@
+use <data:json>;
+use <project:release43_common, release43_distribution, release43_toml, release_io, sha256>;
+
+release43Manifest {
+    fn:
+        private:
+            field(object >> int, key >> str) -> str { return release43_common.release43Common.field(object,key); }
+            kind(object >> int, key >> str, expected >> int) -> bool {
+                value >> int <- jsonObjectGet(object,key); good >> bool <- jsonKind(value) == expected; release43_common.release43Common.release(value); return good;
+            }
+            components(value >> int) -> bool {
+                expected >> int <- release43_distribution.release43Distribution.components();
+                same >> bool <- jsonKind(value) == 5 && jsonArrayLen(value) == jsonArrayLen(expected); at >> int <- 0;
+                while (at < jsonArrayLen(expected) && same) {
+                    a >> int <- jsonArrayGet(value,at); b >> int <- jsonArrayGet(expected,at);
+                    same <- jsonKind(a) == 4 && jsonGetString(a) == jsonGetString(b); release43_common.release43Common.release(a); release43_common.release43Common.release(b); at += 1;
+                }
+                release43_common.release43Common.release(expected); return same;
+            }
+        public:
+            inspect(out >> str, build >> bool) -> void {
+                release43_common.release43Common.record("distribution_build_ok",build);
+                model >> int <- release43_common.release43Common.load(out+"/manifests/release-manifest.json");
+                if (model == 0) { release43_common.release43Common.fail("missing or invalid release manifest JSON"); return; }
+                release43_common.release43Common.record("release_manifest_shape",field(model,"schema") == "nc.release.manifest.v1" && field(model,"version") == "2.0.0" && field(model,"state") == "frozen" && kind(model,"channels",6) && kind(model,"packages",5) && kind(model,"components",5) && kind(model,"integrity_bundle",6));
+                release43_common.release43Common.record("release_manifest_semantic_compat",field(model,"min_ncup_version") == "2.0.0" && kind(model,"breaking_notes",5));
+                sums >> int <- jsonNewObject(); lines >> int <- release43_common.release43Common.lines(release43_common.release43Common.text(out+"/integrity/SHA256SUMS")); at >> int <- 0;
+                while (at < jsonArrayLen(lines)) {
+                    line >> str <- strTrim(release43_common.release43Common.stringAt(lines,at));
+                    if (line != "") {
+                        split >> int <- strIndexOf(line,"  ");
+                        if (split < 0) { release43_common.release43Common.fail("invalid SHA256SUMS row"); return; }
+                        name >> str <- strSubstring(line,split+2,strByteLen(line)-split-2);
+                        index >> int <- strByteLen(name)-1; chars >> p<byte> <- cast(name);
+                        while (index >= 0 && rd(off(chars,index)) != 47 && rd(off(chars,index)) != 92) { index -= 1; }
+                        name <- strSubstring(name,index+1,strByteLen(name)-index-1);
+                        release43_common.release43Common.put(sums,name,jsonNewString(strTrim(strSubstring(line,0,split))));
+                    }
+                    at += 1;
+                }
+                release43_common.release43Common.release(lines);
+                channels >> int <- jsonObjectGet(model,"channels"); packages >> int <- jsonObjectGet(model,"packages"); packageMap >> int <- jsonNewObject(); at <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    row >> int <- jsonArrayGet(packages,at); name >> str <- field(row,"artifact");
+                    if (name != "") release43_common.release43Common.put(packageMap,name,row); else release43_common.release43Common.release(row); at += 1;
+                }
+                names >> int <- jsonParse("[\"stable\",\"beta\",\"nightly\"]"); at <- 0;
+                channelOk >> bool <- true; semanticOk >> bool <- true; hashOk >> bool <- true; urlOk >> bool <- true;
+                while (at < 3) {
+                    channel >> str <- release43_common.release43Common.stringAt(names,at); descriptor >> int <- jsonObjectGet(channels,channel); pathValue >> int <- jsonObjectGet(descriptor,"manifest"); path >> str <- field(descriptor,"manifest");
+                    if (jsonKind(pathValue) != 4 || release43_common.release43Common.fileType(out+"/manifests/"+path) != 1) { channelOk <- false; semanticOk <- false; }
+                    else {
+                        data >> int <- release43_toml.release43Toml.parse(release43_common.release43Common.text(out+"/manifests/"+path));
+                        if (data == 0) { release43_common.release43Common.fail("invalid or unsupported TOML: "+path); return; }
+                        entries >> int <- jsonObjectGet(data,"entries"); comp >> int <- jsonObjectGet(data,"components"); items >> int <- jsonObjectGet(comp,"items"); compat >> int <- jsonObjectGet(data,"compatibility"); expectedCount >> int <- jsonObjectGet(descriptor,"entry_count");
+                        channelOk <- channelOk && field(data,"schema") == "nc.release.channel.manifest.v1" && field(data,"version") == "2.0.0" && field(data,"state") == "frozen" && field(data,"channel") == channel && jsonKind(entries) == 5 && jsonArrayLen(entries) > 0 && components(items) && jsonKind(expectedCount) == 3 && jsonGetIntOr(expectedCount,-1) == jsonArrayLen(entries);
+                        semanticOk <- semanticOk && field(data,"min_ncup_version") == "2.0.0" && kind(data,"breaking_notes",5) && field(compat,"min_ncup_version") == "2.0.0" && kind(compat,"breaking_notes",5);
+                        index >> int <- 0;
+                        while (index < jsonArrayLen(entries)) {
+                            row >> int <- jsonArrayGet(entries,index); artifact >> str <- field(row,"artifact"); hash >> str <- field(row,"sha256"); url >> str <- field(row,"url"); target >> str <- field(row,"target"); id >> str <- field(row,"toolchain_id"); values >> int <- jsonObjectGet(row,"components");
+                            if (artifact == "" || hash == "" || url == "" || target == "" || id == "") channelOk <- false;
+                            else {
+                                channelOk <- channelOk && components(values);
+                                if (release43_common.release43Common.fileType(out+"/packages/"+artifact) != 1) hashOk <- false;
+                                else {
+                                    releaseRow >> int <- jsonObjectGet(packageMap,artifact);
+                                    hashOk <- hashOk && release43_common.release43Common.hashFile(out+"/packages/"+artifact) == hash && field(sums,artifact) == hash && jsonKind(releaseRow) == 6 && field(releaseRow,"sha256") == hash;
+                                    urlOk <- urlOk && (strStartsWith(url,"https://") || strStartsWith(url,"http://")); release43_common.release43Common.release(releaseRow);
+                                }
+                            }
+                            release43_common.release43Common.release(values); release43_common.release43Common.release(row); index += 1;
+                        }
+                        release43_common.release43Common.release(entries); release43_common.release43Common.release(comp); release43_common.release43Common.release(items); release43_common.release43Common.release(compat); release43_common.release43Common.release(expectedCount); release43_common.release43Common.release(data);
+                    }
+                    release43_common.release43Common.release(pathValue); release43_common.release43Common.release(descriptor); at += 1;
+                }
+                release43_common.release43Common.record("channel_manifests_shape",channelOk); release43_common.release43Common.record("channel_manifests_semantic_compat",semanticOk);
+                release43_common.release43Common.record("entries_hashes_match_artifacts",hashOk); release43_common.release43Common.record("entries_urls_declared",urlOk);
+                release43_common.release43Common.release(model); release43_common.release43Common.release(channels); release43_common.release43Common.release(packages); release43_common.release43Common.release(packageMap); release43_common.release43Common.release(names); release43_common.release43Common.release(sums);
+            }
+    fa: return true;
+}

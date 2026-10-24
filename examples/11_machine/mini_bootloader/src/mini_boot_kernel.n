@@ -1,0 +1,29 @@
+mini_boot_kernel :: kernel {
+    const:
+        BOOT_MAGIC >> int <- 0x4E43424F;
+        BOOT_VERSION >> int <- 1;
+
+    stc:
+        initialized >> bool <- false;
+
+    fn:
+        contractReady(magic >> int, version >> int) -> bool {
+            return magic == BOOT_MAGIC && version == BOOT_VERSION;
+        }
+
+        kmain() -> bool {
+            serial at 0x3F8;
+            bootState at 0x70000;
+
+            guard interrupt_disable() else return false;
+            port_write8(0x3F8, 0x4E);
+            *32(bootState, BOOT_MAGIC);
+            initialized <- memory_barrier();
+            return initialized;
+        }
+
+    ref main ->> kmain;
+
+    fa:
+        return true;
+}

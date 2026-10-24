@@ -1,0 +1,28 @@
+use <io:output>;
+use <data:json>;
+
+borrowedQueries72 {
+    view(owner >> int, key >> str) -> str {
+        field >> int <- jsonObjectBorrow(owner,key);
+        value >> str <- jsonStringView(field,"");
+        jsonRelease(field);
+        return value;
+    }
+    run() -> int {
+        owner >> int <- jsonNewObject();
+        jsonObjectSet(owner,"caller_unit",jsonNewString("driver"));
+        first >> str <- view(owner,"caller_unit");
+        iteration >> int <- 0;
+        while (iteration < 1000000) {
+            value >> str <- view(owner,"caller_unit");
+            if (value != "driver" || adr(cast<byte>(value)) != adr(cast<byte>(first))) return 1;
+            iteration += 1;
+        }
+        // Views end before their owner; no string release is valid for a view.
+        jsonRelease(owner);
+        println("borrowed-bindings-ok");
+        return 251;
+    }
+    ref main ->> run;
+    fa: return true;
+}

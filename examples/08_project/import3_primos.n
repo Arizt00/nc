@@ -1,0 +1,384 @@
+use <io:output, render, input>;
+
+/*
+ * Ejercicio "Import 3" segun el esquema de la imagen.
+ *
+ * N*  -> instancia que guarda el valor actual de N.
+ * Np  -> saca por pantalla todos los primos hasta N.
+ * C+  -> comprueba si N es positivo, negativo o cero.
+ * PN  -> saca el primo numero N, es decir, el N-esimo primo.
+ * R   -> trabaja con el primo actual: resta N - primo y calcula N % primo.
+ * Z   -> abre dos submodos matematicos:
+ *        1) Euclides: infinitud de primos con array XYZ y z <- E + PNi.
+ *        2) Fermat: pequeno teorema de Fermat y complejo zF <- r + PNi.
+ *
+ * La idea es parecida a C/C++: primero importamos la familia de entrada/salida,
+ * y despues escribimos las llamadas reales en el codigo: readInt, println,
+ * renderInt, etc.
+ */
+import3Primos {
+    stc:
+        n >> int;
+        opcion >> int;
+        i >> int;
+        contador >> int;
+        candidato >> int;
+        primoActual >> int;
+        divisor >> int;
+        esPrimoActual >> bool;
+        limiteEuclides >> int;
+        productoPrimos >> int;
+        numeroEuclides >> int;
+        realComplejo >> int;
+        imaginarioComplejo >> int;
+        moduloCuadrado >> int;
+        subopcionTeorema >> int;
+        baseFermat >> int;
+        exponenteFermat >> int;
+        residuoFermat >> int;
+        potenciaFermat >> int;
+        xyz >> array<int, 18>;
+        indiceXYZ >> int;
+        puntoXYZ >> int;
+
+    fn:
+        boot() -> bool {
+            n <- 0;
+            opcion <- -1;
+            primoActual <- 0;
+            limiteEuclides <- 0;
+            productoPrimos <- 1;
+            numeroEuclides <- 0;
+            realComplejo <- 0;
+            imaginarioComplejo <- 0;
+            moduloCuadrado <- 0;
+            subopcionTeorema <- -1;
+            baseFermat <- 0;
+            exponenteFermat <- 0;
+            residuoFermat <- 0;
+            potenciaFermat <- 1;
+            xyz <- [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            indiceXYZ <- 0;
+            puntoXYZ <- 0;
+            return true;
+        }
+
+        potenciaMod(base >> int, exp >> int, mod >> int) -> int {
+            /*
+             * Potencia modular por acumulacion:
+             * calcula (base ^ exp) % mod sin guardar base^exp completo.
+             * Es la version didactica; en C/C++ optimizado usariamos
+             * exponenciacion rapida binaria para reducir de O(exp) a O(log exp).
+             */
+            potenciaFermat <- 1;
+            contador <- 0;
+
+            while (contador < exp) {
+                potenciaFermat <- (potenciaFermat * base) % mod;
+                contador <- contador + 1;
+            }
+
+            return potenciaFermat;
+        }
+
+        leerN() -> bool {
+            print("Introduce el valor de N: ");
+            n <- readInt();
+            n !> int : dev(runtime.InputParserError);
+            return true;
+        }
+
+        mostrarN() -> bool {
+            println("Valor actual de N = " + renderInt(n));
+            return true;
+        }
+
+        comprobarSigno() -> bool {
+            if (n > 0) {
+                println("C+: N es positivo.");
+                return true;
+            }
+            if (n < 0) {
+                println("C+: N es negativo.");
+                return true;
+            }
+            println("C+: N vale cero.");
+            return true;
+        }
+
+        esPrimo(valor >> int) -> bool {
+            if (valor < 2) {
+                return false;
+            }
+
+            divisor <- 2;
+            while ((divisor * divisor) <= valor) {
+                if ((valor % divisor) == 0) {
+                    return false;
+                }
+                divisor <- divisor + 1;
+            }
+
+            return true;
+        }
+
+        listarPrimosHastaN() -> bool {
+            if (n < 2) {
+                println("Np: no hay primos positivos hasta N.");
+                return true;
+            }
+
+            println("Np: primos desde 2 hasta N:");
+            i <- 2;
+            while (i <= n) {
+                esPrimoActual <- esPrimo(i);
+                if (esPrimoActual) {
+                    println(i);
+                }
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        calcularPrimoNumeroN() -> bool {
+            if (n <= 0) {
+                println("PN: N debe ser positivo para buscar el N-esimo primo.");
+                return false;
+            }
+
+            contador <- 0;
+            candidato <- 1;
+
+            while (contador < n) {
+                candidato <- candidato + 1;
+                if (esPrimo(candidato)) {
+                    contador <- contador + 1;
+                }
+            }
+
+            primoActual <- candidato;
+            println("PN: el primo numero " + renderInt(n) + " es " + renderInt(primoActual));
+            return true;
+        }
+
+        restarPrimoActual() -> bool {
+            if (primoActual == 0) {
+                println("R: primero calcula PN para tener un primo actual.");
+                return false;
+            }
+
+            println("R: N - primoActual = " + renderInt(n - primoActual));
+            println("Resto: N % primoActual = " + renderInt(n % primoActual));
+            return true;
+        }
+
+        indicePuntoXYZ(punto >> int, eje >> int) -> int {
+            /*
+             * Array 3D estilo C/C++ en memoria contigua.
+             *
+             * Cada punto tiene tres coordenadas:
+             * eje 0 -> x: paso del teorema.
+             * eje 1 -> y: primo encontrado.
+             * eje 2 -> z: numero de Euclides acumulado.
+             *
+             * En C seria algo como xyz[punto][eje], o tambien:
+             * xyz[(punto * 3) + eje].
+             */
+            return (punto * 3) + eje;
+        }
+
+        guardarXYZ(punto >> int, x >> int, y >> int, z >> int) -> bool {
+            indiceXYZ <- indicePuntoXYZ(punto, 0);
+            xyz[indiceXYZ] <- x;
+
+            indiceXYZ <- indicePuntoXYZ(punto, 1);
+            xyz[indiceXYZ] <- y;
+
+            indiceXYZ <- indicePuntoXYZ(punto, 2);
+            xyz[indiceXYZ] <- z;
+
+            return true;
+        }
+
+        leerXYZ(punto >> int, eje >> int) -> int {
+            indiceXYZ <- indicePuntoXYZ(punto, eje);
+            return xyz[indiceXYZ];
+        }
+
+        imprimirTablaXYZ() -> bool {
+            println("Array tridimensional XYZ del teorema:");
+            println("x = paso | y = primo | z = producto(primos hasta y) + 1");
+
+            puntoXYZ <- 0;
+            while (puntoXYZ < limiteEuclides) {
+                println(
+                    "xyz[" + renderInt(puntoXYZ) + "] = (" +
+                    "x=" + renderInt(leerXYZ(puntoXYZ, 0)) + ", " +
+                    "y=" + renderInt(leerXYZ(puntoXYZ, 1)) + ", " +
+                    "z=" + renderInt(leerXYZ(puntoXYZ, 2)) + ")"
+                );
+                puntoXYZ <- puntoXYZ + 1;
+            }
+
+            return true;
+        }
+
+        complejoPorInfinitoDePrimos() -> bool {
+            if (n <= 0) {
+                println("Z: N debe ser positivo para aplicar el teorema.");
+                return false;
+            }
+
+            /*
+             * Teorema de Euclides:
+             * si suponemos una lista finita de primos p1, p2, ..., pk,
+             * entonces E <- (p1 * p2 * ... * pk) + 1 no es divisible por
+             * ninguno de esos primos. Por eso siempre puede aparecer un
+             * nuevo primo o un nuevo factor primo.
+             *
+             * Limitamos k a 6 para evitar desbordar int en este ejemplo.
+             */
+            limiteEuclides <- n;
+            if (limiteEuclides > 6) {
+                println("Z: para evitar overflow, uso solo los 6 primeros primos.");
+                limiteEuclides <- 6;
+            }
+
+            productoPrimos <- 1;
+            xyz <- [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            contador <- 0;
+            candidato <- 1;
+
+            while (contador < limiteEuclides) {
+                candidato <- candidato + 1;
+                if (esPrimo(candidato)) {
+                    productoPrimos <- productoPrimos * candidato;
+                    guardarXYZ(contador, contador + 1, candidato, productoPrimos + 1);
+                    contador <- contador + 1;
+                }
+            }
+
+            if (primoActual == 0) {
+                calcularPrimoNumeroN();
+            }
+
+            imprimirTablaXYZ();
+
+            numeroEuclides <- leerXYZ(limiteEuclides - 1, 2);
+            realComplejo <- numeroEuclides;
+            imaginarioComplejo <- primoActual;
+            moduloCuadrado <- (realComplejo * realComplejo) + (imaginarioComplejo * imaginarioComplejo);
+
+            println("Z: Teorema de Euclides aplicado a primos.");
+            println("Producto de los primeros " + renderInt(limiteEuclides) + " primos = " + renderInt(productoPrimos));
+            println("E = producto + 1 = " + renderInt(numeroEuclides));
+            println("Complejo z = E + PN*i = " + renderInt(realComplejo) + " + " + renderInt(imaginarioComplejo) + "i");
+            println("Conjugado de z = " + renderInt(realComplejo) + " - " + renderInt(imaginarioComplejo) + "i");
+            println("|z|^2 = real^2 + imaginario^2 = " + renderInt(moduloCuadrado));
+
+            return true;
+        }
+
+        teoremaFermatComplejo() -> bool {
+            if (n <= 0) {
+                println("Fermat: N debe ser positivo para obtener PN.");
+                return false;
+            }
+
+            if (primoActual == 0) {
+                calcularPrimoNumeroN();
+            }
+
+            println("");
+            println(ColorBold("SUBMODO 6.2: PEQUENO TEOREMA DE FERMAT" , "cyan"));
+            println("Pierre de Fermat: si p es primo y a no es multiplo de p, entonces a^(p-1) % p = 1.");
+            println("Usaremos p = PN = " + renderInt(primoActual));
+            print("Introduce la base a: ");
+            baseFermat <- readInt();
+            baseFermat !> int : dev(runtime.InputParserError);
+
+            if ((baseFermat % primoActual) == 0) {
+                println("Fermat no aplica: a es multiplo de p.");
+                return false;
+            }
+
+            exponenteFermat <- primoActual - 1;
+            residuoFermat <- potenciaMod(baseFermat, exponenteFermat, primoActual);
+            realComplejo <- residuoFermat;
+            imaginarioComplejo <- primoActual;
+            moduloCuadrado <- (realComplejo * realComplejo) + (imaginarioComplejo * imaginarioComplejo);
+
+            println("a^(p-1) % p = " + renderInt(residuoFermat));
+            println("Complejo zF = residuo + PN*i = " + renderInt(realComplejo) + " + " + renderInt(imaginarioComplejo) + "i");
+            println("|zF|^2 = " + renderInt(moduloCuadrado));
+
+            return true;
+        }
+
+        menuTeoremas() -> bool {
+            subopcionTeorema <- -1;
+
+            while (subopcionTeorema != 0) {
+                println("");
+                println(ColorBold("===== SUBMENU 6: TEOREMAS + COMPLEJOS =====" , "yellow"));
+                println("1. Euclides: infinitud de primos con array XYZ");
+                println("2. Fermat: a^(p-1) % p y numero complejo");
+                println(colorBold("0. Volver al menu principal" , "grey"));
+                print("> ");
+
+                subopcionTeorema <- readInt();
+                subopcionTeorema !> int : dev(runtime.InputParserError);
+
+                if (subopcionTeorema == 1) { complejoPorInfinitoDePrimos(); }
+                else if (subopcionTeorema == 2) { teoremaFermatComplejo(); }
+                else if (subopcionTeorema == 0) { println("Volviendo al menu principal."); }
+                else { println("Subopcion no valida."); }
+            }
+
+            return true;
+        }
+
+        menu() -> bool {
+            println("");
+            println("===== MENU N* =====");
+            println("1. Introducir nuevo N");
+            println("2. Ver N actual y signo C+");
+            println("3. Np: mostrar todos los primos hasta N");
+            println("4. PN: sacar el primo numero N");
+            println("5. R: restar/resto usando el primo actual");
+            println("6. Z: submodos de teoremas y complejos");
+            println(colorBold("0. Salir" , "grey"));
+            print("> ");
+            opcion <- readInt();
+            opcion !> int : dev(runtime.InputParserError);
+            return true;
+        }
+
+        ejecutar() -> bool {
+            boot();
+            println(ColorBold("=== IMPORT 3: CLASE N* Y METODOS DE PRIMOS ===" , "green"));
+            leerN();
+
+            while (opcion != 0) {
+                menu();
+
+                if (opcion == 1) { leerN(); }
+                else if (opcion == 2) { mostrarN(); comprobarSigno(); }
+                else if (opcion == 3) { listarPrimosHastaN(); }
+                else if (opcion == 4) { calcularPrimoNumeroN(); }
+                else if (opcion == 5) { restarPrimoActual(); }
+                else if (opcion == 6) { menuTeoremas(); }
+                else if (opcion == 0) { println(colorBold("Fin del ejercicio." , "blue")); }
+                else { println("Opcion no valida."); }
+            }
+
+            return true;
+        }
+
+    ref main ->> ejecutar;
+
+    fa:
+        return true;
+
+}

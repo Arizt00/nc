@@ -1,0 +1,87 @@
+nccWasmBytes {
+    fn:
+        internal:
+            create() -> p<byte> {
+                writer >> p<byte> <- cast<byte>(alloc(24));
+                guard writer != null else return null;
+                data >> p<byte> <- cast<byte>(alloc(256));
+                guard data != null else { free(writer); return null; }
+                wr<addr>(writer, adr(data));
+                wr<int>(off(writer, 8), 0);
+                wr<int>(off(writer, 12), 256);
+                wr<int>(off(writer, 16), 0);
+                return writer;
+            }
+            data(writer >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(writer)); }
+            size(writer >> p<byte>) -> int { return rd<int>(off(writer, 8)); }
+            healthy(writer >> p<byte>) -> bool { return writer != null && rd<int>(off(writer, 16)) == 0; }
+            reject(writer >> p<byte>) -> void { wr<int>(off(writer, 16), 1); }
+            put(writer >> p<byte>, value >> int) -> void {
+                if (!healthy(writer)) return;
+                count >> int <- size(writer);
+                capacity >> int <- rd<int>(off(writer, 12));
+                if (count == capacity) {
+                    if (capacity > 67108864) { reject(writer); return; }
+                    expanded >> p<byte> <- cast<byte>(alloc(capacity * 2));
+                    if (expanded == null) { reject(writer); return; }
+                    cp(expanded, data(writer), count);
+                    free(data(writer));
+                    wr<addr>(writer, adr(expanded));
+                    wr<int>(off(writer, 12), capacity * 2);
+                }
+                bytes >> p<byte> <- data(writer);
+                wr<byte>(off(bytes, count), value);
+                wr<int>(off(writer, 8), count + 1);
+            }
+            uleb(writer >> p<byte>, value >> int) -> void {
+                if (value < 0) { reject(writer); return; }
+                while (value >= 128) { put(writer, (value & 127) | 128); value <- value >>> 7; }
+                put(writer, value);
+            }
+            sleb(writer >> p<byte>, value >> int) -> void {
+                more >> bool <- true;
+                while (more) {
+                    current >> int <- value & 127;
+                    value <- value >> 7;
+                    more <- !((value == 0 && (current & 64) == 0) ||
+                        (value == -1 && (current & 64) != 0));
+                    put(writer, current | (more ? 128 : 0));
+                }
+            }
+            sleb64(writer >> p<byte>, value >> i64) -> void {
+                more >> bool <- true;
+                while (more) {
+                    current >> int <- value & 127;
+                    value <- value >> 7;
+                    more <- !((value == 0 && (current & 64) == 0) ||
+                        (value == -1 && (current & 64) != 0));
+                    put(writer,current | (more ? 128 : 0));
+                }
+            }
+            appendRaw(writer >> p<byte>, source >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) { put(writer, rd<byte>(off(source, at))); at += 1; }
+            }
+            name(writer >> p<byte>, source >> p<byte>, bytes >> int) -> void {
+                uleb(writer, bytes); appendRaw(writer, source, bytes);
+            }
+            literal(writer >> p<byte>, source >> str) -> void {
+                bytes >> p<byte> <- cast<byte>(source);
+                count >> int <- 0;
+                while (rd<byte>(off(bytes, count)) != 0) { count += 1; }
+                name(writer, bytes, count);
+            }
+            append(writer >> p<byte>, other >> p<byte>) -> void {
+                if (!healthy(other)) { reject(writer); return; }
+                appendRaw(writer, data(other), size(other));
+            }
+            section(writer >> p<byte>, id >> int, payload >> p<byte>) -> void {
+                put(writer, id); uleb(writer, size(payload)); append(writer, payload);
+            }
+            clear(writer >> p<byte>) -> void { wr<int>(off(writer, 8), 0); }
+            release(writer >> p<byte>) -> void {
+                if (writer != null) { free(data(writer)); free(writer); }
+            }
+    fa:
+        return true;
+}

@@ -1,0 +1,47 @@
+use <io:output>;
+use <memory:stack>;
+use <process:session>;
+
+rawProcessSession :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            bufferSlot >> p<addr> <- cast(stackAlloc(8, 8));
+            bytesSlot >> p<int> <- cast(stackAlloc(8, 4));
+
+            id >> int <- sessionCurrentId();
+            active >> int <- sessionActiveConsoleId();
+            queried >> bool <- sessionQuery(
+                null,
+                id,
+                4,
+                adr(bufferSlot),
+                adr(bytesSlot)
+            );
+            buffer >> addr <- rd(bufferSlot);
+            bytes >> int <- rd(bytesSlot);
+            released >> bool <- false;
+            if (queried && buffer != null) {
+                released <- sessionFree(buffer);
+            }
+
+            ok >> bool <-
+                id >= 0 &&
+                active >= 0 &&
+                queried &&
+                buffer != null &&
+                bytes >= 4 &&
+                released;
+
+            stackRestore(mark);
+            print("manual nC process session backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

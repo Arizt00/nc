@@ -1,0 +1,70 @@
+use foreign { c };
+use <io:output>;
+use <process:command>;
+ide43Host {
+    foreign:
+        c symbol "access" {
+            abi: C;
+            header: "unistd.h";
+            library: "c";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            sideEffects: filesystemRead;
+            capability: "filesystem.inspect-executable";
+            policy: "ide43-preserve-bash-executable-check";
+            signature: fn(addr, i32) -> i32;
+        }
+        c symbol "waitid" {
+            abi: C;
+            header: "sys/wait.h";
+            library: "c";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            sideEffects: processObservation;
+            capability: "process.wait.own-child";
+            policy: "ide43-observe-before-retained-runtime-reap";
+            signature: fn(i32, i32, addr, i32) -> i32;
+        }
+        c symbol "readlink" {
+            abi: C;
+            header: "unistd.h";
+            library: "c";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            sideEffects: filesystemRead;
+            capability: "filesystem.readlink.owned-temporary-path";
+            policy: "ide43-cleanup-never-follow-links";
+            signature: fn(addr, addr, u64) -> int;
+        }
+    fn:
+        private:
+            narrow(value >> int) -> i32 { return value; }
+        public:
+            executable(path >> str) -> bool { return access(adr(cast<byte>(path)),narrow(1)) == 0; }
+            pythonCode(child >> addr, timeout >> int) -> int {
+                storage >> p<byte> <- cast(alloc(128)); if (storage == null) return -999999;
+                elapsed >> int <- 0;
+                while (elapsed < timeout) {
+                    index >> int <- 0; while (index < 128) { wr(off(storage,index),0); index += 1; }
+                    code >> i32 <- waitid(narrow(1),narrow(commandId(child)),adr(storage),narrow(16777221));
+                    if (code != 0) { free(storage); return -999999; }
+                    numbers >> p<i32> <- cast(storage);
+                    pid >> int <- rd(off(numbers,4));
+                    if (pid != 0) {
+                        reason >> int <- rd(off(numbers,2)); status >> int <- rd(off(numbers,6));
+                        free(storage); return reason == 1 ? status : -status;
+                    }
+                    sleepMs(1); elapsed += 1;
+                }
+                free(storage); return -999999;
+            }
+            link(path >> str) -> bool {
+                buffer >> p<byte> <- cast(alloc(1)); if (buffer == null) return true;
+                count >> int <- readlink(adr(cast<byte>(path)),adr(buffer),1); free(buffer); return count >= 0;
+            }
+    fa: return true;
+}
+

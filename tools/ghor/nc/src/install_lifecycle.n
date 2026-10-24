@@ -1,0 +1,742 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env>;
+use <project:text, package_graph, registry, resolver, transport, artifact, build_pipeline, sha256>;
+
+installLifecycle[@runtime] {
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                bytes >> int <- 0;
+                while (rd(off(value, bytes)) != 0) { bytes += 1; }
+                return bytes;
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            baseName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return cast(off(source, at + 1));
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (text.ghorText.same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            optionWithValue(value >> str) -> bool {
+                return value == "--manifest" || value == "--manifest-path" ||
+                    value == "--path" || value == "--registry" || value == "--token" ||
+                    value == "--version" || value == "--vers" || value == "--root" ||
+                    value == "--profile" || value == "--target" || value == "--cpu" ||
+                    value == "--tune-profile" || value == "--cc" || value == "--linker" ||
+                    value == "--ncc" || value == "--registry-protocol";
+            }
+
+            firstPositional(handle >> addr) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    value >> str <- argsAt(handle, at);
+                    if (optionWithValue(value)) { at += 2; continue; }
+                    if (!starts(value, "-")) return value;
+                    at += 1;
+                }
+                return "";
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                data >> p<byte> <- cast(alloc(required));
+                guard data != null else return "";
+                written >> int <- envGet(name, adr(data), required);
+                if (written < 0) { free(data); return ""; }
+                return cast(data);
+            }
+
+            installRoot(handle >> addr) -> str {
+                selected >> str <- option(handle, "--root");
+                if (selected != "") return selected;
+                selected <- envText("GHOR_HOME");
+                if (selected != "") return selected;
+                selected <- envText("HOME");
+                if (selected == "") selected <- envText("USERPROFILE");
+                return selected == "" ? ".ghor" : join(selected, ".ghor");
+            }
+
+            addDiagnostic(entries >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(entries, item);
+            }
+
+            hasErrors(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(entries, at), "severity"), "") ==
+                        "error") return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                failed >> bool <- hasErrors(jsonObjectGet(model, "diagnostics"));
+                jsonRelease(model);
+                return failed ? 2 : 0;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            removePath(path >> str) -> bool {
+                if (!exists(path)) return true;
+                if (!isDirectory(path)) return delete_file(path);
+                removed >> Result<bool, FsError> <- removeDir(path);
+                return isOk(removed) && !exists(path);
+            }
+
+            copyVerified(source >> str, target >> str) -> bool {
+                expected >> int <- fsSize(source);
+                if (expected < 0 || !ensureDirectory(directory(target))) return false;
+                if (exists(target)) removePath(target);
+                return fsCopy(source, target) == expected && fsSize(target) == expected &&
+                    sha256.sha256.file(source) == sha256.sha256.file(target);
+            }
+
+            selectedManifest(handle >> addr) -> str {
+                selected >> str <- option(handle, "--manifest-path");
+                if (selected == "") selected <- option(handle, "--manifest");
+                if (selected != "") return selected;
+                selected <- option(handle, "--path");
+                if (selected != "") return isDirectory(selected) ? join(selected, "ghor.toml") : selected;
+                return exists("ghor.toml") ? "ghor.toml" : "";
+            }
+
+            packageIdentity(model >> int) -> int {
+                package >> int <- jsonObjectGet(model, "package");
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "name", jsonClone(jsonObjectGet(package, "name")));
+                jsonObjectSet(result, "version", jsonClone(jsonObjectGet(package, "version")));
+                return result;
+            }
+
+            rebase(path >> str, oldRoot >> str, newRoot >> str) -> str {
+                if (!starts(path, oldRoot)) return path;
+                suffix >> str <- strSubstring(path, strByteLen(oldRoot),
+                    strByteLen(path) - strByteLen(oldRoot));
+                result >> str <- newRoot + suffix;
+                strRelease(suffix);
+                return result;
+            }
+
+            addMove(moves >> int, staged >> str, finalPath >> str) -> bool {
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "staged", jsonNewString(staged));
+                jsonObjectSet(entry, "final", jsonNewString(finalPath));
+                jsonObjectSet(entry, "backup", jsonNewString(finalPath + ".ghor-stage1-backup"));
+                jsonObjectSet(entry, "backed", jsonNewBool(false));
+                jsonObjectSet(entry, "moved", jsonNewBool(false));
+                return jsonArrayPush(moves, entry);
+            }
+
+            rollbackMoves(moves >> int) -> void {
+                at >> int <- jsonArrayLen(moves) - 1;
+                while (at >= 0) {
+                    entry >> int <- jsonArrayGet(moves, at);
+                    staged >> str <- jsonGetStringOr(jsonObjectGet(entry, "staged"), "");
+                    finalPath >> str <- jsonGetStringOr(jsonObjectGet(entry, "final"), "");
+                    backup >> str <- jsonGetStringOr(jsonObjectGet(entry, "backup"), "");
+                    if (jsonGetBoolOr(jsonObjectGet(entry, "moved"), false) && exists(finalPath)) {
+                        removePath(staged);
+                        rename_file(finalPath, staged);
+                    }
+                    if (jsonGetBoolOr(jsonObjectGet(entry, "backed"), false) && exists(backup)) {
+                        rename_file(backup, finalPath);
+                    }
+                    at -= 1;
+                }
+            }
+
+            commitMoves(moves >> int, diagnostics >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(moves)) {
+                    entry >> int <- jsonArrayGet(moves, at);
+                    finalPath >> str <- jsonGetStringOr(jsonObjectGet(entry, "final"), "");
+                    backup >> str <- jsonGetStringOr(jsonObjectGet(entry, "backup"), "");
+                    ensureDirectory(directory(finalPath));
+                    removePath(backup);
+                    if (exists(finalPath)) {
+                        if (!rename_file(finalPath, backup)) {
+                            rollbackMoves(moves);
+                            return addDiagnostic(diagnostics, "E_GHOR_INSTALL_TRANSACTION_001",
+                                "existing installed material could not be backed up") && false;
+                        }
+                        jsonObjectSet(entry, "backed", jsonNewBool(true));
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (at < jsonArrayLen(moves)) {
+                    entry >> int <- jsonArrayGet(moves, at);
+                    staged >> str <- jsonGetStringOr(jsonObjectGet(entry, "staged"), "");
+                    finalPath >> str <- jsonGetStringOr(jsonObjectGet(entry, "final"), "");
+                    if (!exists(staged) || !rename_file(staged, finalPath)) {
+                        rollbackMoves(moves);
+                        return addDiagnostic(diagnostics, "E_GHOR_INSTALL_TRANSACTION_001",
+                            "install transaction failed while committing material") && false;
+                    }
+                    jsonObjectSet(entry, "moved", jsonNewBool(true));
+                    at += 1;
+                }
+                at <- 0;
+                while (at < jsonArrayLen(moves)) {
+                    removePath(jsonGetStringOr(
+                        jsonObjectGet(jsonArrayGet(moves, at), "backup"), ""));
+                    at += 1;
+                }
+                return true;
+            }
+
+            canonicalHash(value >> int) -> str {
+                rendered >> str <- jsonStringify(value);
+                hash >> str <- sha256.sha256.bytes(cast(rendered), length(cast(rendered)));
+                strRelease(rendered);
+                return hash;
+            }
+
+            diagnosticsClosed(entries >> int) -> bool {
+                if (entries == 0) return true;
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(entries, at), "severity"), "") ==
+                        "error") return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            validateRegistryManifest(entry >> int, path >> str, diagnostics >> int) -> int {
+                parsed >> int <- jsonParseFile(path);
+                guard parsed != 0 else {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest is not valid JSON");
+                    return 0;
+                }
+                expected >> str <- jsonGetStringOr(
+                    jsonObjectGet(entry, "package_manifest_hash"), "");
+                fileHash >> str <- sha256.sha256.file(path);
+                stableHash >> str <- canonicalHash(parsed);
+                if (expected == "" || (expected != fileHash && expected != stableHash)) {
+                    jsonRelease(parsed);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest SHA-256 does not match its index entry");
+                    return 0;
+                }
+                if (jsonGetStringOr(jsonObjectGet(parsed, "schema"), "") != "ghor.package.v2") {
+                    jsonRelease(parsed);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_MANIFEST_001",
+                        "registry package manifest schema is unsupported");
+                    return 0;
+                }
+                ffi >> int <- jsonObjectGet(parsed, "ffi_link_manifest");
+                status >> str <- jsonGetStringOr(jsonObjectGet(ffi, "status"), "closed");
+                if (ffi == 0 || status != "closed" ||
+                    !diagnosticsClosed(jsonObjectGet(ffi, "diagnostics"))) {
+                    jsonRelease(parsed);
+                    addDiagnostic(diagnostics, "E_GHOR_FFI_MANIFEST_001",
+                        "registry package ffi_link_manifest is missing, open or contains errors");
+                    return 0;
+                }
+                expectedFfi >> str <- jsonGetStringOr(
+                    jsonObjectGet(entry, "ffi_link_manifest_hash"), "");
+                actualFfi >> str <- canonicalHash(ffi);
+                if (expectedFfi != "" && expectedFfi != actualFfi) {
+                    jsonRelease(parsed);
+                    addDiagnostic(diagnostics, "E_GHOR_FFI_MANIFEST_001",
+                        "registry ffi_link_manifest SHA-256 does not match its index entry");
+                    return 0;
+                }
+                validation >> int <- jsonNewObject();
+                jsonObjectSet(validation, "status", jsonNewString("validated"));
+                jsonObjectSet(validation, "package_manifest_hash", jsonNewString(expected));
+                jsonObjectSet(validation, "ffi_link_manifest_hash", jsonNewString(actualFfi));
+                jsonRelease(parsed);
+                return validation;
+            }
+
+            previousReceipt(root >> str, name >> str) -> int {
+                path >> str <- join(join(root, "installed"), name + ".json");
+                return exists(path) ? jsonParseFile(path) : 0;
+            }
+
+            cleanupOwned(previous >> int, current >> int) -> void {
+                if (previous == 0) return;
+                fields >> array<str, 3> <- ["source_dir", "artifact_dir", "cache_path"];
+                at >> int <- 0;
+                while (at < 3) {
+                    field >> str <- fields[at];
+                    oldPath >> str <- jsonGetStringOr(jsonObjectGet(previous, field), "");
+                    newPath >> str <- jsonGetStringOr(jsonObjectGet(current, field), "");
+                    ownedField >> str <- "owns_" + field;
+                    if (oldPath != "" && oldPath != newPath &&
+                        jsonGetBoolOr(jsonObjectGet(previous, ownedField), false)) removePath(oldPath);
+                    at += 1;
+                }
+            }
+
+            writeReceipt(
+                receipt >> int,
+                path >> str,
+                diagnostics >> int
+            ) -> bool {
+                if (!ensureDirectory(directory(path)) || !jsonSaveFile(receipt, path, 2)) {
+                    return addDiagnostic(diagnostics, "E_GHOR_INSTALL_TRANSACTION_001",
+                        "install receipt could not be written") && false;
+                }
+                return true;
+            }
+
+            finishInstall(
+                handle >> addr,
+                sourceKind >> str,
+                manifestPath >> str,
+                sourceDirectory >> str,
+                cachePath >> str,
+                root >> str,
+                transaction >> str,
+                registryReference >> str,
+                validation >> int,
+                diagnostics >> int
+            ) -> int {
+                model >> int <- package_graph.ghorPackageGraph.loadEffective(manifestPath);
+                guard model != 0 else {
+                    addDiagnostic(diagnostics, "E_GHOR_MANIFEST_001",
+                        "installed package manifest cannot be materialized");
+                    return 0;
+                }
+                identity >> int <- packageIdentity(model);
+                name >> str <- jsonGetStringOr(jsonObjectGet(identity, "name"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(identity, "version"), "");
+                if (name == "" || version == "") {
+                    jsonRelease(identity); jsonRelease(model);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001",
+                        "installed package requires a name and version");
+                    return 0;
+                }
+                stagedArtifacts >> str <- join(transaction, "artifacts");
+                build >> int <- build_pipeline.buildPipeline.materializeManifest(
+                    handle, manifestPath, stagedArtifacts, diagnostics);
+                if (build == 0 || hasErrors(diagnostics)) {
+                    jsonRelease(identity); jsonRelease(model);
+                    return 0;
+                }
+                executable >> str <- jsonGetStringOr(jsonObjectGet(build, "executable"), "");
+                if (executable == "" || !exists(executable)) {
+                    jsonRelease(build); jsonRelease(identity); jsonRelease(model);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001",
+                        "native build did not produce an installable executable");
+                    return 0;
+                }
+                windows >> bool <- strEndsWith(executable, ".exe");
+                binaryName >> str <- windows ? name + ".exe" : name;
+                stagedBinary >> str <- join(join(transaction, "bin"), binaryName);
+                if (!copyVerified(executable, stagedBinary)) {
+                    jsonRelease(build); jsonRelease(identity); jsonRelease(model);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_TRANSACTION_001",
+                        "native executable could not be staged");
+                    return 0;
+                }
+                stagedCompat >> str <- windows ? join(join(transaction, "bin"), name) : "";
+                if (windows && !copyVerified(executable, stagedCompat)) {
+                    jsonRelease(build); jsonRelease(identity); jsonRelease(model);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_TRANSACTION_001",
+                        "extensionless compatibility executable could not be staged");
+                    return 0;
+                }
+                packageId >> str <- name + "-" + version;
+                finalArtifacts >> str <- join(join(root, "artifacts"), packageId);
+                finalBinary >> str <- join(join(root, "bin"), binaryName);
+                finalCompat >> str <- windows ? join(join(root, "bin"), name) : "";
+                finalSource >> str <- sourceKind == "registry" ?
+                    join(join(root, "registry-src"), packageId) : sourceDirectory;
+                finalCache >> str <- sourceKind == "registry" ?
+                    join(join(root, "registry-cache"), baseName(cachePath)) : "";
+                receipt >> int <- jsonNewObject();
+                jsonObjectSet(receipt, "schema", jsonNewString("ghor.install.receipt.v2"));
+                jsonObjectSet(receipt, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(receipt, "status", jsonNewString("installed"));
+                jsonObjectSet(receipt, "transaction", jsonNewString("committed"));
+                jsonObjectSet(receipt, "source", jsonNewString(sourceKind));
+                jsonObjectSet(receipt, "package", jsonNewString(name));
+                jsonObjectSet(receipt, "version", jsonNewString(version));
+                jsonObjectSet(receipt, "root", jsonNewString(root));
+                jsonObjectSet(receipt, "manifest", jsonNewString(
+                    sourceKind == "registry" ? join(finalSource, "ghor.toml") : manifestPath));
+                jsonObjectSet(receipt, "binary", jsonNewString(finalBinary));
+                jsonObjectSet(receipt, "compat_binary", finalCompat == "" ?
+                    jsonNewNull() : jsonNewString(finalCompat));
+                jsonObjectSet(receipt, "binary_hash", jsonNewString(sha256.sha256.file(stagedBinary)));
+                jsonObjectSet(receipt, "artifact_dir", jsonNewString(finalArtifacts));
+                jsonObjectSet(receipt, "nm", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "nm"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(receipt, "object", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "object"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(receipt, "build_report", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "artifact"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(receipt, "source_dir", jsonNewString(finalSource));
+                jsonObjectSet(receipt, "cache_path", finalCache == "" ?
+                    jsonNewNull() : jsonNewString(finalCache));
+                jsonObjectSet(receipt, "registry", registryReference == "" ?
+                    jsonNewNull() : jsonNewString(registryReference));
+                jsonObjectSet(receipt, "owns_source_dir", jsonNewBool(sourceKind == "registry"));
+                jsonObjectSet(receipt, "owns_artifact_dir", jsonNewBool(true));
+                jsonObjectSet(receipt, "owns_cache_path", jsonNewBool(sourceKind == "registry"));
+                jsonObjectSet(receipt, "package_manifest_validation",
+                    validation == 0 ? jsonNewNull() : jsonClone(validation));
+                buildReceipt >> int <- jsonClone(build);
+                jsonObjectSet(buildReceipt, "artifact", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "artifact"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(buildReceipt, "executable", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "executable"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(buildReceipt, "nm", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "nm"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(buildReceipt, "object", jsonNewString(rebase(
+                    jsonGetStringOr(jsonObjectGet(build, "object"), ""), stagedArtifacts, finalArtifacts)));
+                jsonObjectSet(receipt, "build", buildReceipt);
+                jsonObjectSet(receipt, "diagnostics", jsonClone(diagnostics));
+                stagedReceipt >> str <- join(join(transaction, "receipt"), name + ".json");
+                if (!writeReceipt(receipt, stagedReceipt, diagnostics)) {
+                    jsonRelease(receipt); jsonRelease(build); jsonRelease(identity); jsonRelease(model);
+                    return 0;
+                }
+                moves >> int <- jsonNewArray();
+                addMove(moves, stagedArtifacts, finalArtifacts);
+                addMove(moves, stagedBinary, finalBinary);
+                if (windows) addMove(moves, stagedCompat, finalCompat);
+                if (sourceKind == "registry") {
+                    addMove(moves, sourceDirectory, finalSource);
+                    addMove(moves, cachePath, finalCache);
+                }
+                finalReceipt >> str <- join(join(root, "installed"), name + ".json");
+                addMove(moves, stagedReceipt, finalReceipt);
+                previous >> int <- previousReceipt(root, name);
+                if (!commitMoves(moves, diagnostics)) {
+                    if (previous != 0) jsonRelease(previous);
+                    jsonRelease(moves); jsonRelease(receipt); jsonRelease(build);
+                    jsonRelease(identity); jsonRelease(model);
+                    return 0;
+                }
+                cleanupOwned(previous, receipt);
+                if (previous != 0) jsonRelease(previous);
+                jsonRelease(moves); jsonRelease(build); jsonRelease(identity); jsonRelease(model);
+                return receipt;
+            }
+
+            installPath(handle >> addr, diagnostics >> int) -> int {
+                manifestPath >> str <- selectedManifest(handle);
+                if (manifestPath == "" || !exists(manifestPath)) {
+                    addDiagnostic(diagnostics, "E_GHOR_MANIFEST_001",
+                        "install path requires a readable ghor.toml");
+                    return 0;
+                }
+                model >> int <- package_graph.ghorPackageGraph.loadEffective(manifestPath);
+                guard model != 0 else return 0;
+                identity >> int <- packageIdentity(model);
+                name >> str <- jsonGetStringOr(jsonObjectGet(identity, "name"), "package");
+                version >> str <- jsonGetStringOr(jsonObjectGet(identity, "version"), "0.0.0");
+                root >> str <- installRoot(handle);
+                transaction >> str <- join(join(root, ".transactions"), name + "-" + version);
+                removePath(transaction);
+                ensureDirectory(transaction);
+                jsonRelease(identity); jsonRelease(model);
+                return finishInstall(handle, "path", manifestPath, directory(manifestPath), "",
+                    root, transaction, "", 0, diagnostics);
+            }
+
+            installRegistry(handle >> addr, diagnostics >> int) -> int {
+                name >> str <- firstPositional(handle);
+                if (name == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001", "install expects <package>");
+                    return 0;
+                }
+                requirement >> str <- option(handle, "--version");
+                if (requirement == "") requirement <- option(handle, "--vers");
+                if (requirement == "") requirement <- "*";
+                selectedRegistry >> str <- registry.registry.reference(handle);
+                if (selectedRegistry == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_001",
+                        "install requires a material registry reference");
+                    return 0;
+                }
+                token >> str <- registry.registry.authToken(handle, selectedRegistry);
+                index >> int <- registry.registry.loadIndex(
+                    handle, selectedRegistry, token, diagnostics);
+                guard index != 0 else return 0;
+                selected >> int <- resolver.resolver.selectPackage(index, name, requirement);
+                jsonRelease(index);
+                if (selected == 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001",
+                        "registry has no compatible non-yanked package version");
+                    return 0;
+                }
+                version >> str <- jsonGetStringOr(jsonObjectGet(selected, "version"), "");
+                archiveRelative >> str <- jsonGetStringOr(jsonObjectGet(selected, "archive"), "");
+                archiveName >> str <- jsonGetStringOr(jsonObjectGet(selected, "archive_name"),
+                    name + "-" + version + ".crate");
+                manifestRelative >> str <- jsonGetStringOr(
+                    jsonObjectGet(selected, "package_manifest"),
+                    jsonGetStringOr(jsonObjectGet(selected, "manifest"), ""));
+                checksum >> str <- jsonGetStringOr(jsonObjectGet(selected, "checksum"), "");
+                materialRoot >> str <- transport.transport.registryRootAuthorized(
+                    handle, selectedRegistry, token, diagnostics);
+                if (version == "" || archiveRelative == "" || manifestRelative == "" ||
+                    checksum == "" || materialRoot == "") {
+                    jsonRelease(selected);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001",
+                        "registry entry has incomplete install material metadata");
+                    return 0;
+                }
+                if (!transport.transport.ensureRegistryFile(handle, selectedRegistry, materialRoot,
+                    archiveRelative, diagnostics) ||
+                    !transport.transport.ensureRegistryFile(handle, selectedRegistry, materialRoot,
+                    manifestRelative, diagnostics)) {
+                    jsonRelease(selected); return 0;
+                }
+                archiveSource >> str <- join(materialRoot, archiveRelative);
+                if (sha256.sha256.file(archiveSource) != checksum) {
+                    jsonRelease(selected);
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_CHECKSUM_001",
+                        "registry archive SHA-256 mismatch");
+                    return 0;
+                }
+                validation >> int <- validateRegistryManifest(
+                    selected, join(materialRoot, manifestRelative), diagnostics);
+                if (validation == 0) { jsonRelease(selected); return 0; }
+                root >> str <- installRoot(handle);
+                transaction >> str <- join(join(root, ".transactions"), name + "-" + version);
+                removePath(transaction); ensureDirectory(transaction);
+                stagedCache >> str <- join(join(transaction, "cache"), archiveName);
+                stagedSource >> str <- join(transaction, "source");
+                if (!copyVerified(archiveSource, stagedCache) ||
+                    !artifact.artifact.extract(stagedCache, name + "-" + version,
+                        stagedSource, diagnostics)) {
+                    removePath(transaction); jsonRelease(validation); jsonRelease(selected);
+                    return 0;
+                }
+                manifestPath >> str <- join(stagedSource, "ghor.toml");
+                installed >> int <- package_graph.ghorPackageGraph.loadEffective(manifestPath);
+                if (installed == 0 || jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(installed, "package"), "name"), "") != name ||
+                    jsonGetStringOr(jsonObjectGet(
+                        jsonObjectGet(installed, "package"), "version"), "") != version) {
+                    if (installed != 0) jsonRelease(installed);
+                    removePath(transaction); jsonRelease(validation); jsonRelease(selected);
+                    addDiagnostic(diagnostics, "E_GHOR_INSTALL_001",
+                        "extracted package identity does not match the selected registry entry");
+                    return 0;
+                }
+                jsonRelease(installed);
+                receipt >> int <- finishInstall(handle, "registry", manifestPath, stagedSource,
+                    stagedCache, root, transaction, selectedRegistry, validation, diagnostics);
+                jsonRelease(validation); jsonRelease(selected);
+                return receipt;
+            }
+
+            executeInstall(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                pathInstall >> bool <- option(handle, "--manifest-path") != "" ||
+                    option(handle, "--manifest") != "" || option(handle, "--path") != "" ||
+                    firstPositional(handle) == "";
+                receipt >> int <- pathInstall ? installPath(handle, diagnostics) :
+                    installRegistry(handle, diagnostics);
+                if (receipt == 0) {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.install.v2"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                jsonObjectSet(receipt, "diagnostics", diagnostics);
+                removePath(join(join(installRoot(handle), ".transactions"),
+                    jsonGetStringOr(jsonObjectGet(receipt, "package"), "") + "-" +
+                    jsonGetStringOr(jsonObjectGet(receipt, "version"), "")));
+                return printModel(receipt);
+            }
+
+            executeUninstall(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                name >> str <- firstPositional(handle);
+                root >> str <- installRoot(handle);
+                if (name == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_UNINSTALL_001",
+                        "uninstall expects <package>");
+                }
+                receiptPath >> str <- join(join(root, "installed"), name + ".json");
+                receipt >> int <- name == "" || !exists(receiptPath) ? 0 : jsonParseFile(receiptPath);
+                if (name != "" && receipt == 0) {
+                    legacy >> str <- join(join(root, "bin"), name);
+                    legacyExe >> str <- legacy + ".exe";
+                    if (exists(legacy)) removePath(legacy);
+                    if (exists(legacyExe)) removePath(legacyExe);
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.uninstall.v2"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString("not_installed"));
+                    jsonObjectSet(report, "package", jsonNewString(name));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                if (receipt == 0) {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.uninstall.v2"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                expectedVersion >> str <- option(handle, "--version");
+                if (expectedVersion != "" && expectedVersion !=
+                    jsonGetStringOr(jsonObjectGet(receipt, "version"), "")) {
+                    addDiagnostic(diagnostics, "E_GHOR_UNINSTALL_001",
+                        "installed package version does not match --version");
+                    jsonRelease(receipt);
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.uninstall.v2"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                transaction >> str <- join(join(root, ".transactions"), name + "-uninstall");
+                removePath(transaction); ensureDirectory(transaction);
+                moves >> int <- jsonNewArray();
+                paths >> array<str, 6> <- [
+                    jsonGetStringOr(jsonObjectGet(receipt, "binary"), ""),
+                    jsonGetStringOr(jsonObjectGet(receipt, "compat_binary"), ""),
+                    jsonGetStringOr(jsonObjectGet(receipt, "artifact_dir"), ""),
+                    jsonGetBoolOr(jsonObjectGet(receipt, "owns_source_dir"), false) ?
+                        jsonGetStringOr(jsonObjectGet(receipt, "source_dir"), "") : "",
+                    jsonGetBoolOr(jsonObjectGet(receipt, "owns_cache_path"), false) ?
+                        jsonGetStringOr(jsonObjectGet(receipt, "cache_path"), "") : "",
+                    receiptPath
+                ];
+                labels >> array<str, 6> <- ["binary", "compat", "artifacts", "source", "cache", "receipt"];
+                at >> int <- 0;
+                while (at < 6) {
+                    path >> str <- paths[at];
+                    if (path != "" && exists(path)) addMove(moves, path,
+                        join(transaction, labels[at] + "-" + baseName(path)));
+                    at += 1;
+                }
+                if (!commitMoves(moves, diagnostics)) {
+                    jsonRelease(moves); jsonRelease(receipt);
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.uninstall.v2"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                removed >> int <- jsonArrayLen(moves);
+                removePath(transaction);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.uninstall.v2"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString("uninstalled"));
+                jsonObjectSet(report, "transaction", jsonNewString("committed"));
+                jsonObjectSet(report, "package", jsonNewString(name));
+                jsonObjectSet(report, "version", jsonClone(jsonObjectGet(receipt, "version")));
+                jsonObjectSet(report, "removed_materials", jsonNewInt(removed));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(moves); jsonRelease(receipt);
+                return printModel(report);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                if (argsCount(handle) <= 1) return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "install" || selected == "uninstall";
+            }
+
+            execute(handle >> addr) -> int {
+                return argsAt(handle, 1) == "install" ?
+                    executeInstall(handle) : executeUninstall(handle);
+            }
+
+            selfTest() -> bool {
+                return starts("install", "inst") && baseName("root/bin/tool") == "tool";
+            }
+
+    fa:
+        return true;
+}

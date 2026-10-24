@@ -1,0 +1,54 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+
+nativeJsonFloatVectors77 {
+    field(row >> int, key >> str) -> str {
+        node >> int <- jsonObjectBorrow(row,key); value >> str <- jsonStringView(node,"");
+        jsonRelease(node); return value;
+    }
+    hex(value >> u64) -> str {
+        out >> p<byte> <- alloc(17); at >> int <- 0;
+        if (out == null) return null;
+        while (at < 16) {
+            nibble >> int <- (value >> ((15-at)*4)) & 15;
+            wr(off(out,at),nibble < 10 ? 48+nibble : 87+nibble); at += 1;
+        }
+        wr(off(out,16),0); return cast<str>(out);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen(); if (argsCount(arguments) != 3) return 64;
+        input >> int <- jsonParseFile(argsAt(arguments,1));
+        if (input == 0) return 65;
+        rows >> int <- jsonObjectBorrow(input,"cases"); output >> int <- jsonNewArray();
+        at >> int <- 0; valid >> bool <- jsonArrayLen(rows) > 0;
+        while (at < jsonArrayLen(rows)) {
+            row >> int <- jsonArrayBorrow(rows,at); expected >> str <- field(row,"bits");
+            node >> int <- jsonParse(field(row,"text"));
+            value >> ft64 <- jsonGetFloat(node); raw >> u64 <- rd<u64>(cast<byte>(&value));
+            observed >> str <- hex(raw); matched >> bool <- node != 0 && observed == expected;
+            stored >> int <- jsonNewFloat(value); text >> str <- "";
+            if (((raw >> 52) & 2047) == 2047) matched <- matched && stored == 0 && jsonErrorCode() == 3;
+            else {
+                text <- jsonStringify(stored); back >> int <- jsonParse(text);
+                again >> ft64 <- jsonGetFloat(back);
+                matched <- matched && stored != 0 && back != 0 && rd<u64>(cast<byte>(&again)) == raw;
+                jsonRelease(back); jsonRelease(stored);
+            }
+            result >> int <- jsonNewObject(); jsonObjectSet(result,"bits",jsonNewString(observed));
+            jsonObjectSet(result,"formatted",jsonNewString(text));
+            jsonObjectSet(result,"passed",jsonNewBool(matched)); jsonArrayPush(output,result);
+            jsonRelease(result); jsonRelease(node); jsonRelease(row);
+            free(cast<byte>(observed)); if (text != "") free(cast<byte>(text));
+            valid <- valid && matched; at += 1;
+        }
+        report >> int <- jsonNewObject(); jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"cases",output); jsonRelease(output);
+        valid <- jsonSaveFile(report,argsAt(arguments,2),0) && valid;
+        jsonRelease(report); jsonRelease(rows); jsonRelease(input); argsRelease(arguments);
+        println(valid ? "native-json-float-vectors-ok" : "native-json-float-vectors-failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

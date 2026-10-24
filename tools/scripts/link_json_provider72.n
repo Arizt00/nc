@@ -1,0 +1,61 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command, env>;
+
+linkJsonProvider72 {
+    text(model >> int, key >> str) -> str {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(field,"");
+        jsonRelease(field);
+        return value;
+    }
+    quote(value >> str) -> str {
+        if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+        return "\""+value+"\"";
+    }
+    invoke(line >> str) -> bool {
+        windows >> bool <- envHas("WINDIR");
+        child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+            windows ? stdOut() : null,windows ? stdErr() : null,0);
+        if (child == null || !commandStarted(child)) return false;
+        waited >> int <- commandWait(child,120000);
+        if (waited != 0) { commandTerminate(child,15); commandWait(child,30000); }
+        valid >> bool <- waited == 0 && commandExitCode(child) == 0;
+        commandRelease(child);
+        return valid;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        model >> int <- jsonParseFile(argsAt(arguments,1));
+        if (model == 0) return 65;
+        mappings >> int <- jsonObjectBorrow(model,"mappings");
+        words >> str <- quote(text(model,"objcopy"));
+        at >> int <- 0;
+        while (at < jsonArrayLen(mappings)) {
+            row >> int <- jsonArrayBorrow(mappings,at);
+            words += " --redefine-sym "+quote(text(row,"from")+"="+text(row,"to"));
+            jsonRelease(row); at += 1;
+        }
+        words += " "+quote(text(model,"object"))+" "+quote(text(model,"published_object"));
+        valid >> bool <- jsonArrayLen(mappings) > 0 && invoke(words);
+        strRelease(words); jsonRelease(mappings);
+        if (!valid) return 66;
+        words <- quote(text(model,"linker"))+" "+text(model,"link_options");
+        objects >> int <- jsonObjectBorrow(model,"objects");
+        at <- 0;
+        while (at < jsonArrayLen(objects)) {
+            item >> int <- jsonArrayBorrow(objects,at);
+            path >> str <- jsonStringView(item,"");
+            valid <- valid && fsSize(path) > 0;
+            words += " "+quote(path);
+            jsonRelease(item); at += 1;
+        }
+        valid <- valid && jsonArrayLen(objects) > 0 && invoke(words) && fsSize(text(model,"image")) > 0;
+        strRelease(words); jsonRelease(objects); jsonRelease(model); argsRelease(arguments);
+        println(valid ? "JSON cursor provider linked from nC" : "JSON cursor provider link failed");
+        return valid ? 0 : 67;
+    }
+    ref main ->> run;
+    fa: return true;
+}

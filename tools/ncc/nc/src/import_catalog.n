@@ -1,0 +1,402 @@
+use <project:parser_ast>;
+
+nccImportCatalog {
+    const:
+        DOMAIN_UNKNOWN >> int <- 0;
+        DOMAIN_CORE >> int <- 1;
+        DOMAIN_ALLOC >> int <- 2;
+        DOMAIN_STOUD >> int <- 3;
+        DOMAIN_AUTH >> int <- 4;
+        DOMAIN_DOM >> int <- 5;
+        DOMAIN_PROJECT >> int <- 6;
+
+        REQ_NONE >> int <- 0;
+        REQ_OUTPUT >> int <- 1;
+        REQ_RENDER >> int <- 2;
+        REQ_INPUT >> int <- 3;
+        REQ_ARGS >> int <- 4;
+        REQ_PARSE >> int <- 5;
+
+    fn:
+        private:
+            same(material >> p<byte>, token >> int, value >> str) -> bool {
+                return parser_ast.nccParserAst.materialTokenSame(material, token, value);
+            }
+
+            coreItem(material >> p<byte>, family >> int, item >> int) -> bool {
+                if (same(material, family, "types")) {
+                    return same(material, item, "types") || same(material, item, "option") ||
+                        same(material, item, "result") || same(material, item, "error");
+                }
+                if (same(material, family, "memory")) {
+                    return same(material, item, "ptr") || same(material, item, "region") ||
+                        same(material, item, "bytes") || same(material, item, "layout") ||
+                        same(material, item, "align") || same(material, item, "endian") ||
+                        same(material, item, "slice") || same(material, item, "span") ||
+                        same(material, item, "addr") || same(material, item, "volatile");
+                }
+                if (same(material, family, "sync")) {
+                    return same(material, item, "atomic") || same(material, item, "fence") ||
+                        same(material, item, "barrier") || same(material, item, "wait") ||
+                        same(material, item, "notify");
+                }
+                return same(material, family, "math") && same(material, item, "core");
+            }
+
+            allocItem(material >> p<byte>, family >> int, item >> int) -> bool {
+                if (same(material, family, "heap")) {
+                    return same(material, item, "alloc") || same(material, item, "heap") ||
+                        same(material, item, "buffer");
+                }
+                if (same(material, family, "collections")) {
+                    return same(material, item, "array") || same(material, item, "vector") ||
+                        same(material, item, "list") || same(material, item, "queue");
+                }
+                return same(material, family, "string") && same(material, item, "string");
+            }
+
+            stoudIoItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "input") || same(material, item, "output") ||
+                    same(material, item, "errorOutput") || same(material, item, "std") ||
+                    same(material, item, "render") || same(material, item, "concat") ||
+                    same(material, item, "flush") || same(material, item, "random") ||
+                    same(material, item, "range") || same(material, item, "int") ||
+                    same(material, item, "float") || same(material, item, "bool") ||
+                    same(material, item, "seed") || same(material, item, "entropy") ||
+                    same(material, item, "uuid") || same(material, item, "fs") ||
+                    same(material, item, "fsread") || same(material, item, "fread_lines") ||
+                    same(material, item, "fswrite") || same(material, item, "fsappend") ||
+                    same(material, item, "fsync") || same(material, item, "exists") ||
+                    same(material, item, "deleteFile") || same(material, item, "delete_file") ||
+                    same(material, item, "copyFile") || same(material, item, "createDir") ||
+                    same(material, item, "removeDir") || same(material, item, "listDir") ||
+                    same(material, item, "metadata") || same(material, item, "permissions") ||
+                    same(material, item, "setReadonly") || same(material, item, "renamePath") ||
+                    same(material, item, "rename_file") || same(material, item, "movePath") ||
+                    same(material, item, "absolutePath") || same(material, item, "officialPath") ||
+                    same(material, item, "lockFile") || same(material, item, "unlockFile") ||
+                    same(material, item, "readBytes") || same(material, item, "readBytesInto") ||
+                    same(material, item, "writeBytes");
+            }
+
+            stoudMemoryItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "ptr") || same(material, item, "region") ||
+                    same(material, item, "stack") || same(material, item, "heap") ||
+                    same(material, item, "map") || same(material, item, "alloc") ||
+                    same(material, item, "buffer") || same(material, item, "bytes") ||
+                    same(material, item, "layout") || same(material, item, "align") ||
+                    same(material, item, "endian") || same(material, item, "slice") ||
+                    same(material, item, "span");
+            }
+
+            stoudCollectionsItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "array") || same(material, item, "list") ||
+                    same(material, item, "queue") || same(material, item, "vector") ||
+                    same(material, item, "slice") || same(material, item, "span") ||
+                    same(material, item, "option") || same(material, item, "result") ||
+                    same(material, item, "error");
+            }
+
+            stoudMathItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "core") || same(material, item, "algebra") ||
+                    same(material, item, "trig") || same(material, item, "geometry") ||
+                    same(material, item, "vector") || same(material, item, "matrix") ||
+                    same(material, item, "tensor") || same(material, item, "stats") ||
+                    same(material, item, "prob") || same(material, item, "calc") ||
+                    same(material, item, "numeric") || same(material, item, "complex") ||
+                    same(material, item, "discrete") || same(material, item, "sign");
+            }
+
+            stoudFsItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "fs") || same(material, item, "read") ||
+                    same(material, item, "write") || same(material, item, "append") ||
+                    same(material, item, "sync") || same(material, item, "exists") ||
+                    same(material, item, "delete") || same(material, item, "copy") ||
+                    same(material, item, "mkdir") || same(material, item, "rmdir") ||
+                    same(material, item, "list") || same(material, item, "metadata") ||
+                    same(material, item, "permissions") || same(material, item, "path") ||
+                    same(material, item, "dir") || same(material, item, "file") ||
+                    same(material, item, "stream");
+            }
+
+            stoudProcessItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "process") || same(material, item, "args") ||
+                    same(material, item, "env") || same(material, item, "exit") ||
+                    same(material, item, "session") || same(material, item, "command") ||
+                    same(material, item, "user") || same(material, item, "temp") ||
+                    same(material, item, "service") || same(material, item, "signal") ||
+                    same(material, item, "spawn") || same(material, item, "wait") ||
+                    same(material, item, "kill") || same(material, item, "stdio") ||
+                    same(material, item, "status");
+            }
+
+            stoudTextItem(material >> p<byte>, item >> int) -> bool {
+                return same(material, item, "text") || same(material, item, "string") ||
+                    same(material, item, "unicode") || same(material, item, "format") ||
+                    same(material, item, "parse") || same(material, item, "convert") ||
+                    same(material, item, "width") || same(material, item, "escape") ||
+                    same(material, item, "pad") || same(material, item, "wrap") ||
+                    same(material, item, "truncate");
+            }
+
+            stoudItem(material >> p<byte>, family >> int, item >> int) -> bool {
+                if (same(material, family, "io")) return stoudIoItem(material, item);
+                if (same(material, family, "memory")) return stoudMemoryItem(material, item);
+                if (same(material, family, "collections")) return stoudCollectionsItem(material, item);
+                if (same(material, family, "data")) return same(material, item, "json");
+                if (same(material, family, "math")) return stoudMathItem(material, item);
+                if (same(material, family, "time")) {
+                    return same(material, item, "clock") || same(material, item, "time") ||
+                        same(material, item, "timer") || same(material, item, "sleep");
+                }
+                if (same(material, family, "mobile")) {
+                    return same(material, item, "telephony") || same(material, item, "tts_engine") ||
+                        same(material, item, "network") || same(material, item, "permissions");
+                }
+                if (same(material, family, "network")) {
+                    return same(material, item, "network") || same(material, item, "server") ||
+                        same(material, item, "client") || same(material, item, "send_bytes") ||
+                        same(material, item, "receive_bytes") || same(material, item, "server_open") ||
+                        same(material, item, "isWiFiConnected");
+                }
+                if (same(material, family, "net")) {
+                    return same(material, item, "net") || same(material, item, "socket") ||
+                        same(material, item, "tcp") || same(material, item, "udp") ||
+                        same(material, item, "http") || same(material, item, "dns") ||
+                        same(material, item, "tls");
+                }
+                if (same(material, family, "sys")) {
+                    return same(material, item, "permissions") ||
+                        same(material, item, "get_current_time") || same(material, item, "cpu_load") ||
+                        same(material, item, "registry_write") ||
+                        same(material, item, "registry_read") || same(material, item, "sleep");
+                }
+                if (same(material, family, "terminal")) {
+                    return same(material, item, "terminal") || same(material, item, "clear") ||
+                        same(material, item, "moveCursor") || same(material, item, "hideCursor") ||
+                        same(material, item, "showCursor") || same(material, item, "enterRawMode") ||
+                        same(material, item, "exitRawMode") ||
+                        same(material, item, "readKeyNonBlocking");
+                }
+                if (same(material, family, "ui")) {
+                    return same(material, item, "window") || same(material, item, "canvas") ||
+                        same(material, item, "input");
+                }
+                if (same(material, family, "os")) {
+                    return same(material, item, "os") || same(material, item, "platform") ||
+                        same(material, item, "openUri") || same(material, item, "media") ||
+                        same(material, item, "mediaNext") || same(material, item, "mediaPlay") ||
+                        same(material, item, "mediaPause") || same(material, item, "mediaPrevious");
+                }
+                if (same(material, family, "fs") || same(material, family, "filesystem")) {
+                    return stoudFsItem(material, item);
+                }
+                if (same(material, family, "process")) return stoudProcessItem(material, item);
+                if (same(material, family, "thread")) {
+                    return same(material, item, "thread") || same(material, item, "spawn") ||
+                        same(material, item, "join") || same(material, item, "sleep") ||
+                        same(material, item, "local") || same(material, item, "sync") ||
+                        same(material, item, "lock") || same(material, item, "atomic") ||
+                        same(material, item, "channel");
+                }
+                if (same(material, family, "text")) return stoudTextItem(material, item);
+                if (same(material, family, "task")) {
+                    return same(material, item, "task") || same(material, item, "thread") ||
+                        same(material, item, "async") || same(material, item, "scheduler") ||
+                        same(material, item, "cancel") || same(material, item, "event");
+                }
+                if (same(material, family, "sync")) {
+                    return same(material, item, "sync") || same(material, item, "lock") ||
+                        same(material, item, "atomic") || same(material, item, "channel");
+                }
+                if (same(material, family, "audit")) {
+                    return same(material, item, "debug") || same(material, item, "diagnostic") ||
+                        same(material, item, "log") || same(material, item, "trace") ||
+                        same(material, item, "status") || same(material, item, "assert") ||
+                        same(material, item, "validate") || same(material, item, "profile") ||
+                        same(material, item, "bridge");
+                }
+                return false;
+            }
+
+            authItem(material >> p<byte>, family >> int, item >> int) -> bool {
+                if (same(material, family, "system")) {
+                    return same(material, item, "file") || same(material, item, "dir") ||
+                        same(material, item, "path") || same(material, item, "env") ||
+                        same(material, item, "process") || same(material, item, "thread") ||
+                        same(material, item, "permission") || same(material, item, "service") ||
+                        same(material, item, "signal") || same(material, item, "session") ||
+                        same(material, item, "media") || same(material, item, "os");
+                }
+                if (same(material, family, "security")) {
+                    return same(material, item, "policy") || same(material, item, "capability") ||
+                        same(material, item, "sandbox") || same(material, item, "audit");
+                }
+                return same(material, family, "resource") &&
+                    (same(material, item, "resource") || same(material, item, "handle") ||
+                    same(material, item, "session"));
+            }
+
+            domItem(material >> p<byte>, family >> int, item >> int) -> bool {
+                if (same(material, family, "compiler")) {
+                    return same(material, item, "parse") || same(material, item, "ast") ||
+                        same(material, item, "sema") || same(material, item, "lowering") ||
+                        same(material, item, "diagnostics") || same(material, item, "report") ||
+                        same(material, item, "manifest");
+                }
+                if (same(material, family, "high")) {
+                    return same(material, item, "typeinfo") || same(material, item, "metadata") ||
+                        same(material, item, "consteval") || same(material, item, "comptime") ||
+                        same(material, item, "macros");
+                }
+                if (same(material, family, "inspect")) {
+                    return same(material, item, "site") || same(material, item, "metadata") ||
+                        same(material, item, "trace") || same(material, item, "report") ||
+                        same(material, item, "evidence");
+                }
+                if (same(material, family, "ai")) {
+                    return same(material, item, "model") || same(material, item, "agent") ||
+                        same(material, item, "memory") || same(material, item, "policy") ||
+                        same(material, item, "eval");
+                }
+                return same(material, family, "tooling") &&
+                    (same(material, item, "fmt") || same(material, item, "lint") ||
+                    same(material, item, "lsp") || same(material, item, "package") ||
+                    same(material, item, "build"));
+            }
+
+        public:
+            defaultDomain() -> int { return DOMAIN_STOUD; }
+
+            coreDomain() -> int { return DOMAIN_CORE; }
+            allocDomain() -> int { return DOMAIN_ALLOC; }
+            authDomain() -> int { return DOMAIN_AUTH; }
+            domDomain() -> int { return DOMAIN_DOM; }
+
+            projectDomain() -> int { return DOMAIN_PROJECT; }
+
+            classifyDomain(material >> p<byte>, token >> int) -> int {
+                if (same(material, token, "core")) return DOMAIN_CORE;
+                if (same(material, token, "alloc")) return DOMAIN_ALLOC;
+                if (same(material, token, "stoud")) return DOMAIN_STOUD;
+                if (same(material, token, "auth")) return DOMAIN_AUTH;
+                if (same(material, token, "dom")) return DOMAIN_DOM;
+                if (same(material, token, "project")) return DOMAIN_PROJECT;
+                return DOMAIN_UNKNOWN;
+            }
+
+            knownFamily(material >> p<byte>, domain >> int, family >> int) -> bool {
+                if (domain == DOMAIN_CORE) {
+                    return same(material, family, "types") || same(material, family, "memory") ||
+                        same(material, family, "sync") || same(material, family, "math");
+                }
+                if (domain == DOMAIN_ALLOC) {
+                    return same(material, family, "heap") ||
+                        same(material, family, "collections") || same(material, family, "string");
+                }
+                if (domain == DOMAIN_STOUD) {
+                    return same(material, family, "io") || same(material, family, "memory") ||
+                        same(material, family, "collections") || same(material, family, "data") ||
+                        same(material, family, "math") || same(material, family, "time") ||
+                        same(material, family, "mobile") || same(material, family, "network") ||
+                        same(material, family, "net") || same(material, family, "sys") ||
+                        same(material, family, "terminal") || same(material, family, "ui") ||
+                        same(material, family, "os") || same(material, family, "fs") ||
+                        same(material, family, "filesystem") || same(material, family, "process") ||
+                        same(material, family, "thread") || same(material, family, "text") ||
+                        same(material, family, "task") || same(material, family, "sync") ||
+                        same(material, family, "audit");
+                }
+                if (domain == DOMAIN_AUTH) {
+                    return same(material, family, "system") ||
+                        same(material, family, "security") || same(material, family, "resource");
+                }
+                if (domain == DOMAIN_DOM) {
+                    return same(material, family, "compiler") || same(material, family, "high") ||
+                        same(material, family, "inspect") || same(material, family, "ai") ||
+                        same(material, family, "tooling");
+                }
+                return domain == DOMAIN_PROJECT;
+            }
+
+            knownItem(material >> p<byte>, domain >> int, family >> int, item >> int) -> bool {
+                if (domain == DOMAIN_PROJECT) return true;
+                if (domain == DOMAIN_CORE) return coreItem(material, family, item);
+                if (domain == DOMAIN_ALLOC) return allocItem(material, family, item);
+                if (domain == DOMAIN_STOUD) return stoudItem(material, family, item);
+                if (domain == DOMAIN_AUTH) return authItem(material, family, item);
+                if (domain == DOMAIN_DOM) return domItem(material, family, item);
+                return false;
+            }
+
+            runtimeRequirement(material >> p<byte>, token >> int) -> int {
+                if (same(material, token, "print") || same(material, token, "println")) {
+                    return REQ_OUTPUT;
+                }
+                if (same(material, token, "renderInt") || same(material, token, "renderBool") ||
+                    same(material, token, "renderStr") || same(material, token, "renderChar") ||
+                    same(material, token, "renderFt32") || same(material, token, "renderFt64") ||
+                    same(material, token, "color") || same(material, token, "colorBold")) {
+                    return REQ_RENDER;
+                }
+                if (same(material, token, "readInt") || same(material, token, "readStr") ||
+                    same(material, token, "readLine")) return REQ_INPUT;
+                if (same(material, token, "argsOpen") || same(material, token, "argsCount") ||
+                    same(material, token, "argsAt") || same(material, token, "argsError") ||
+                    same(material, token, "argsRelease")) return REQ_ARGS;
+                if (same(material, token, "parseInt") || same(material, token, "parseBool")) {
+                    return REQ_PARSE;
+                }
+                return REQ_NONE;
+            }
+
+            importSatisfies(material >> p<byte>, requirement >> int,
+                family >> int, item >> int) -> bool {
+                if (requirement == REQ_OUTPUT) {
+                    return same(material, family, "io") && same(material, item, "output");
+                }
+                if (requirement == REQ_RENDER) {
+                    return same(material, family, "io") && same(material, item, "render");
+                }
+                if (requirement == REQ_INPUT) {
+                    return same(material, family, "io") && same(material, item, "input");
+                }
+                if (requirement == REQ_ARGS) {
+                    return same(material, family, "process") && same(material, item, "args");
+                }
+                if (requirement == REQ_PARSE) {
+                    return same(material, family, "text") && same(material, item, "parse");
+                }
+                return false;
+            }
+
+            runtimeArity(material >> p<byte>, token >> int) -> int {
+                if (same(material, token, "print") || same(material, token, "println") ||
+                    same(material, token, "renderInt") || same(material, token, "renderBool") ||
+                    same(material, token, "renderStr") || same(material, token, "renderChar") ||
+                    same(material, token, "renderFt32") || same(material, token, "renderFt64") ||
+                    same(material, token, "argsCount") || same(material, token, "argsError") ||
+                    same(material, token, "argsRelease") || same(material, token, "parseInt") ||
+                    same(material, token, "parseBool")) return 1;
+                if (same(material, token, "color") || same(material, token, "colorBold") ||
+                    same(material, token, "argsAt")) return 2;
+                return 0;
+            }
+
+            runtimeReturnClass(material >> p<byte>, token >> int) -> int {
+                if (same(material, token, "print") || same(material, token, "println")) return 1;
+                if (same(material, token, "renderInt") || same(material, token, "renderBool") ||
+                    same(material, token, "renderStr") || same(material, token, "renderChar") ||
+                    same(material, token, "renderFt32") || same(material, token, "renderFt64") ||
+                    same(material, token, "color") || same(material, token, "colorBold") ||
+                    same(material, token, "readStr") || same(material, token, "readLine") ||
+                    same(material, token, "argsAt")) return 5;
+                if (same(material, token, "argsRelease") || same(material, token, "parseBool")) {
+                    return 2;
+                }
+                return 3;
+            }
+
+    fa:
+        return true;
+}

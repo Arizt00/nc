@@ -1,0 +1,181 @@
+use <project:source, sha256, machine_authority>;
+
+nccTargetInit {
+    const:
+        MAGIC >> str <- "NCI1\n";
+        SCHEMA >> str <- "schema=nc.compiler.target-init.v1\n";
+        HASH_BYTES >> int <- 64;
+
+    type:
+        TargetInit {
+            public:
+                headerBytes >> int;
+                payloadBytes >> int;
+                target >> str;
+                entry >> str;
+                payloadHash >> str;
+        }
+
+    stc:
+        verified >> u64 <- 0;
+        rejected >> u64 <- 0;
+
+    local:
+        lastHeaderBytes >> int <- 0;
+        lastPayloadBytes >> int <- 0;
+
+    fn:
+        private:
+            find(data >> p<byte>, bytes >> int, needle >> str) -> int {
+                needleBytes >> int <- strByteLen(needle);
+                guard data != null && needleBytes > 0 && bytes >= needleBytes else return -1;
+                at >> int <- 0;
+                while (at + needleBytes <= bytes) {
+                    inner >> int <- 0;
+                    while (inner < needleBytes &&
+                        rd<byte>(off(data, at + inner)) ==
+                        rd<byte>(off(cast<byte>(needle), inner))) {
+                        inner += 1;
+                    }
+                    if (inner == needleBytes) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            lineEquals(data >> p<byte>, headerBytes >> int, key >> str, value >> str) -> bool {
+                keyAt >> int <- find(data, headerBytes, key);
+                guard keyAt >= 0 else return false;
+                valueAt >> int <- keyAt + strByteLen(key);
+                valueBytes >> int <- strByteLen(value);
+                guard valueAt + valueBytes < headerBytes else return false;
+                at >> int <- 0;
+                while (at < valueBytes) {
+                    if (rd<byte>(off(data, valueAt + at)) != rd<byte>(off(cast<byte>(value), at))) {
+                        return false;
+                    }
+                    at += 1;
+                }
+                return rd<byte>(off(data, valueAt + valueBytes)) == 10;
+            }
+
+            decimal(data >> p<byte>, headerBytes >> int, key >> str) -> int {
+                keyAt >> int <- find(data, headerBytes, key);
+                guard keyAt >= 0 else return -1;
+                at >> int <- keyAt + strByteLen(key);
+                value >> int <- 0;
+                digits >> int <- 0;
+                while (at < headerBytes && rd<byte>(off(data, at)) != 10) {
+                    digit >> int <- rd<byte>(off(data, at)) - 48;
+                    guard digit >= 0 && digit <= 9 else return -1;
+                    value <- value * 10 + digit;
+                    digits += 1;
+                    at += 1;
+                }
+                return digits > 0 ? value : -1;
+            }
+
+            hashShape(data >> p<byte>, headerBytes >> int, key >> str) -> bool {
+                keyAt >> int <- find(data, headerBytes, key);
+                guard keyAt >= 0 else return false;
+                at >> int <- keyAt + strByteLen(key);
+                end >> int <- at + HASH_BYTES;
+                guard end < headerBytes && rd<byte>(off(data, end)) == 10 else return false;
+                while (at < end) {
+                    value >> byte <- rd<byte>(off(data, at));
+                    hex >> bool <- (value >= 48 && value <= 57) || (value >= 97 && value <= 102);
+                    if (!hex) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            targetArch(target >> str) -> str {
+                return machine_authority.nccMachineAuthority.targetArch(target);
+            }
+
+            targetPointerWidth(target >> str) -> str {
+                width >> int <- machine_authority.nccMachineAuthority.pointerWidth(target);
+                if (width == 64) return "64";
+                if (width == 32) return "32";
+                return "";
+            }
+
+            targetAbi(target >> str) -> str {
+                return machine_authority.nccMachineAuthority.abi(target);
+            }
+
+            targetObject(target >> str) -> str {
+                return machine_authority.nccMachineAuthority.object(target);
+            }
+
+            reject() -> bool {
+                rejected += 1;
+                return false;
+            }
+
+        public:
+            inspect(path >> str, target >> str, entry >> str) -> bool {
+                bytes >> int <- fsSize(path);
+                guard bytes > strByteLen(MAGIC) + strByteLen(SCHEMA) else return reject();
+                data >> p<byte> <- source.nccSource.load(path);
+                guard data != null else return reject();
+
+                marker >> int <- find(data, bytes, "\n\n");
+                headerBytes >> int <- marker + 2;
+                payloadBytes >> int <- decimal(data, headerBytes, "payload-bytes=");
+                expectedArch >> str <- targetArch(target);
+                expectedPointerWidth >> str <- targetPointerWidth(target);
+                expectedAbi >> str <- targetAbi(target);
+                expectedObject >> str <- targetObject(target);
+                expectedExecutable >> str <- machine_authority.nccMachineAuthority.executableKind(target);
+                expectedLoader >> str <- machine_authority.nccMachineAuthority.loaderKind(target);
+                valid >> bool <- marker > 0 &&
+                    find(data, strByteLen(MAGIC), MAGIC) == 0 &&
+                    find(data, headerBytes, SCHEMA) >= 0 &&
+                    lineEquals(data, headerBytes, "target=", target) &&
+                    expectedArch != "" && expectedPointerWidth != "" &&
+                    expectedAbi != "" && expectedObject != "" &&
+                    expectedExecutable != "" && expectedLoader != "" &&
+                    lineEquals(data, headerBytes, "arch=", expectedArch) &&
+                    lineEquals(data, headerBytes, "abi=", expectedAbi) &&
+                    lineEquals(data, headerBytes, "object=", expectedObject) &&
+                    lineEquals(data, headerBytes, "executable-kind=", expectedExecutable) &&
+                    lineEquals(data, headerBytes, "loader=", expectedLoader) &&
+                    lineEquals(data, headerBytes, "pointer-width=", expectedPointerWidth) &&
+                    lineEquals(data, headerBytes, "endian=", "little") &&
+                    lineEquals(data, headerBytes, "entry=", entry) &&
+                    hashShape(data, headerBytes, "machine-sha256=") &&
+                    hashShape(data, headerBytes, "payload-sha256=") &&
+                    payloadBytes >= 0 && headerBytes + payloadBytes == bytes;
+                if (valid) {
+                    payloadHash >> str <- sha256.nccSha256.bytes(off(data, headerBytes), payloadBytes);
+                    valid <- lineEquals(data, headerBytes, "payload-sha256=", payloadHash);
+                }
+                source.nccSource.release(data);
+                if (!valid) return reject();
+                lastHeaderBytes <- headerBytes;
+                lastPayloadBytes <- payloadBytes;
+                verified += 1;
+                return true;
+            }
+
+            selfTest() -> bool {
+                return strByteLen(MAGIC) == 5 && strByteLen(SCHEMA) == 34 && HASH_BYTES == 64 &&
+                    targetArch("x86_64-pc-windows-msvc") == "x86_64" &&
+                    targetArch("aarch64-apple-darwin") == "aarch64" &&
+                    targetArch("riscv32imac-unknown-elf") == "riscv32" &&
+                    targetAbi("x86_64-pc-windows-msvc") == "win64" &&
+                    targetAbi("riscv32imac-unknown-elf") == "ilp32" &&
+                    targetObject("aarch64-apple-darwin") == "macho64" &&
+                    targetObject("armv7-unknown-linux-gnueabihf") == "elf32" &&
+                    targetPointerWidth("armv7-unknown-linux-gnueabihf") == "32" &&
+                    targetPointerWidth("riscv64gc-unknown-linux-gnu") == "64" &&
+                    machine_authority.nccMachineAuthority.executableSuffix(
+                        "x86_64-pc-windows-msvc"
+                    ) == ".exe";
+            }
+
+    fa:
+        return true;
+}

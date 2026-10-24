@@ -1,0 +1,219 @@
+use <net:socket>;
+use <io:render>;
+use <io:output>;
+use <process:env>;
+use <project:mobile43_codec, mobile43_transport>;
+
+mobile43Peer {
+    const:
+        TOKEN >> str <- "nc-conformance-token-0123456789";
+    stc:
+        listener >> addr;
+        tlsContext >> addr;
+        peer >> addr;
+        tlsPeer >> addr;
+        secure >> bool;
+        expected >> int;
+        errors >> int <- 0;
+        sessions >> int <- 0;
+        mutation >> str <- "";
+        stopping >> bool <- false;
+    fn:
+        private:
+            exact(data >> p<byte>, count >> int) -> bool {
+                done >> int <- 0;
+                while (done < count) {
+                    read >> int <- mobile43_transport.mobile43Transport.read(peer,tlsPeer,off(data,done),count-done);
+                    if (read <= 0 || read > count-done) return false;
+                    done += read;
+                }
+                return true;
+            }
+            readFrame(binary >> bool) -> str {
+                data >> p<byte> <- cast(alloc(1048577));
+                guard data != null else return "";
+                count >> int <- 0; valid >> bool <- true;
+                if (binary) {
+                    valid <- exact(data,4);
+                    if (valid) {
+                        count <- mobile43_codec.mobile43Codec.readLength(data);
+                        if (envHas("NC_MOBILE_TRACE")) println("peer frame bytes: "+renderInt(count));
+                        valid <- count >= 0 && count <= 1048576;
+                        if (valid) valid <- exact(data,count);
+                    }
+                } else {
+                    while (count <= 1048576) {
+                        valid <- exact(off(data,count),1);
+                        if (!valid || rd(off(data,count)) == 10) break;
+                        count += 1;
+                    }
+                    if (count > 1048576) valid <- false;
+                    while (count > 0) {
+                        if (rd(off(data,count-1)) != 13) break;
+                        count -= 1;
+                    }
+                }
+                if (!valid || !mobile43_codec.mobile43Codec.utf8(data,count)) { free(data); return ""; }
+                wr(off(data,count),0); return mobile43_codec.mobile43Codec.owned(data,count);
+            }
+            writeAll(data >> p<byte>, count >> int) -> bool {
+                done >> int <- 0;
+                while (done < count) {
+                    amount >> int <- count-done > 7 ? 7 : count-done;
+                    sent >> int <- mobile43_transport.mobile43Transport.write(peer,tlsPeer,off(data,done),amount);
+                    if (sent <= 0 || sent > amount) return false;
+                    done += sent;
+                }
+                return true;
+            }
+            writeFrame(binary >> bool, text >> str) -> bool {
+                count >> int <- strByteLen(text);
+                if (!binary) {
+                    line >> str <- text+"\n";
+                    result >> bool <- writeAll(cast(line),count+1); strRelease(line); return result;
+                }
+                data >> p<byte> <- cast(alloc(4));
+                guard data != null else return false;
+                mobile43_codec.mobile43Codec.writeLength(data,count);
+                result >> bool <- writeAll(data,4) && writeAll(cast(text),count);
+                free(data); return result;
+            }
+            field(text >> str, index >> int) -> str { return mobile43_codec.mobile43Codec.field(text,index); }
+            sign(value >> str) -> str { return mobile43_codec.mobile43Codec.sign(TOKEN,value); }
+            handle() -> bool {
+                nonce >> str <- mobile43_transport.mobile43Transport.nonce();
+                session >> str <- mobile43_transport.mobile43Transport.nonce();
+                hello >> str <- mutation == "hello" ? "BROKEN|NCBM1" :
+                    "HELLO|NCBM1|"+nonce+"|LINE,FRAME|"+(secure ? "SECURE" : "RAW");
+                valid >> bool <- writeFrame(false,hello); strRelease(hello);
+                if (mutation == "hello" || !valid) { strRelease(nonce); strRelease(session); return true; }
+                selection >> str <- readFrame(false);
+                frame >> str <- field(selection,1);
+                if (envHas("NC_MOBILE_TRACE")) println("peer selection: "+selection);
+                valid <- frame == "LINE" || frame == "FRAME";
+                if (secure) {
+                    auth >> str <- "AUTH|"+frame+"|"+nonce+"|"+field(selection,2);
+                    mac >> str <- sign(auth);
+                    valid <- valid && mobile43_codec.mobile43Codec.fields(selection) == 4 &&
+                        field(selection,0) == "AUTH" && mobile43_codec.mobile43Codec.equal(mac,field(selection,3));
+                    strRelease(auth); strRelease(mac);
+                    if (valid) {
+                        ready >> str <- "AUTH_OK|"+session;
+                        mac <- sign(ready);
+                        if (mutation == "auth") { strRelease(mac); mac <- "00"; }
+                        response >> str <- ready+"|"+mac;
+                        valid <- writeFrame(false,response); strRelease(response); strRelease(ready);
+                        if (mutation != "auth") strRelease(mac);
+                    } else writeFrame(false,"AUTH_REJECTED");
+                } else {
+                    valid <- valid && mobile43_codec.mobile43Codec.fields(selection) == 3 &&
+                        field(selection,0) == "SELECT" && field(selection,2) == "RAW";
+                    if (valid) valid <- writeFrame(false,"READY|RAW|"+frame);
+                }
+                strRelease(nonce); strRelease(selection);
+                if (!valid || mutation == "auth") { strRelease(session); return true; }
+                request >> str <- readFrame(frame == "FRAME");
+                if (envHas("NC_MOBILE_TRACE")) println("peer request: "+request);
+                commandText >> str <- request;
+                if (secure) {
+                    payload >> str <- field(request,3);
+                    signed >> str <- "REQ|"+session+"|1|"+payload;
+                    mac >> str <- sign(signed);
+                    valid <- mobile43_codec.mobile43Codec.fields(request) == 5 &&
+                        field(request,0) == "REQ" && field(request,1) == session && field(request,2) == "1" &&
+                        mobile43_codec.mobile43Codec.equal(mac,field(request,4));
+                    commandText <- mobile43_codec.mobile43Codec.decode(payload);
+                    strRelease(payload); strRelease(signed); strRelease(mac);
+                }
+                response >> str <- commandResponse(commandText);
+                if (mutation == "oversize" || mutation == "short" || mutation == "utf8") {
+                    bytes >> p<byte> <- cast(alloc(4));
+                    if (bytes == null) return false;
+                    mobile43_codec.mobile43Codec.writeLength(bytes,mutation == "oversize" ? 1048577 : 2);
+                    if (mutation == "short") writeAll(bytes,2);
+                    else {
+                        writeAll(bytes,4);
+                        if (mutation == "utf8") { wr(bytes,192); wr(off(bytes,1),128); writeAll(bytes,2); }
+                    }
+                    free(bytes); strRelease(session); strRelease(request); strRelease(response);
+                    if (secure) strRelease(commandText);
+                    return true;
+                }
+                if (secure) {
+                    payload >> str <- mutation == "base64" ? "wIA" : mobile43_codec.mobile43Codec.encode(response);
+                    signed >> str <- "RES|"+session+"|1|"+payload;
+                    mac >> str <- sign(signed);
+                    if (mutation == "hmac") { strRelease(mac); mac <- "00"; }
+                    if (mutation == "sequence") { strRelease(signed); signed <- "RES|"+session+"|2|"+payload; }
+                    strRelease(response); response <- signed+"|"+mac;
+                    strRelease(payload); strRelease(signed);
+                    if (mutation != "hmac") strRelease(mac);
+                }
+                if (valid) valid <- writeFrame(frame == "FRAME",response);
+                strRelease(session); strRelease(request); strRelease(response);
+                if (secure) strRelease(commandText);
+                return valid;
+            }
+        public:
+            commandResponse(commandText >> str) -> str {
+                trimmed >> str <- strTrim(commandText);
+                index >> int <- 0; bytes >> p<byte> <- cast(trimmed);
+                while (index < strByteLen(trimmed) && rd(off(bytes,index)) != 32) { index += 1; }
+                action >> str <- strToUpper(strSubstring(trimmed,0,index)); strRelease(trimmed);
+                result >> str <- "ERR|UNKNOWN_COMMAND";
+                if (action == "PING") result <- "OK|PONG";
+                else if (action == "AYUDA") result <- "OK|AGREGAR ELIMINAR BLOQUEAR_POR_PATRON DESBLOQUEAR_PATRON LISTAR ESTADO LIMPIAR APAGAR_SERVIDOR";
+                else if (action == "AGREGAR") result <- "OK|ADDED";
+                else if (action == "ELIMINAR") result <- "OK|REMOVED";
+                else if (action == "BLOQUEAR_POR_PATRON") result <- "OK|PATTERN_ADDED";
+                else if (action == "DESBLOQUEAR_PATRON") result <- "OK|PATTERN_REMOVED";
+                else if (action == "LISTAR") result <- "OK|NUMBERS|+34620123456|PATTERNS|+34";
+                else if (action == "ESTADO") result <- "OK|READY|NUMBERS|1|PATTERNS|1|CALLS|0|BLOCKED|0";
+                else if (action == "LIMPIAR") result <- "OK|CLEARED";
+                else if (action == "APAGAR_SERVIDOR") result <- "OK|SERVER_STOPPING";
+                strRelease(action); return result;
+            }
+            open(port >> int, encrypted >> bool, cert >> str, key >> str, count >> int, alter >> str) -> bool {
+                secure <- encrypted; expected <- count; errors <- 0; sessions <- 0; mutation <- alter; stopping <- false;
+                tlsContext <- secure ? mobile43_transport.mobile43Transport.context(true,cert,key) : null;
+                if (secure && tlsContext == null) return false;
+                listener <- socketCreate(2,1,6);
+                if (listener == null || socketBind(listener,"127.0.0.1",port) != 0 || socketListen(listener,16) != 0) {
+                    mobile43_transport.mobile43Transport.close(listener,null,tlsContext);
+                    listener <- null; tlsContext <- null; return false;
+                }
+                return true;
+            }
+            run() -> int {
+                index >> int <- 0;
+                address >> p<byte> <- cast(alloc(128));
+                if (address == null) { errors += 1; return errors; }
+                while (index < expected && !stopping) {
+                    peer <- socketAccept(listener,adr(address),128);
+                    if (peer == null) { if (!stopping) errors += 1; break; }
+                    sessions += 1;
+                    socketSetTimeout(peer,3000,3000);
+                    tlsPeer <- secure ? mobile43_transport.mobile43Transport.wrap(tlsContext,peer,true) : null;
+                    if ((!secure || tlsPeer != null) && !stopping) {
+                        if (!handle()) errors += 1;
+                    }
+                    mobile43_transport.mobile43Transport.close(peer,tlsPeer,null);
+                    index += 1;
+                }
+                free(address); return errors;
+            }
+            stop() -> void {
+                stopping <- true;
+                if (listener != null) socketShutdown(listener,2);
+                mobile43_transport.mobile43Transport.close(listener,null,tlsContext);
+                listener <- null; tlsContext <- null;
+            }
+            interrupt() -> void {
+                stopping <- true;
+                if (listener != null) { socketClose(listener); listener <- null; }
+            }
+            accepted() -> int { return sessions; }
+            failureCount() -> int { return errors; }
+            listenerHandle() -> addr { return listener; }
+    fa: return true;
+}

@@ -1,0 +1,23 @@
+use <io:output>;
+
+nativeStaticMemberCalls80 {
+    type: Box { public: apply >> fn(int) -> int; get >> fn() -> p<int>; }
+    stc:
+        values >> array<int,2> <- [7,11];
+        callbacks >> Box <- Box(apply: &twice,get: &buffer);
+        dispatch >> array<fn(int) -> int,2> <- [&twice,&triple];
+    twice(value >> int) -> int { return value*2; }
+    triple(value >> int) -> int { return value*3; }
+    buffer() -> p<int> { return &values[0]; }
+    factory() -> fn() -> p<int> { return &buffer; }
+    run() -> int {
+        if (callbacks.apply(5)+dispatch[1](4) != 22) return 1;
+        if (rd(callbacks.get())+rd(off(callbacks.get(),1)) != 18) return 2;
+        get >> fn() -> p<int> <- factory();
+        if (rd(get())+rd(off(get(),1)) != 18) return 3;
+        if (rd(factory()()) != 7) return 4;
+        println("native-static-member-calls-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,54 @@
+use <io:output>;
+use <data:json>;
+use <process:args, command, env>;
+
+vmFaultVerify74 {
+    mode(index >> int) -> str {
+        if (index == 0) return "reserved";
+        if (index == 1) return "readonly";
+        if (index == 2) return "decommitted";
+        if (index == 3) return "released";
+        return index == 4 ? "rx" : "guard";
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 4) return 64;
+        image >> str <- argsAt(arguments,1);
+        cwd >> str <- argsAt(arguments,2);
+        if (strContains(image,"\"") || strContains(image,"\n")) return 65;
+        rows >> int <- jsonNewArray();
+        valid >> bool <- true;
+        at >> int <- 0;
+        while (at < 6) {
+            line >> str <- "\""+image+"\" "+mode(at);
+            child >> addr <- commandOpen(line,cwd,null,null,null,0);
+            started >> bool <- child != null && commandStarted(child);
+            waited >> int <- started ? commandWait(child,30000) : -1;
+            if (child != null && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+            code >> int <- child == null ? -999 : commandExitCode(child);
+            expected >> int <- envHas("WINDIR") ? (at == 5 ? -2147483647 : -1073741819) : 139;
+            passed >> bool <- started && waited == 0 && code == expected;
+            row >> int <- jsonNewObject();
+            jsonObjectSet(row,"mode",jsonNewString(mode(at)));
+            jsonObjectSet(row,"started",jsonNewBool(started));
+            jsonObjectSet(row,"wait",jsonNewInt(waited));
+            jsonObjectSet(row,"exit",jsonNewInt(code));
+            jsonObjectSet(row,"expected_exit",jsonNewInt(expected));
+            jsonObjectSet(row,"passed",jsonNewBool(passed));
+            jsonArrayPush(rows,row); jsonRelease(row);
+            valid <- valid && passed;
+            if (child != null) commandRelease(child);
+            strRelease(line); at += 1;
+        }
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.native.vm-faults.v74"));
+        jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"cases",rows);
+        saved >> bool <- jsonSaveFile(report,argsAt(arguments,3),2);
+        jsonRelease(report); jsonRelease(rows); argsRelease(arguments);
+        println(valid && saved ? "native VM fault permissions PASS" : "native VM fault permissions FAIL");
+        return valid && saved ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,23 @@
+use <project:fs_byte_provider>;
+use <process:args>;
+
+nativeFsIoProvider {
+    fn:
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                if (argsCount(args) != 2) { argsRelease(args); return 64; }
+                path >> str <- argsAt(args,1);
+                data >> p<byte> <- cast<byte>(alloc(8));
+                if (data == null) { argsRelease(args); return 1; }
+                wr<byte>(data,0); wr<byte>(off(data,1),255); wr<byte>(off(data,2),13); wr<byte>(off(data,3),10);
+                ok >> bool <- fs_byte_provider.fsIoProvider.provider_fs_fsWriteFrom(path,data,4,false) == 4;
+                ok <- ok && fs_byte_provider.fsIoProvider.provider_fs_fsSize(path) == 4;
+                wr<byte>(data,17);
+                ok <- ok && fs_byte_provider.fsIoProvider.provider_fs_fsReadInto(path,data,8) == 4 && rd<byte>(data) == 0 && rd<byte>(off(data,1)) == 255;
+                free(data); argsRelease(args);
+                return ok ? 174 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

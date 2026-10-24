@@ -1,0 +1,64 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release43_common, release43_public, release43_archive, release43_host, release_io, cert_json>;
+
+release43PublicGoldens {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void { println((good ? "PASS " : "FAIL ")+name); release43_common.release43Common.record(name,good); if (!good) failures += 1; }
+            set(object >> int, key >> str, value >> str) -> void { release43_common.release43Common.put(object,key,jsonNewString(value)); }
+            file(path >> str, content >> str) -> void { expect("fixture",release43_common.release43Common.writeText(path,content)); }
+            layoutTree(path >> str, expected >> int) -> bool {
+                actual >> int <- release43_common.release43Common.tree(path); good >> bool <- jsonArrayLen(actual) == jsonArrayLen(expected); index >> int <- 0;
+                while (index < jsonArrayLen(expected)) {
+                    row >> int <- jsonArrayGet(expected,index); name >> str <- release43_common.release43Common.field(row,"path");
+                    if (release43_common.release43Common.fileType(path+"/"+name) != release_io.releaseIo.number(row,"kind",0)) good <- false;
+                    if (release_io.releaseIo.number(row,"kind",0) == 1) {
+                        model >> int <- jsonObjectGet(row,"json");
+                        if (jsonKind(model) == 6) { observed >> int <- release43_common.release43Common.load(path+"/"+name); if (cert_json.certJson.stringify(observed) != cert_json.certJson.stringify(model)) good <- false; release43_common.release43Common.release(observed); }
+                        else if (release43_common.release43Common.hashFile(path+"/"+name) != release43_common.release43Common.field(row,"sha256")) good <- false;
+                        release43_common.release43Common.release(model);
+                    }
+                    release43_common.release43Common.release(row); index += 1;
+                }
+                release43_common.release43Common.release(actual); return good;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- jsonNewObject(); set(options,"--root",argsCount(arguments) > 1 ? argsAt(arguments,1) : ".");
+                if (!release43_common.release43Common.initialize(options)) { println(release43_common.release43Common.message()); return 2; } jsonRelease(options);
+                goldenPath >> str <- argsCount(arguments) > 2 ? argsAt(arguments,2) : release43_common.release43Common.rootPath()+"/bootstrap/release43-public-goldens.json";
+                println("golden="+goldenPath); golden >> int <- release43_common.release43Common.load(goldenPath);
+                if (golden == 0) { println("cannot parse golden JSON bytes="+renderInt(release43_common.release43Common.fileSize(goldenPath))+" error="+jsonErrorMessage()+" line="+renderInt(jsonErrorLine())+" column="+renderInt(jsonErrorColumn())); return 2; } hosts >> int <- jsonObjectGet(golden,"hosts"); selected >> int <- jsonObjectGet(hosts,envHas("WINDIR") ? "windows" : "linux");
+                sandbox >> str <- release43_common.release43Common.workPath()+"/repo"; source >> str <- sandbox+"/dist/public-beta/ncc";
+                file(source+"/a.txt","hello\n"); file(source+"/a/z.txt","nested\n"); file(source+"/café.txt","café\n"); file(source+"/文字.txt","UTF-8\n");
+                expect("empty-directory",release43_common.release43Common.makeDirectories(source+"/empty")); bytes >> p<byte> <- cast(alloc(256)); index >> int <- 0;
+                while (index < 256) { wr<byte>(off<byte>(bytes,index),index); index += 1; } expect("binary-fixture",release43_common.release43Common.writeBytes(source+"/binary.bin",bytes,256,false) == 256); free(bytes);
+                name >> str <- ""; index <- 0; while (index < 120) { name <- name+"p"; index += 1; } file(source+"/"+name+".txt","PAX\n");
+                expect("hardlink",release43_host.release43Host.createHardLink(source+"/a.txt",source+"/hardlink.txt"));
+                if (!envHas("WINDIR")) { expect("symlink-file",release43_host.release43Host.createSymlink("a.txt",source+"/symlink.txt",false)); expect("symlink-dir",release43_host.release43Host.createSymlink("a",source+"/directory-link",true)); expect("broken-symlink",release43_host.release43Host.createSymlink("missing",source+"/broken-link",false)); }
+                options <- jsonNewObject(); set(options,"--root",sandbox); set(options,"--source",source); set(options,"--out",sandbox+"/artifacts");
+                expect("package-native",release43_public.release43Public.package(options) == 0);
+                expect("zip-frozen-oracle-identity",release43_common.release43Common.hashFile(sandbox+"/artifacts/ncc-public-beta-source.zip") == release43_common.release43Common.field(selected,"zip_sha256"));
+                expect("tar-frozen-paired-members",release43_common.release43Common.hashFile(sandbox+"/artifacts/ncc-public-beta-source.tar.gz") == release43_common.release43Common.field(selected,"native_tar_sha256_after_paired_member_identity"));
+                package >> int <- release43_common.release43Common.load(sandbox+"/artifacts/PACKAGE_MANIFEST.json"); expect("package-schema",release43_common.release43Common.field(package,"schema") == "ncc.public_beta.package.v1" && jsonObjectLen(package) == 6);
+                expect("package-count",release_io.releaseIo.number(package,"file_count",0) == release_io.releaseIo.number(selected,"file_count",-1)); jsonRelease(package);
+                file(source+"/.git/config","private"); expect("forbidden-rejected",release43_public.release43Public.package(options) == 1); jsonRelease(options);
+                fixture >> int <- jsonObjectGet(golden,"fixture"); manifest >> int <- jsonObjectGet(fixture,"manifest"); expect("layout-manifest",release43_common.release43Common.save(sandbox+"/tools/release/public_beta_manifest.json",manifest)); jsonRelease(manifest);
+                files >> int <- jsonObjectGet(fixture,"files"); index <- 0;
+                while (index < jsonObjectLen(files)) { path >> str <- jsonObjectKeyAt(files,index); file(sandbox+"/"+path,release43_common.release43Common.field(files,path)); index += 1; }
+                options <- jsonNewObject(); set(options,"--root",sandbox); set(options,"--dist",sandbox+"/dist/public-beta/layout"); file(sandbox+"/dist/public-beta/layout/old.txt","old");
+                expect("layout-native",release43_public.release43Public.layout(options) == 0); expected >> int <- jsonObjectGet(selected,"layout"); expect("layout-frozen-oracle-tree",layoutTree(sandbox+"/dist/public-beta/layout",expected));
+                file(sandbox+"/dist/public-beta/layout/kept.txt","keep"); release43_common.release43Common.put(options,"--keep",jsonNewBool(true)); expect("layout-keep",release43_public.release43Public.layout(options) == 0); expect("layout-kept-file",release43_common.release43Common.text(sandbox+"/dist/public-beta/layout/kept.txt") == "keep");
+                set(options,"--dist",sandbox+"/escape"); expect("layout-boundary",release43_public.release43Public.layout(options) == 1);
+                report >> int <- jsonNewObject(); set(report,"schema","nc.release43.public.regression.v1"); release43_common.release43Common.put(report,"checks",release43_common.release43Common.checkRows()); release43_common.release43Common.put(report,"failures",jsonNewInt(failures)); release43_common.release43Common.put(report,"python_required",jsonNewBool(false));
+                release43_common.release43Common.put(report,"passed",jsonNewBool(failures == 0)); set(report,"regression_executable",release43_common.release43Common.absolute(argsAt(arguments,0)));
+                if (argsCount(arguments) > 3) { candidate >> str <- release43_common.release43Common.absolute(argsAt(arguments,3)); set(report,"candidate_path",candidate); set(report,"candidate_sha256",release43_common.release43Common.hashFile(candidate)); }
+                if (argsCount(arguments) > 4) { native >> str <- release43_common.release43Common.absolute(argsAt(arguments,4)); set(report,"native_path",native); set(report,"native_sha256",release43_common.release43Common.hashFile(native)); }
+                release43_common.release43Common.save(release43_common.release43Common.workPath()+"/public-golden-regression.json",report); println("sealed="+release43_common.release43Common.workPath()+"/public-golden-regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

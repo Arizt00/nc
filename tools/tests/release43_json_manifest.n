@@ -1,0 +1,41 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release43_json, cert_json>;
+
+release43JsonManifestTests {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void { println((good ? "PASS " : "FAIL ")+name); if (!good) failures += 1; }
+            valid(name >> str, input >> str, expected >> str) -> void {
+                model >> int <- release43_json.release43Json.manifest(input); text >> str <- model == 0 ? "" : cert_json.certJson.stringify(model);
+                expect(name,text == expected); if (model != 0) jsonRelease(model); strRelease(text);
+            }
+            invalid(name >> str, input >> str) -> void { model >> int <- release43_json.release43Json.manifest(input); expect(name,model == 0); if (model != 0) jsonRelease(model); }
+        public:
+            run() -> int {
+                valid("unused-nul","{\"schema\":\"ok\",\"ignored\":\"\\u0000\"}","{\"schema\":\"ok\"}");
+                valid("unused-isolated-surrogate","{\"schema\":\"ok\",\"ignored\":\"\\ud800\"}","{\"schema\":\"ok\"}");
+                valid("unused-nonfinite","{\"ignored\":[NaN,Infinity,-Infinity],\"schema\":\"ok\"}","{\"schema\":\"ok\"}");
+                deep >> str <- "0"; index >> int <- 0; while (index < 70) { deep <- "{\"unused\":"+deep+"}"; index += 1; }
+                valid("unused-deep","{\"schema\":\"ok\",\"ignored\":"+deep+"}","{\"schema\":\"ok\"}");
+                valid("duplicate-known-last-wins","{\"schema\":\"\\u0000\",\"schema\":\"ok\"}","{\"schema\":\"ok\"}");
+                valid("escaped-known-key","{\"sch\\u0065ma\":\"ok\"}","{\"schema\":\"ok\"}");
+                valid("unknown-nul-key","{\"\\u0000\":7,\"schema\":\"ok\"}","{\"schema\":\"ok\"}");
+                valid("unused-policy-description","{\"public_example_name_policy\":{\"description\":\"\\u0000\\ud800\",\"forbid_path_tokens\":[\"phase\"]}}","{\"public_example_name_policy\":{\"forbid_path_tokens\":[\"phase\"]}}");
+                valid("unused-prune-metadata","{\"public_package_prune\":{\"description\":NaN,\"crate_integration_tests\":true}}","{\"public_package_prune\":{\"crate_integration_tests\":true}}");
+                valid("unused-fixture-metadata","{\"public_fixture_trees\":[{\"description\":\"\\ud800\",\"source\":\"a\",\"dest\":\"b\"}]}","{\"public_fixture_trees\":[{\"source\":\"a\",\"dest\":\"b\"}]}");
+                valid("policy-last-value-wins","{\"public_example_name_policy\":{\"forbid_path_tokens\":\"\\u0000\",\"forbid_path_tokens\":[]}}","{\"public_example_name_policy\":{\"forbid_path_tokens\":[]}}");
+                invalid("unused-bad-escape","{\"ignored\":\"\\x00\",\"schema\":\"ok\"}");
+                invalid("unused-trailing-comma","{\"ignored\":[1,],\"schema\":\"ok\"}");
+                invalid("unused-leading-zero","{\"ignored\":01,\"schema\":\"ok\"}");
+                invalid("unused-unterminated","{\"ignored\":\"no-end}");
+                invalid("missing-comma","{\"ignored\":1 \"schema\":\"ok\"}");
+                invalid("trailing-root-data","{\"schema\":\"ok\"} []");
+                invalid("array-root","[]"); invalid("invalid-number-exponent","{\"ignored\":1e}");
+                invalid("malformed-fixture-metadata","{\"public_fixture_trees\":[{\"source\":\"a\",\"dest\":\"b\",\"ignored\":[1,]}]}");
+                println("failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

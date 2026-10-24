@@ -1,0 +1,52 @@
+use <data:json>;
+use <process:args>;
+use <io:output>;
+
+nativeJsonFsBatch {
+    fn:
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                if (argsCount(args) != 2) { argsRelease(args); return 64; }
+                path >> str <- argsAt(args,1);
+                root >> int <- jsonNewObject();
+                jsonObjectSet(root,"n",jsonNewInt(-17));
+                jsonObjectSet(root,"ok",jsonNewBool(true));
+                jsonObjectSet(root,"name",jsonNewString("niño\n\"quoted\""));
+                value >> int <- jsonObjectGet(root,"n");
+                ok >> bool <- jsonGetIntOr(value,99) == -17 && jsonGetIntOr(0,-123) == -123;
+                jsonRelease(value);
+                truth >> int <- jsonNewBool(false);
+                ok <- ok && jsonGetIntOr(truth,71) == 71;
+                jsonRelease(truth);
+                text >> str <- jsonStringifyPretty(root,2);
+                ok <- ok && strByteLen(text) > 30 && jsonValidate(text) && !jsonValidate("{broken");
+                parsed >> int <- jsonParse(text);
+                ok <- ok && jsonEquals(root,parsed);
+                name >> int <- jsonObjectGet(parsed,"name");
+                named >> str <- jsonGetStringOr(name,"fallback");
+                ok <- ok && named == "niño\n\"quoted\"" && jsonGetStringOr(0,"fallback") == "fallback";
+                strRelease(named); jsonRelease(name);
+                ok <- ok && !jsonSaveFile(0,path,2) && !jsonSaveFile(root,path,-1) && jsonSaveFile(root,path,2);
+                bytes >> int <- fsSize(path);
+                data >> p<byte> <- cast<byte>(alloc(bytes+16));
+                if (data == null) { jsonRelease(root); jsonRelease(parsed); strRelease(text); argsRelease(args); return 1; }
+                ok <- ok && bytes == strByteLen(text) && fsReadInto(path,data,bytes+16) == bytes;
+                loaded >> int <- jsonParseFile(path);
+                ok <- ok && jsonEquals(root,loaded);
+                jsonRelease(loaded);
+                wr<byte>(data,0); wr<byte>(off(data,1),255); wr<byte>(off(data,2),13); wr<byte>(off(data,3),10);
+                ok <- ok && fsWriteFrom(path,data,4,false) == 4 && fsWriteFrom(path,off(data,2),2,true) == 2 && fsSize(path) == 6;
+                wr<byte>(off(data,6),77);
+                ok <- ok && fsReadInto(path,data,16) == 6 && rd<byte>(data) == 0 && rd<byte>(off(data,1)) == 255 && rd<byte>(off(data,4)) == 13 && rd<byte>(off(data,5)) == 10 && rd<byte>(off(data,6)) == 77;
+                empty >> p<byte> <- null;
+                ok <- ok && fsWriteFrom(path,empty,0,false) == 0 && fsSize(path) == 0 && fsReadInto(path,empty,0) == 0;
+                ok <- ok && fsWriteFrom(path,empty,1,false) == -1 && fsReadInto(path,data,-1) == -1 && fsSize(null) == -1;
+                ok <- ok && fsWriteFrom("",data,1,false) == -1 && fsReadInto("",data,1) == -1;
+                free(data); jsonRelease(root); jsonRelease(parsed); strRelease(text); argsRelease(args);
+                if (ok) println("json fs batch ok");
+                return ok ? 172 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

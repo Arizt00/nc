@@ -1,0 +1,27 @@
+use <io:output>;
+
+nativeVmFileLinux74 {
+    run() -> int {
+        path >> str <- "native-vm-file74.bin";
+        page >> int <- vmPageSize();
+        file >> i64 <- syscall6(257,-100,adr(path),0x242,384,0,0);
+        if (file < 0 || page <= 0) return 1;
+        if (syscall6(77,file,page,0,0,0,0) != 0) return 2;
+        mapped >> p<byte> <- vmMap(null,page,3,1,file,0);
+        if (mapped == null) return 3;
+        volatileWrite(mapped,255);
+        volatileWrite(off(mapped,page-1),233);
+        if (!vmSync(mapped,page,4) || !vmUnmap(mapped,page)) return 4;
+        first >> byte <- 0;
+        last >> byte <- 0;
+        if (syscall6(17,file,adr(&first),1,0,0,0) != 1 ||
+            syscall6(17,file,adr(&last),1,page-1,0,0) != 1) return 5;
+        if (first != 255 || last != 233) return 6;
+        if (syscall6(3,file,0,0,0,0,0) != 0 ||
+            syscall6(263,-100,adr(path),0,0,0,0) != 0) return 7;
+        println("native-linux-file-map-ok");
+        return 243;
+    }
+    ref main ->> run;
+    fa: return true;
+}

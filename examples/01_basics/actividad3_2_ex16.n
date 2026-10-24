@@ -1,0 +1,212 @@
+
+use <collections:queue>;
+use <io:output, render, input>;
+use <memory:ptr, region, heap>;
+
+actividad3_2_ejercicio16 :: runtime {
+    stc:
+
+        audit >> memRegion<int>;
+        eventos >> queue<int>;
+        eventosStorage >> p<int>;
+        base >> addr;
+        sesion >> p<byte>;
+        filas >> int;
+        mesas >> int;
+        pasillo >> int;
+        opcion >> int;
+        conPasillo >> bool;
+
+    fn:
+        boot() -> bool {
+
+            audit >> memRegion<int> <- regionCreate<int>(64);
+
+            eventosStorage <- cast(alloc(64 * sizeOf(int)));
+            eventos <- queueAt(eventosStorage, 64);
+
+            base >> addr <- 0x1000;
+            sesion !> p<byte> : base;
+
+            filas >> int <- 4;
+            mesas >> int <- 6;
+            pasillo >> int <- 2;
+            opcion >> int <- 1;
+            conPasillo >> bool <- true;
+            return true;
+        }
+
+        estado(fila >> int, columna >> int) -> int {
+
+            if (conPasillo && columna == pasillo) {
+                return 3;
+            }
+
+            patron >> int <- (((fila + 1) * 17) + ((columna + 1) * 23) + (filas * 5) + mesas) % 11;
+
+            if (patron == 0) { return 4; }
+            if (patron < 3) { return 2; }
+            if (patron < 7) { return 1; }
+            return 0;
+        }
+
+        imprimirAula() -> bool {
+
+            if (filas < 1) { filas <- 1; }
+            if (filas > 8) { filas <- 8; }
+            if (mesas < 1) { mesas <- 1; }
+            if (mesas > 8) { mesas <- 8; }
+            if (pasillo < 0) { pasillo <- 0; }
+            if (pasillo >= mesas) { pasillo <- mesas - 1; }
+
+            while (!eventos.isEmpty()) {
+                basura >> int <- eventos.dequeue();
+            }
+
+            libres >> int <- 0;
+            ocupados >> int <- 0;
+            reservados >> int <- 0;
+            bloqueados >> int <- 0;
+            pasillos >> int <- 0;
+            checksum >> int <- 0;
+            ancho >> int <- mesas * 4;
+
+            println("");
+            println(colorBold("===== AULA CON PIZARRA =====" , "cyan"));
+
+            print(" ");
+            i >> int <- 0;
+            while (i < ancho) { print("_"); i <- i + 1; }
+            println(" ");
+
+            print("|");
+            if (ancho < 7) {
+                print("PIZ ");
+            } else {
+                i >> int <- 0;
+                while (i < ((ancho - 7) / 2)) { print(" "); i <- i + 1; }
+                print("PIZARRA");
+                i >> int <- 0;
+                while (i < ((ancho - 7) - ((ancho - 7) / 2))) { print(" "); i <- i + 1; }
+            }
+            println("|");
+
+            print("|");
+            i >> int <- 0;
+            while (i < ancho) { print("-"); i <- i + 1; }
+            println("|");
+
+            fila >> int <- 0;
+            while (fila < filas) {
+                print("|");
+                columna >> int <- 0;
+
+                while (columna < mesas) {
+                    e >> int <- estado(fila, columna);
+                    pos >> int <- (fila * 8) + columna;
+                    marca >> int <- ((fila + 1) * 1000) + ((columna + 1) * 100) + e;
+
+                    regionWrite(audit, pos, marca);
+                    checksum >> int <- checksum + marca;
+
+                    if (e == 0) { print("[ ] "); libres <- libres + 1; }
+                    if (e == 1) { print("[X] "); ocupados <- ocupados + 1; }
+                    if (e == 2) { print("[R] "); reservados <- reservados + 1; eventos.enqueue(marca); }
+                    if (e == 3) { print("    "); pasillos <- pasillos + 1; }
+                    if (e == 4) { print("[!] "); bloqueados <- bloqueados + 1; eventos.enqueue(marca); }
+
+                    columna >> int <- columna + 1;
+                }
+
+                println("| fila " + renderInt(fila + 1));
+                fila >> int <- fila + 1;
+            }
+
+            print(" ");
+            i >> int <- 0;
+            while (i < ancho) { print("-"); i <- i + 1; }
+            println("");
+
+            println("[ ] libre  [X] ocupado  [R] reservado  [!] no disponible");
+            println("resumen: libres=" + renderInt(libres) + " ocupados=" + renderInt(ocupados) + " reservados=" + renderInt(reservados));
+
+            return true;
+        }
+
+        configurar() -> bool {
+
+            print("filas [1..8]: "); flush();
+            filas >> int <- readInt();
+
+            print("mesas por fila [1..8]: "); flush();
+            mesas >> int <- readInt();
+
+            print("pasillo? 1=si 0=no: "); flush();
+            opcion >> int <- readInt();
+            conPasillo >> bool <- opcion == 1;
+
+            if (conPasillo) {
+                print("columna pasillo [1.." + renderInt(mesas) + "]: "); flush();
+                pasillo >> int <- readInt() - 1;
+            }
+
+            return imprimirAula();
+        }
+
+        run() -> bool {
+
+            boot();
+            println(colorBold("Ejercicio 16 compacto: La clase" , "blue"));
+
+            while (opcion != 0) {
+
+                println("");
+                println("1 configurar y dibujar");
+                println("2 redibujar");
+                println("3 ver auditoria memRegion");
+                println("4 procesar cola");
+                println("0 salir");
+                print("> "); flush();
+                opcion >> int <- readInt();
+
+                if (opcion == 1) { configurar(); }
+                if (opcion == 2) { imprimirAula(); }
+
+                if (opcion == 3) {
+
+                    fila >> int <- 0;
+                    while (fila < filas) {
+                        columna >> int <- 0;
+                        while (columna < mesas) {
+                            pos >> int <- (fila * 8) + columna;
+                            print(regionRead(audit, pos));
+                            print(" ");
+                            columna >> int <- columna + 1;
+                        }
+                        println("");
+                        fila >> int <- fila + 1;
+                    }
+                }
+
+                if (opcion == 4) {
+
+                    while (!eventos.isEmpty()) {
+                        println("evento=" + renderInt(eventos.dequeue()));
+                    }
+                }
+            }
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+
+            regionInvalidate(audit);
+            free(eventosStorage);
+            return true;
+        }
+
+}

@@ -1,0 +1,36 @@
+nccSource {
+    fn:
+        public:
+            bytes(path >> str) -> int {
+                return fsSize(path);
+            }
+
+            load(path >> str) -> p<byte> {
+                count >> int <- fsSize(path);
+                return loadSized(path, count);
+            }
+
+            loadSized(path >> str, count >> int) -> p<byte> {
+                guard count >= 0 && count < 2147483647 else return null;
+                data >> p<byte> <- cast<byte>(alloc(count + 1));
+                guard data != null else return null;
+                if (count > 0 && fsReadInto(path, data, count) != count) {
+                    free(data);
+                    return null;
+                }
+                if (fsSize(path) != count) {
+                    free(data);
+                    return null;
+                }
+                wr<byte>(off(data, count), 0);
+                return data;
+            }
+
+            release(data >> p<byte>) -> bool {
+                if (data != null) free(data);
+                return true;
+            }
+
+    fa:
+        return true;
+}

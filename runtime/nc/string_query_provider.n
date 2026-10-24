@@ -1,0 +1,54 @@
+stringQueryProvider :: runtime {
+    fn:
+        private:
+            prefix(value >> p<byte>, needle >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (rd<byte>(off(needle,at)) != 0) {
+                    if (rd<byte>(off(value,at)) != rd<byte>(off(needle,at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            compare(left >> str, right >> str) -> int {
+                a >> p<byte> <- cast<byte>(left); b >> p<byte> <- cast<byte>(right);
+                at >> int <- 0;
+                while (rd<byte>(off(a,at)) == rd<byte>(off(b,at))) {
+                    if (rd<byte>(off(a,at)) == 0) return 0;
+                    at += 1;
+                }
+                return rd<byte>(off(a,at)) < rd<byte>(off(b,at)) ? -1 : 1;
+            }
+            indexOf(value >> str, needle >> str) -> int {
+                source >> p<byte> <- cast<byte>(value); find >> p<byte> <- cast<byte>(needle);
+                at >> int <- 0;
+                repeat {
+                    if (prefix(off(source,at),find)) return at;
+                    if (rd<byte>(off(source,at)) == 0) return -1;
+                    at += 1;
+                } until (false);
+                return -1;
+            }
+            slice(value >> str, start >> int, count >> int) -> str {
+                reserved >> u64 <- count;
+                reserved += 1;
+                result >> p<byte> <- cast<byte>(alloc(reserved));
+                if (result == null) return cast(null);
+                cp(result,off(cast<byte>(value),start),count);
+                wr<byte>(off(result,count),0);
+                return cast(result);
+            }
+        public:
+            provider_string_strSubstring(value >> str, start >> int, count >> int) -> str { return slice(value,start,count); }
+            provider_string_strSlice(value >> str, start >> int, count >> int) -> str { return slice(value,start,count); }
+            provider_string_substring(value >> str, start >> int, count >> int) -> str { return slice(value,start,count); }
+            provider_string_strContains(value >> str, needle >> str) -> bool { return indexOf(value,needle) >= 0; }
+            provider_string_strIndexOf(value >> str, needle >> str) -> int { return indexOf(value,needle); }
+            provider_string_strStartsWith(value >> str, needle >> str) -> bool { return prefix(cast<byte>(value),cast<byte>(needle)); }
+            provider_string_strEndsWith(value >> str, needle >> str) -> bool {
+                bytes >> int <- strByteLen(value); tail >> int <- strByteLen(needle);
+                return bytes >= tail && prefix(off(cast<byte>(value),bytes-tail),cast<byte>(needle));
+            }
+            provider_string_strCompare(left >> str, right >> str) -> int { return compare(left,right); }
+            provider_string_strEq(left >> str, right >> str) -> bool { return compare(left,right) == 0; }
+    fa: return true;
+}

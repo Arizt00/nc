@@ -1,0 +1,2301 @@
+use <data:json>;
+use <fs:dir>;
+use <io:output, render>;
+use <project:parser_ast, ir, mct, mct_llvm, mct_object, mct_image, sha256, content_cache, type_shapes, native_types, type_contract_sema>;
+
+nccProject[@runtime] {
+    const:
+        LIST_BYTES >> int <- 1048576;
+        METADATA_BYTES >> int <- 256;
+
+        AST_CONTAINER >> int <- 3;
+        AST_CONST_SECTION >> int <- 4;
+        AST_TYPE_SECTION >> int <- 5;
+        AST_STC_SECTION >> int <- 6;
+        AST_LOCAL_SECTION >> int <- 7;
+        AST_FN_SECTION >> int <- 8;
+        AST_GLOBAL_CONST >> int <- 10;
+        AST_GLOBAL_TYPE >> int <- 11;
+        AST_VALUE_DECL >> int <- 12;
+        AST_TYPE_DECL >> int <- 13;
+        AST_FIELD_DECL >> int <- 14;
+        AST_FUNCTION_DECL >> int <- 15;
+        AST_ENTRY_REF >> int <- 17;
+        AST_EXPR_NAME >> int <- 26;
+        AST_EXPR_CALL >> int <- 29;
+        AST_EXPR_MEMBER >> int <- 30;
+
+        IR_FUNCTION >> int <- 2;
+        IR_TYPE >> int <- 4;
+        IR_CALL >> int <- 8;
+
+        T_IDENTIFIER >> int <- 1;
+        T_COLON >> int <- 13;
+        T_SEMICOLON >> int <- 14;
+        T_LESS >> int <- 27;
+        T_KEYWORD_USE >> int <- 50;
+
+    type:
+        ProjectTarget {
+            public:
+                triple >> str;
+                isa >> str;
+                objectFormat >> str;
+                abi >> str;
+                pointerBits >> int;
+                debugInfo >> str;
+                objectExtension >> str;
+                objectDirectory >> str;
+        }
+
+        ProjectContract {
+            public:
+                units >> int;
+                edges >> int;
+                symbols >> int;
+                unresolved >> int;
+                duplicates >> int;
+                references >> int;
+                bindings >> int;
+                denied >> int;
+                objects >> int;
+                ltoInlinedCalls >> int;
+                ltoGvnReuses >> int;
+                ltoCallEdges >> int;
+                ltoRelocations >> int;
+                ltoBytes >> int;
+                fingerprint >> int;
+        }
+
+    stc:
+        synchronizations >> u64 <- 0;
+        resolutions >> u64 <- 0;
+        sourceBytes >> u64 <- 0;
+
+    local:
+        lastUnits >> int <- 0;
+        lastEdges >> int <- 0;
+        lastSymbols >> int <- 0;
+        lastUnresolved >> int <- 0;
+        lastDuplicates >> int <- 0;
+        lastReferences >> int <- 0;
+        lastBindings >> int <- 0;
+        lastDenied >> int <- 0;
+        lastObjects >> int <- 0;
+        lastFingerprint >> int <- 0;
+        lastAstHits >> int <- 0;
+        lastAstMisses >> int <- 0;
+        lastMaterialHits >> int <- 0;
+        lastMaterialMisses >> int <- 0;
+        lastRestoredBytes >> int <- 0;
+        lastLtoInlinedCalls >> int <- 0;
+        lastLtoGvnReuses >> int <- 0;
+        lastLtoCallEdges >> int <- 0;
+        lastLtoRelocations >> int <- 0;
+        lastLtoBytes >> int <- 0;
+        lastLtoCacheHit >> bool <- false;
+
+    fn:
+        private:
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                width >> int <- strByteLen(left);
+                data >> p<byte> <- cast<byte>(left);
+                if (width > 0 && separator(rd<byte>(off(data, width - 1)))) return left + right;
+                if (width >= 2 && rd<byte>(off(data, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast<byte>(alloc(METADATA_BYTES));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, METADATA_BYTES);
+                result >> bool <- described >= 14 &&
+                    rd<byte>(off(metadata, 0)) == 116 && rd<byte>(off(metadata, 1)) == 121 &&
+                    rd<byte>(off(metadata, 2)) == 112 && rd<byte>(off(metadata, 3)) == 101 &&
+                    rd<byte>(off(metadata, 4)) == 61 && rd<byte>(off(metadata, 5)) == 100 &&
+                    rd<byte>(off(metadata, 6)) == 105 && rd<byte>(off(metadata, 7)) == 114 &&
+                    rd<byte>(off(metadata, 8)) == 101 && rd<byte>(off(metadata, 9)) == 99 &&
+                    rd<byte>(off(metadata, 10)) == 116 && rd<byte>(off(metadata, 11)) == 111 &&
+                    rd<byte>(off(metadata, 12)) == 114 && rd<byte>(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            directory(path >> str) -> str {
+                data >> p<byte> <- cast<byte>(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd<byte>(off(data, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                return strSubstring(path, 0, at);
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (path == "" || path == "." || exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != path && !ensureDirectory(parent)) return false;
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            insertSortedUnique(values >> int, value >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    current >> str <- arrayText(values, at, "");
+                    if (current == value) return true;
+                    if (strCompare(value, current) < 0) {
+                        node >> int <- jsonNewString(value);
+                        guard node != 0 else return false;
+                        inserted >> bool <- jsonArrayInsert(values, at, node);
+                        jsonRelease(node);
+                        return inserted;
+                    }
+                    at += 1;
+                }
+                return pushText(values, value);
+            }
+
+            contains(values >> int, value >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(values)) {
+                    if (arrayText(values, at, "") == value) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            arrayText(values >> int, index >> int, fallback >> str) -> str {
+                item >> int <- jsonArrayBorrow(values, index);
+                guard item != 0 else return fallback;
+                value >> str <- jsonGetStringOr(item, fallback);
+                jsonRelease(item);
+                return value;
+            }
+
+            objectText(object >> int, key >> str, fallback >> str) -> str {
+                item >> int <- jsonObjectBorrow(object, key);
+                guard item != 0 else return fallback;
+                value >> str <- jsonGetStringOr(item, fallback);
+                jsonRelease(item);
+                return value;
+            }
+
+            objectInt(object >> int, key >> str, fallback >> int) -> int {
+                item >> int <- jsonObjectBorrow(object, key);
+                guard item != 0 else return fallback;
+                value >> int <- jsonGetIntOr(item, fallback);
+                jsonRelease(item);
+                return value;
+            }
+
+            objectBool(object >> int, key >> str, fallback >> bool) -> bool {
+                item >> int <- jsonObjectBorrow(object, key);
+                guard item != 0 else return fallback;
+                value >> bool <- jsonGetBoolOr(item, fallback);
+                jsonRelease(item);
+                return value;
+            }
+
+            cloneField(object >> int, key >> str) -> int {
+                item >> int <- jsonObjectBorrow(object, key);
+                guard item != 0 else return 0;
+                value >> int <- jsonClone(item);
+                jsonRelease(item);
+                return value;
+            }
+
+            setText(object >> int, key >> str, value >> str) -> bool {
+                node >> int <- jsonNewString(value);
+                guard node != 0 else return false;
+                ok >> bool <- jsonObjectSet(object, key, node);
+                jsonRelease(node);
+                return ok;
+            }
+
+            setInteger(object >> int, key >> str, value >> int) -> bool {
+                node >> int <- jsonNewInt(value);
+                guard node != 0 else return false;
+                ok >> bool <- jsonObjectSet(object, key, node);
+                jsonRelease(node);
+                return ok;
+            }
+
+            setBoolean(object >> int, key >> str, value >> bool) -> bool {
+                node >> int <- jsonNewBool(value);
+                guard node != 0 else return false;
+                ok >> bool <- jsonObjectSet(object, key, node);
+                jsonRelease(node);
+                return ok;
+            }
+
+            pushText(array >> int, value >> str) -> bool {
+                node >> int <- jsonNewString(value);
+                guard node != 0 else return false;
+                ok >> bool <- jsonArrayPush(array, node);
+                jsonRelease(node);
+                return ok;
+            }
+
+            releaseText(value >> str) -> bool {
+                return value == "" ? true : strRelease(value);
+            }
+
+            sourceFile(name >> str) -> bool {
+                return strEndsWith(name, ".n") || strEndsWith(name, ".nc");
+            }
+
+            collectSources(root >> str, relative >> str, files >> int) -> bool {
+                if (!exists(root) || !isDirectory(root)) return true;
+                names >> p<byte> <- cast<byte>(alloc(LIST_BYTES));
+                guard names != null else return false;
+                listed >> int <- listDirInto(root, names, LIST_BYTES);
+                if (listed < 0 || listed >= LIST_BYTES) { free(names); return false; }
+                wr<byte>(off(names, listed), 0);
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd<byte>(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr<byte>(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(root, name);
+                            childRelative >> str <- relative == "" ? name : relative + "/" + name;
+                            if (isDirectory(child)) {
+                                guard collectSources(child, childRelative, files) else {
+                                    free(names);
+                                    return false;
+                                }
+                            }
+                            else if (sourceFile(name)) insertSortedUnique(files, childRelative);
+                        }
+                        while (at < listed &&
+                            (rd<byte>(off(names, at + 1)) == 10 ||
+                             rd<byte>(off(names, at + 1)) == 13)) { at += 1; }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return true;
+            }
+
+            baseName(path >> str) -> str {
+                data >> p<byte> <- cast<byte>(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd<byte>(off(data, at)))) { at -= 1; }
+                return strSubstring(path, at + 1, strByteLen(path) - at - 1);
+            }
+
+            stem(path >> str) -> str {
+                name >> str <- baseName(path);
+                at >> int <- strByteLen(name) - 1;
+                data >> p<byte> <- cast<byte>(name);
+                while (at >= 0 && rd<byte>(off(data, at)) != 46) { at -= 1; }
+                return at <= 0 ? name : strSubstring(name, 0, at);
+            }
+
+            target(triple >> str) -> ProjectTarget {
+                if (triple == "x86_64-pc-windows-msvc") return ProjectTarget(
+                    triple: triple, isa: "x86_64", objectFormat: "coff",
+                    abi: "win64", pointerBits: 64, debugInfo: "pdb",
+                    objectExtension: "obj", objectDirectory: "w64");
+                if (triple == "x86_64-apple-darwin") return ProjectTarget(
+                    triple: triple, isa: "x86_64", objectFormat: "macho64",
+                    abi: "sysv64", pointerBits: 64, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "mx64");
+                if (triple == "aarch64-apple-darwin") return ProjectTarget(
+                    triple: triple, isa: "aarch64", objectFormat: "macho64",
+                    abi: "aapcs64", pointerBits: 64, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "ma64");
+                if (triple == "i386-unknown-linux-gnu") return ProjectTarget(
+                    triple: triple, isa: "i386", objectFormat: "elf32",
+                    abi: "sysv32", pointerBits: 32, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "l32");
+                if (triple == "aarch64-unknown-linux-gnu") return ProjectTarget(
+                    triple: triple, isa: "aarch64", objectFormat: "elf64",
+                    abi: "aapcs64", pointerBits: 64, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "la64");
+                if (triple == "armv7-unknown-linux-gnueabihf") return ProjectTarget(
+                    triple: triple, isa: "armv7", objectFormat: "elf32",
+                    abi: "aapcs32", pointerBits: 32, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "armv7");
+                if (triple == "riscv32imac-unknown-elf") return ProjectTarget(
+                    triple: triple, isa: "riscv32", objectFormat: "elf32",
+                    abi: "riscv32", pointerBits: 32, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "rv32");
+                if (triple == "riscv64gc-unknown-linux-gnu") return ProjectTarget(
+                    triple: triple, isa: "riscv64", objectFormat: "elf64",
+                    abi: "riscv64", pointerBits: 64, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "rv64");
+                if (triple == "wasm32-wasi") return ProjectTarget(
+                    triple: triple, isa: "wasm32", objectFormat: "wasm",
+                    abi: "wasm", pointerBits: 32, debugInfo: "dwarf",
+                    objectExtension: "wasm", objectDirectory: "wasm32");
+                return ProjectTarget(
+                    triple: triple, isa: "x86_64", objectFormat: "elf64",
+                    abi: "sysv64", pointerBits: 64, debugInfo: "dwarf",
+                    objectExtension: "o", objectDirectory: "l64");
+            }
+
+            targetKnown(triple >> str) -> bool {
+                return triple == "x86_64-unknown-linux-gnu" ||
+                    triple == "x86_64-pc-windows-msvc" ||
+                    triple == "x86_64-apple-darwin" ||
+                    triple == "i386-unknown-linux-gnu" ||
+                    triple == "aarch64-unknown-linux-gnu" ||
+                    triple == "aarch64-apple-darwin" ||
+                    triple == "armv7-unknown-linux-gnueabihf" ||
+                    triple == "riscv32imac-unknown-elf" ||
+                    triple == "riscv64gc-unknown-linux-gnu" || triple == "wasm32-wasi";
+            }
+
+            targetJson(contract >> ProjectTarget) -> int {
+                value >> int <- jsonNewObject();
+                setText(value, "abi", contract.abi);
+                setText(value, "backend_kind", "hosted-production");
+                setText(value, "code_model", "small");
+                setText(value, "debug_info_model", contract.debugInfo);
+                setText(value, "endianness", "little");
+                setText(value, "host_services", "os");
+                setText(value, "isa", contract.isa);
+                setText(value, "linker_model", "ncc-native-plan");
+                setText(value, "object_format", contract.objectFormat);
+                setInteger(value, "pointer_width", contract.pointerBits);
+                setText(value, "relocation_model", "pic");
+                setText(value, "runtime_model", "hosted");
+                setText(value, "support_tier", "tier1");
+                setText(value, "target_family", "hosted");
+                setText(value, "target_triple", contract.triple);
+                return value;
+            }
+
+            executableExtension(contract >> ProjectTarget) -> str {
+                if (contract.objectFormat == "coff") return ".exe";
+                if (contract.objectFormat == "wasm") return ".wasm";
+                return "";
+            }
+
+            executablePath(root >> str, mainName >> str, contract >> ProjectTarget,
+                requested >> str) -> str {
+                if (requested != "") return requested;
+                return join(root, ".ncc/bin/" + stem(mainName) +
+                    executableExtension(contract));
+            }
+
+            visibility(flags >> int) -> str {
+                if ((flags & 3) == 1) return "public";
+                if ((flags & 3) == 2) return "private";
+                if ((flags & 3) == 3) return "internal";
+                return "unspecified";
+            }
+
+            symbolKind(kind >> int) -> str {
+                if (kind == AST_CONTAINER) return "container";
+                if (kind == AST_GLOBAL_CONST) return "const_eval";
+                if (kind == AST_GLOBAL_TYPE || kind == AST_TYPE_DECL) return "type";
+                if (kind == AST_VALUE_DECL) return "state";
+                if (kind == AST_FIELD_DECL) return "field";
+                if (kind == AST_FUNCTION_DECL) return "function";
+                if (kind == AST_ENTRY_REF) return "main_entry";
+                return "";
+            }
+
+            unitSymbol(material >> p<byte>, node >> int, kind >> int) -> bool {
+                if (kind == AST_CONTAINER || kind == AST_GLOBAL_CONST ||
+                    kind == AST_GLOBAL_TYPE || kind == AST_ENTRY_REF) return true;
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                guard parent >= 0 else return false;
+                parentKind >> int <- parser_ast.nccParserAst.materialNodeKind(material, parent);
+                if (kind == AST_VALUE_DECL) return parentKind == AST_CONST_SECTION ||
+                    parentKind == AST_STC_SECTION || parentKind == AST_LOCAL_SECTION;
+                if (kind == AST_TYPE_DECL) return parentKind == AST_TYPE_SECTION;
+                if (kind == AST_FIELD_DECL) return false;
+                if (kind == AST_FUNCTION_DECL) return parentKind == AST_FN_SECTION;
+                return false;
+            }
+
+            tokenText(material >> p<byte>, index >> int) -> str {
+                bytes >> int <- parser_ast.nccParserAst.materialIdentityBytes(material, index);
+                result >> p<byte> <- cast<byte>(alloc(bytes + 1));
+                guard result != null else return "";
+                cp(result, parser_ast.nccParserAst.materialTokenData(material, index), bytes);
+                wr<byte>(off(result, bytes), 0);
+                return cast(result);
+            }
+
+            nodeName(material >> p<byte>, node >> int) -> str {
+                wanted >> int <- parser_ast.nccParserAst.materialNodeNameHash(material, node);
+                origin >> int <- parser_ast.nccParserAst.materialNodeOrigin(material, node);
+                if (origin >= 0 && wanted != 0 &&
+                    parser_ast.nccParserAst.materialIdentityHash(material, origin) == wanted)
+                    return tokenText(material, origin);
+                at >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material, node);
+                limit >> int <- parser_ast.nccParserAst.materialNodeEndToken(material, node);
+                while (at <= limit) {
+                    if (wanted != 0 && parser_ast.nccParserAst.materialIdentityHash(material, at) == wanted)
+                        return tokenText(material, at);
+                    at += 1;
+                }
+                return "";
+            }
+
+            ownerContainer(material >> p<byte>, node >> int) -> str {
+                parent >> int <- parser_ast.nccParserAst.materialNodeParent(material, node);
+                while (parent >= 0) {
+                    if (parser_ast.nccParserAst.materialNodeKind(material, parent) == AST_CONTAINER)
+                        return nodeName(material, parent);
+                    parent <- parser_ast.nccParserAst.materialNodeParent(material, parent);
+                }
+                return "";
+            }
+
+            leftmostIdentityNode(material >> p<byte>, node >> int) -> int {
+                guard node >= 0 else return -1;
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, node);
+                return child < 0 ? node : leftmostIdentityNode(material, child);
+            }
+
+            rightmostIdentityNode(material >> p<byte>, node >> int) -> int {
+                guard node >= 0 else return -1;
+                child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, node);
+                if (child < 0) return node;
+                last >> int <- child;
+                next >> int <- parser_ast.nccParserAst.materialNodeNextSibling(material, last);
+                while (next >= 0) {
+                    last <- next;
+                    next <- parser_ast.nccParserAst.materialNodeNextSibling(material, last);
+                }
+                return rightmostIdentityNode(material, last);
+            }
+
+            collectSymbols(material >> p<byte>, targetId >> int) -> int {
+                symbols >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+                    kind >> int <- parser_ast.nccParserAst.materialNodeKind(material, at);
+                    label >> str <- symbolKind(kind);
+                    if (label != "" && unitSymbol(material, at, kind)) {
+                        name >> str <- kind == AST_ENTRY_REF ? "__main" : nodeName(material, at);
+                        owner >> str <- kind == AST_CONTAINER ? name : ownerContainer(material, at);
+                        qualified >> str <- kind == AST_CONTAINER ? name : owner + "." + name;
+                        symbol >> int <- jsonNewObject();
+                        setText(symbol, "container", owner);
+                        setText(symbol, "kind", label);
+                        setInteger(symbol,"source_node",at);
+                        setText(symbol, "name", qualified);
+                        setText(symbol, "visibility", visibility(
+                            (kind == AST_TYPE_DECL || kind == AST_GLOBAL_TYPE) ?
+                                parser_ast.nccParserAst.materialNodeFlags(material,at) >> 8 :
+                                parser_ast.nccParserAst.materialNodeFlags(material,at)));
+                        if (kind == AST_FUNCTION_DECL || kind == AST_TYPE_DECL || kind == AST_GLOBAL_TYPE) {
+                            shape >> int <- type_shapes.nccTypeShapes.signature(material,at,targetId);
+                            jsonObjectSet(symbol,"type_signature",shape); jsonRelease(shape);
+                            setInteger(symbol,"result_code",ir.nccIr.projectMaterialTypeCodeFor(material,at,targetId));
+                            parameters >> int <- jsonNewArray();
+                            child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,at);
+                            while (child >= 0) {
+                                if (parser_ast.nccParserAst.materialNodeKind(material,child) == 16) {
+                                    code >> int <- jsonNewInt(ir.nccIr.projectMaterialTypeCodeFor(material,child,targetId));
+                                    jsonArrayPush(parameters,code); jsonRelease(code);
+                                }
+                                child <- parser_ast.nccParserAst.materialNodeNextSibling(material,child);
+                            }
+                            jsonObjectSet(symbol,"parameter_codes",parameters); jsonRelease(parameters);
+                        }
+                        jsonArrayPush(symbols, symbol);
+                        jsonRelease(symbol);
+                        if (kind != AST_CONTAINER) {
+                            releaseText(qualified);
+                            releaseText(owner);
+                        }
+                        releaseText(name);
+                    }
+                    at += 1;
+                }
+                return symbols;
+            }
+
+            collectImports(material >> p<byte>) -> int {
+                imports >> int <- jsonNewArray();
+                count >> int <- parser_ast.nccParserAst.materialTokenCount(material);
+                at >> int <- 0;
+                while (at < count) {
+                    if (parser_ast.nccParserAst.materialTokenKind(material, at) == T_KEYWORD_USE) {
+                        cursor >> int <- at + 1;
+                        if (parser_ast.nccParserAst.materialTokenKind(material, cursor) == T_LESS)
+                            cursor += 1;
+                        projectMode >> bool <-
+                            parser_ast.nccParserAst.materialTokenSame(material, cursor, "project") &&
+                            parser_ast.nccParserAst.materialTokenKind(material, cursor + 1) == T_COLON;
+                        cursor += 2;
+                        while (cursor < count &&
+                            parser_ast.nccParserAst.materialTokenKind(material, cursor) != T_SEMICOLON) {
+                            if (projectMode &&
+                                parser_ast.nccParserAst.materialTokenKind(material, cursor) == T_IDENTIFIER) {
+                                imported >> str <- tokenText(material, cursor);
+                                insertSortedUnique(imports, imported);
+                                releaseText(imported);
+                            }
+                            cursor += 1;
+                        }
+                        at <- cursor;
+                    }
+                    at += 1;
+                }
+                return imports;
+            }
+
+            localGenericSymbol(symbols >> int, qualified >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(symbols)) {
+                    symbol >> int <- jsonArrayBorrow(symbols,at);
+                    if (objectText(symbol,"kind","") == "function" && objectText(symbol,"name","") == qualified) {
+                        shape >> int <- jsonObjectBorrow(symbol,"type_signature");
+                        return jsonArrayLen(jsonObjectBorrow(shape,"generics")) > 0;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+            collectReferences(material >> p<byte>, imports >> int, targetId >> int, unitName >> str, symbols >> int) -> int {
+                references >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+                    referenceKind >> int <- parser_ast.nccParserAst.materialNodeKind(material,at);
+                    if (referenceKind == 18 || type_contract_sema.nccTypeContractSema.projectTypeReference(material,at)) {
+                        first >> int <- parser_ast.nccParserAst.materialNodeFirstToken(material,at);
+                        end >> int <- parser_ast.nccParserAst.materialNodeEndToken(material,at);
+                        if (end == first+4 && parser_ast.nccParserAst.materialTokenKind(material,first+1) == 16 &&
+                            parser_ast.nccParserAst.materialTokenKind(material,first+3) == 16) {
+                            module >> str <- tokenText(material,first);
+                            if (contains(imports,module)) {
+                                owner >> str <- tokenText(material,first+2);
+                                name >> str <- tokenText(material,end);
+                                qualified >> str <- owner+"."+name;
+                                reference >> int <- jsonNewObject();
+                                setText(reference,"reference_kind","type");
+                                setInteger(reference,"node",at);
+                                setText(reference,"module",module); setText(reference,"owner",owner);
+                                setText(reference,"name",name); setText(reference,"qualified",qualified);
+                                setInteger(reference,"line",parser_ast.nccParserAst.materialNodeLine(material,at));
+                                setInteger(reference,"column",parser_ast.nccParserAst.materialNodeColumn(material,at));
+                                jsonArrayPush(references,reference); jsonRelease(reference);
+                                releaseText(owner); releaseText(name); releaseText(qualified);
+                            }
+                            releaseText(module);
+                        }
+                    }
+                    if (referenceKind == AST_EXPR_CALL ||
+                        (referenceKind == 27 && parser_ast.nccParserAst.materialNodeRoleHash(material,at) == 43)) {
+                        target >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material, at);
+                        application >> int <- parser_ast.nccParserAst.materialNodeKind(material,target) == 74 ? target : -1;
+                        if (parser_ast.nccParserAst.materialNodeKind(material,target) == 74)
+                            target = parser_ast.nccParserAst.materialNodeFirstChild(material,target);
+                        if (application >= 0 && parser_ast.nccParserAst.materialNodeKind(material,target) == AST_EXPR_NAME) {
+                            parent >> int <- parser_ast.nccParserAst.materialNodeParent(material,at);
+                            templated >> bool <- false;
+                            while (parent >= 0 && parser_ast.nccParserAst.materialNodeKind(material,parent) != AST_CONTAINER) {
+                                if (parser_ast.nccParserAst.materialNodeKind(material,parent) == AST_FUNCTION_DECL) {
+                                    child >> int <- parser_ast.nccParserAst.materialNodeFirstChild(material,parent);
+                                    while (child >= 0) {
+                                        if (parser_ast.nccParserAst.materialNodeKind(material,child) == 72) templated <- true;
+                                        child <- parser_ast.nccParserAst.materialNodeNextSibling(material,child);
+                                    }
+                                }
+                                parent <- parser_ast.nccParserAst.materialNodeParent(material,parent);
+                            }
+                            if (parent >= 0 && !templated) {
+                                owner >> str <- nodeName(material,parent);
+                                name >> str <- nodeName(material,target);
+                                qualified >> str <- owner+"."+name;
+                                if (localGenericSymbol(symbols,qualified)) {
+                                reference >> int <- jsonNewObject();
+                                setInteger(reference,"node",at); setBoolean(reference,"local_generic",true);
+                                setText(reference,"module",unitName); setText(reference,"owner",owner);
+                                setText(reference,"name",name); setText(reference,"qualified",qualified);
+                                arguments >> int <- type_shapes.nccTypeShapes.signature(material,application,targetId);
+                                jsonObjectSet(reference,"type_arguments",arguments); jsonRelease(arguments);
+                                setInteger(reference,"line",parser_ast.nccParserAst.materialNodeLine(material,at));
+                                setInteger(reference,"column",parser_ast.nccParserAst.materialNodeColumn(material,at));
+                                jsonArrayPush(references,reference); jsonRelease(reference);
+                                }
+                                releaseText(owner); releaseText(name); releaseText(qualified);
+                            }
+                        }
+                        if (target >= 0 &&
+                            parser_ast.nccParserAst.materialNodeKind(material, target) ==
+                                AST_EXPR_MEMBER) {
+                            left >> int <- parser_ast.nccParserAst.materialNodeFirstChild(
+                                material, target);
+                            moduleNode >> int <- leftmostIdentityNode(material, target);
+                            ownerNode >> int <- rightmostIdentityNode(material, left);
+                            nameNode >> int <- rightmostIdentityNode(material, target);
+                            module >> str <- nodeName(material, moduleNode);
+                            if (contains(imports, module)) {
+                                owner >> str <- nodeName(material, ownerNode);
+                                name >> str <- nodeName(material, nameNode);
+                                qualified >> str <- owner + "." + name;
+                                reference >> int <- jsonNewObject();
+                                setInteger(reference,"node",at);
+                                if (application >= 0) {
+                                    arguments >> int <- type_shapes.nccTypeShapes.signature(material,application,targetId);
+                                    jsonObjectSet(reference,"type_arguments",arguments); jsonRelease(arguments);
+                                }
+                                setText(reference, "module", module);
+                                setText(reference, "owner", owner);
+                                setText(reference, "name", name);
+                                setText(reference, "qualified", qualified);
+                                setInteger(reference, "line",
+                                    parser_ast.nccParserAst.materialNodeLine(material, at));
+                                setInteger(reference, "column",
+                                    parser_ast.nccParserAst.materialNodeColumn(material, at));
+                                jsonArrayPush(references, reference);
+                                jsonRelease(reference);
+                                releaseText(qualified);
+                                releaseText(module);
+                                releaseText(owner);
+                                releaseText(name);
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                return references;
+            }
+
+            codeIdentity(root >> str, unit >> int) -> bool {
+                name >> str <- objectText(unit, "name", "");
+                codeRelative >> str <- ".ncc/code/" + name + ".json";
+                code >> int <- jsonNewObject();
+                setText(code, "schema", "ncc.code.v1");
+                setText(code, "unit", name);
+                source >> int <- cloneField(unit, "source");
+                hash >> int <- cloneField(unit, "source_hash");
+                jsonObjectSet(code, "source", source);
+                jsonObjectSet(code, "hash", hash);
+                jsonRelease(source);
+                jsonRelease(hash);
+                setText(code, "bridge", "../../bridge.json");
+                ok >> bool <- jsonSaveFile(code, join(root, codeRelative), 2);
+                jsonRelease(code);
+                setText(unit, "code", codeRelative);
+                return ok;
+            }
+
+            objectRelative(unit >> int, contract >> ProjectTarget) -> str {
+                name >> str <- objectText(unit, "name", "");
+                return ".ncc/obj/" + contract.objectDirectory + "/" + name +
+                    "." + contract.objectExtension;
+            }
+
+            parseUnit(root >> str, relative >> str, name >> str,
+                mainUnit >> bool, contract >> ProjectTarget) -> int {
+                path >> str <- join(root, relative);
+                guard exists(path) else return 0;
+                hash >> str <- sha256.nccSha256.file(path);
+                guard hash != "" else return 0;
+                sourceHash >> str <- "sha256:" + hash;
+                astKey >> str <- content_cache.nccContentCache.astKey(sourceHash, relative);
+                cached >> int <- content_cache.nccContentCache.probeAst(root, astKey);
+                if (cached != 0 && objectText(cached, "source_hash", "") == sourceHash) {
+                    setText(cached, "name", name);
+                    setText(cached, "base_name", name);
+                    setText(cached, "source", relative);
+                    setBoolean(cached, "is_main", mainUnit);
+                    setText(cached, "ast_cache_key", astKey);
+                    setBoolean(cached, "ast_cache_hit", true);
+                    sourceBytes += fsSize(path);
+                    lastAstHits += 1;
+                    return cached;
+                }
+                if (cached != 0) jsonRelease(cached);
+                lastAstMisses += 1;
+                material >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                guard parser_ast.nccParserAst.materialReady(material) else {
+                    parser_ast.nccParserAst.parseFile(path, false, true);
+                    parser_ast.nccParserAst.closeMaterial(material);
+                    return 0;
+                }
+                unit >> int <- jsonNewObject();
+                setText(unit, "name", name);
+                setText(unit, "base_name", name);
+                setText(unit, "source", relative);
+                setText(unit, "source_hash", sourceHash);
+                setBoolean(unit,"imported_type_layouts",type_contract_sema.nccTypeContractSema.projectTypesPending(material));
+                symbols >> int <- collectSymbols(material,ir.nccIr.projectTargetCode(contract.triple));
+                jsonObjectSet(unit, "symbols", symbols);
+                imports >> int <- collectImports(material);
+                jsonObjectSet(unit, "imports", imports);
+                jsonObjectSet(unit, "deps", imports);
+                references >> int <- collectReferences(material, imports,ir.nccIr.projectTargetCode(contract.triple),name,symbols);
+                jsonRelease(symbols);
+                jsonObjectSet(unit, "references", references);
+                jsonRelease(references);
+                jsonRelease(imports);
+                setBoolean(unit, "is_main", mainUnit);
+                setText(unit, "ast_cache_key", astKey);
+                setBoolean(unit, "ast_cache_hit", false);
+                sourceBytes += fsSize(path);
+                parser_ast.nccParserAst.closeMaterial(material);
+                content_cache.nccContentCache.storeAst(root, astKey, unit);
+                return unit;
+            }
+
+            duplicateCount(units >> int, base >> str) -> int {
+                count >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    if (objectText(unit, "base_name", "") == base) count += 1;
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                return count;
+            }
+
+            normalizeUnitNames(units >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    base >> str <- objectText(unit, "base_name", "");
+                    if (!objectBool(unit, "is_main", false) &&
+                        duplicateCount(units, base) > 1) {
+                        hash >> str <- objectText(unit, "source_hash", "");
+                        suffix >> str <- strSubstring(hash, 7, 8);
+                        normalized >> str <- base + "_" + suffix;
+                        setText(unit, "name", normalized);
+                        releaseText(normalized);
+                        releaseText(suffix);
+                    }
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                return true;
+            }
+
+            knownUnit(units >> int, name >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    matchesName >> bool <- objectText(unit, "name", "") == name ||
+                        objectText(unit, "base_name", "") == name;
+                    jsonRelease(unit);
+                    if (matchesName) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            unitFor(units >> int, name >> str) -> int {
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    if (objectText(unit, "name", "") == name ||
+                        objectText(unit, "base_name", "") == name)
+                        return unit;
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                return 0;
+            }
+
+            visibilityValue(value >> str) -> int {
+                if (value == "public") return 1;
+                if (value == "private") return 2;
+                if (value == "internal") return 3;
+                return 0;
+            }
+
+            graphTextEqual(bytes >> p<byte>, count >> int, value >> str) -> bool {
+                guard count == strByteLen(value) else return false;
+                data >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (at < count) {
+                    if (rd<byte>(off(bytes, at)) != rd<byte>(off(data, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            edgesOf(units >> int) -> int {
+                edges >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    from >> str <- objectText(unit, "name", "");
+                    deps >> int <- jsonObjectBorrow(unit, "deps");
+                    depAt >> int <- 0;
+                    while (depAt < jsonArrayLen(deps)) {
+                        to >> str <- arrayText(deps, depAt, "");
+                        edge >> int <- jsonNewArray();
+                        pushText(edge, from);
+                        pushText(edge, to);
+                        jsonArrayPush(edges, edge);
+                        jsonRelease(edge);
+                        depAt += 1;
+                    }
+                    jsonRelease(deps);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                return edges;
+            }
+
+            visit(units >> int, unit >> int, marks >> int, order >> int) -> bool {
+                name >> str <- objectText(unit, "name", "");
+                state >> int <- objectInt(marks, name, 0);
+                if (state == 2 || state == 1) return true;
+                setInteger(marks, name, 1);
+                deps >> int <- jsonObjectBorrow(unit, "deps");
+                depAt >> int <- 0;
+                while (depAt < jsonArrayLen(deps)) {
+                    wanted >> str <- arrayText(deps, depAt, "");
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(units)) {
+                        candidate >> int <- jsonArrayBorrow(units, at);
+                        if (objectText(candidate, "name", "") == wanted ||
+                            objectText(candidate, "base_name", "") == wanted) {
+                            visit(units, candidate, marks, order);
+                            at <- jsonArrayLen(units);
+                        }
+                        jsonRelease(candidate);
+                        at += 1;
+                    }
+                    depAt += 1;
+                }
+                jsonRelease(deps);
+                setInteger(marks, name, 2);
+                if (!contains(order, name)) pushText(order, name);
+                return true;
+            }
+
+            linkOrder(units >> int) -> int {
+                marks >> int <- jsonNewObject();
+                order >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    visit(units, unit, marks, order);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                jsonRelease(marks);
+                return order;
+            }
+
+            stableHash(value >> str, seed >> int) -> int {
+                data >> p<byte> <- cast<byte>(value);
+                byteCount >> int <- strByteLen(value);
+                at >> int <- 0;
+                result >> int <- seed;
+                while (at < byteCount) {
+                    result <- (result * 33 + rd<byte>(off(data, at)) + 1) % 16777213;
+                    at += 1;
+                }
+                return result;
+            }
+
+            stripInternalUnitFields(units >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    base >> int <- jsonObjectRemove(unit, "base_name");
+                    mainFlag >> int <- jsonObjectRemove(unit, "is_main");
+                    astHit >> int <- jsonObjectRemove(unit, "ast_cache_hit");
+                    materialHit >> int <- jsonObjectRemove(unit, "material_cache_hit");
+                    if (base != 0) jsonRelease(base);
+                    if (mainFlag != 0) jsonRelease(mainFlag);
+                    if (astHit != 0) jsonRelease(astHit);
+                    if (materialHit != 0) jsonRelease(materialHit);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                return true;
+            }
+
+            refreshExportLayouts(units >> int, symbols >> int, root >> str) -> bool {
+                count >> int <- jsonArrayLen(units);
+                materials >> p<addr> <- calloc(count,sizeOf(addr));
+                if (materials == null) return false;
+                valid >> bool <- true; at >> int <- 0;
+                while (at < count && valid) {
+                    unit >> int <- jsonArrayBorrow(units,at);
+                    if (objectBool(unit,"imported_type_layouts",false)) {
+                        path >> str <- join(root,objectView(unit,"source",""));
+                        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(path);
+                        valid <- parser_ast.nccParserAst.materialReady(material);
+                        wr(off(materials,at),adr(material)); releaseText(path);
+                    }
+                    jsonRelease(unit); at += 1;
+                }
+                // Layout dependencies may run against source order, including pointer cycles.
+                // Publish a fixed point using the same target layout engine as IR lowering.
+                changed >> bool <- true; pass >> int <- 0;
+                while (valid && changed && pass <= count) {
+                    changed <- false; at <- 0;
+                    while (at < count && valid) {
+                        material >> p<byte> <- from<byte>(rd(off(materials,at)));
+                        unit >> int <- jsonArrayBorrow(units,at);
+                        unitName >> str <- objectView(unit,"name","");
+                        layout >> p<byte> <- null;
+                        index >> int <- 0;
+                        while (material != null && index < jsonArrayLen(symbols) && valid) {
+                            symbol >> int <- jsonArrayBorrow(symbols,index);
+                            if (objectView(symbol,"unit","") == unitName && jsonObjectHas(symbol,"type_signature")) {
+                                old >> int <- jsonObjectBorrow(symbol,"type_signature");
+                                if (layout == null) layout <- type_shapes.nccTypeShapes.openBoundLayout(material,objectInt(old,"target",0),symbols);
+                                shape >> int <- type_shapes.nccTypeShapes.signatureInLayout(material,
+                                    objectInt(symbol,"source_node",-1),objectInt(old,"target",0),layout);
+                                valid <- shape != 0;
+                                different >> bool <- valid && !jsonEquals(old,shape);
+                                jsonRelease(old);
+                                if (different) {
+                                    jsonObjectSet(symbol,"type_signature",shape); changed <- true;
+                                }
+                                jsonRelease(shape);
+                            }
+                            jsonRelease(symbol); index += 1;
+                        }
+                        type_shapes.nccTypeShapes.closeBoundLayout(layout);
+                        jsonRelease(unit); at += 1;
+                    }
+                    pass += 1;
+                }
+                at <- 0;
+                while (at < count) { parser_ast.nccParserAst.closeMaterial(from<byte>(rd(off(materials,at)))); at += 1; }
+                free(materials);
+                at <- 0;
+                while (valid && !changed && at < count) {
+                    unit >> int <- jsonArrayBorrow(units,at);
+                    source >> int <- jsonObjectBorrow(unit,"symbols"); index >> int <- 0;
+                    while (index < jsonArrayLen(symbols)) {
+                        symbol >> int <- jsonArrayBorrow(symbols,index);
+                        if (objectView(symbol,"unit","") == objectView(unit,"name","") && jsonObjectHas(symbol,"type_signature")) {
+                            sourceAt >> int <- 0;
+                            while (sourceAt < jsonArrayLen(source)) {
+                                original >> int <- jsonArrayBorrow(source,sourceAt);
+                                if (objectInt(original,"source_node",-1) == objectInt(symbol,"source_node",-2)) {
+                                    shape >> int <- cloneField(symbol,"type_signature");
+                                    jsonObjectSet(original,"type_signature",shape); jsonRelease(shape);
+                                }
+                                jsonRelease(original); sourceAt += 1;
+                            }
+                        }
+                        jsonRelease(symbol); index += 1;
+                    }
+                    jsonRelease(source); jsonRelease(unit); at += 1;
+                }
+                return valid && !changed;
+            }
+
+            resolution(units >> int, edges >> int, root >> str, write >> bool) -> int {
+                symbols >> int <- jsonNewArray();
+                bindings >> int <- jsonNewArray();
+                seen >> int <- jsonNewObject();
+                symbolIndex >> int <- jsonNewObject();
+                unresolved >> int <- 0;
+                duplicates >> int <- 0;
+                references >> int <- 0;
+                resolvedReferences >> int <- 0;
+                denied >> int <- 0;
+                ambiguous >> int <- 0;
+                fingerprint >> int <- 5381;
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    unitName >> str <- objectText(unit, "name", "");
+                    deps >> int <- jsonObjectBorrow(unit, "deps");
+                    depAt >> int <- 0;
+                    while (depAt < jsonArrayLen(deps)) {
+                        dep >> str <- arrayText(deps, depAt, "");
+                        if (!knownUnit(units, dep)) unresolved += 1;
+                        edgeIdentity >> str <- unitName + "->" + dep;
+                        fingerprint <- stableHash(edgeIdentity, fingerprint);
+                        releaseText(edgeIdentity);
+                        depAt += 1;
+                    }
+                    source >> int <- jsonObjectBorrow(unit, "symbols");
+                    symbolAt >> int <- 0;
+                    while (symbolAt < jsonArrayLen(source)) {
+                        sourceItem >> int <- jsonArrayBorrow(source, symbolAt);
+                        item >> int <- jsonClone(sourceItem);
+                        jsonRelease(sourceItem);
+                        name >> str <- objectText(item, "name", "");
+                        materialized >> str <- name;
+                        if (jsonObjectHas(seen, name)) {
+                            duplicates += 1;
+                            materialized <- unitName + "__" + name;
+                        }
+                        setBoolean(seen, materialized, true);
+                        setText(item, "unit", unitName);
+                        setText(item, "materialized_name", materialized);
+                        setInteger(item, "ordinal", jsonArrayLen(symbols));
+                        jsonArrayPush(symbols, item);
+                        if (objectText(item, "kind", "") == "function" || objectText(item,"kind","") == "type") {
+                            symbolKey >> str <- unitName + "::" + name;
+                            if (jsonObjectHas(symbolIndex, symbolKey))
+                                setInteger(symbolIndex, symbolKey, -1);
+                            else setInteger(symbolIndex, symbolKey, jsonArrayLen(symbols));
+                            releaseText(symbolKey);
+                        }
+                        jsonRelease(item);
+                        fingerprint <- stableHash(materialized, fingerprint);
+                        if (materialized != name) releaseText(materialized);
+                        symbolAt += 1;
+                    }
+                    jsonRelease(source);
+                    jsonRelease(deps);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+
+                layoutsPublished >> bool <- refreshExportLayouts(units,symbols,root);
+                if (!layoutsPublished) unresolved += 1;
+                at <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    unitName >> str <- objectText(unit, "name", "");
+                    sourceReferences >> int <- jsonObjectBorrow(unit, "references");
+                    referenceAt >> int <- 0;
+                    while (referenceAt < jsonArrayLen(sourceReferences)) {
+                        reference >> int <- jsonArrayBorrow(sourceReferences, referenceAt);
+                        references += 1;
+                        module >> str <- objectText(reference, "module", "");
+                        qualified >> str <- objectText(reference, "qualified", "");
+                        dependency >> int <- unitFor(units, module);
+                        if (dependency == 0) {
+                            unresolved += 1;
+                        }
+                        else {
+                            dependencyName >> str <- objectText(dependency, "name", "");
+                            symbolKey >> str <- dependencyName + "::" + qualified;
+                            indexed >> int <- objectInt(symbolIndex, symbolKey, 0);
+                            releaseText(symbolKey);
+                            matches >> int <- indexed == 0 ? 0 : (indexed < 0 ? 2 : 1);
+                            matchedSymbol >> int <- 0;
+                            if (indexed > 0)
+                                matchedSymbol <- jsonArrayBorrow(symbols, indexed - 1);
+                            if (matches == 0) unresolved += 1;
+                            else if (matches > 1) { ambiguous += 1; unresolved += 1; }
+                            else if (objectView(reference,"reference_kind","") == "type" &&
+                                objectView(matchedSymbol,"kind","") != "type") {
+                                unresolved += 1;
+                                native_types.nccNativeTypes.projectSignatureError(3,
+                                    objectInt(reference,"line",0),objectInt(reference,"column",0),
+                                    objectView(unit,"source",""));
+                            }
+                            else {
+                                access >> str <- objectText(matchedSymbol, "visibility", "unspecified");
+                                if (access == "unspecified" && objectText(matchedSymbol,"kind","") == "type") access = "internal";
+                                localBinding >> bool <- unitName == dependencyName && jsonGetBoolOr(jsonObjectBorrow(reference,"local_generic"),false);
+                                if (!localBinding && (access == "private" || access == "unspecified")) {
+                                    denied += 1;
+                                    unresolved += 1;
+                                }
+                                else {
+                                    binding >> int <- jsonClone(reference);
+                                    setText(binding, "caller_unit", unitName);
+                                    setText(binding, "defining_unit", dependencyName);
+                                    setText(binding, "visibility", access);
+                                    materializedName >> int <- cloneField(
+                                        matchedSymbol, "materialized_name");
+                                    symbolOrdinal >> int <- cloneField(matchedSymbol, "ordinal");
+                                    jsonObjectSet(binding, "materialized_name", materializedName);
+                                    jsonObjectSet(binding, "symbol_ordinal", symbolOrdinal);
+                                    resultCode >> int <- cloneField(matchedSymbol,"result_code");
+                                    parameterCodes >> int <- cloneField(matchedSymbol,"parameter_codes");
+                                    typeSignature >> int <- cloneField(matchedSymbol,"type_signature");
+                                    resolvedShape >> int <- type_shapes.nccTypeShapes.resolveImported(typeSignature,symbols);
+                                    jsonRelease(typeSignature); typeSignature = resolvedShape;
+                                    typeArguments >> int <- jsonObjectBorrow(reference,"type_arguments");
+                                    if (typeArguments != 0) {
+                                        resolvedArguments >> int <- type_shapes.nccTypeShapes.resolveImported(typeArguments,symbols);
+                                        jsonRelease(typeArguments); typeArguments = resolvedArguments;
+                                        jsonObjectSet(binding,"type_arguments",typeArguments);
+                                        instantiated >> int <- type_shapes.nccTypeShapes.instantiate(typeSignature,typeArguments);
+                                        jsonRelease(typeSignature); typeSignature = instantiated;
+                                        if (typeSignature == 0) {
+                                            unresolved += 1;
+                                            native_types.nccNativeTypes.projectSignatureError(7,objectInt(reference,"line",0),objectInt(reference,"column",0),objectText(unit,"source",""));
+                                        }
+                                    }
+                                    jsonRelease(typeArguments);
+                                    jsonObjectSet(binding,"result_code",resultCode);
+                                    jsonObjectSet(binding,"parameter_codes",parameterCodes);
+                                    jsonObjectSet(binding,"type_signature",typeSignature);
+                                    if (typeArguments != 0) {
+                                        canonical >> str <- jsonStringify(typeSignature);
+                                        digest >> str <- sha256.nccSha256.bytes(cast<byte>(canonical),strByteLen(canonical));
+                                        specialized >> str <- objectText(binding,"name","")+"__nc_"+digest;
+                                        setText(binding,"emission_name",specialized); releaseText(specialized);
+                                        releaseText(digest); releaseText(canonical);
+                                    }
+                                    jsonRelease(typeSignature);
+                                    jsonRelease(resultCode); jsonRelease(parameterCodes);
+                                    jsonRelease(materializedName);
+                                    jsonRelease(symbolOrdinal);
+                                    jsonArrayPush(bindings, binding);
+                                    jsonRelease(binding);
+                                    resolvedReferences += 1;
+                                    bindingIdentity >> str <- unitName + "=>" + dependencyName +
+                                        ":" + qualified + ":" + access;
+                                    fingerprint <- stableHash(bindingIdentity, fingerprint);
+                                    fingerprint <- signatureFingerprint(matchedSymbol,fingerprint);
+                                    releaseText(bindingIdentity);
+                                }
+                            }
+                            if (matchedSymbol != 0) jsonRelease(matchedSymbol);
+                            jsonRelease(dependency);
+                        }
+                        jsonRelease(reference);
+                        referenceAt += 1;
+                    }
+                    jsonRelease(sourceReferences);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                symbolCount >> int <- jsonArrayLen(symbols);
+                report >> int <- jsonNewObject();
+                setText(report, "schema", "nc.bootstrap.project.resolution.v2");
+                setText(report, "status", unresolved == 0 ? "resolved" : "unresolved");
+                setInteger(report, "unit_count", jsonArrayLen(units));
+                setInteger(report, "edge_count", jsonArrayLen(edges));
+                setInteger(report, "symbol_count", symbolCount);
+                setInteger(report, "unresolved_count", unresolved);
+                setInteger(report, "duplicate_count", duplicates);
+                setInteger(report, "reference_count", references);
+                setInteger(report, "resolved_reference_count", resolvedReferences);
+                setInteger(report, "visibility_denied_count", denied);
+                setInteger(report, "ambiguous_reference_count", ambiguous);
+                setInteger(report, "fingerprint", fingerprint);
+                setBoolean(report,"exported_layouts_fixed_point",layoutsPublished);
+                jsonObjectSet(report, "symbols", symbols);
+                jsonObjectSet(report, "bindings", bindings);
+                jsonObjectSet(report, "edges", edges);
+                if (write) {
+                    ensureDirectory(join(root, ".ncc/lowering"));
+                    jsonSaveFile(report, join(root, ".ncc/lowering/project.symbols.json"), 2);
+                }
+                jsonRelease(seen);
+                jsonRelease(symbolIndex);
+                jsonRelease(symbols);
+                jsonRelease(bindings);
+                lastSymbols <- symbolCount;
+                lastUnresolved <- unresolved;
+                lastDuplicates <- duplicates;
+                lastReferences <- references;
+                lastBindings <- resolvedReferences;
+                lastDenied <- denied;
+                lastFingerprint <- fingerprint;
+                resolutions += 1;
+                return report;
+            }
+
+            bindingFor(report >> int, caller >> str, graph >> p<byte>, node >> int, callNode >> int) -> int {
+                bindings >> int <- jsonObjectBorrow(report, "bindings");
+                at >> int <- 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings, at);
+                    if (objectView(binding, "caller_unit", "") == caller &&
+                        objectInt(binding,"node",-1) == callNode &&
+                        (objectView(binding,"reference_kind","") == "type" || objectBool(binding,"local_generic",false) || (graphTextEqual(ir.nccIr.projectGraphNodeOwner(graph, node),
+                            ir.nccIr.projectGraphNodeOwnerBytes(graph, node),
+                            objectView(binding, "owner", "")) &&
+                        graphTextEqual(ir.nccIr.projectGraphNodeName(graph, node),
+                            ir.nccIr.projectGraphNodeNameBytes(graph, node),
+                            objectView(binding, "name", ""))))) {
+                        jsonRelease(bindings);
+                        return binding;
+                    }
+                    jsonRelease(binding);
+                    at += 1;
+                }
+                jsonRelease(bindings);
+                return 0;
+            }
+
+            bindingCount(report >> int, caller >> str) -> int {
+                bindings >> int <- jsonObjectBorrow(report, "bindings");
+                count >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings, at);
+                    if (objectView(binding, "caller_unit", "") == caller) count += 1;
+                    jsonRelease(binding);
+                    at += 1;
+                }
+                jsonRelease(bindings);
+                return count;
+            }
+
+            bindingFingerprint(report >> int, caller >> str) -> int {
+                bindings >> int <- jsonObjectBorrow(report, "bindings");
+                value >> int <- stableHash(caller, 5381);
+                at >> int <- 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings, at);
+                    if (objectView(binding, "caller_unit", "") == caller ||
+                        (objectView(binding,"defining_unit","") == caller && jsonObjectHas(binding,"emission_name"))) {
+                        identity >> str <-
+                            objectView(binding, "defining_unit", "") + "|" +
+                            objectView(binding, "owner", "") + "|" +
+                            objectView(binding, "name", "") + "|" +
+                            objectView(binding, "materialized_name", "") + "|" +
+                            objectView(binding, "visibility", "");
+                        value <- stableHash(identity, value);
+                        value <- signatureFingerprint(binding,value);
+                        value <- stableHash(objectView(binding,"emission_name",""),value);
+                        releaseText(identity);
+                    }
+                    jsonRelease(binding);
+                    at += 1;
+                }
+                jsonRelease(bindings);
+                return value;
+            }
+
+            typedCacheKey(report >> int, unit >> str, base >> str) -> str {
+                bindings >> int <- jsonObjectBorrow(report,"bindings");
+                selected >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings,at);
+                    if (unit == "" || objectView(binding,"caller_unit","") == unit ||
+                        (objectView(binding,"defining_unit","") == unit && jsonObjectHas(binding,"emission_name"))) jsonArrayPush(selected,binding);
+                    jsonRelease(binding); at += 1;
+                }
+                text >> str <- jsonStringify(selected);
+                canonical >> str <- base+"|"+text;
+                key >> str <- sha256.nccSha256.bytes(cast<byte>(canonical),strByteLen(canonical));
+                releaseText(text); releaseText(canonical); releaseText(base);
+                jsonRelease(selected); jsonRelease(bindings); return key;
+            }
+
+            materialPath(root >> str, contract >> ProjectTarget,
+                unitName >> str, extension >> str) -> str {
+                return join(root, ".ncc/incremental/m/" + materialTargetId(contract) +
+                    "/" + unitName + extension);
+            }
+
+            materialTargetId(contract >> ProjectTarget) -> str {
+                return contract.objectDirectory;
+            }
+
+            setMctReadiness(unit >> int, artifact >> p<byte>) -> bool {
+                guard artifact != null else return false;
+                setInteger(unit, "mct_intrinsic_targets_pending_selection",
+                    mct.nccMct.projectArtifactIntrinsicTargets(artifact));
+                setInteger(unit, "mct_selected_intrinsics",
+                    mct.nccMct.projectArtifactSelectedIntrinsics(artifact));
+                setInteger(unit, "mct_runtime_import_targets",
+                    mct.nccMct.projectArtifactRuntimeTargets(artifact));
+                setInteger(unit, "mct_project_external_targets",
+                    mct.nccMct.projectArtifactExternalTargets(artifact));
+                return true;
+            }
+
+            projectMctReadiness(units >> int) -> int {
+                readiness >> int <- jsonNewObject();
+                intrinsic >> int <- 0;
+                selected >> int <- 0;
+                runtime >> int <- 0;
+                project >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    intrinsic += objectInt(unit,
+                        "mct_intrinsic_targets_pending_selection", 0);
+                    selected += objectInt(unit, "mct_selected_intrinsics", 0);
+                    runtime += objectInt(unit, "mct_runtime_import_targets", 0);
+                    project += objectInt(unit, "mct_project_external_targets", 0);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                setText(readiness, "schema", "nc.bootstrap.mct.project-link-readiness.v1");
+                setInteger(readiness, "intrinsic_targets_pending_selection", intrinsic);
+                setInteger(readiness, "selected_intrinsics", selected);
+                setInteger(readiness, "runtime_import_targets", runtime);
+                setInteger(readiness, "project_external_targets", project);
+                setInteger(readiness, "unresolved_targets", 0);
+                setBoolean(readiness, "ready", intrinsic == 0);
+                return readiness;
+            }
+
+            writeCacheStatus(root >> str, units >> int, contract >> ProjectTarget) -> bool {
+                status >> int <- jsonNewObject();
+                rows >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    row >> int <- jsonNewObject();
+                    unitName >> int <- cloneField(unit, "name");
+                    astKey >> int <- cloneField(unit, "ast_cache_key");
+                    astHit >> int <- cloneField(unit, "ast_cache_hit");
+                    materialKey >> int <- cloneField(unit, "material_cache_key");
+                    materialHit >> int <- cloneField(unit, "material_cache_hit");
+                    jsonObjectSet(row, "unit", unitName);
+                    jsonObjectSet(row, "ast_key", astKey);
+                    jsonObjectSet(row, "ast_hit", astHit);
+                    jsonObjectSet(row, "material_key", materialKey);
+                    jsonObjectSet(row, "material_hit", materialHit);
+                    jsonRelease(unitName); jsonRelease(astKey); jsonRelease(astHit);
+                    jsonRelease(materialKey); jsonRelease(materialHit);
+                    jsonArrayPush(rows, row);
+                    jsonRelease(row);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                setText(status, "schema", "nc.bootstrap.project.content-cache.v1");
+                setText(status, "target", contract.triple);
+                setBoolean(status, "enabled", content_cache.nccContentCache.enabled());
+                setInteger(status, "ast_hits", lastAstHits);
+                setInteger(status, "ast_misses", lastAstMisses);
+                setInteger(status, "material_hits", lastMaterialHits);
+                setInteger(status, "material_misses", lastMaterialMisses);
+                setInteger(status, "probes", content_cache.nccContentCache.probeCount());
+                setInteger(status, "stores", content_cache.nccContentCache.storeCount());
+                setInteger(status, "restored_bytes",
+                    content_cache.nccContentCache.restoredByteCount());
+                jsonObjectSet(status, "units", rows);
+                jsonRelease(rows);
+                lastRestoredBytes <- content_cache.nccContentCache.restoredByteCount();
+                ensureDirectory(join(root, ".ncc/incremental"));
+                saved >> bool <- jsonSaveFile(status,
+                    join(root, ".ncc/incremental/project-cache.json"), 2);
+                if (!saved)
+                    println("error[E_PROJECT_ATOMIC_WRITE_001]: cannot write native project cache status");
+                jsonRelease(status);
+                return saved;
+            }
+
+            signatureFingerprint(binding >> int, value >> int) -> int {
+                shape >> int <- jsonObjectBorrow(binding,"type_signature");
+                if (shape != 0) {
+                    canonical >> str <- jsonStringify(shape);
+                    value = stableHash(canonical,value); strRelease(canonical); jsonRelease(shape);
+                }
+                value <- stableHash(renderInt(objectInt(binding,"result_code",-1)),value);
+                parameters >> int <- jsonObjectBorrow(binding,"parameter_codes");
+                value <- stableHash(renderInt(jsonArrayLen(parameters)),value);
+                at >> int <- 0;
+                while (at < jsonArrayLen(parameters)) {
+                    code >> int <- jsonArrayBorrow(parameters,at);
+                    value <- stableHash(renderInt(jsonGetIntOr(code,-1)),value);
+                    jsonRelease(code); at += 1;
+                }
+                jsonRelease(parameters); return value;
+            }
+
+            bindGraph(graph >> p<byte>, unitName >> str, report >> int) -> p<byte> {
+                guard graph != null else return null;
+                bindings >> int <- jsonObjectBorrow(report,"bindings");
+                sourceNodes >> int <- ir.nccIr.projectGraphNodes(graph);
+                reserve >> int <- sourceNodes*16;
+                added >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings,at);
+                    if (objectView(binding,"caller_unit","") == unitName) {
+                        parameters >> int <- jsonObjectBorrow(binding,"parameter_codes");
+                        reserve += 16+jsonArrayLen(parameters)*8;
+                        shape >> int <- jsonObjectBorrow(binding,"type_signature");
+                        added += ir.nccIr.projectTypeNodes(shape);
+                        reserve += ir.nccIr.projectTypeSpellingBytes(shape);
+                        jsonRelease(shape);
+                        jsonRelease(parameters);
+                    }
+                    if (objectView(binding,"defining_unit","") == unitName && jsonObjectHas(binding,"emission_name")) {
+                        function >> int <- genericFunctionFor(graph,binding,sourceNodes);
+                        arguments >> int <- jsonObjectBorrow(binding,"type_arguments");
+                        if (function >= 0) {
+                            bodyNodes >> int <- ir.nccIr.projectFunctionNodes(graph,function,sourceNodes);
+                            added += bodyNodes;
+                            reserve += bodyNodes*strByteLen(objectView(binding,"emission_name",""));
+                        }
+                        added += ir.nccIr.projectTypeNodes(arguments);
+                        reserve += ir.nccIr.projectTypeSpellingBytes(arguments)+256;
+                        jsonRelease(arguments);
+                    }
+                    jsonRelease(binding); at += 1;
+                }
+                jsonRelease(bindings);
+                out >> p<byte> <- ir.nccIr.projectReserveTypes(graph,added,reserve);
+                ir.nccIr.projectReleaseGraph(graph);
+                guard out != null else return null;
+                graph <- out;
+                bound >> int <- 0;
+                typeCursor >> int <- sourceNodes;
+                at <- 0;
+                while (at < sourceNodes) {
+                    operation >> int <- ir.nccIr.projectGraphNodeOpcode(graph, at);
+                    if (operation == IR_FUNCTION) {
+                        access >> int <- ir.nccIr.projectGraphNodeVisibility(graph, at);
+                        if (access == 1 || access == 3)
+                            ir.nccIr.projectGraphMarkExport(graph, at);
+                    }
+                    else if ((operation == IR_TYPE && ir.nccIr.projectGraphNodeAstKind(graph,at) == 18) ||
+                        ir.nccIr.projectGraphNodeAstKind(graph,at) == 30) {
+                        binding >> int <- bindingFor(report,unitName,graph,at,at);
+                        if (binding != 0 && objectView(binding,"reference_kind","") == "type") {
+                            shape >> int <- jsonObjectBorrow(binding,"type_signature");
+                            root >> int <- objectInt(shape,"result",-1);
+                            attached >> bool <- root >= 0 && ir.nccIr.projectImportTypes(graph,shape,typeCursor) &&
+                                ir.nccIr.projectBindType(graph,at,typeCursor+root);
+                            typeCursor += ir.nccIr.projectTypeNodes(shape);
+                            jsonRelease(shape); jsonRelease(binding);
+                            if (!attached) { ir.nccIr.projectReleaseGraph(graph); return null; }
+                            bound += 1;
+                        } else if (binding != 0) jsonRelease(binding);
+                    }
+                    else if (operation == IR_CALL ||
+                        (ir.nccIr.projectGraphNodeAstKind(graph,at) == 27 && ir.nccIr.projectGraphNodeRoleHash(graph,at) == 43)) {
+                        target >> int <- ir.nccIr.projectGraphNodeFirstChild(graph, at);
+                        if (ir.nccIr.projectGraphNodeAstKind(graph,target) == 74) target = ir.nccIr.projectGraphNodeFirstChild(graph,target);
+                        if (target >= 0) {
+                            binding >> int <- bindingFor(report, unitName, graph, target,at);
+                            if (binding != 0) {
+                                ir.nccIr.projectGraphSetNodeVisibility(graph, target,
+                                    visibilityValue(objectText(binding, "visibility", "")));
+                                parameters >> int <- jsonObjectBorrow(binding,"parameter_codes");
+                                shape >> int <- jsonObjectBorrow(binding,"type_signature");
+                                arity >> int <- jsonArrayLen(parameters);
+                                codes >> p<int> <- cast<int>(alloc((arity+1)*sizeOf(int)));
+                                types >> p<int> <- cast<int>(alloc((arity+1)*sizeOf(int)));
+                                if (codes == null || types == null) {
+                                    if (codes != null) free(codes);
+                                    if (types != null) free(types);
+                                    jsonRelease(shape);
+                                    jsonRelease(parameters); jsonRelease(binding);
+                                    ir.nccIr.projectReleaseGraph(graph); return null;
+                                }
+                                wr(codes,objectInt(binding,"result_code",-1));
+                                resultType >> int <- objectInt(shape,"result",-1);
+                                wr(types,resultType < 0 ? -1 : typeCursor+resultType);
+                                shapeParameters >> int <- jsonObjectBorrow(shape,"parameters");
+                                parameter >> int <- 0;
+                                while (parameter < arity) {
+                                    code >> int <- jsonArrayBorrow(parameters,parameter);
+                                    wr(off(codes,parameter+1),jsonGetIntOr(code,-1));
+                                    jsonRelease(code); parameter += 1;
+                                }
+                                parameter = 0;
+                                while (parameter < arity) {
+                                    value >> int <- jsonArrayBorrow(shapeParameters,parameter);
+                                    referenced >> int <- jsonGetIntOr(value,-1);
+                                    wr(off(types,parameter+1),referenced < 0 ? -1 : typeCursor+referenced);
+                                    jsonRelease(value); parameter += 1;
+                                }
+                                attached >> bool <- jsonArrayLen(shapeParameters) == arity &&
+                                    ir.nccIr.projectImportTypes(graph,shape,typeCursor) &&
+                                    ir.nccIr.projectAppendTypedSignature(graph,target,codes,arity,types);
+                                if (attached && jsonObjectHas(binding,"emission_name"))
+                                    attached = ir.nccIr.projectRenameNode(graph,target,objectText(binding,"emission_name",""));
+                                typeCursor += ir.nccIr.projectTypeNodes(shape);
+                                free(types); free(codes); jsonRelease(shapeParameters); jsonRelease(shape); jsonRelease(parameters);
+                                jsonRelease(binding);
+                                if (!attached) { ir.nccIr.projectReleaseGraph(graph); return null; }
+                                bound += 1;
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                emitted >> int <- jsonNewObject();
+                bindings = jsonObjectBorrow(report,"bindings"); at = 0;
+                while (at < jsonArrayLen(bindings)) {
+                    binding >> int <- jsonArrayBorrow(bindings,at);
+                    if (objectView(binding,"defining_unit","") == unitName && jsonObjectHas(binding,"emission_name")) {
+                        name >> str <- objectText(binding,"emission_name","");
+                        if (!jsonObjectHas(emitted,name)) {
+                            function >> int <- genericFunctionFor(graph,binding,sourceNodes);
+                            arguments >> int <- jsonObjectBorrow(binding,"type_arguments");
+                            imported >> bool <- function >= 0 && ir.nccIr.projectImportTypes(graph,arguments,typeCursor);
+                            cloneBase >> int <- typeCursor+ir.nccIr.projectTypeNodes(arguments);
+                            cloned >> int <- imported ? ir.nccIr.projectCloneGeneric(graph,function,cloneBase,sourceNodes,arguments,typeCursor,name) : -1;
+                            jsonRelease(arguments);
+                            if (cloned < 0) { jsonRelease(binding); jsonRelease(bindings); jsonRelease(emitted); ir.nccIr.projectReleaseGraph(graph); return null; }
+                            typeCursor = cloneBase+ir.nccIr.projectFunctionNodes(graph,function,sourceNodes);
+                            ir.nccIr.projectHideFunction(graph,function);
+                            ir.nccIr.projectGraphMarkExport(graph,cloned);
+                            signature >> int <- cloneField(binding,"type_signature");
+                            jsonObjectSet(emitted,name,signature); jsonRelease(signature);
+                        } else {
+                            prior >> int <- jsonObjectBorrow(emitted,name);
+                            current >> int <- jsonObjectBorrow(binding,"type_signature");
+                            identical >> bool <- jsonEquals(prior,current);
+                            jsonRelease(prior); jsonRelease(current);
+                            if (!identical) { jsonRelease(binding); jsonRelease(bindings); jsonRelease(emitted); ir.nccIr.projectReleaseGraph(graph); return null; }
+                        }
+                    }
+                    jsonRelease(binding); at += 1;
+                }
+                jsonRelease(bindings); jsonRelease(emitted);
+                at = 0;
+                while (at < sourceNodes) {
+                    if (ir.nccIr.projectGraphNodeAstKind(graph,at) == 15 && ir.nccIr.projectGenericFunction(graph,at)) ir.nccIr.projectHideFunction(graph,at);
+                    at += 1;
+                }
+                out = ir.nccIr.projectTrimNodes(graph,typeCursor);
+                ir.nccIr.projectReleaseGraph(graph); graph = out;
+                if (graph == null) return null;
+                if (!native_types.nccNativeTypes.bindIntrinsics(graph,ir.nccIr.projectGraphNodes(graph))) {
+                    ir.nccIr.projectReleaseGraph(graph); return null;
+                }
+                ir.nccIr.projectGraphRefreshFingerprint(graph);
+                if (bound != bindingCount(report, unitName)) { ir.nccIr.projectReleaseGraph(graph); return null; }
+                return graph;
+            }
+
+            genericFunctionFor(graph >> p<byte>, binding >> int, limit >> int) -> int {
+                at >> int <- 0;
+                while (at < limit) {
+                    if (ir.nccIr.projectGraphNodeAstKind(graph,at) == 15 && ir.nccIr.projectGenericFunction(graph,at) &&
+                        graphTextEqual(ir.nccIr.projectGraphNodeName(graph,at),ir.nccIr.projectGraphNodeNameBytes(graph,at),objectText(binding,"name","")) &&
+                        graphTextEqual(ir.nccIr.projectGraphNodeOwner(graph,at),ir.nccIr.projectGraphNodeOwnerBytes(graph,at),objectText(binding,"owner",""))) return at;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            objectFailure(source >> str, phase >> str) -> bool {
+                print("error[E_PROJECT_UNIT_OBJECT_MCT_001] project."); println(phase);
+                print(" --> "); println(source);
+                return false;
+            }
+
+            materializeObject(root >> str, unit >> int, contract >> ProjectTarget,
+                report >> int) -> bool {
+                relative >> str <- objectRelative(unit, contract);
+                objectPath >> str <- join(root, relative);
+                guard ensureDirectory(directory(objectPath)) else return false;
+                sourceRelative >> str <- objectText(unit, "source", "");
+                source >> str <- join(root, sourceRelative);
+                unitName >> str <- objectText(unit, "name", "");
+                bindingHash >> int <- bindingFingerprint(report, unitName);
+                cacheKey >> str <- content_cache.nccContentCache.materialKey(
+                    objectText(unit, "source_hash", ""),
+                    sourceRelative, contract.triple, unitName, bindingHash);
+                cacheKey = typedCacheKey(report,unitName,cacheKey);
+                irPath >> str <- materialPath(root, contract, unitName, ".ncir");
+                mctPath >> str <- materialPath(root, contract, unitName, ".ncmct");
+                guard ensureDirectory(directory(irPath)) else return false;
+                cached >> int <- content_cache.nccContentCache.probeMaterial(
+                    root, cacheKey, irPath, mctPath, objectPath);
+                if (cached != 0) {
+                    hash >> str <- objectText(cached, "object.bin_sha256", "");
+                    valid >> bool <- hash != "" && fsSize(objectPath) ==
+                        objectInt(cached, "object.bin_bytes", -1);
+                    if (valid) {
+                        setText(unit, "object", relative);
+                        objectHashText >> str <- "sha256:" + hash;
+                        setText(unit, "object_hash", objectHashText);
+                        releaseText(objectHashText);
+                        setInteger(unit, "object_bytes", fsSize(objectPath));
+                        restoredArtifact >> p<byte> <- mct.nccMct.projectOpenArtifact(mctPath);
+                        guard setMctReadiness(unit, restoredArtifact) else {
+                            if (restoredArtifact != null)
+                                mct.nccMct.projectReleaseArtifact(restoredArtifact);
+                            jsonRelease(cached);
+                            return false;
+                        }
+                        mct.nccMct.projectReleaseArtifact(restoredArtifact);
+                        objectHashField >> int <- cloneField(cached, "object_hash32");
+                        irHashField >> int <- cloneField(cached, "ir_fingerprint");
+                        mctHashField >> int <- cloneField(cached, "mct_fingerprint");
+                        jsonObjectSet(unit, "object_hash32", objectHashField);
+                        jsonObjectSet(unit, "ir_fingerprint", irHashField);
+                        jsonObjectSet(unit, "mct_fingerprint", mctHashField);
+                        jsonRelease(objectHashField); jsonRelease(irHashField);
+                        jsonRelease(mctHashField);
+                        setText(unit, "material_cache_key", cacheKey);
+                        setBoolean(unit, "material_cache_hit", true);
+                        lastMaterialHits += 1;
+                        jsonRelease(cached);
+                        return true;
+                    }
+                    jsonRelease(cached);
+                }
+                lastMaterialMisses += 1;
+                graph >> p<byte> <- ir.nccIr.projectGraphFor(source, contract.triple);
+                guard graph != null else return objectFailure(source,"ir");
+                graph <- bindGraph(graph, unitName, report);
+                guard graph != null else {
+                    return objectFailure(source,"binding");
+                }
+                if (!ir.nccIr.projectRefreshLayouts(graph,source)) {
+                    ir.nccIr.projectReleaseGraph(graph); return objectFailure(source,"layout");
+                }
+                if (!native_types.nccNativeTypes.validateBindings(graph,ir.nccIr.projectGraphNodes(graph),source)) {
+                    ir.nccIr.projectReleaseGraph(graph); return objectFailure(source,"signature-sema");
+                }
+                irHash >> int <- ir.nccIr.projectGraphFingerprint(graph);
+                guard ir.nccIr.projectWriteGraph(graph, irPath) else {
+                    ir.nccIr.projectReleaseGraph(graph);
+                    return objectFailure(source,"write-ir");
+                }
+                artifact >> p<byte> <- mct.nccMct.projectArtifactFromGraph(graph);
+                ir.nccIr.projectReleaseGraph(graph);
+                guard artifact != null else return objectFailure(source,"native-body");
+                guard mct.nccMct.projectWriteArtifact(artifact, mctPath) else {
+                    mct.nccMct.projectReleaseArtifact(artifact);
+                    return objectFailure(source,"write-mct");
+                }
+                object >> p<byte> <- mct_object.nccMctObject.projectObjectFromArtifact(artifact);
+                guard object != null else {
+                    mct.nccMct.projectReleaseArtifact(artifact);
+                    return objectFailure(source,"object");
+                }
+                bytes >> int <- mct_object.nccMctObject.projectObjectBytes(object);
+                objectHash >> int <- mct_object.nccMctObject.projectObjectHash(object);
+                mctHash >> int <- mct.nccMct.projectArtifactFingerprint(artifact);
+                relocations >> int <- mct.nccMct.projectArtifactRelocations(artifact);
+                setMctReadiness(unit, artifact);
+                ok >> bool <- mct_object.nccMctObject.projectWriteObject(object, objectPath);
+                mct_object.nccMctObject.projectReleaseObject(object);
+                mct.nccMct.projectReleaseArtifact(artifact);
+                guard ok else return false;
+                hash >> str <- sha256.nccSha256.file(objectPath);
+                guard hash != "" else return false;
+                setText(unit, "object", relative);
+                objectHashText >> str <- "sha256:" + hash;
+                setText(unit, "object_hash", objectHashText);
+                releaseText(objectHashText);
+                setInteger(unit, "object_bytes", bytes);
+                setInteger(unit, "object_hash32", objectHash);
+                setInteger(unit, "ir_fingerprint", irHash);
+                setInteger(unit, "mct_fingerprint", mctHash);
+                setText(unit, "material_cache_key", cacheKey);
+                setBoolean(unit, "material_cache_hit", false);
+                content_cache.nccContentCache.storeMaterial(root, cacheKey, irPath, mctPath,
+                    objectPath, irHash, mctHash, objectHash, 0, 0, 0, 1,
+                    relocations);
+                return true;
+            }
+
+            materializeObjects(root >> str, units >> int, contract >> ProjectTarget,
+                report >> int) -> bool {
+                lastObjects <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    guard materializeObject(root, unit, contract, report) else {
+                        jsonRelease(unit);
+                        return false;
+                    }
+                    jsonRelease(unit);
+                    lastObjects += 1;
+                    at += 1;
+                }
+                return true;
+            }
+
+            releaseGraphSlots(graphs >> p<byte>, count >> int) -> void {
+                if (graphs == null) return;
+                at >> int <- 0;
+                while (at < count) {
+                    graph >> p<byte> <- from<byte>(rd<addr>(
+                        off(graphs, at * sizeOf<addr>())));
+                    if (graph != null) ir.nccIr.projectReleaseGraph(graph);
+                    at += 1;
+                }
+                free(graphs);
+            }
+
+            ltoSourceIdentity(units >> int, contract >> ProjectTarget,
+                report >> int) -> str {
+                total >> int <- strByteLen(contract.triple) + 1;
+                at >> int <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    unitName >> str <- objectText(unit, "name", "");
+                    sourceHash >> str <- objectText(unit, "source_hash", "");
+                    bindingText >> str <- renderInt(bindingFingerprint(report, unitName));
+                    total += strByteLen(unitName) + strByteLen(sourceHash) +
+                        strByteLen(bindingText) + 3;
+                    releaseText(bindingText);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                material >> p<byte> <- cast<byte>(alloc(total));
+                guard material != null else return "";
+                cursor >> int <- 0;
+                tripleBytes >> int <- strByteLen(contract.triple);
+                if (tripleBytes > 0) cp(material, cast<byte>(contract.triple), tripleBytes);
+                cursor += tripleBytes;
+                wr<byte>(off(material, cursor), 124); cursor += 1;
+                at <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    unitName >> str <- objectText(unit, "name", "");
+                    sourceHash >> str <- objectText(unit, "source_hash", "");
+                    bindingText >> str <- renderInt(bindingFingerprint(report, unitName));
+                    nameBytes >> int <- strByteLen(unitName);
+                    hashBytes >> int <- strByteLen(sourceHash);
+                    bindingBytes >> int <- strByteLen(bindingText);
+                    if (nameBytes > 0) cp(off(material, cursor), cast<byte>(unitName), nameBytes);
+                    cursor += nameBytes;
+                    wr<byte>(off(material, cursor), 124); cursor += 1;
+                    if (hashBytes > 0) cp(off(material, cursor), cast<byte>(sourceHash), hashBytes);
+                    cursor += hashBytes;
+                    wr<byte>(off(material, cursor), 124); cursor += 1;
+                    if (bindingBytes > 0)
+                        cp(off(material, cursor), cast<byte>(bindingText), bindingBytes);
+                    cursor += bindingBytes;
+                    wr<byte>(off(material, cursor), 59); cursor += 1;
+                    releaseText(bindingText);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                digest >> str <- sha256.nccSha256.bytes(material, cursor);
+                free(material);
+                return digest;
+            }
+
+            ltoResult(relative >> str, objectPath >> str, cacheKey >> str,
+                cacheHit >> bool, linkedUnits >> int, irHash >> int,
+                mctHash >> int, objectHash >> int, inlinedCalls >> int,
+                gvnReuses >> int, callEdges >> int, relocations >> int) -> int {
+                result >> int <- jsonNewObject();
+                setText(result, "schema", "nc.bootstrap.project.linked-lto.v1");
+                setText(result, "status", "materialized");
+                setText(result, "scope", "owner-qualified-linked-units");
+                setText(result, "optimization", "O3");
+                setText(result, "object", relative);
+                hash >> str <- sha256.nccSha256.file(objectPath);
+                objectHashText >> str <- "sha256:" + hash;
+                setText(result, "object_hash", objectHashText);
+                releaseText(objectHashText);
+                setInteger(result, "object_bytes", fsSize(objectPath));
+                setInteger(result, "object_hash32", objectHash);
+                setInteger(result, "ir_fingerprint", irHash);
+                setInteger(result, "mct_fingerprint", mctHash);
+                setInteger(result, "linked_units", linkedUnits);
+                setInteger(result, "inlined_calls", inlinedCalls);
+                setInteger(result, "gvn_reuses", gvnReuses);
+                setInteger(result, "retained_call_edges", callEdges);
+                setInteger(result, "material_relocations", relocations);
+                setBoolean(result, "owner_qualified_resolution", true);
+                setBoolean(result, "abi_uniform", true);
+                setText(result, "material_cache_key", cacheKey);
+                setBoolean(result, "material_cache_hit", cacheHit);
+                lastLtoInlinedCalls <- inlinedCalls;
+                lastLtoGvnReuses <- gvnReuses;
+                lastLtoCallEdges <- callEdges;
+                lastLtoRelocations <- relocations;
+                lastLtoBytes <- fsSize(objectPath);
+                lastLtoCacheHit <- cacheHit;
+                return result;
+            }
+
+            materializeLinkedLto(root >> str, units >> int,
+                contract >> ProjectTarget, report >> int) -> int {
+                linkedUnits >> int <- jsonArrayLen(units);
+                guard linkedUnits > 0 else return 0;
+                relative >> str <- ".ncc/obj/" + contract.objectDirectory +
+                    "/lto." + contract.objectExtension;
+                objectPath >> str <- join(root, relative);
+                irPath >> str <- materialPath(
+                    root, contract, "lto", ".ncir");
+                mctPath >> str <- materialPath(
+                    root, contract, "lto", ".ncmct");
+                guard ensureDirectory(directory(objectPath)) &&
+                    ensureDirectory(directory(irPath)) else return 0;
+                sourceIdentity >> str <- ltoSourceIdentity(units, contract, report);
+                cacheKey >> str <- content_cache.nccContentCache.materialKey(
+                    sourceIdentity, "__project_lto", contract.triple,
+                    "__project_lto", linkedUnits);
+                cacheKey = typedCacheKey(report,"",cacheKey);
+                cached >> int <- content_cache.nccContentCache.probeMaterial(
+                    root, cacheKey, irPath, mctPath, objectPath);
+                if (cached != 0 && objectInt(cached, "linked_units", -1) ==
+                    linkedUnits && fsSize(objectPath) == objectInt(
+                    cached, "object.bin_bytes", -1)) {
+                    result >> int <- ltoResult(relative, objectPath, cacheKey, true,
+                        linkedUnits, objectInt(cached, "ir_fingerprint", 0),
+                        objectInt(cached, "mct_fingerprint", 0),
+                        objectInt(cached, "object_hash32", 0),
+                        objectInt(cached, "inlined_calls", 0),
+                        objectInt(cached, "gvn_reuses", 0),
+                        objectInt(cached, "call_edges", 0),
+                        objectInt(cached, "material_relocations", 0));
+                    jsonRelease(cached);
+                    lastMaterialHits += 1;
+                    return result;
+                }
+                if (cached != 0) jsonRelease(cached);
+                lastMaterialMisses += 1;
+
+                graphs >> p<byte> <- cast<byte>(alloc(linkedUnits * sizeOf<addr>()));
+                guard graphs != null else return 0;
+                clearAt >> int <- 0;
+                while (clearAt < linkedUnits * sizeOf<addr>()) {
+                    wr<byte>(off(graphs, clearAt), 0);
+                    clearAt += 1;
+                }
+                built >> int <- 0;
+                while (built < linkedUnits) {
+                    unit >> int <- jsonArrayBorrow(units, built);
+                    sourceRelative >> str <- objectText(unit, "source", "");
+                    unitName >> str <- objectText(unit, "name", "");
+                    graph >> p<byte> <- ir.nccIr.projectReadGraph(
+                        materialPath(root,contract,unitName,".ncir"),contract.triple);
+                    if (graph == null) {
+                        jsonRelease(unit);
+                        releaseGraphSlots(graphs, built);
+                        return 0;
+                    }
+                    wr<addr>(off(graphs, built * sizeOf<addr>()), adr(graph));
+                    jsonRelease(unit);
+                    built += 1;
+                }
+                merged >> p<byte> <- ir.nccIr.projectMergeGraphs(graphs, linkedUnits);
+                releaseGraphSlots(graphs, linkedUnits);
+                guard merged != null else return 0;
+                transform >> p<byte> <- mct_llvm.nccMctLlvm.optimizeGraph(merged, 3);
+                guard transform != null else {
+                    ir.nccIr.projectReleaseGraph(merged);
+                    return 0;
+                }
+                inlinedCalls >> int <- mct_llvm.nccMctLlvm.transformInlinedCalls(
+                    transform);
+                gvnReuses >> int <- mct_llvm.nccMctLlvm.transformGvnReuses(transform);
+                callEdges >> int <- mct_llvm.nccMctLlvm.transformCallEdges(transform);
+                irHash >> int <- ir.nccIr.projectGraphFingerprint(merged);
+                guard ir.nccIr.projectWriteGraph(merged, irPath) else {
+                    mct_llvm.nccMctLlvm.releaseTransform(transform);
+                    ir.nccIr.projectReleaseGraph(merged);
+                    return 0;
+                }
+                artifact >> p<byte> <- mct.nccMct.projectArtifactFromGraph(merged);
+                mct_llvm.nccMctLlvm.releaseTransform(transform);
+                ir.nccIr.projectReleaseGraph(merged);
+                guard artifact != null else return 0;
+                guard mct.nccMct.projectWriteArtifact(artifact, mctPath) else {
+                    mct.nccMct.projectReleaseArtifact(artifact);
+                    return 0;
+                }
+                object >> p<byte> <- mct_object.nccMctObject.projectObjectFromArtifact(
+                    artifact);
+                guard object != null else {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: stage=lto-object-build target=" +
+                        contract.triple);
+                    mct.nccMct.projectReleaseArtifact(artifact);
+                    return 0;
+                }
+                objectHash >> int <- mct_object.nccMctObject.projectObjectHash(object);
+                mctHash >> int <- mct.nccMct.projectArtifactFingerprint(artifact);
+                relocations >> int <- mct.nccMct.projectArtifactRelocations(artifact);
+                ok >> bool <- mct_object.nccMctObject.projectWriteObject(
+                    object, objectPath);
+                mct_object.nccMctObject.projectReleaseObject(object);
+                mct.nccMct.projectReleaseArtifact(artifact);
+                guard ok else {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: stage=lto-object-write target=" +
+                        contract.triple);
+                    return 0;
+                }
+                guard sha256.nccSha256.file(objectPath) != "" else {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: stage=lto-object-hash target=" +
+                        contract.triple);
+                    return 0;
+                }
+                content_cache.nccContentCache.storeMaterial(root, cacheKey,
+                    irPath, mctPath, objectPath, irHash, mctHash, objectHash,
+                    inlinedCalls, gvnReuses, callEdges, linkedUnits, relocations);
+                return ltoResult(relative, objectPath, cacheKey, false, linkedUnits,
+                    irHash, mctHash, objectHash, inlinedCalls, gvnReuses,
+                    callEdges, relocations);
+            }
+
+            build(root >> str, mainName >> str, triple >> str, withLto >> bool) -> int {
+                lastAstHits <- 0;
+                lastAstMisses <- 0;
+                lastMaterialHits <- 0;
+                lastMaterialMisses <- 0;
+                lastRestoredBytes <- 0;
+                lastLtoInlinedCalls <- 0;
+                lastLtoGvnReuses <- 0;
+                lastLtoCallEdges <- 0;
+                lastLtoRelocations <- 0;
+                lastLtoBytes <- 0;
+                lastLtoCacheHit <- false;
+                content_cache.nccContentCache.resetCounters();
+                guard targetKnown(triple) else {
+                    println("error[E_IR_TARGET_UNSUPPORTED_001]: unsupported project target '" + triple + "'");
+                    return 0;
+                }
+                contract >> ProjectTarget <- target(triple);
+                guard exists(root) && isDirectory(root) else {
+                    println("error[E_PROJECT_SOURCE_MISSING_001]: project root cannot be read");
+                    return 0;
+                }
+                guard ensureDirectory(join(root, ".ncc/code")) &&
+                    ensureDirectory(join(root, ".ncc/lowering")) &&
+                    ensureDirectory(join(root, ".ncc/cache")) &&
+                    ensureDirectory(join(root, ".ncc/incremental")) &&
+                    ensureDirectory(join(root, ".ncc/obj/" + contract.objectDirectory)) else return 0;
+
+                units >> int <- jsonNewArray();
+                mainUnit >> int <- parseUnit(root, mainName, "main", true, contract);
+                guard mainUnit != 0 else { jsonRelease(units); return 0; }
+                jsonArrayPush(units, mainUnit);
+                jsonRelease(mainUnit);
+                files >> int <- jsonNewArray();
+                guard collectSources(join(root, "src"), "src", files) else {
+                    jsonRelease(files); jsonRelease(units); return 0;
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    relative >> str <- arrayText(files, at, "");
+                    unit >> int <- parseUnit(root, relative, stem(relative), false, contract);
+                    if (unit == 0) { jsonRelease(files); jsonRelease(units); return 0; }
+                    jsonArrayPush(units, unit);
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                jsonRelease(files);
+                normalizeUnitNames(units);
+                at <- 0;
+                while (at < jsonArrayLen(units)) {
+                    unit >> int <- jsonArrayBorrow(units, at);
+                    if (!codeIdentity(root, unit)) {
+                        jsonRelease(unit);
+                        jsonRelease(units);
+                        return 0;
+                    }
+                    jsonRelease(unit);
+                    at += 1;
+                }
+                edges >> int <- edgesOf(units);
+                order >> int <- linkOrder(units);
+                report >> int <- resolution(units, edges, root, true);
+                if (objectInt(report, "unresolved_count", 0) != 0) {
+                    println("error[E_PROJECT_UNIT_QUALIFIED_001]: native project contains unresolved references");
+                    jsonRelease(report); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units);
+                    return 0;
+                }
+                if (!materializeObjects(root, units, contract, report)) {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: native project unit materialization failed");
+                    jsonRelease(report); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units);
+                    return 0;
+                }
+                linkedLto >> int <- withLto ? materializeLinkedLto(root, units, contract, report) : jsonNewObject();
+                if (!withLto) {
+                    setText(linkedLto,"schema","nc.project.objects-only.v1");
+                    setText(linkedLto,"status","not_requested");
+                }
+                if (linkedLto == 0) {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: native linked LTO materialization failed");
+                    jsonRelease(report); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units);
+                    return 0;
+                }
+                if (!writeCacheStatus(root, units, contract)) {
+                    jsonRelease(linkedLto);
+                    jsonRelease(report); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units);
+                    return 0;
+                }
+                if (!stripInternalUnitFields(units)) {
+                    println("error[E_PROJECT_BRIDGE_SCHEMA_001]: native project internal fields could not be stripped");
+                    jsonRelease(linkedLto); jsonRelease(report); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units);
+                    return 0;
+                }
+                bridge >> int <- jsonNewObject();
+                setText(bridge, "schema", "ncc.bridge.v1");
+                setText(bridge, "linker", "ncc.project.native-resolution.v1");
+                setText(bridge, "main", mainName);
+                setText(bridge, "object_dir", ".ncc/obj");
+                targetValue >> int <- targetJson(contract);
+                jsonObjectSet(bridge, "target", targetValue);
+                jsonRelease(targetValue);
+                jsonObjectSet(bridge, "units", units);
+                jsonObjectSet(bridge, "edges", edges);
+                jsonObjectSet(bridge, "link_order", order);
+                jsonObjectSet(bridge, "linked_lto", linkedLto);
+                jsonRelease(linkedLto);
+                readiness >> int <- projectMctReadiness(units);
+                jsonObjectSet(bridge, "mct_link_readiness", readiness);
+                jsonRelease(readiness);
+                setText(bridge, "resolution", ".ncc/lowering/project.symbols.json");
+                unitCount >> int <- jsonArrayLen(units);
+                edgeCount >> int <- jsonArrayLen(edges);
+                guard jsonSaveFile(bridge, join(root, "bridge.json"), 2) else {
+                    println("error[E_PROJECT_ATOMIC_WRITE_001]: cannot write native project bridge");
+                    jsonRelease(report); jsonRelease(bridge); jsonRelease(order);
+                    jsonRelease(edges); jsonRelease(units); return 0;
+                }
+                jsonRelease(report);
+                jsonRelease(order);
+                jsonRelease(edges);
+                jsonRelease(units);
+                lastUnits <- unitCount;
+                lastEdges <- edgeCount;
+                synchronizations += 1;
+                return bridge;
+            }
+
+            emitSummary(action >> str, root >> str, bridge >> int, json >> bool, quiet >> bool) -> int {
+                guard bridge != 0 else return 1;
+                units >> int <- jsonObjectBorrow(bridge, "units");
+                edges >> int <- jsonObjectBorrow(bridge, "edges");
+                if (!quiet) {
+                    if (json) {
+                        report >> int <- jsonNewObject();
+                        setText(report, "schema", "nc.bootstrap.project.command.v1");
+                        setText(report, "action", action);
+                        setText(report, "status", "ok");
+                        setText(report, "root", root);
+                        setInteger(report, "units", jsonArrayLen(units));
+                        setInteger(report, "edges", jsonArrayLen(edges));
+                        linkOrderValue >> int <- cloneField(bridge, "link_order");
+                        jsonObjectSet(report, "link_order", linkOrderValue);
+                        jsonRelease(linkOrderValue);
+                        readiness >> int <- cloneField(bridge, "mct_link_readiness");
+                        jsonObjectSet(report, "mct_link_readiness", readiness);
+                        jsonRelease(readiness);
+                        linkedLto >> int <- cloneField(bridge, "linked_lto");
+                        jsonObjectSet(report, "linked_lto", linkedLto);
+                        jsonRelease(linkedLto);
+                        incremental >> int <- jsonNewObject();
+                        setText(incremental, "schema",
+                            "nc.bootstrap.project.content-cache.v1");
+                        setBoolean(incremental, "enabled",
+                            content_cache.nccContentCache.enabled());
+                        setInteger(incremental, "ast_hits", lastAstHits);
+                        setInteger(incremental, "ast_misses", lastAstMisses);
+                        setInteger(incremental, "material_hits", lastMaterialHits);
+                        setInteger(incremental, "material_misses", lastMaterialMisses);
+                        setInteger(incremental, "restored_bytes", lastRestoredBytes);
+                        jsonObjectSet(report, "incremental", incremental);
+                        jsonRelease(incremental);
+                        rendered >> str <- jsonStringifyPretty(report, 2);
+                        println(rendered);
+                        strRelease(rendered);
+                        jsonRelease(report);
+                    }
+                    else {
+                        print("OK: project "); print(action); print(" root="); print(root);
+                        print(" units="); print(renderInt(jsonArrayLen(units)));
+                        print(" edges="); print(renderInt(jsonArrayLen(edges)));
+                        print(" ast-cache="); print(renderInt(lastAstHits)); print("/");
+                        print(renderInt(lastAstHits + lastAstMisses));
+                        print(" material-cache="); print(renderInt(lastMaterialHits)); print("/");
+                        print(renderInt(lastMaterialHits + lastMaterialMisses));
+                        print(" lto-inline="); print(renderInt(lastLtoInlinedCalls));
+                        print(" lto-gvn="); print(renderInt(lastLtoGvnReuses));
+                        print(" lto-edges="); print(renderInt(lastLtoCallEdges));
+                        print(" lto-relocations="); print(renderInt(lastLtoRelocations));
+                        print(" lto-bytes="); print(renderInt(lastLtoBytes));
+                        readiness >> int <- jsonObjectBorrow(bridge, "mct_link_readiness");
+                        print(" intrinsic-pending="); println(renderInt(objectInt(readiness,
+                            "intrinsic_targets_pending_selection", 0)));
+                        jsonRelease(readiness);
+                    }
+                }
+                jsonRelease(edges);
+                jsonRelease(units);
+                return 0;
+            }
+
+        public:
+            configureCache(enabled >> bool, root >> str) -> bool {
+                return content_cache.nccContentCache.configure(enabled, root);
+            }
+
+            objects(root >> str, mainName >> str, triple >> str, json >> bool, quiet >> bool) -> int {
+                bridge >> int <- build(root,mainName,triple,false);
+                code >> int <- emitSummary("objects",root,bridge,json,quiet);
+                if (bridge != 0) jsonRelease(bridge);
+                return code;
+            }
+
+            sync(root >> str, mainName >> str, triple >> str, json >> bool, quiet >> bool) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                code >> int <- emitSummary("sync", root, bridge, json, quiet);
+                if (bridge != 0) jsonRelease(bridge);
+                return code;
+            }
+
+            link(root >> str, mainName >> str, triple >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                guard bridge != 0 else return 1;
+                contract >> ProjectTarget <- target(triple);
+                destination >> str <- executablePath(root, mainName, contract, output);
+                mctPath >> str <- materialPath(root, contract, "lto", ".ncmct");
+                guard ensureDirectory(directory(destination)) else {
+                    println("error[E_PROJECT_ATOMIC_WRITE_001]: cannot create native image directory");
+                    jsonRelease(bridge);
+                    return 1;
+                }
+                artifact >> p<byte> <- mct.nccMct.projectOpenArtifact(mctPath);
+                guard artifact != null else {
+                    println("error[E_PROJECT_UNIT_OBJECT_MCT_001]: linked project MCT artifact is unavailable");
+                    jsonRelease(bridge);
+                    return 1;
+                }
+                providers >> int <- mct_image.nccMctImage.projectProviderCount(artifact);
+                linked >> bool <- mct_image.nccMctImage.projectWriteImage(artifact, destination);
+                mct.nccMct.projectReleaseArtifact(artifact);
+                guard linked && fsSize(destination) > 0 else {
+                    println("error[E_MCT_IMAGE_WRITE_001]: native project image could not be written");
+                    jsonRelease(bridge);
+                    return 1;
+                }
+                image >> int <- jsonNewObject();
+                setText(image, "schema", "nc.bootstrap.project.final-image.v1");
+                setText(image, "path", destination);
+                setText(image, "target", triple);
+                setText(image, "format", contract.objectFormat);
+                setInteger(image, "bytes", fsSize(destination));
+                setInteger(image, "runtime_providers", providers);
+                setBoolean(image, "self_contained", providers == 0);
+                digest >> str <- sha256.nccSha256.file(destination);
+                setText(image, "sha256", digest);
+                jsonObjectSet(bridge, "final_image", image);
+                jsonRelease(image);
+                setText(bridge, "linker", "ncc.project.native-final-image.v1");
+                guard jsonSaveFile(bridge, join(root, "bridge.json"), 2) else {
+                    println("error[E_PROJECT_ATOMIC_WRITE_001]: cannot retain native project image identity");
+                    jsonRelease(bridge);
+                    return 1;
+                }
+                code >> int <- emitSummary("link", root, bridge, json, quiet);
+                if (!quiet && !json && providers > 0)
+                    println("note: final image requires the declared nC runtime provider binary");
+                jsonRelease(bridge);
+                return code;
+            }
+
+            graph(root >> str, mainName >> str, triple >> str, json >> bool, quiet >> bool) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                guard bridge != 0 else return 1;
+                if (!quiet) {
+                    if (json) {
+                        rendered >> str <- jsonStringifyPretty(bridge, 2);
+                        println(rendered);
+                        strRelease(rendered);
+                    }
+                    else emitSummary("graph", root, bridge, false, false);
+                }
+                jsonRelease(bridge);
+                return 0;
+            }
+
+            resolve(root >> str, mainName >> str, triple >> str, json >> bool, quiet >> bool) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                guard bridge != 0 else return 1;
+                bridgeUnits >> int <- jsonObjectBorrow(bridge, "units");
+                bridgeEdges >> int <- jsonObjectBorrow(bridge, "edges");
+                report >> int <- resolution(bridgeUnits, bridgeEdges, root, true);
+                jsonRelease(bridgeUnits); jsonRelease(bridgeEdges);
+                unresolved >> int <- objectInt(report, "unresolved_count", 0);
+                if (!quiet) {
+                    if (json) {
+                        rendered >> str <- jsonStringifyPretty(report, 2);
+                        println(rendered);
+                        strRelease(rendered);
+                    }
+                    else {
+                        print("OK: project resolve symbols=");
+                        print(renderInt(objectInt(report, "symbol_count", 0)));
+                        print(" unresolved="); println(renderInt(unresolved));
+                    }
+                }
+                jsonRelease(report);
+                jsonRelease(bridge);
+                return unresolved == 0 ? 0 : 1;
+            }
+
+            check(root >> str, mainName >> str, triple >> str,
+                units >> int, edges >> int, symbols >> int, unresolved >> int,
+                references >> int, bindings >> int, denied >> int, objects >> int,
+                ltoInlinedCalls >> int, ltoCallEdges >> int,
+                minimumLtoBytes >> int, ltoRelocations >> int,
+                ltoGvnReuses >> int) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                guard bridge != 0 else return 1;
+                bridgeUnits >> int <- jsonObjectBorrow(bridge, "units");
+                bridgeEdges >> int <- jsonObjectBorrow(bridge, "edges");
+                report >> int <- resolution(bridgeUnits, bridgeEdges, root, true);
+                ok >> bool <- jsonArrayLen(bridgeUnits) == units &&
+                    jsonArrayLen(bridgeEdges) == edges &&
+                    objectInt(report, "symbol_count", 0) == symbols &&
+                    objectInt(report, "unresolved_count", 0) == unresolved &&
+                    (references < 0 || objectInt(report,
+                        "reference_count", 0) == references) &&
+                    (bindings < 0 || objectInt(report,
+                        "resolved_reference_count", 0) == bindings) &&
+                    (denied < 0 || objectInt(report,
+                        "visibility_denied_count", 0) == denied) &&
+                    (objects < 0 || lastObjects == objects) &&
+                    (ltoInlinedCalls < 0 || lastLtoInlinedCalls == ltoInlinedCalls) &&
+                    (ltoGvnReuses < 0 || lastLtoGvnReuses == ltoGvnReuses) &&
+                    (ltoCallEdges < 0 || lastLtoCallEdges == ltoCallEdges) &&
+                    (minimumLtoBytes < 0 || lastLtoBytes >= minimumLtoBytes) &&
+                    (ltoRelocations < 0 || lastLtoRelocations == ltoRelocations);
+                jsonRelease(bridgeUnits); jsonRelease(bridgeEdges);
+                jsonRelease(report);
+                jsonRelease(bridge);
+                return ok ? 0 : 1;
+            }
+
+            checkMctReadiness(root >> str, mainName >> str, triple >> str,
+                intrinsic >> int, runtime >> int, projectTargets >> int,
+                unresolved >> int, selected >> int) -> int {
+                bridge >> int <- build(root, mainName, triple,true);
+                guard bridge != 0 else return 1;
+                readiness >> int <- jsonObjectBorrow(bridge, "mct_link_readiness");
+                ok >> bool <- objectInt(readiness,
+                    "intrinsic_targets_pending_selection", -1) == intrinsic &&
+                    (selected < 0 || objectInt(readiness,
+                    "selected_intrinsics", -1) == selected) &&
+                    objectInt(readiness, "runtime_import_targets", -1) == runtime &&
+                    objectInt(readiness, "project_external_targets", -1) == projectTargets &&
+                    objectInt(readiness, "unresolved_targets", -1) == unresolved;
+                jsonRelease(readiness);
+                jsonRelease(bridge);
+                return ok ? 0 : 1;
+            }
+
+            contract() -> ProjectContract {
+                return ProjectContract(units: lastUnits, edges: lastEdges,
+                    symbols: lastSymbols, unresolved: lastUnresolved,
+                    duplicates: lastDuplicates, references: lastReferences,
+                    bindings: lastBindings, denied: lastDenied, objects: lastObjects,
+                    ltoInlinedCalls: lastLtoInlinedCalls,
+                    ltoGvnReuses: lastLtoGvnReuses,
+                    ltoCallEdges: lastLtoCallEdges,
+                    ltoRelocations: lastLtoRelocations, ltoBytes: lastLtoBytes,
+                    fingerprint: lastFingerprint);
+            }
+
+            selfTest() -> bool {
+                contract >> ProjectTarget <- target("aarch64-unknown-linux-gnu");
+                return targetKnown("x86_64-unknown-linux-gnu") &&
+                    targetKnown("wasm32-wasi") && !targetKnown("m68k-unknown-none") &&
+                    contract.pointerBits == 64 && contract.objectFormat == "elf64" &&
+                    stableHash("project", 5381) == 980322 &&
+                    content_cache.nccContentCache.selfTest();
+            }
+
+    fn:
+        private:
+            // The owner must remain alive while a view is read; never release the string.
+            objectView(object >> int, key >> str, fallback >> str) -> str {
+                item >> int <- jsonObjectBorrow(object,key);
+                value >> str <- jsonStringView(item,fallback);
+                jsonRelease(item);
+                return value;
+            }
+    fa:
+        return true;
+}

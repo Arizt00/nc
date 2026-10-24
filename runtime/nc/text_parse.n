@@ -1,0 +1,369 @@
+/*
+ * Manual text parser provider.
+ *
+ * Every conversion walks caller-owned bytes directly. The try variants write
+ * into caller-provided storage and return a status bit: no Result boxing,
+ * allocation, ownership, locale, libc or hidden cleanup is involved.
+ */
+nccTextParseRuntime :: runtime {
+    fn:
+        private:
+            isSpace(code >> byte) -> bool {
+                return code == 32 || code == 9 || code == 10 ||
+                    code == 11 || code == 12 || code == 13;
+            }
+
+            textEnd(value >> str) -> int {
+                bytes >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (rd(off(bytes, at)) != 0) {
+                    at += 1;
+                }
+                return at;
+            }
+
+            trimmedBegin(bytes >> p<byte>, finish >> int) -> int {
+                at >> int <- 0;
+                while (at < finish && isSpace(rd(off(bytes, at)))) {
+                    at += 1;
+                }
+                return at;
+            }
+
+            trimmedEnd(bytes >> p<byte>, begin >> int, finish >> int) -> int {
+                at >> int <- finish;
+                while (at > begin && isSpace(rd(off(bytes, at - 1)))) {
+                    at -= 1;
+                }
+                return at;
+            }
+
+            digitValue(code >> byte) -> int {
+                if (code >= 48 && code <= 57) {
+                    return code - 48;
+                }
+                if (code >= 65 && code <= 90) {
+                    return code - 55;
+                }
+                if (code >= 97 && code <= 122) {
+                    return code - 87;
+                }
+                return -1;
+            }
+
+            foldAscii(code >> byte) -> byte {
+                if (code >= 65 && code <= 90) {
+                    lowered >> byte <- code + 32;
+                    return lowered;
+                }
+                return code;
+            }
+
+            equalsFold4(bytes >> p<byte>, begin >> int, a >> byte, b >> byte, c >> byte, d >> byte) -> bool {
+                return foldAscii(rd(off(bytes, begin))) == a &&
+                    foldAscii(rd(off(bytes, begin + 1))) == b &&
+                    foldAscii(rd(off(bytes, begin + 2))) == c &&
+                    foldAscii(rd(off(bytes, begin + 3))) == d;
+            }
+
+            equalsFold5(
+                bytes >> p<byte>,
+                begin >> int,
+                a >> byte,
+                b >> byte,
+                c >> byte,
+                d >> byte,
+                e >> byte
+            ) -> bool {
+                return foldAscii(rd(off(bytes, begin))) == a &&
+                    foldAscii(rd(off(bytes, begin + 1))) == b &&
+                    foldAscii(rd(off(bytes, begin + 2))) == c &&
+                    foldAscii(rd(off(bytes, begin + 3))) == d &&
+                    foldAscii(rd(off(bytes, begin + 4))) == e;
+            }
+
+            scanUnsigned(value >> str, out >> p<u64>) -> bool {
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                guard begin < finish else return false;
+
+                at >> int <- begin;
+                if (rd(off(bytes, at)) == 43) {
+                    at += 1;
+                }
+                guard at < finish else return false;
+
+                base >> int <- 10;
+                if (at + 1 < finish && rd(off(bytes, at)) == 48) {
+                    prefix >> byte <- foldAscii(rd(off(bytes, at + 1)));
+                    if (prefix == 120) {
+                        base <- 16;
+                        at += 2;
+                    } else if (prefix == 98) {
+                        base <- 2;
+                        at += 2;
+                    } else if (prefix == 111) {
+                        base <- 8;
+                        at += 2;
+                    }
+                }
+                guard at < finish else return false;
+
+                result >> u64 <- 0;
+                digits >> int <- 0;
+                separator >> bool <- false;
+                while (at < finish) {
+                    code >> byte <- rd(off(bytes, at));
+                    if (code == 95) {
+                        guard digits > 0 && !separator else return false;
+                        separator <- true;
+                        at += 1;
+                        continue;
+                    }
+                    digit >> int <- digitValue(code);
+                    guard digit >= 0 && digit < base else return false;
+                    baseWide >> u64 <- base;
+                    digitWide >> u64 <- digit;
+                    result <- result * baseWide + digitWide;
+                    digits += 1;
+                    separator <- false;
+                    at += 1;
+                }
+                guard digits > 0 && !separator else return false;
+                wr(out, result);
+                return true;
+            }
+
+            scanSigned(value >> str, out >> p<int>) -> bool {
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                guard begin < finish else return false;
+
+                negative >> bool <- false;
+                at >> int <- begin;
+                if (rd(off(bytes, at)) == 43 || rd(off(bytes, at)) == 45) {
+                    negative <- rd(off(bytes, at)) == 45;
+                    at += 1;
+                }
+                guard at < finish else return false;
+
+                base >> int <- 10;
+                if (at + 1 < finish && rd(off(bytes, at)) == 48) {
+                    prefix >> byte <- foldAscii(rd(off(bytes, at + 1)));
+                    if (prefix == 120) {
+                        base <- 16;
+                        at += 2;
+                    } else if (prefix == 98) {
+                        base <- 2;
+                        at += 2;
+                    } else if (prefix == 111) {
+                        base <- 8;
+                        at += 2;
+                    }
+                }
+                guard at < finish else return false;
+
+                magnitude >> u64 <- 0;
+                digits >> int <- 0;
+                separator >> bool <- false;
+                while (at < finish) {
+                    code >> byte <- rd(off(bytes, at));
+                    if (code == 95) {
+                        guard digits > 0 && !separator else return false;
+                        separator <- true;
+                        at += 1;
+                        continue;
+                    }
+                    digit >> int <- digitValue(code);
+                    guard digit >= 0 && digit < base else return false;
+                    baseWide >> u64 <- base;
+                    digitWide >> u64 <- digit;
+                    magnitude <- magnitude * baseWide + digitWide;
+                    digits += 1;
+                    separator <- false;
+                    at += 1;
+                }
+                guard digits > 0 && !separator else return false;
+                signed >> int <- magnitude;
+                wr(out, negative ? 0 - signed : signed);
+                return true;
+            }
+
+            scanFloat(value >> str, out >> p<ft64>) -> bool {
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                guard begin < finish else return false;
+
+                at >> int <- begin;
+                negative >> bool <- false;
+                if (rd(off(bytes, at)) == 43 || rd(off(bytes, at)) == 45) {
+                    negative <- rd(off(bytes, at)) == 45;
+                    at += 1;
+                }
+                guard at < finish else return false;
+
+                result >> ft64 <- 0.0;
+                digits >> int <- 0;
+                separator >> bool <- false;
+                while (at < finish) {
+                    code >> byte <- rd(off(bytes, at));
+                    if (code == 95) {
+                        guard digits > 0 && !separator else return false;
+                        separator <- true;
+                        at += 1;
+                        continue;
+                    }
+                    digit >> int <- digitValue(code);
+                    if (digit < 0 || digit > 9) {
+                        break;
+                    }
+                    digitFloat >> ft64 <- cast(digit);
+                    result <- result * 10.0 + digitFloat;
+                    digits += 1;
+                    separator <- false;
+                    at += 1;
+                }
+                guard !separator else return false;
+
+                if (at < finish && rd(off(bytes, at)) == 46) {
+                    at += 1;
+                    scale >> ft64 <- 0.1;
+                    fractionDigits >> int <- 0;
+                    separator <- false;
+                    while (at < finish) {
+                        code >> byte <- rd(off(bytes, at));
+                        if (code == 95) {
+                            guard fractionDigits > 0 && !separator else return false;
+                            separator <- true;
+                            at += 1;
+                            continue;
+                        }
+                        digit >> int <- digitValue(code);
+                        if (digit < 0 || digit > 9) {
+                            break;
+                        }
+                        digitFloat >> ft64 <- cast(digit);
+                        result <- result + digitFloat * scale;
+                        scale <- scale * 0.1;
+                        fractionDigits += 1;
+                        digits += 1;
+                        separator <- false;
+                        at += 1;
+                    }
+                    guard !separator else return false;
+                }
+                guard digits > 0 else return false;
+
+                exponent >> int <- 0;
+                exponentNegative >> bool <- false;
+                if (at < finish && (rd(off(bytes, at)) == 101 || rd(off(bytes, at)) == 69)) {
+                    at += 1;
+                    guard at < finish else return false;
+                    if (rd(off(bytes, at)) == 43 || rd(off(bytes, at)) == 45) {
+                        exponentNegative <- rd(off(bytes, at)) == 45;
+                        at += 1;
+                    }
+                    guard at < finish else return false;
+                    exponentDigits >> int <- 0;
+                    while (at < finish) {
+                        digit >> int <- digitValue(rd(off(bytes, at)));
+                        guard digit >= 0 && digit <= 9 else return false;
+                        exponent <- exponent * 10 + digit;
+                        exponentDigits += 1;
+                        at += 1;
+                    }
+                    guard exponentDigits > 0 else return false;
+                }
+                guard at == finish else return false;
+
+                while (exponent > 0) {
+                    if (exponentNegative) {
+                        result <- result / 10.0;
+                    } else {
+                        result <- result * 10.0;
+                    }
+                    exponent -= 1;
+                }
+                wr(out, negative ? 0.0 - result : result);
+                return true;
+            }
+
+            scanBool(value >> str, out >> p<bool>) -> bool {
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                finish <- trimmedEnd(bytes, begin, finish);
+                count >> int <- finish - begin;
+                if (count == 1 && rd(off(bytes, begin)) == 49) {
+                    wr(out, true);
+                    return true;
+                }
+                if (count == 1 && rd(off(bytes, begin)) == 48) {
+                    wr(out, false);
+                    return true;
+                }
+                if (count == 4 && equalsFold4(bytes, begin, 116, 114, 117, 101)) {
+                    wr(out, true);
+                    return true;
+                }
+                if (count == 5 && equalsFold5(bytes, begin, 102, 97, 108, 115, 101)) {
+                    wr(out, false);
+                    return true;
+                }
+                return false;
+            }
+
+        public:
+            parseIntRaw(value >> str) -> int {
+                out >> int <- 0;
+                scanSigned(value, &out);
+                return out;
+            }
+
+            parseUIntRaw(value >> str) -> u64 {
+                out >> u64 <- 0;
+                scanUnsigned(value, &out);
+                return out;
+            }
+
+            parseFloatRaw(value >> str) -> ft64 {
+                out >> ft64 <- 0.0;
+                scanFloat(value, &out);
+                return out;
+            }
+
+            parseBoolRaw(value >> str) -> bool {
+                out >> bool <- false;
+                scanBool(value, &out);
+                return out;
+            }
+
+            parseCharRaw(value >> str) -> char {
+                bytes >> p<byte> <- cast<byte>(value);
+                finish >> int <- textEnd(value);
+                begin >> int <- trimmedBegin(bytes, finish);
+                guard begin < finish else return 0;
+                return rd(off(bytes, begin));
+            }
+
+            tryParseIntRaw(value >> str, out >> p<int>) -> bool {
+                return scanSigned(value, out);
+            }
+
+            tryParseFloatRaw(value >> str, out >> p<ft64>) -> bool {
+                return scanFloat(value, out);
+            }
+
+            tryParseBoolRaw(value >> str, out >> p<bool>) -> bool {
+                return scanBool(value, out);
+            }
+
+    fa:
+        return true;
+}

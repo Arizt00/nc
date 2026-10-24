@@ -1,0 +1,193 @@
+nccIntrinsics {
+    const:
+        INTRINSIC_NONE >> int <- 0;
+
+        PTR_READ >> int <- 1;
+        PTR_WRITE >> int <- 2;
+        PTR_OFFSET >> int <- 3;
+        PTR_DIFF >> int <- 4;
+        PTR_IS_NULL >> int <- 5;
+        PTR_FROM_ADDR >> int <- 6;
+        PTR_CAST >> int <- 7;
+        PTR_ADDR >> int <- 8;
+
+        MEM_COPY >> int <- 20;
+        MEM_MOVE >> int <- 21;
+        MEM_SET >> int <- 22;
+        MEM_COMPARE >> int <- 23;
+        LAYOUT_SIZE >> int <- 24;
+        LAYOUT_ALIGN >> int <- 25;
+        LAYOUT_OFFSET >> int <- 26;
+        STATIC_ASSERT >> int <- 27;
+
+        MMIO_READ8 >> int <- 40;
+        MMIO_READ16 >> int <- 41;
+        MMIO_READ32 >> int <- 42;
+        MMIO_READ64 >> int <- 43;
+        MMIO_READ128 >> int <- 44;
+        MMIO_READ256 >> int <- 45;
+        MMIO_READ512 >> int <- 46;
+        MMIO_WRITE8 >> int <- 47;
+        MMIO_WRITE16 >> int <- 48;
+        MMIO_WRITE32 >> int <- 49;
+        MMIO_WRITE64 >> int <- 50;
+        MMIO_WRITE128 >> int <- 51;
+        MMIO_WRITE256 >> int <- 52;
+        MMIO_WRITE512 >> int <- 53;
+
+        VOLATILE_LOAD >> int <- 60;
+        VOLATILE_STORE >> int <- 61;
+        ATOMIC_LOAD >> int <- 62;
+        ATOMIC_LOAD_ORDER >> int <- 63;
+        ATOMIC_STORE >> int <- 64;
+        ATOMIC_STORE_ORDER >> int <- 65;
+        ATOMIC_EXCHANGE >> int <- 66;
+        ATOMIC_FETCH_ADD >> int <- 67;
+        ATOMIC_FETCH_SUB >> int <- 68;
+        ATOMIC_FETCH_AND >> int <- 69;
+        ATOMIC_FETCH_OR >> int <- 70;
+        ATOMIC_FETCH_XOR >> int <- 71;
+        ATOMIC_COMPARE_EXCHANGE_STRONG >> int <- 72;
+        ATOMIC_COMPARE_EXCHANGE_WEAK >> int <- 73;
+        ATOMIC_COMPARE_EXCHANGE >> int <- 74;
+        ATOMIC_COMPILER_FENCE >> int <- 75;
+        ATOMIC_THREAD_FENCE >> int <- 76;
+        ATOMIC_FENCE >> int <- 77;
+        LINUX_SYSCALL6 >> int <- 90;
+
+        EFFECT_READ >> int <- 1;
+        EFFECT_WRITE >> int <- 2;
+        EFFECT_MEMORY >> int <- 32;
+        EFFECT_VOLATILE >> int <- 256;
+
+    fn:
+        private:
+            equal(name >> p<byte>, bytes >> int, value >> str) -> bool {
+                guard bytes == strByteLen(value) else return false;
+                expected >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                while (at < bytes) {
+                    if (rd<byte>(off(name, at)) != rd<byte>(off(expected, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            oneOf3(name >> p<byte>, bytes >> int, a >> str, b >> str, c >> str) -> bool {
+                return equal(name, bytes, a) || equal(name, bytes, b) ||
+                    (c != "" && equal(name, bytes, c));
+            }
+
+        public:
+            resolve(name >> p<byte>, bytes >> int) -> int {
+                if (oneOf3(name, bytes, "rd", "ptrRead", "pread")) return PTR_READ;
+                if (oneOf3(name, bytes, "wr", "ptrWrite", "pwrite")) return PTR_WRITE;
+                if (oneOf3(name, bytes, "off", "ptrOffset", "poffset")) return PTR_OFFSET;
+                if (oneOf3(name, bytes, "dist", "ptrDiff", "pdiff")) return PTR_DIFF;
+                if (oneOf3(name, bytes, "nil", "ptrIsNull", "pnull")) return PTR_IS_NULL;
+                if (oneOf3(name, bytes, "from", "ptrFromAddr", "pfromaddr")) return PTR_FROM_ADDR;
+                if (oneOf3(name, bytes, "cast", "ptrCast", "pcast") ||
+                    equal(name, bytes, "asptr")) return PTR_CAST;
+                if (oneOf3(name, bytes, "adr", "ptrAddr", "paddr")) return PTR_ADDR;
+
+                if (equal(name, bytes, "cp") || equal(name, bytes, "memcpy")) return MEM_COPY;
+                if (equal(name, bytes, "mv") || equal(name, bytes, "memmove")) return MEM_MOVE;
+                if (equal(name, bytes, "fill") || equal(name, bytes, "memset")) return MEM_SET;
+                if (equal(name, bytes, "cmp") || equal(name, bytes, "memcmp")) return MEM_COMPARE;
+                if (equal(name, bytes, "sizeOf")) return LAYOUT_SIZE;
+                if (equal(name, bytes, "alignOf")) return LAYOUT_ALIGN;
+                if (equal(name, bytes, "offsetOf")) return LAYOUT_OFFSET;
+                if (equal(name, bytes, "staticAssert")) return STATIC_ASSERT;
+
+                if (equal(name, bytes, "mmio_read8") || equal(name, bytes, "mrd8")) return MMIO_READ8;
+                if (equal(name, bytes, "mmio_read16") || equal(name, bytes, "mrd16")) return MMIO_READ16;
+                if (equal(name, bytes, "mmio_read32") || equal(name, bytes, "mrd32")) return MMIO_READ32;
+                if (equal(name, bytes, "mmio_read64") || equal(name, bytes, "mrd64")) return MMIO_READ64;
+                if (equal(name, bytes, "mmio_read128") || equal(name, bytes, "mrd128")) return MMIO_READ128;
+                if (equal(name, bytes, "mmio_read256") || equal(name, bytes, "mrd256")) return MMIO_READ256;
+                if (equal(name, bytes, "mmio_read512") || equal(name, bytes, "mrd512")) return MMIO_READ512;
+                if (equal(name, bytes, "mmio_write8") || equal(name, bytes, "mwr8")) return MMIO_WRITE8;
+                if (equal(name, bytes, "mmio_write16") || equal(name, bytes, "mwr16")) return MMIO_WRITE16;
+                if (equal(name, bytes, "mmio_write32") || equal(name, bytes, "mwr32")) return MMIO_WRITE32;
+                if (equal(name, bytes, "mmio_write64") || equal(name, bytes, "mwr64")) return MMIO_WRITE64;
+                if (equal(name, bytes, "mmio_write128") || equal(name, bytes, "mwr128")) return MMIO_WRITE128;
+                if (equal(name, bytes, "mmio_write256") || equal(name, bytes, "mwr256")) return MMIO_WRITE256;
+                if (equal(name, bytes, "mmio_write512") || equal(name, bytes, "mwr512")) return MMIO_WRITE512;
+
+                if (equal(name, bytes, "volatileLoad") || equal(name, bytes, "volatileRead")) return VOLATILE_LOAD;
+                if (equal(name, bytes, "volatileStore") || equal(name, bytes, "volatileWrite")) return VOLATILE_STORE;
+                if (equal(name, bytes, "atomicLoad")) return ATOMIC_LOAD;
+                if (equal(name, bytes, "atomicLoadOrder")) return ATOMIC_LOAD_ORDER;
+                if (equal(name, bytes, "atomicStore")) return ATOMIC_STORE;
+                if (equal(name, bytes, "atomicStoreOrder")) return ATOMIC_STORE_ORDER;
+                if (equal(name, bytes, "atomicExchange")) return ATOMIC_EXCHANGE;
+                if (equal(name, bytes, "atomicFetchAdd")) return ATOMIC_FETCH_ADD;
+                if (equal(name, bytes, "atomicFetchSub")) return ATOMIC_FETCH_SUB;
+                if (equal(name, bytes, "atomicFetchAnd")) return ATOMIC_FETCH_AND;
+                if (equal(name, bytes, "atomicFetchOr")) return ATOMIC_FETCH_OR;
+                if (equal(name, bytes, "atomicFetchXor")) return ATOMIC_FETCH_XOR;
+                if (equal(name, bytes, "atomicCompareExchangeStrong"))
+                    return ATOMIC_COMPARE_EXCHANGE_STRONG;
+                if (equal(name, bytes, "atomicCompareExchangeWeak"))
+                    return ATOMIC_COMPARE_EXCHANGE_WEAK;
+                if (equal(name, bytes, "compareExchange")) return ATOMIC_COMPARE_EXCHANGE;
+                if (equal(name, bytes, "atomicCompilerFence")) return ATOMIC_COMPILER_FENCE;
+                if (equal(name, bytes, "atomicThreadFence")) return ATOMIC_THREAD_FENCE;
+                if (equal(name, bytes, "atomicFence")) return ATOMIC_FENCE;
+                if (equal(name, bytes, "syscall6")) return LINUX_SYSCALL6;
+                return INTRINSIC_NONE;
+            }
+
+            selected(id >> int) -> bool {
+                return (id >= PTR_READ && id <= PTR_ADDR) ||
+                    id == MEM_COPY || isLayoutQuery(id) || isVolatile(id) || id == LINUX_SYSCALL6;
+            }
+
+            isRead(id >> int) -> bool { return id == PTR_READ || id == VOLATILE_LOAD; }
+            isWrite(id >> int) -> bool { return id == PTR_WRITE || id == VOLATILE_STORE; }
+            isVolatile(id >> int) -> bool { return id == VOLATILE_LOAD || id == VOLATILE_STORE; }
+            isOffset(id >> int) -> bool { return id == PTR_OFFSET; }
+            isDiff(id >> int) -> bool { return id == PTR_DIFF; }
+            isNull(id >> int) -> bool { return id == PTR_IS_NULL; }
+            isIdentity(id >> int) -> bool {
+                return id == PTR_FROM_ADDR || id == PTR_CAST || id == PTR_ADDR;
+            }
+            isCopy(id >> int) -> bool { return id == MEM_COPY; }
+            isLayoutSize(id >> int) -> bool { return id == LAYOUT_SIZE; }
+            isLayoutQuery(id >> int) -> bool { return id >= LAYOUT_SIZE && id <= LAYOUT_OFFSET; }
+            readsMemory(id >> int) -> bool {
+                return isRead(id) || id == MEM_COPY;
+            }
+            writesMemory(id >> int) -> bool {
+                return isWrite(id) || id == MEM_COPY;
+            }
+
+            needsElementType(id >> int) -> bool {
+                return isRead(id) || isWrite(id) || id == PTR_OFFSET ||
+                    id == PTR_DIFF;
+            }
+
+            effects(id >> int) -> int {
+                if (id == PTR_READ) return EFFECT_READ + EFFECT_MEMORY;
+                if (id == PTR_WRITE) return EFFECT_WRITE + EFFECT_MEMORY;
+                if (id == MEM_COPY) return EFFECT_READ + EFFECT_WRITE + EFFECT_MEMORY;
+                if (id == VOLATILE_LOAD) return EFFECT_READ + EFFECT_MEMORY + EFFECT_VOLATILE;
+                if (id == VOLATILE_STORE) return EFFECT_WRITE + EFFECT_MEMORY + EFFECT_VOLATILE;
+                if (id == LINUX_SYSCALL6) return EFFECT_READ + EFFECT_WRITE + EFFECT_MEMORY + EFFECT_VOLATILE + 4;
+                return 0;
+            }
+
+            selfTest() -> bool {
+                sample >> str <- "ptrOffset";
+                return resolve(cast<byte>(sample), strByteLen(sample)) == PTR_OFFSET &&
+                    selected(PTR_READ) && selected(MEM_COPY) && selected(LAYOUT_SIZE) &&
+                    effects(PTR_WRITE) == EFFECT_WRITE + EFFECT_MEMORY &&
+                    effects(MEM_COPY) == EFFECT_READ + EFFECT_WRITE + EFFECT_MEMORY &&
+                    selected(VOLATILE_STORE) && selected(VOLATILE_LOAD) &&
+                    resolve(cast<byte>("volatileWrite"),13) == VOLATILE_STORE &&
+                    effects(VOLATILE_LOAD) == EFFECT_READ + EFFECT_MEMORY + EFFECT_VOLATILE;
+            }
+
+    fa:
+        return true;
+}

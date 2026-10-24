@@ -1,0 +1,37 @@
+use <io:output>;
+use <memory:slice, stack>;
+
+memorySliceBasic :: runtime {
+    fn:
+        prepare(descriptor >> addr, data >> addr) -> bool {
+            return sliceAt(descriptor, data, 4, 0);
+        }
+
+        verify(descriptor >> addr) -> bool {
+            sliceWrite8(descriptor, 0, 10);
+            sliceWrite8(descriptor, 1, 20);
+            sliceWrite8(descriptor, 2, 30);
+            sliceWrite8(descriptor, 3, 40);
+            return sliceLen(descriptor) == 4 &&
+                sliceRead8(descriptor, 2) == 30 &&
+                !sliceIsEmpty(descriptor);
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            data >> p<byte> <- stackAlloc(4, 1);
+            descriptor >> p<byte> <- stackAlloc(sliceStride(), 8);
+            ready >> bool <- prepare(adr(descriptor), adr(data));
+            ok >> bool <- ready && verify(adr(descriptor));
+            print("memory-slice-manual-ok=");
+            if (ok) { println("true"); } else { println("false"); }
+            sliceClear(adr(descriptor));
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

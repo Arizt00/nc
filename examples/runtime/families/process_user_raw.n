@@ -1,0 +1,69 @@
+use <io:output>;
+use <process:user>;
+
+rawProcessUser :: runtime {
+    fn:
+        run() -> bool {
+            name >> addr <- userBuffer(512);
+            nameSize >> p<int> <- cast(userBuffer(8));
+            extended >> addr <- userBuffer(512);
+            extendedSize >> p<int> <- cast(userBuffer(8));
+            tokenSlot >> p<addr> <- cast(userBuffer(8));
+            tokenInfo >> addr <- userBuffer(512);
+            tokenInfoSize >> p<int> <- cast(userBuffer(8));
+            profile >> addr <- userBuffer(1024);
+            profileSize >> p<int> <- cast(userBuffer(8));
+
+            wr(nameSize, 256);
+            wr(extendedSize, 256);
+            wr(tokenSlot, 0);
+            wr(tokenInfoSize, 0);
+            wr(profileSize, 512);
+
+            named >> bool <- userName(name, adr(nameSize));
+            namedEx >> bool <- userNameEx(2, extended, adr(extendedSize));
+            process >> addr <- userCurrentProcess();
+            opened >> bool <- userOpenProcessToken(process, 8, adr(tokenSlot));
+            token >> addr <- rd(tokenSlot);
+            queried >> bool <- userTokenInformation(token, 1, tokenInfo, 512, adr(tokenInfoSize));
+            profiled >> bool <- userProfileDirectory(token, profile, adr(profileSize));
+            closed >> bool <- userClose(token);
+
+            freedProfileSize >> bool <- userFree(adr(profileSize));
+            freedProfile >> bool <- userFree(profile);
+            freedTokenInfoSize >> bool <- userFree(adr(tokenInfoSize));
+            freedTokenInfo >> bool <- userFree(tokenInfo);
+            freedTokenSlot >> bool <- userFree(adr(tokenSlot));
+            freedExtendedSize >> bool <- userFree(adr(extendedSize));
+            freedExtended >> bool <- userFree(extended);
+            freedNameSize >> bool <- userFree(adr(nameSize));
+            freedName >> bool <- userFree(name);
+
+            ok >> bool <-
+                named &&
+                namedEx &&
+                opened &&
+                queried &&
+                profiled &&
+                closed &&
+                freedProfileSize &&
+                freedProfile &&
+                freedTokenInfoSize &&
+                freedTokenInfo &&
+                freedTokenSlot &&
+                freedExtendedSize &&
+                freedExtended &&
+                freedNameSize &&
+                freedName;
+
+            print("manual nC process user backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

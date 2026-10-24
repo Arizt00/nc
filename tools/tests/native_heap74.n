@@ -1,0 +1,54 @@
+use <io:output>;
+
+nativeHeap74 {
+    run() -> int {
+        if (!free(null) || alloc(0xFFFFFFFFFFFFFFFF) != null ||
+            calloc(0x4000000000000000,16) != null) return 1;
+        empty >> p<byte> <- alloc(0);
+        if (empty == null || !free(empty)) return 2;
+        block >> p<byte> <- calloc(7,13);
+        if (block == null || (adr(block) & 15) != 0) return 3;
+        index >> int <- 0;
+        while (index < 91) {
+            if (rd(off(block,index)) != 0) return 4;
+            wr(off(block,index),index+3); index += 1;
+        }
+        failed >> p<byte> <- realloc(block,0xFFFFFFFFFFFFFFFF);
+        if (failed != null || rd(off(block,90)) != 93) return 5;
+        grown >> p<byte> <- realloc(block,513);
+        if (grown == null) return 6;
+        index <- 0;
+        while (index < 91) { if (rd(off(grown,index)) != index+3) return 7; index += 1; }
+        small >> p<byte> <- realloc(grown,17);
+        if (small == null) return 8;
+        index <- 0;
+        while (index < 17) { if (rd(off(small,index)) != index+3) return 9; index += 1; }
+        if (realloc(small,0) != null) return 10;
+        pointers >> array<addr,64>;
+        cells >> p<addr> <- cast<addr>(&pointers);
+        round >> int <- 0;
+        checksum >> int <- 0;
+        while (round < 128) {
+            index <- 0;
+            while (index < 64) {
+                item >> p<byte> <- alloc(index*31+1);
+                if (item == null) return 11;
+                wr(off(item,index*31),index);
+                wr(off(cells,index),adr(item)); index += 1;
+            }
+            index <- 63;
+            while (index >= 0) {
+                item >> p<byte> <- from<byte>(rd(off(cells,index)));
+                checksum += rd(off(item,index*31));
+                if (!free(item)) return 12;
+                index -= 1;
+            }
+            round += 1;
+        }
+        if (checksum != 258048) return 13;
+        println("native-heap-ok");
+        return 249;
+    }
+    ref main ->> run;
+    fa: return true;
+}

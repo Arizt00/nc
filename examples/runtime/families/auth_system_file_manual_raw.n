@@ -1,0 +1,61 @@
+use <auth.system:file>;
+use <io:output>;
+use <memory:stack>;
+
+authSystemFileManual :: runtime {
+    fn:
+        strideCheck() -> bool {
+            return authFileStride() == 64;
+        }
+
+        writeCopy(table >> addr) -> bool {
+            written >> bool <- authFileWrite(
+                table, 0, 101, 9001, 7, 3, 44, 2, 4096, 1
+            );
+            copied >> bool <- authFileCopy(table, 1, table, 0);
+            return written && copied;
+        }
+
+        identity(table >> addr) -> bool {
+            pathKey >> int <- authFilePathKey(table, 1);
+            handle >> int <- authFileHandle(table, 1);
+            owner >> int <- authFileOwner(table, 1);
+            generation >> int <- authFileGeneration(table, 1);
+            return pathKey == 101 && handle == 9001 && owner == 44 && generation == 2;
+        }
+
+        authority(table >> addr) -> bool {
+            rights >> int <- authFileRights(table, 1);
+            flags >> int <- authFileFlags(table, 1);
+            sizeHint >> int <- authFileSizeHint(table, 1);
+            state >> int <- authFileState(table, 1);
+            allowed >> bool <- authFileAllows(table, 1, 3);
+            return rights == 7 && flags == 3 && sizeHint == 4096 && state == 1 && allowed;
+        }
+
+        clearRecord(table >> addr) -> bool {
+            cleared >> bool <- authFileClear(table, 1);
+            return cleared && authFileState(table, 1) == 0;
+        }
+
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            stride >> int <- authFileStride();
+            table >> p<byte> <- stackAlloc(stride * 2, 8);
+            written >> bool <- writeCopy(adr(table));
+            identityOk >> bool <- identity(adr(table));
+            authorityOk >> bool <- authority(adr(table));
+            cleared >> bool <- clearRecord(adr(table));
+            strideOk >> bool <- strideCheck();
+            ok >> bool <- strideOk && written && identityOk && authorityOk && cleared;
+            print("manual nC auth system file backend: ");
+            if (ok) { println("true"); } else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

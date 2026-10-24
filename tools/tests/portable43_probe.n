@@ -1,0 +1,19 @@
+use <process:args>;
+use <data:json>;
+use <io:output>;
+use <project:portable43_repr, physical43_deep_json, physical43_common, release_io, cert_json>;
+
+portable43Probe {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); input >> str <- release_io.releaseIo.option(arguments,"--json","null"); out >> str <- release_io.releaseIo.option(arguments,"--out","");
+                value >> int <- physical43_deep_json.physical43DeepJson.parse(input); if (value == 0) { argsRelease(arguments); return 1; }
+                text >> str <- portable43_repr.portable43Repr.strValue(value); shown >> str <- portable43_repr.portable43Repr.repr(value);
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"str",portable43_repr.portable43Repr.string(text)); cert_json.certJson.put(report,"repr",jsonNewString(shown));
+                good >> bool <- out == "" ? true : physical43_common.physical43Common.save(out,report);
+                physical43_common.physical43Common.print(report); strRelease(text); strRelease(shown); jsonRelease(report); jsonRelease(value); argsRelease(arguments); return good ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

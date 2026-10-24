@@ -1,0 +1,125 @@
+use <process:args, env>;
+use <data:json>;
+use <io:output, render>;
+use <project:docs43_pdf, docs43_font, docs43_zip, docs43_books, docs43_source, docs43_wrap, docs43_manual, docs43_cases, docs43_wrap_cases, release_io, cert_json, sha256, tool_cli, process_capture>;
+
+docs43Tests {
+    stc:
+        results >> int <- 0;
+        failures >> int <- 0;
+        configPhase >> str <- "";
+        decodedSample >> str <- "";
+    fn:
+        private:
+            check(name >> str, success >> bool) -> void {
+                cert_json.certJson.put(results,name,jsonNewBool(success));
+                println((success ? "PASS " : "FAIL ")+name);
+                if (!success) failures += 1;
+            }
+            item(array >> int, at >> int) -> str {
+                child >> int <- jsonArrayBorrow(array,at); value >> str <- jsonStringView(child,"");
+                copy >> str <- strSubstring(value,0,strByteLen(value)); jsonRelease(child); return copy;
+            }
+            zipXml(path >> str) -> str {
+                size >> int <- fsSize(path); guard size > 0 && size < 2097152 else return "";
+                bytes >> p<byte> <- cast(alloc(size+1)); guard bytes != null else return "";
+                if (fsReadInto(path,bytes,size) != size) { free(bytes); return ""; }
+                at >> int <- 0;
+                while (at < size) { if (rd(off(bytes,at)) == 0) wr(off(bytes,at),32); at += 1; }
+                wr(off(bytes,size),0); text >> str <- cast(bytes);
+                result >> str <- strSubstring(text,0,size); free(bytes); return result;
+            }
+            cliHelp(binary >> str, root >> str, command >> str, flag >> str) -> bool {
+                missing >> str <- root+"/help-missing-root";
+                destination >> str <- root+"/help-missing-output";
+                line >> str <- process_capture.processCapture.quoted(binary)+" "+command+" "+flag+" --root "+process_capture.processCapture.quoted(missing)+" --out "+process_capture.processCapture.quoted(destination);
+                report >> int <- process_capture.processCapture.capture(line,tool_cli.toolCli.absolute(root),10000,4096);
+                codeValue >> int <- jsonObjectBorrow(report,"code"); code >> int <- jsonGetInt(codeValue); jsonRelease(codeValue);
+                output >> str <- cert_json.certJson.field(report,"stdout");
+                error >> str <- cert_json.certJson.field(report,"stderr");
+                success >> bool <- code == 0 && tool_cli.toolCli.clean(report) && strContains(output,"Usage: ncc-documents-v43") && error == "";
+                if (command != "") success <- success && strContains(output,command);
+                else success <- success && strContains(output,"build_nc_manual") && strContains(output,"build_public_pdf_library");
+                success <- success && release_io.releaseIo.fileType(missing) == 0 && release_io.releaseIo.fileType(destination) == 0;
+                strRelease(output); strRelease(error); jsonRelease(report); return success;
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen();
+                root >> str <- release_io.releaseIo.option(args,"--root","target/tmp/docs43/tests-fixture");
+                results <- jsonNewObject(); failures <- 0;
+                check("sha256_vectors",sha256.nccSha256.selfTest());
+                check("crc32_vector",docs43_zip.docs43Zip.crc(cast<byte>("123456789"),9) == -873187034);
+                check("helvetica_metrics",docs43_pdf.docs43Pdf.measure("ABC",1,10000) == 20560);
+                check("helvetica_bold_metrics",docs43_pdf.docs43Pdf.measure("ABC",2,10000) == 21660);
+                check("courier_metrics",docs43_pdf.docs43Pdf.measure("ABC",3,10000) == 18000);
+                check("pdf_escape",docs43_pdf.docs43Pdf.literal("a(b)\\é") == "(a\\050b\\051\\134\\351)");
+                cleaned >> str <- docs43_books.docs43Books.clean("baseico baseica canónico canónica Baseical official");
+                check("clean_replacements",cleaned == "principal principal principal principal Official official" && docs43_books.docs43Books.cleanOk()); strRelease(cleaned);
+                cleaned <- docs43_books.docs43Books.clean("CANON"); check("forbidden_case_insensitive",!docs43_books.docs43Books.cleanOk()); strRelease(cleaned);
+                check("invalid_book",!docs43_books.docs43Books.buildBook(root,-1) && !docs43_books.docs43Books.buildBook(root,6));
+                check("fixture_write",release_io.releaseIo.write(root+"/source.txt"," A\r\nB\rC\nD "));
+                fallback >> str <- envHas("WINDIR") ? "target/tmp/docs43/integration-windows/bin/ncc-documents-v43.exe" : "target/tmp/docs43/integration-linux/bin/ncc-documents-v43";
+                binary >> str <- tool_cli.toolCli.absolute(release_io.releaseIo.option(args,"--cli",fallback));
+                check("help_manual_long",cliHelp(binary,root,"build_nc_manual","--help"));
+                check("help_manual_short",cliHelp(binary,root,"build_nc_manual","-h"));
+                check("help_books_long",cliHelp(binary,root,"build_public_pdf_library","--help"));
+                check("help_books_short",cliHelp(binary,root,"build_public_pdf_library","-h"));
+                check("help_family_long",cliHelp(binary,root,"","--help"));
+                check("help_family_short",cliHelp(binary,root,"","-h"));
+                check("help_no_files",release_io.releaseIo.fileType(root+"/help-missing-root") == 0 && release_io.releaseIo.fileType(root+"/help-missing-output") == 0);
+                check("source_truncation",docs43_source.docs43Source.read(root,"source.txt",3) == "A\nB\nC\n...");
+                check("source_missing",docs43_source.docs43Source.read(root,"absent.txt",2) == "[missing source: absent.txt]");
+                wrapped >> int <- docs43_pdf.docs43Pdf.wrap("alpha beta gamma",1,10000,50000);
+                check("metric_wrap",jsonArrayLen(wrapped) == 2 && item(wrapped,0) == "alpha beta" && item(wrapped,1) == "gamma"); jsonRelease(wrapped);
+                wrapped <- docs43_wrap.docs43Wrap.wrap("\talpha"); check("tab_expansion",item(wrapped,0) == "        alpha"); jsonRelease(wrapped);
+                check("textwrap_105_oracles",docs43_wrap_cases.docs43WrapCases.run());
+                check("pdf_begin",docs43_pdf.docs43Pdf.begin(root+"/writer.pdf","Writer test","nC",595276,841890));
+                docs43_pdf.docs43Pdf.text("Native (PDF) é",44000,751890,1,11000); docs43_pdf.docs43Pdf.page();
+                check("pdf_finish",docs43_pdf.docs43Pdf.finish());
+                pdf >> str <- release_io.releaseIo.text(root+"/writer.pdf");
+                check("pdf_structure",strStartsWith(pdf,"%PDF-1.4") && strContains(pdf,"/Count 1") && strContains(pdf,"xref\n0 9") && strContains(pdf,"%%EOF")); strRelease(pdf);
+                check("pdf_bad_destination",!docs43_pdf.docs43Pdf.begin(root,"bad","nC",595276,841890));
+                check("zip_begin",docs43_zip.docs43Zip.begin(root+"/writer.zip"));
+                docs43_zip.docs43Zip.add("unicode.txt","nC áéíóú"); check("zip_finish",docs43_zip.docs43Zip.finish());
+                check("bad_json_write",release_io.releaseIo.write(root+"/docs/spec/runtime/runtime_imports_index.json","{ invalid"));
+                check("malformed_runtime_rejected",!docs43_manual.docs43Manual.build(root));
+                check("valid_fixture",docs43_cases.docs43Cases.create(root+"/valid-root"));
+                check("manual_fixture",docs43_manual.docs43Manual.build(root+"/valid-root"));
+                xml >> str <- zipXml(root+"/valid-root/docs/manual/Manual_completo_nC.docx");
+                check("docx_heading_inherits_style",strContains(xml,"<w:pStyle w:val=\"Heading1\"/></w:pPr><w:r><w:t"));
+                check("docx_body_run_not_bold",strContains(xml,"<w:sz w:val=\"22\"/><w:b w:val=\"0\"/></w:rPr>"));
+                check("docx_list_run_inherited_color",strContains(xml,"<w:sz w:val=\"22\"/></w:rPr>"));
+                check("docx_heading3_style",strContains(xml,"<w:color w:val=\"1F4D78\"/><w:sz w:val=\"24\"/>")); strRelease(xml);
+                check("config_fixture",docs43_cases.docs43Cases.config(root+"/config-root"));
+                check("config_manual",docs43_manual.docs43Manual.build(root+"/config-root"));
+                configPhase <- docs43_manual.docs43Manual.phase();
+                decoded >> str <- docs43_source.docs43Source.read(root+"/valid-root","invalid-utf8.txt",4);
+                decodedSample <- strSubstring(decoded,0,strByteLen(decoded));
+                check("invalid_utf8_replacement",decoded == "a�b�"); strRelease(decoded);
+                check("unicode_source_write",release_io.releaseIo.write(root+"/unicode-lines.txt","\u{00a0}A\u{2028}B\u{0085}C\u{3000}"));
+                check("unicode_source_lines",docs43_source.docs43Source.read(root,"unicode-lines.txt",2) == "A\nB\n...");
+                docs43_source.docs43Source.reset(); docs43_source.docs43Source.read(root,"valid-root/examples",4);
+                check("source_directory_rejected",!docs43_source.docs43Source.ok());
+                check("control_source_write",release_io.releaseIo.write(root+"/control.txt","A\x01B")); docs43_source.docs43Source.reset(); docs43_source.docs43Source.read(root,"control.txt",4);
+                check("source_xml_control_rejected",!docs43_source.docs43Source.ok());
+                check("bad_capabilities_write",release_io.releaseIo.write(root+"/docs/spec/runtime/runtime_imports_index.json","{\"families\":[{\"family_key\":\"test\",\"required_capabilities\":[1]}]}"));
+                check("bad_capabilities_rejected",!docs43_manual.docs43Manual.build(root));
+                check("bad_families_write",release_io.releaseIo.write(root+"/docs/spec/runtime/runtime_imports_index.json","{\"families\":null}"));
+                check("bad_families_rejected",!docs43_manual.docs43Manual.build(root));
+                check("unicode_pdf_begin",docs43_pdf.docs43Pdf.begin(root+"/unicode.pdf","Unicode →","nC",595276,841890));
+                docs43_pdf.docs43Pdf.text("nC → α a�b�",44000,751890,1,11000); docs43_pdf.docs43Pdf.page();
+                check("unicode_pdf_finish",docs43_pdf.docs43Pdf.finish());
+                check("unicode_real_glyphs",docs43_font.docs43Font.supports(65533) && docs43_font.docs43Font.supports(8594) && docs43_font.docs43Font.supports(945));
+                check("cid_mapping_zero",strStartsWith(docs43_font.docs43Font.mapping(),"0000"));
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.documents.native-tests.v43"));
+                cert_json.certJson.put(report,"checks",results); cert_json.certJson.put(report,"failures",jsonNewInt(failures));
+                cert_json.certJson.put(report,"config_phase",jsonNewString(configPhase));
+                cert_json.certJson.put(report,"decoded_utf8",jsonNewString(decodedSample));
+                cert_json.certJson.put(report,"pdf_sha256",jsonNewString(sha256.nccSha256.file(root+"/writer.pdf")));
+                saved >> bool <- cert_json.certJson.save(root+"/tests.json",report);
+                jsonRelease(report); jsonRelease(results); argsRelease(args); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

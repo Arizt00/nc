@@ -1,0 +1,107 @@
+use <data:json>;
+use <io:output, render>;
+use <project:release_io, tool_cli, sha256>;
+
+frontendArtifactsVerify {
+    fn:
+        private:
+            little(data >> p<byte>, at >> int, width >> int) -> int {
+                value >> int <- 0; index >> int <- width - 1;
+                while (index >= 0) { value <- value * 256 + (rd(off(data, at + index)) & 255); index -= 1; }
+                return value;
+            }
+            clear(data >> p<byte>, at >> int) -> void {
+                index >> int <- 0;
+                while (index < 4) { wr(off(data, at + index), 0); index += 1; }
+            }
+            normalized(path >> str, profile >> str) -> str {
+                size >> int <- fsSize(path);
+                if (size < 1 || size > 134217728) return "";
+                if (profile == "none") return sha256.nccSha256.file(path);
+                if (profile != "coff-timestamp" && profile != "pe-timestamp-checksum") return "";
+                data >> p<byte> <- cast(alloc(size));
+                if (data == null) return "";
+                if (fsReadInto(path, data, size) != size) { free(data); return ""; }
+                valid >> bool <- false;
+                if (profile == "coff-timestamp" && size >= 60) {
+                    sections >> int <- little(data, 2, 2);
+                    valid <- little(data, 0, 2) == 34404 && sections > 0 &&
+                        sections <= (size - 20) / 40 && little(data, 16, 2) == 0;
+                    if (valid) clear(data, 4);
+                }
+                if (profile == "pe-timestamp-checksum" && size >= 64) {
+                    header >> int <- little(data, 60, 4);
+                    if (header >= 64 && header <= size - 92 && little(data, 0, 2) == 23117) {
+                        valid <- little(data, header, 4) == 17744 &&
+                            little(data, header + 4, 2) == 34404 &&
+                            little(data, header + 20, 2) >= 68 &&
+                            little(data, header + 20, 2) <= size - header - 24 &&
+                            little(data, header + 24, 2) == 523;
+                        if (valid) { clear(data, header + 8); clear(data, header + 88); }
+                    }
+                }
+                hash >> str <- valid ? sha256.nccSha256.bytes(data, size) : "";
+                free(data); return hash;
+            }
+        public:
+            run(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments, "|--manifest|--out|", "");
+                if (options == 0) return 64;
+                path >> str <- tool_cli.toolCli.value(options, "--manifest", "");
+                out >> str <- tool_cli.toolCli.value(options, "--out", "");
+                if (path == "" || out == "") { jsonRelease(options); return 64; }
+                model >> int <- jsonParseFile(path);
+                if (model == 0) { jsonRelease(options); return 2; }
+                entries >> int <- jsonObjectGet(model, "artifacts");
+                if (jsonKind(entries) != 5) {
+                    jsonRelease(entries); jsonRelease(model); jsonRelease(options); return 2;
+                }
+                valid >> bool <- jsonArrayLen(entries) > 0;
+                rows >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    entry >> int <- jsonArrayGet(entries, at);
+                    name >> str <- release_io.releaseIo.field(entry, "name");
+                    left >> str <- release_io.releaseIo.field(entry, "reference");
+                    right >> str <- release_io.releaseIo.field(entry, "candidate");
+                    profile >> str <- release_io.releaseIo.field(entry, "normalization");
+                    if (profile == "") profile <- "none";
+                    row >> int <- jsonNewObject(); equal >> bool <- false;
+                    a >> str <- ""; b >> str <- "";
+                    na >> str <- ""; nb >> str <- "";
+                    if (name != "" && left != "" && right != "" && left != right) {
+                        size >> int <- fsSize(left);
+                        if (size > 0 && size == fsSize(right)) {
+                            a <- sha256.nccSha256.file(left); b <- sha256.nccSha256.file(right);
+                            na <- normalized(left, profile); nb <- normalized(right, profile);
+                            equal <- strByteLen(na) == 64 && na == nb;
+                        }
+                    }
+                    jsonObjectSet(row, "name", jsonNewString(name));
+                    jsonObjectSet(row, "reference", jsonNewString(left));
+                    jsonObjectSet(row, "candidate", jsonNewString(right));
+                    jsonObjectSet(row, "reference_sha256", jsonNewString(a));
+                    jsonObjectSet(row, "candidate_sha256", jsonNewString(b));
+                    jsonObjectSet(row, "reference_normalized_sha256", jsonNewString(na));
+                    jsonObjectSet(row, "candidate_normalized_sha256", jsonNewString(nb));
+                    jsonObjectSet(row, "normalization", jsonNewString(profile));
+                    jsonObjectSet(row, "bytes", jsonNewInt(fsSize(left)));
+                    jsonObjectSet(row, "equal", jsonNewBool(equal));
+                    jsonObjectSet(row, "exact", jsonNewBool(equal && a == b));
+                    jsonArrayPush(rows, row); valid <- valid && equal;
+                    strRelease(name); strRelease(left); strRelease(right); strRelease(a); strRelease(b);
+                    strRelease(na); strRelease(nb); strRelease(profile);
+                    jsonRelease(entry); at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("nc.frontend.artifact-equivalence.v44"));
+                jsonObjectSet(report, "status", jsonNewString(valid ? "PASS" : "FAIL"));
+                jsonObjectSet(report, "scope", jsonNewString("independent rebuilds; only validated COFF timestamps and PE timestamps/checksum may normalize; not complete self-hosting"));
+                jsonObjectSet(report, "stage3_promotable", jsonNewBool(false));
+                jsonObjectSet(report, "artifacts", rows);
+                written >> bool <- release_io.releaseIo.save(out, report);
+                println(valid && written ? "artifact equivalence PASS" : "artifact equivalence FAIL");
+                jsonRelease(report); jsonRelease(entries); jsonRelease(model); jsonRelease(options);
+                return valid && written ? 0 : 1;
+            }
+    fa: return true;
+}

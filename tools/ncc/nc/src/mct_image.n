@@ -1,0 +1,267 @@
+use <io:output, render>;
+use <project:ir, sema, mct, mct_link, mct_image_contract, mct_image_pe, mct_image_elf, mct_image_elf32, mct_image_macho, mct_image_wasm, diagnostics>;
+
+nccMctImage {
+    const:
+        TARGET_WIN64 >> int <- 2;
+        TARGET_X86_64 >> int <- 1;
+        TARGET_AARCH64 >> int <- 5;
+        TARGET_X86_64_DARWIN >> int <- 3;
+        TARGET_AARCH64_DARWIN >> int <- 6;
+        TARGET_I386 >> int <- 4;
+        TARGET_ARMV7 >> int <- 7;
+        TARGET_RISCV32 >> int <- 8;
+        TARGET_RISCV64 >> int <- 9;
+        TARGET_WASM32 >> int <- 10;
+        FORMAT_PE64 >> int <- 1;
+        FORMAT_ELF64 >> int <- 2;
+        FORMAT_ELF32 >> int <- 3;
+        FORMAT_MACHO64 >> int <- 4;
+        FORMAT_WASM >> int <- 5;
+
+    fn:
+        private:
+            formatName(format >> int) -> str {
+                if (format == FORMAT_PE64) return "pe64";
+                if (format == FORMAT_ELF64) return "elf64";
+                if (format == FORMAT_ELF32) return "elf32";
+                if (format == FORMAT_MACHO64) return "macho64";
+                if (format == FORMAT_WASM) return "wasm";
+                return "unsupported";
+            }
+
+            jsonString(value >> str) -> void {
+                data >> p<byte> <- cast<byte>(value);
+                at >> int <- 0;
+                count >> int <- 0;
+                while (rd<byte>(off(data, count)) != 0) { count += 1; }
+                escaped >> p<byte> <- cast<byte>(alloc(count * 2 + 1));
+                guard escaped != null else { print("\"\""); return; }
+                cursor >> int <- 0;
+                print("\"");
+                while (rd<byte>(off(data, at)) != 0) {
+                    current >> int <- rd<byte>(off(data, at)) & 255;
+                    if (current == 34 || current == 92 || current == 8 || current == 9 ||
+                        current == 10 || current == 12 || current == 13) {
+                        wr<byte>(off(escaped, cursor), 92);
+                        cursor += 1;
+                        current <- current == 34 ? 34 : (current == 92 ? 92 :
+                            (current == 8 ? 98 : (current == 9 ? 116 :
+                            (current == 10 ? 110 : (current == 12 ? 102 : 114)))));
+                    }
+                    wr<byte>(off(escaped, cursor), current);
+                    cursor += 1;
+                    at += 1;
+                }
+                wr<byte>(off(escaped, cursor), 0);
+                print(cast<str>(escaped));
+                free(escaped);
+                print("\"");
+            }
+
+            build(material >> p<byte>, plan >> p<byte>) -> p<byte> {
+                guard material != null && plan != null else return null;
+                if (mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_WIN64)
+                    return mct_image_pe.nccMctImagePe.build(material, plan);
+                if (mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_X86_64 ||
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_AARCH64 ||
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_RISCV64)
+                    return mct_image_elf.nccMctImageElf.build(material, plan);
+                if (mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_I386 ||
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_ARMV7 ||
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_RISCV32)
+                    return mct_image_elf32.nccMctImageElf32.build(material, plan);
+                if (mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_X86_64_DARWIN ||
+                    mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_AARCH64_DARWIN)
+                    return mct_image_macho.nccMctImageMacho.build(material, plan);
+                if (mct_link.nccMctLink.finalPlanTarget(plan) == TARGET_WASM32)
+                    return mct_image_wasm.nccMctImageWasm.build(material, plan);
+                return null;
+            }
+
+            supported(target >> int) -> bool {
+                return target == TARGET_WIN64 || target == TARGET_X86_64 ||
+                    target == TARGET_AARCH64 || target == TARGET_RISCV64 ||
+                    target == TARGET_I386 || target == TARGET_ARMV7 ||
+                    target == TARGET_RISCV32 ||
+                    target == TARGET_X86_64_DARWIN || target == TARGET_AARCH64_DARWIN ||
+                    target == TARGET_WASM32;
+            }
+
+            report(path >> str, targetName >> str, image >> p<byte>, json >> bool) -> void {
+                format >> int <- mct_image_contract.nccMctImageContract.format(image);
+                if (!json) {
+                    print("MCT image format="); print(formatName(format));
+                    print(" target="); print(targetName);
+                    print(" bytes="); print(renderInt(
+                        mct_image_contract.nccMctImageContract.bytes(image)));
+                    print(" entry="); print(renderInt(
+                        mct_image_contract.nccMctImageContract.entry(image)));
+                    print(" providers="); print(renderInt(
+                        mct_image_contract.nccMctImageContract.providers(image)));
+                    print(" hash="); println(renderInt(
+                        mct_image_contract.nccMctImageContract.hash(image)));
+                    return;
+                }
+                print("{\"schema\":\"nc.mct.image.v1\",\"path\":"); jsonString(path);
+                print(",\"target\":\""); print(targetName);
+                print("\",\"format\":\""); print(formatName(format));
+                print("\",\"format_id\":"); print(renderInt(format));
+                print(",\"bytes\":"); print(renderInt(
+                    mct_image_contract.nccMctImageContract.bytes(image)));
+                print(",\"entry\":"); print(renderInt(
+                    mct_image_contract.nccMctImageContract.entry(image)));
+                print(",\"providers\":"); print(renderInt(
+                    mct_image_contract.nccMctImageContract.providers(image)));
+                print(",\"flags\":"); print(renderInt(
+                    mct_image_contract.nccMctImageContract.flags(image)));
+                print(",\"hash\":"); print(renderInt(
+                    mct_image_contract.nccMctImageContract.hash(image)));
+                println("}");
+            }
+
+        public:
+            projectWriteImage(material >> p<byte>, output >> str) -> bool {
+                guard material != null && output != "" else return false;
+                plan >> p<byte> <- mct_link.nccMctLink.finalPlanFromArtifact(material);
+                guard plan != null else {
+                    println("error[E_MCT_IMAGE_WRITE_001]: stage=final-plan-build");
+                    return false;
+                }
+                guard mct_link.nccMctLink.finalPlanReady(plan) else {
+                    print("error[E_MCT_IMAGE_WRITE_001]: stage=final-plan-ready target=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanTarget(plan)));
+                    print(" providers=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanProviderCount(plan)));
+                    print(" relocations=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanRelocationCount(plan)));
+                    print(" applied=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanAppliedCount(plan)));
+                    print(" project=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanProjectTargetCount(plan)));
+                    print(" unresolved=");
+                    println(renderInt(mct_link.nccMctLink.finalPlanUnresolvedCount(plan)));
+                    if (plan != null) mct_link.nccMctLink.releaseFinalPlan(plan);
+                    return false;
+                }
+                image >> p<byte> <- build(material, plan);
+                guard image != null else {
+                    print("error[E_MCT_IMAGE_WRITE_001]: stage=image-build target=");
+                    print(renderInt(mct_link.nccMctLink.finalPlanTarget(plan)));
+                    print(" bytes="); print(renderInt(mct_link.nccMctLink.finalPlanBytes(plan)));
+                    print(" providers=");
+                    println(renderInt(mct_link.nccMctLink.finalPlanProviderCount(plan)));
+                    mct_link.nccMctLink.releaseFinalPlan(plan);
+                    return false;
+                }
+                ok >> bool <- mct_image_contract.nccMctImageContract.write(image, output);
+                if (!ok) {
+                    print("error[E_MCT_IMAGE_WRITE_001]: stage=image-write bytes=");
+                    println(renderInt(mct_image_contract.nccMctImageContract.bytes(image)));
+                }
+                mct_image_contract.nccMctImageContract.release(image);
+                mct_link.nccMctLink.releaseFinalPlan(plan);
+                return ok;
+            }
+
+            projectProviderCount(material >> p<byte>) -> int {
+                guard material != null else return -1;
+                plan >> p<byte> <- mct_link.nccMctLink.finalPlanFromArtifact(material);
+                guard plan != null && mct_link.nccMctLink.finalPlanReady(plan) else {
+                    if (plan != null) mct_link.nccMctLink.releaseFinalPlan(plan);
+                    return -1;
+                }
+                providers >> int <- mct_link.nccMctLink.finalPlanProviderCount(plan);
+                mct_link.nccMctLink.releaseFinalPlan(plan);
+                return providers;
+            }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                if (!supported(target))
+                    return diagnostics.nccDiagnostics.emitMctImageTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                plan >> p<byte> <- mct_link.nccMctLink.finalPlanFromArtifact(material);
+                guard plan != null && mct_link.nccMctLink.finalPlanReady(plan) else {
+                    if (plan != null) mct_link.nccMctLink.releaseFinalPlan(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctImageMaterial(path);
+                }
+                image >> p<byte> <- build(material, plan);
+                guard image != null else {
+                    mct_link.nccMctLink.releaseFinalPlan(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctImageMaterial(path);
+                }
+                if (!mct_image_contract.nccMctImageContract.write(image, output)) {
+                    mct_image_contract.nccMctImageContract.release(image);
+                    mct_link.nccMctLink.releaseFinalPlan(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctImageWrite(output);
+                }
+                if (!quiet) report(path, targetName, image, json);
+                mct_image_contract.nccMctImageContract.release(image);
+                mct_link.nccMctLink.releaseFinalPlan(plan);
+                mct.nccMct.releaseArtifact(material);
+                return 0;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedFormat >> int,
+                expectedBytes >> int, expectedEntry >> int, expectedProviders >> int,
+                expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                if (!supported(target))
+                    return diagnostics.nccDiagnostics.emitMctImageTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                plan >> p<byte> <- mct_link.nccMctLink.finalPlanFromArtifact(material);
+                guard plan != null && mct_link.nccMctLink.finalPlanReady(plan) else {
+                    if (plan != null) mct_link.nccMctLink.releaseFinalPlan(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctImageMaterial(path);
+                }
+                image >> p<byte> <- build(material, plan);
+                guard image != null else {
+                    mct_link.nccMctLink.releaseFinalPlan(plan);
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctImageMaterial(path);
+                }
+                actualFormat >> int <- mct_image_contract.nccMctImageContract.format(image);
+                actualBytes >> int <- mct_image_contract.nccMctImageContract.bytes(image);
+                actualEntry >> int <- mct_image_contract.nccMctImageContract.entry(image);
+                actualProviders >> int <- mct_image_contract.nccMctImageContract.providers(image);
+                actualHash >> int <- mct_image_contract.nccMctImageContract.hash(image);
+                valid >> bool <- true;
+                if (actualFormat != expectedFormat) valid <- false;
+                if (actualBytes != expectedBytes) valid <- false;
+                if (actualEntry != expectedEntry) valid <- false;
+                if (actualProviders != expectedProviders) valid <- false;
+                if (actualHash != expectedHash) valid <- false;
+                mct_image_contract.nccMctImageContract.release(image);
+                mct_link.nccMctLink.releaseFinalPlan(plan);
+                mct.nccMct.releaseArtifact(material);
+                if (!valid) return diagnostics.nccDiagnostics.emitMctImageContract(path);
+                return 0;
+            }
+
+            selfTest() -> bool {
+                return FORMAT_PE64 == 1 && FORMAT_ELF64 == 2 && FORMAT_ELF32 == 3 &&
+                    TARGET_WIN64 == 2 &&
+                    mct_image_pe.nccMctImagePe.selfTest() &&
+                    mct_image_elf.nccMctImageElf.selfTest() &&
+                    mct_image_elf32.nccMctImageElf32.selfTest() &&
+                    mct_image_macho.nccMctImageMacho.selfTest() &&
+                    mct_image_wasm.nccMctImageWasm.selfTest();
+            }
+
+    fa:
+        return true;
+}

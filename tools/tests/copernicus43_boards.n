@@ -1,0 +1,90 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, erroroutput, render>;
+use <project:physical43_boards, physical43_common, physical43_stages, release_io, tool_cli, cert_json>;
+
+copernicus43Boards {
+    stc:
+        checks >> int <- 0;
+        failures >> int <- 0;
+        checksRows >> int <- 0;
+        cases >> int <- 0;
+        self >> str <- "";
+        scratch >> str <- "";
+    fn:
+        private:
+            expect(valid >> bool, name >> str) -> void {
+                checks += 1; if (!valid) { failures += 1; println("FAIL "+name); }
+                row >> int <- jsonNewObject(); cert_json.certJson.put(row,"name",jsonNewString(name)); cert_json.certJson.put(row,"passed",jsonNewBool(valid)); cert_json.certJson.push(checksRows,row);
+            }
+            put(model >> int, key >> str, value >> int) -> void { cert_json.certJson.put(model,key,value); }
+            fixture(arguments >> addr) -> int {
+                action >> str <- argsCount(arguments) > 2 ? argsAt(arguments,2) : "";
+                if (action == "certify-board") {
+                    options >> int <- physical43_common.physical43Common.parse(arguments,3,"|--manifest|--bundle|","|--json|",""); if (options == 0 || !jsonObjectHas(options,"--manifest") || !jsonObjectHas(options,"--bundle")) return 2;
+                    manifest >> str <- tool_cli.toolCli.value(options,"--manifest",""); bundle >> str <- tool_cli.toolCli.value(options,"--bundle",""); model >> int <- physical43_common.physical43Common.read(manifest,false);
+                    if (physical43_common.physical43Common.textAt(model,"/fixture/control") != "copernicus43boards-NOT-hardware") { eprintln("fixture refuses non-control manifest"); return 2; }
+                    artifact >> str <- physical43_common.physical43Common.textAt(model,"/artifact/path"); digest >> str <- physical43_common.physical43Common.textAt(model,"/artifact/sha256"); target >> str <- physical43_common.physical43Common.textAt(model,"/board/target");
+                    if (target == "" || digest != physical43_common.physical43Common.fileHash(artifact)) { eprintln("fixture refuses unbound or missing artifact"); return 3; }
+                    fault >> str <- physical43_common.physical43Common.textAt(model,"/fixture/fault"); allowed >> int <- jsonParse("[\"\",\"certify-fail\",\"status\",\"physical-false\",\"physical-int\",\"execution-class\",\"target\",\"hash\",\"verify-fail\",\"missing-certificate\",\"malformed-certificate\"]"); known >> bool <- release_io.releaseIo.contains(allowed,fault); jsonRelease(allowed); if (!known) return 2; if (fault == "certify-fail") { eprintln("controlled certify failure, NOT hardware"); return 7; }
+                    physical43_common.physical43Common.directories(bundle);
+                    certificate >> int <- jsonParse("{\"status\":\"certified\",\"physical_board\":true,\"execution_class\":\"physical_hardware\",\"fixture_only\":true,\"not_hardware_evidence\":true}");
+                    board >> int <- jsonNewObject(); put(board,"target",jsonNewString(target)); put(certificate,"board",board); artifactModel >> int <- jsonNewObject(); put(artifactModel,"sha256",jsonNewString(digest)); put(artifactModel,"path",jsonNewString(artifact)); put(certificate,"artifact",artifactModel); put(certificate,"fixture_fault",jsonNewString(fault));
+                    if (fault == "status") put(certificate,"status",jsonNewString("rejected"));
+                    if (fault == "physical-false") put(certificate,"physical_board",jsonNewBool(false));
+                    if (fault == "physical-int") put(certificate,"physical_board",jsonNewInt(1));
+                    if (fault == "execution-class") put(certificate,"execution_class",jsonNewString("emulator"));
+                    if (fault == "target") { board <- jsonNewObject(); put(board,"target",jsonNewString("wrong-target")); put(certificate,"board",board); }
+                    if (fault == "hash") { artifactModel <- jsonNewObject(); put(artifactModel,"sha256",jsonNewString("0000000000000000000000000000000000000000000000000000000000000000")); put(certificate,"artifact",artifactModel); }
+                    if (fault == "missing-certificate") { println("controlled missing certificate, NOT hardware"); return 0; }
+                    if (!physical43_common.physical43Common.save(bundle+"/certificate.json",certificate)) return 4;
+                    if (fault == "malformed-certificate") physical43_common.physical43Common.write(bundle+"/certificate.json","not JSON\n");
+                    println("controlled board fixture, NOT hardware"); jsonRelease(certificate); jsonRelease(model); jsonRelease(options); return 0;
+                }
+                if (action == "verify-board-certificate") {
+                    if (argsCount(arguments) != 5 || argsAt(arguments,4) != "--json") return 2; certificate >> int <- physical43_common.physical43Common.read(argsAt(arguments,3)+"/certificate.json",false);
+                    if (certificate == 0) { eprintln("controlled missing/invalid fixture certificate"); return 5; }
+                    if (!physical43_common.physical43Common.boolAt(certificate,"/fixture_only") || !physical43_common.physical43Common.boolAt(certificate,"/not_hardware_evidence")) return 2;
+                    if (physical43_common.physical43Common.field(certificate,"fixture_fault") == "verify-fail") { eprintln("controlled verification failure, NOT hardware"); return 9; }
+                    println("controlled certificate verifier, NOT hardware"); jsonRelease(certificate); return 0;
+                }
+                return 2;
+            }
+            normalize(model >> int) -> int {
+                kind >> int <- jsonKind(model);
+                if (kind == 5 || kind == 6) {
+                    result >> int <- kind == 5 ? jsonNewArray() : jsonNewObject(); at >> int <- 0; count >> int <- kind == 5 ? jsonArrayLen(model) : jsonObjectLen(model);
+                    while (at < count) { label >> str <- kind == 6 ? jsonObjectKeyAt(model,at) : ""; child >> int <- kind == 5 ? jsonArrayBorrow(model,at) : jsonObjectBorrow(model,label); normalized >> int <- label == "elapsed_ns" ? jsonNewInt(0) : normalize(child); if (kind == 5) cert_json.certJson.push(result,normalized); else put(result,label,normalized); jsonRelease(child); strRelease(label); at += 1; } return result;
+                }
+                if (kind == 4) {
+                    text >> str <- jsonStringView(model,""); forwardScratch >> str <- release_io.releaseIo.forwardPath(scratch); forwardSelf >> str <- release_io.releaseIo.forwardPath(self);
+                    replaced >> str <- physical43_common.physical43Common.replace(text,self,"$EXE"); replaced <- physical43_common.physical43Common.replace(replaced,forwardSelf,"$EXE"); replaced <- physical43_common.physical43Common.replace(replaced,scratch,"$SCRATCH"); replaced <- physical43_common.physical43Common.replace(replaced,forwardScratch,"$SCRATCH"); result >> int <- jsonNewString(replaced); strRelease(forwardScratch); strRelease(forwardSelf); strRelease(replaced); return result;
+                }
+                return jsonClone(model);
+            }
+            retained(row >> int) -> int {
+                result >> int <- jsonNewObject(); names >> int <- jsonParse("[\"stdout\",\"stderr\",\"manifest\",\"certificate\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(names)) { name >> int <- jsonArrayBorrow(names,at); label >> str <- jsonStringView(name,""); path >> str <- physical43_common.physical43Common.field(row,label);
+                    if (path != "" && physical43_common.physical43Common.fileType(path) == 1) { item >> int <- jsonNewObject(); put(item,"path",jsonNewString(path)); put(item,"sha256",jsonNewString(physical43_common.physical43Common.fileHash(path))); put(item,"text",jsonNewString(physical43_common.physical43Common.readText(path,false))); if (label == "manifest" || label == "certificate") { parsed >> int <- physical43_common.physical43Common.read(path,false); put(item,"model",parsed == 0 ? jsonNewNull() : parsed); } put(result,label,item); } strRelease(path); jsonRelease(name); at += 1;
+                } jsonRelease(names); verification >> int <- jsonObjectBorrow(row,"verification"); if (jsonKind(verification) == 6) put(result,"verification",retained(verification)); jsonRelease(verification); return result;
+            }
+            one(plan >> int, golden >> int) -> void {
+                name >> str <- cert_json.certJson.field(plan,"name"); root >> str <- physical43_common.physical43Common.nativePath(scratch+"/cases/"+name); physical43_common.physical43Common.directories(root);
+                manifest >> int <- jsonObjectBorrow(plan,"manifest"); template >> str <- physical43_common.physical43Common.nativePath(root+"/template.json"); expect(physical43_common.physical43Common.save(template,manifest),name+" actual full manifest"); jsonRelease(manifest);
+                image >> str <- physical43_common.physical43Common.nativePath(root+"/linked.bin"); expect(physical43_common.physical43Common.write(image,"controlled synthetic board artifact NOT hardware\n"),name+" real bound artifact bytes"); hash >> str <- physical43_common.physical43Common.fileHash(image);
+                sourceRoutes >> int <- jsonObjectBorrow(plan,"routes"); routes >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(sourceRoutes)) { route >> int <- jsonArrayBorrow(sourceRoutes,at); if (physical43_common.physical43Common.field(route,"linked_artifact") == "$IMAGE") { put(route,"linked_artifact",jsonNewString(image)); put(route,"linked_sha256",jsonNewString(hash)); } cert_json.certJson.push(routes,route); at += 1; } jsonRelease(sourceRoutes);
+                specs >> int <- jsonNewArray(); prefix >> str <- cert_json.certJson.field(plan,"prefix"); cert_json.certJson.push(specs,jsonNewString(prefix+template)); logs >> str <- physical43_common.physical43Common.nativePath(root+"/logs"); boardRoot >> str <- physical43_common.physical43Common.nativePath(root+"/boards"); physical43_common.physical43Common.reset(); actual >> int <- physical43_boards.physical43Boards.run(specs,routes,self,physical43_common.physical43Common.absolutePath("."),boardRoot,logs);
+                row >> int <- jsonArrayBorrow(actual,0); expectedStatus >> str <- cert_json.certJson.field(plan,"expected_status"); status >> str <- physical43_common.physical43Common.field(row,"status"); expect(jsonArrayLen(actual) == 1 && status == expectedStatus,name+" branch/result status"); artifacts >> int <- retained(row); normalized >> int <- normalize(actual); expected >> int <- jsonObjectBorrow(golden,name); if (jsonKind(expected) != 0) expect(physical43_common.physical43Common.equal(normalized,expected),name+" complete frozen original row (elapsed/path identity only)");
+                record >> int <- jsonNewObject(); put(record,"name",jsonNewString(name)); put(record,"passed",jsonNewBool(status == expectedStatus && (jsonKind(expected) == 0 || physical43_common.physical43Common.equal(normalized,expected)))); put(record,"root",jsonNewString(root)); put(record,"manifests",specs); put(record,"routes",routes); put(record,"board_root",jsonNewString(boardRoot)); put(record,"logs",jsonNewString(logs)); put(record,"actual",actual); put(record,"normalized",normalized); put(record,"retained",artifacts); cert_json.certJson.push(cases,record); jsonRelease(expected); jsonRelease(row); strRelease(name); strRelease(root); strRelease(template); strRelease(image); strRelease(hash); strRelease(prefix); strRelease(logs); strRelease(boardRoot);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) > 1 && argsAt(arguments,1) == "machine") return fixture(arguments);
+                if (argsCount(arguments) != 4 && argsCount(arguments) != 5) return 2; self <- physical43_common.physical43Common.absolutePath(argsAt(arguments,0)); scratch <- physical43_common.physical43Common.absolutePath(argsAt(arguments,1)); if (physical43_common.physical43Common.fileType(scratch) != 0) return 2;
+                plans >> int <- physical43_common.physical43Common.read(argsAt(arguments,2),false); golden >> int <- argsCount(arguments) == 5 ? physical43_common.physical43Common.read(argsAt(arguments,4),false) : jsonNewObject(); if (plans == 0 || golden == 0) return 2;
+                checksRows <- jsonNewArray(); cases <- jsonNewArray(); sourceRows >> int <- jsonObjectBorrow(plans,"cases"); at >> int <- 0; while (at < jsonArrayLen(sourceRows)) { plan >> int <- jsonArrayBorrow(sourceRows,at); one(plan,golden); jsonRelease(plan); at += 1; } jsonRelease(sourceRows);
+                report >> int <- jsonNewObject(); put(report,"schema",jsonNewString("nc.physical43.boards.native-control.v43")); put(report,"host",jsonNewString(envHas("WINDIR") ? "windows" : "linux")); put(report,"passed",jsonNewBool(failures == 0)); put(report,"check_count",jsonNewInt(checks)); put(report,"failures",jsonNewInt(failures)); put(report,"driver_repository_path",jsonNewString(argsAt(arguments,0))); put(report,"driver_sha256",jsonNewString(physical43_common.physical43Common.fileHash(self))); put(report,"covered_originals",jsonParse("[\"tools/scripts/certify_final_pipeline.py\"]")); put(report,"fixture_only_not_hardware_or_CI",jsonNewBool(true)); put(report,"scratch",jsonNewString(scratch)); put(report,"repo",jsonNewString(physical43_common.physical43Common.absolutePath("."))); put(report,"checks",checksRows); put(report,"cases",cases); put(report,"python_required",jsonNewBool(false)); saved >> bool <- cert_json.certJson.save(argsAt(arguments,3),report); jsonRelease(report); jsonRelease(plans); jsonRelease(golden); println("boards controls checks="+renderInt(checks)+" failures="+renderInt(failures)); return saved && failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+}

@@ -1,0 +1,115 @@
+use <data:json>;
+use <process:env>;
+use <project:release43_common, release43_distribution, release_io>;
+
+release43Installer {
+    fn:
+        private:
+            field(object >> int, key >> str) -> str { return release43_common.release43Common.field(object,key); }
+            arg(words >> int, value >> str) -> void { release43_common.release43Common.arg(words,value); }
+            invokeNcup(words >> int) -> int { return release43_common.release43Common.command(words,true); }
+            install(home >> str, id >> str, profile >> str, toolchain >> bool) -> int {
+                words >> int <- jsonParse(toolchain ? "[\"ncup\",\"toolchain\",\"install\"]" : "[\"ncup\",\"install\"]");
+                arg(words,id); arg(words,"--home"); arg(words,home); arg(words,"--profile"); arg(words,profile); return invokeNcup(words);
+            }
+            stateRow(home >> str, id >> str) -> int {
+                state >> int <- release43_common.release43Common.load(home+"/manifests/toolchains.v1.json"); row >> int <- release43_common.release43Common.rowById(state,id); release43_common.release43Common.release(state); return row;
+            }
+            shellPath(path >> str) -> str {
+                if (!envHas("WINDIR")) return path;
+                words >> int <- jsonParse("[\"-u\"]"); arg(words,path);
+                row >> int <- release43_common.release43Common.invoke(release43_common.release43Common.nativeTool("cygpath"),words);
+                return release43_common.release43Common.succeeded(row) ? field(row,"stdout") : path;
+            }
+            pathPrefix(text >> str, path >> str, separator >> bool) -> bool {
+                converted >> str <- shellPath(path);
+                hostPath >> str <- release43_common.release43Common.pathArgument(path);
+                if (separator) return strStartsWith(text,path+":") || strStartsWith(text,path+";") || strStartsWith(text,hostPath+":") || strStartsWith(text,hostPath+";") || strStartsWith(text,converted+":") || strStartsWith(text,converted+";");
+                return strStartsWith(text,path) || strStartsWith(text,hostPath) || strStartsWith(text,converted);
+            }
+        public:
+            inspect(out >> str, provided >> bool) -> void {
+                keys >> int <- jsonParse("[\"artifacts_present\",\"contract_consistent\",\"fresh_install\",\"upgrade\",\"downgrade\",\"rollback\",\"corrupt_download\",\"invalid_signature\",\"insufficient_space\",\"path_empty\",\"path_existing\",\"multi_toolchain_override\",\"os_runner_matrix\"]"); at >> int <- 0;
+                while (at < jsonArrayLen(keys)) { release43_common.release43Common.record(release43_common.release43Common.stringAt(keys,at),false); at += 1; } release43_common.release43Common.release(keys);
+                root >> str <- release43_common.release43Common.rootPath(); work >> str <- release43_common.release43Common.workPath(); home >> str <- work+"/home"; project >> str <- work+"/project";
+                release43_common.release43Common.makeDirectories(project);
+                required >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_installer_matrix_spec.md\",\"docs/spec/release/v2_0_0_phase10_installer_matrix_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_installer_matrix_contract.json\",\"docs/status/STATUS_PHASE10_punto16_installer_matrix_v2_0_0.md\",\"tools/ncc/nc/src/verification/release43_installer.n\",\"tools/release/qa_phase10_p16_v2_0_0.sh\",\".github/workflows/phase10-installer-matrix.yml\"]"); present >> bool <- true; at <- 0;
+                while (at < jsonArrayLen(required)) { present <- present && release43_common.release43Common.fileType(root+"/"+release43_common.release43Common.stringAt(required,at)) == 1; at += 1; } release43_common.release43Common.release(required);
+                release43_common.release43Common.record("artifacts_present",present); if (!present) { release43_common.release43Common.fail("phase10 p16 artifacts missing"); return; }
+                contract >> int <- release43_common.release43Common.load(root+"/docs/spec/release/v2_0_0_phase10_installer_matrix_contract.json"); injection >> int <- jsonObjectGet(contract,"fault_injection");
+                release43_common.release43Common.record("contract_consistent",field(contract,"schema") == "nc.phase10.installer.matrix.contract.v1" && field(contract,"state") == "frozen" && release_io.releaseIo.member(contract,"required_gates","release_phase10_installer_matrix_gate_tests") && field(injection,"env_var") == "NCUP_FAULT_INJECT_NO_SPACE"); release43_common.release43Common.release(injection); release43_common.release43Common.release(contract);
+                if (!release43_common.release43Common.build()) return;
+                modelRow >> int <- invokeNcup(jsonParse("[\"phase10-toolchain-model\",\"--json\"]")); if (!release43_common.release43Common.succeeded(modelRow)) { release43_common.release43Common.fail("phase10-toolchain-model failed"); return; }
+                model >> int <- release43_common.release43Common.doc(modelRow); rows >> int <- jsonObjectGet(model,"toolchains"); host >> str <- release43_common.release43Common.host();
+                // rustc failure is nonfatal here, matching Python's fallback selection.
+                release43_common.release43Common.reset(); stable >> str <- ""; secondary >> str <- ""; hostStable >> str <- ""; hostBeta >> str <- ""; hostNightly >> str <- ""; at <- 0;
+                while (at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows,at); id >> str <- field(row,"id");
+                    if (id == "stable-"+host) hostStable <- id;
+                    if (id == "beta-"+host) hostBeta <- id;
+                    if (id == "nightly-"+host) hostNightly <- id;
+                    if (stable == "" && strStartsWith(id,"stable-")) stable <- id;
+                    if (secondary == "" && (strStartsWith(id,"beta-") || strStartsWith(id,"nightly-"))) secondary <- id;
+                    release43_common.release43Common.release(row); at += 1;
+                }
+                if (hostStable != "") { stable <- hostStable; secondary <- hostBeta != "" ? hostBeta : (hostNightly != "" ? hostNightly : hostStable); }
+                else if (secondary == "") secondary <- stable;
+                release43_common.release43Common.release(rows); release43_common.release43Common.release(model);
+                if (stable == "" || secondary == "") { release43_common.release43Common.fail("cannot resolve toolchain matrix"); return; }
+                target >> str <- strSubstring(stable,7,strByteLen(stable)-7);
+                words >> int <- jsonParse("[\"ncup\",\"init\",\"--home\"]"); arg(words,home); arg(words,"--profile"); arg(words,"minimal"); arg(words,"--channel"); arg(words,"stable"); arg(words,"--target"); arg(words,target); arg(words,"--force"); arg(words,"--yes"); arg(words,"--skip-first-run"); arg(words,"--json");
+                if (!release43_common.release43Common.succeeded(invokeNcup(words))) { release43_common.release43Common.fail("ncup init failed"); return; }
+                stable0 >> int <- stateRow(home,stable);
+                release43_common.release43Common.record("fresh_install",stable0 != 0 && release43_common.release43Common.fileType(field(stable0,"bin_dir")) != 0);
+                if (stable0 == 0) { release43_common.release43Common.fail("fresh install did not register stable toolchain"); return; }
+                envScript >> str <- shellPath(home+"/env.sh"); script >> str <- "set -euo pipefail; source '"+envScript+"'; command -v ncc >/dev/null; printf '%s' \"$PATH\"";
+                bash >> str <- release43_common.release43Common.nativeTool("bash");
+                hadPath >> bool <- envHas("PATH"); oldPath >> str <- release43_common.release43Common.env("PATH"); envSet("PATH","");
+                words <- jsonParse("[\"-lc\"]"); arg(words,script); pathEmpty >> int <- release43_common.release43Common.invoke(bash,words);
+                if (hadPath) envSet("PATH",oldPath); else envRemove("PATH");
+                release43_common.release43Common.record("path_empty",release43_common.release43Common.succeeded(pathEmpty) && pathPrefix(field(pathEmpty,"stdout"),home+"/bin",false));
+                script <- "set -euo pipefail; export PATH='/usr/bin:/bin'; source '"+envScript+"'; printf '%s' \"$PATH\"";
+                words <- jsonParse("[\"-lc\"]"); arg(words,script); pathExisting >> int <- release43_common.release43Common.invoke(bash,words);
+                release43_common.release43Common.record("path_existing",release43_common.release43Common.succeeded(pathExisting) && pathPrefix(field(pathExisting,"stdout"),home+"/bin",true) && strContains(field(pathExisting,"stdout"),"/usr/bin:/bin"));
+                sleepMs(1100); if (!release43_common.release43Common.succeeded(install(home,stable,"complete",false))) { release43_common.release43Common.fail("upgrade install failed"); return; }
+                stable1 >> int <- stateRow(home,stable);
+                release43_common.release43Common.record("upgrade",stable1 != 0 && field(stable1,"profile") == "complete" && (release_io.releaseIo.number(stable1,"installed_at_epoch",-1) != release_io.releaseIo.number(stable0,"installed_at_epoch",-1) || field(stable0,"profile") != field(stable1,"profile")));
+                sleepMs(1100); if (!release43_common.release43Common.succeeded(install(home,stable,"minimal",false))) { release43_common.release43Common.fail("downgrade install failed"); return; }
+                stable2 >> int <- stateRow(home,stable);
+                release43_common.release43Common.record("downgrade",stable2 != 0 && field(stable2,"profile") == "minimal" && release_io.releaseIo.number(stable2,"installed_at_epoch",-1) != release_io.releaseIo.number(stable1,"installed_at_epoch",-1));
+                if (!release43_common.release43Common.succeeded(install(home,secondary,"minimal",true))) { release43_common.release43Common.fail("secondary toolchain install failed"); return; }
+                words <- jsonParse("[\"ncup\",\"override\",\"set\"]"); arg(words,secondary); arg(words,"--cwd"); arg(words,project);
+                if (!release43_common.release43Common.succeeded(release43_common.release43Common.commandEnv(words,true,"NCUP_HOME",home))) { release43_common.release43Common.fail("override set failed"); return; }
+                words <- jsonParse("[\"ncup\",\"which\",\"ncc\",\"--cwd\"]"); arg(words,project); arg(words,"--json"); row >> int <- release43_common.release43Common.commandEnv(words,true,"NCUP_HOME",home);
+                if (!release43_common.release43Common.succeeded(row)) { release43_common.release43Common.fail("ncup which failed"); return; }
+                which >> int <- release43_common.release43Common.doc(row);
+                release43_common.release43Common.record("multi_toolchain_override",field(which,"source") == "local_override" && strStartsWith(field(which,"toolchain_id"),strSubstring(secondary,0,strIndexOf(secondary,"-"))+"-")); release43_common.release43Common.release(which);
+                words <- jsonParse("[\"ncup\",\"install\"]"); arg(words,stable); arg(words,"--home"); arg(words,home); arg(words,"--profile"); arg(words,"minimal");
+                row <- release43_common.release43Common.commandEnv(words,true,"NCUP_FAULT_INJECT_NO_SPACE","1");
+                release43_common.release43Common.record("insufficient_space",!release43_common.release43Common.succeeded(row) && strContains(strToLower(field(row,"stdout")+"\n"+field(row,"stderr")),"no space left on device"));
+                before >> str <- release43_common.release43Common.revision(home,secondary); if (!release43_common.release43Common.breakTrust(home,false)) return;
+                words <- jsonParse("[\"ncup\",\"update\",\"--home\"]"); arg(words,home); arg(words,"--cwd"); arg(words,project); row <- release43_common.release43Common.commandEnv(words,true,"NCUP_TOOLCHAIN",secondary);
+                release43_common.release43Common.record("rollback",!release43_common.release43Common.succeeded(row) && before == release43_common.release43Common.revision(home,secondary) && strContains(strToLower(field(row,"stdout")+"\n"+field(row,"stderr")),"rollback was applied"));
+                if (!provided) {
+                    if (!release43_distribution.release43Distribution.build(out,"phase10-p16-signing-key")) { release43_common.release43Common.fail("distribution build failed for p16"); return; }
+                }
+                artifact >> str <- release43_distribution.release43Distribution.artifact(out);
+                if (artifact == "") { release43_common.release43Common.fail("cannot find host artifact for p16 integrity checks"); return; }
+                // Verify distinct signature and checksum failures, not merely any failed command.
+                clean >> bool <- release43_distribution.release43Distribution.verify(out,"phase10-p16-signing-key");
+                invalid >> bool <- !release43_distribution.release43Distribution.cleanInstall(out,artifact,"wrong-phase10-p16-key");
+                release43_common.release43Common.record("invalid_signature",clean && invalid && strContains(release43_distribution.release43Distribution.verificationMessage(),"signature mismatch"));
+                backup >> str <- out+"/release43-artifact-backup";
+                if (!release43_common.release43Common.copyRequired(artifact,backup)) return;
+                corruption >> str <- "\nphase10-p16-corruption\n"; corruptWritten >> bool <- release43_common.release43Common.writeBytes(artifact,cast<byte>(corruption),strByteLen(corruption),true) == strByteLen(corruption);
+                corrupt >> bool <- false;
+                if (corruptWritten) corrupt <- !release43_distribution.release43Distribution.cleanInstall(out,artifact,"phase10-p16-signing-key");
+                corrupt <- corrupt && strContains(release43_distribution.release43Distribution.verificationMessage(),"checksum");
+                restored >> bool <- release43_common.release43Common.copyRequired(backup,artifact); release43_common.release43Common.deleteFile(backup);
+                release43_common.release43Common.record("corrupt_download",clean && corrupt && restored);
+                workflow >> str <- release43_common.release43Common.text(root+"/.github/workflows/phase10-installer-matrix.yml");
+                release43_common.release43Common.record("os_runner_matrix",strContains(workflow,"ubuntu-latest") && strContains(workflow,"windows-latest") && strContains(workflow,"macos-latest"));
+                release43_common.release43Common.release(stable0); release43_common.release43Common.release(stable1); release43_common.release43Common.release(stable2);
+            }
+    fa: return true;
+}

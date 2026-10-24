@@ -1,0 +1,55 @@
+use <data:json>;
+use <project:release_io, ide43_core>;
+
+ide43Association {
+    fn:
+        public:
+            evaluate(root >> str) -> int {
+                checks >> int <- ide43_core.ide43Core.initialize("artifacts_present|vscode_associates_canonical_n_without_legacy_nc|vscode_associates_nb_nbb_nm_ncp|jetbrains_associates_canonical_n_without_legacy_nc|jetbrains_associates_nb_nbb_nm_ncp|ncup_init_and_which_ok|toolchain_runtime_stdlib_manifest_present|global_ncc_exec_outside_repo_ok|nclsp_accepts_nc_high_level|nclsp_low_level_exts_validate_with_expert_lane_mapping|nclsp_low_level_editorial_profile_metadata_present|stdlib_model_resolves_from_installed_toolchain|contract_consistent");
+                present >> bool <- ide43_core.ide43Core.files(root,
+                    "docs/spec/release/v2_0_0_phase10_file_association_global_exec_spec.md|docs/spec/release/v2_0_0_phase10_file_association_global_exec_compatibility_spec.md|docs/spec/release/v2_0_0_phase10_file_association_global_exec_contract.json|docs/status/STATUS_PHASE10_punto12_file_association_global_exec_v2_0_0.md|tools/ncc/nc/src/verification/ide43_association.n|tools/release/qa_phase10_p12_v2_0_0.sh|tools/vscode/nc-language/package.json|tools/jetbrains/nc-language-plugin/src/main/resources/META-INF/plugin.xml",true);
+                ide43_core.ide43Core.record(checks,"artifacts_present",present);
+                if (!present) { ide43_core.ide43Core.fail("phase10 p12 artifacts missing"); return checks; }
+                package >> int <- ide43_core.ide43Core.read(root,"tools/vscode/nc-language/package.json");
+                languages >> int <- ide43_core.ide43Core.lookup(package,"contributes|languages");
+                all >> int <- jsonNewObject(); high >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(languages)) {
+                    row >> int <- jsonArrayGet(languages,index); extensions >> int <- jsonObjectGet(row,"extensions");
+                    if (ide43_core.ide43Core.is(row,"id","nc")) { jsonRelease(high); high <- jsonClone(extensions); }
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(extensions)) {
+                        ext >> int <- jsonArrayGet(extensions,at); jsonObjectSet(all,jsonStringView(ext,""),jsonNewBool(true));
+                        jsonRelease(ext); at += 1;
+                    }
+                    jsonRelease(extensions); jsonRelease(row); index += 1;
+                }
+                ide43_core.ide43Core.record(checks,"vscode_associates_canonical_n_without_legacy_nc",
+                    release_io.releaseIo.contains(high,".n") && !jsonObjectHas(all,".nc"));
+                ide43_core.ide43Core.record(checks,"vscode_associates_nb_nbb_nm_ncp",
+                    jsonObjectHas(all,".nb") && jsonObjectHas(all,".nbb") && jsonObjectHas(all,".nm") && jsonObjectHas(all,".ncp"));
+                xml >> str <- ide43_core.ide43Core.readText(root+"/tools/jetbrains/nc-language-plugin/src/main/resources/META-INF/plugin.xml");
+                extensions >> int <- ide43_core.ide43Core.extensions(xml);
+                ide43_core.ide43Core.record(checks,"jetbrains_associates_canonical_n_without_legacy_nc",
+                    release_io.releaseIo.contains(extensions,"n") && !release_io.releaseIo.contains(extensions,"nc"));
+                ide43_core.ide43Core.record(checks,"jetbrains_associates_nb_nbb_nm_ncp",
+                    release_io.releaseIo.contains(extensions,"nb") && release_io.releaseIo.contains(extensions,"nbb") &&
+                    release_io.releaseIo.contains(extensions,"nm") && release_io.releaseIo.contains(extensions,"ncp"));
+                jsonRelease(extensions); jsonRelease(package); jsonRelease(languages); jsonRelease(high);
+                jsonRelease(all); strRelease(xml);
+                return checks;
+            }
+            finalize(root >> str, checks >> int) -> void {
+                contract >> int <- ide43_core.ide43Core.read(root,"docs/spec/release/v2_0_0_phase10_file_association_global_exec_contract.json");
+                ide43_core.ide43Core.record(checks,"contract_consistent",
+                    ide43_core.ide43Core.is(contract,"schema","nc.phase10.file-association-global-exec.contract.v1") &&
+                    ide43_core.ide43Core.members(contract,"file_association|vscode_extensions",".n|.nb|.nbb|.nm|.ncp",true) &&
+                    ide43_core.ide43Core.members(contract,"file_association|jetbrains_extensions","n|nb|nbb|nm|ncp",true) &&
+                    ide43_core.ide43Core.is(contract,"file_association|legacy_high_level_alias",".nc") &&
+                    ide43_core.ide43Core.is(contract,"file_association|legacy_alias_scope","compiler_and_lsp_only") &&
+                    ide43_core.ide43Core.boolean(contract,"file_association|editor_plugins_claim_legacy_alias",false) &&
+                    ide43_core.ide43Core.members(contract,"required_gates","release_phase10_file_association_global_exec_gate_tests",false));
+                jsonRelease(contract);
+            }
+    fa: return true;
+}
+

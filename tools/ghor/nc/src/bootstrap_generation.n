@@ -1,0 +1,1139 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output, render>;
+use <process:args, env, spawn, wait>;
+use <project:sha256, assurance>;
+
+bootstrapGeneration[@runtime] {
+    const:
+        MANIFEST_SCHEMA >> str <- "ghor.bootstrap.generation-manifest.v1";
+        REPORT_SCHEMA >> str <- "ghor.bootstrap.generation-report.v1";
+        STATE_SCHEMA >> str <- "ghor.bootstrap.generation-state.v1";
+        PATH_BYTES >> int <- 32768;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            absolute(path >> str) -> str {
+                if (path == "") return "";
+                output >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard output != null else return path;
+                written >> int <- absolutePathInto(path, output, PATH_BYTES);
+                if (written <= 0 || written >= PATH_BYTES) {
+                    free(output);
+                    return path;
+                }
+                wr(off(output, written), 0);
+                return cast(output);
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                at >> int <- 3;
+                while (at + 1 < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                at >> int <- 3;
+                while (at < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            compiler(handle >> addr) -> str {
+                selected >> str <- option(handle, "--ncc");
+                if (selected != "") return selected;
+                selected <- envText("NC_GHOR_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            hostTarget() -> str {
+                configured >> str <- envText("NC_GHOR_HOST_TARGET");
+                if (configured != "") return configured;
+                arch >> str <- envText("PROCESSOR_ARCHITECTURE");
+                if (arch == "") arch <- envText("HOSTTYPE");
+                normalized >> str <- arch;
+                if (arch == "AMD64" || arch == "amd64" || arch == "x64")
+                    normalized <- "x86_64";
+                else if (arch == "arm64") normalized <- "aarch64";
+                if (normalized == "") normalized <- "x86_64";
+                if (envText("OS") == "Windows_NT")
+                    return normalized + "-pc-windows-msvc";
+                platform >> str <- envText("OSTYPE");
+                if (strContains(platform, "darwin"))
+                    return normalized + "-apple-darwin";
+                return normalized + "-unknown-linux-gnu";
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (path == "" || path == "." || exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            candidatePath(artifactDirectory >> str, name >> str, target >> str) -> str {
+                suffix >> str <- strContains(target, "windows") ? ".candidate.exe" :
+                    ".candidate";
+                return join(artifactDirectory, name + suffix);
+            }
+
+            run(executable >> str, values >> list<str>) -> int {
+                // Plain spawn inherits the host environment; explicit maps use spawnWithEnv.
+                process >> Result<ProcessHandle, ProcessError> <- spawn(executable, values);
+                if (!isOk(process)) return -1;
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) ? unwrap(status) : -1;
+            }
+
+            smokeDependencyReady(dependency >> int) -> bool {
+                direct >> str <- jsonGetStringOr(dependency, "");
+                configured >> str <- jsonGetStringOr(
+                    jsonObjectGet(dependency, "path"), "");
+                path >> str <- absolute(configured != "" ? configured : direct);
+                guard path != "" && exists(path) else return false;
+                bytes >> int <- fsSize(path);
+                minimum >> int <- jsonGetIntOr(
+                    jsonObjectGet(dependency, "min_bytes"), 1);
+                exact >> int <- jsonGetIntOr(
+                    jsonObjectGet(dependency, "bytes"), -1);
+                expectedHash >> str <- jsonGetStringOr(
+                    jsonObjectGet(dependency, "sha256"), "");
+                if (bytes < minimum || (exact >= 0 && bytes != exact)) return false;
+                if (expectedHash != "" && sha256.sha256.file(path) != expectedHash)
+                    return false;
+                providerManifest >> str <- jsonGetStringOr(
+                    jsonObjectGet(dependency, "artifact_manifest"), "");
+                if (providerManifest == "") return true;
+                manifestPath >> str <- absolute(providerManifest);
+                guard exists(manifestPath) else return false;
+                manifest >> int <- jsonParseFile(manifestPath);
+                guard manifest > 0 else return false;
+                expectedSchema >> str <- jsonGetStringOr(
+                    jsonObjectGet(dependency, "artifact_schema"), "");
+                expectedSymbols >> int <- jsonGetIntOr(
+                    jsonObjectGet(dependency, "required_symbol_count"), -1);
+                manifestReady >> bool <-
+                    (expectedSchema == "" || jsonGetStringOr(
+                        jsonObjectGet(manifest, "schema"), "") == expectedSchema) &&
+                    jsonGetIntOr(jsonObjectGet(manifest, "bytes"), -1) == bytes &&
+                    jsonGetStringOr(jsonObjectGet(manifest, "sha256"), "") ==
+                        sha256.sha256.file(path) &&
+                    (expectedSymbols < 0 || jsonGetIntOr(
+                        jsonObjectGet(manifest, "required_symbol_count"), -1) ==
+                        expectedSymbols);
+                jsonRelease(manifest);
+                return manifestReady;
+            }
+
+            smokeDependenciesReady(component >> int) -> bool {
+                dependencies >> int <- jsonObjectGet(component, "smoke_dependencies");
+                ready >> bool <- true;
+                at >> int <- 0;
+                while (at < jsonArrayLen(dependencies)) {
+                    dependency >> int <- jsonArrayGet(dependencies, at);
+                    if (!smokeDependencyReady(dependency)) ready <- false;
+                    jsonRelease(dependency);
+                    at += 1;
+                }
+                jsonRelease(dependencies);
+                return ready;
+            }
+
+            materializeRuntimeProviders(
+                handle >> addr,
+                manifest >> int,
+                diagnostics >> int
+            ) -> bool {
+                configured >> int <- jsonObjectGet(manifest, "runtime_providers");
+                guard configured > 0 else {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_PROVIDER_001",
+                        "generation manifest has no runtime provider contract", "");
+                    return false;
+                }
+                output >> str <- jsonGetStringOr(
+                    jsonObjectGet(configured, "out"), "target/bootstrap/stage2");
+                arguments >> list<str> <- listCreateWithCapacity<str>(6);
+                listAdd(arguments, "runtime");
+                listAdd(arguments, "provider");
+                listAdd(arguments, "all");
+                listAdd(arguments, "--out");
+                listAdd(arguments, output);
+                code >> int <- run(compiler(handle), arguments);
+                bundlePath >> str <- join(output, "ncruntime.providers.json");
+                bundle >> int <- code == 0 && exists(bundlePath) ?
+                    jsonParseFile(bundlePath) : 0;
+                ready >> bool <- bundle > 0 &&
+                    jsonGetStringOr(jsonObjectGet(bundle, "schema"), "") ==
+                        "nc.runtime.provider.bundle.v1" &&
+                    jsonGetStringOr(jsonObjectGet(bundle, "status"), "") ==
+                        "materialized" &&
+                    jsonArrayLen(jsonObjectGet(bundle, "artifacts")) == 5;
+                if (!ready) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_PROVIDER_001",
+                    "nC runtime providers were not materialized as one five-target bundle",
+                    bundlePath);
+                if (bundle > 0) jsonRelease(bundle);
+                jsonRelease(configured);
+                return ready;
+            }
+
+            captureCode(executable >> str, values >> list<str>) -> int {
+                capture >> int <- exists(executable) ?
+                    assurance.assurance.captureArguments(executable, values) : 0;
+                code >> int <- capture == 0 ? -1 :
+                    jsonGetIntOr(jsonObjectGet(capture, "exit_code"), -1);
+                if (capture != 0) jsonRelease(capture);
+                return code;
+            }
+
+            addDiagnostic(
+                diagnostics >> int,
+                code >> str,
+                message >> str,
+                path >> str
+            ) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                if (path != "") jsonObjectSet(item, "path", jsonNewString(path));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            writeAtomic(value >> int, path >> str) -> bool {
+                guard path != "" && ensureDirectory(directory(path)) else return false;
+                temporary >> str <- path + ".next";
+                backup >> str <- path + ".bak";
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                guard jsonSaveFile(value, temporary, 2) else return false;
+                hadPrevious >> bool <- exists(path);
+                if (hadPrevious && fsCopy(path, backup) != fsSize(path)) {
+                    delete_file(temporary);
+                    return false;
+                }
+                if (hadPrevious && !delete_file(path)) {
+                    delete_file(temporary);
+                    delete_file(backup);
+                    return false;
+                }
+                moved >> bool <- rename_file(temporary, path);
+                if (!moved && hadPrevious && exists(backup)) fsCopy(backup, path);
+                if (exists(temporary)) delete_file(temporary);
+                if (exists(backup)) delete_file(backup);
+                return moved;
+            }
+
+            publishArtifact(
+                candidate >> str,
+                output >> str,
+                name >> str,
+                diagnostics >> int
+            ) -> bool {
+                guard exists(candidate) && fsSize(candidate) > 0 else return false;
+                backup >> str <- output + ".previous";
+                if (exists(backup)) delete_file(backup);
+                hadPrevious >> bool <- exists(output);
+                if (hadPrevious && fsCopy(output, backup) != fsSize(output)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                        "component backup could not be materialized: " + name, output);
+                    return false;
+                }
+                if (hadPrevious && !delete_file(output)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                        "component output could not be replaced: " + name, output);
+                    if (exists(backup)) delete_file(backup);
+                    return false;
+                }
+                promoted >> bool <- rename_file(candidate, output);
+                if (!promoted && hadPrevious && exists(backup)) fsCopy(backup, output);
+                if (exists(candidate)) delete_file(candidate);
+                if (exists(backup)) delete_file(backup);
+                if (!promoted) addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                    "component candidate could not be promoted: " + name, output);
+                return promoted;
+            }
+
+            manifestPath(handle >> addr) -> str {
+                return option(handle, "--manifest");
+            }
+
+            loadManifest(handle >> addr, diagnostics >> int) -> int {
+                path >> str <- manifestPath(handle);
+                if (path == "" || !exists(path)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                        "--manifest must name an existing generation manifest", path);
+                    return 0;
+                }
+                manifest >> int <- jsonParseFile(path);
+                if (manifest == 0 || jsonGetStringOr(jsonObjectGet(manifest, "schema"), "") != MANIFEST_SCHEMA) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                        "generation manifest is invalid or uses an unsupported schema", path);
+                    if (manifest != 0) jsonRelease(manifest);
+                    return 0;
+                }
+                return manifest;
+            }
+
+            sourceReady(component >> int, diagnostics >> int) -> bool {
+                name >> str <- jsonGetStringOr(jsonObjectGet(component, "name"), "component");
+                project >> str <- absolute(jsonGetStringOr(jsonObjectGet(component, "project"), ""));
+                entry >> str <- jsonGetStringOr(jsonObjectGet(component, "entry"), "");
+                ready >> bool <- project != "" && exists(project) && entry != "" &&
+                    exists(join(project, entry));
+                if (!ready) addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_SOURCE_001",
+                    "required component source root or entry is missing: " + name,
+                    project == "" ? entry : project);
+                sources >> int <- jsonObjectGet(component, "sources");
+                if (jsonArrayLen(sources) == 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_SOURCE_001",
+                        "component must retain an explicit non-empty source inventory: " + name, project);
+                    ready <- false;
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(sources)) {
+                    relative >> str <- jsonGetStringOr(jsonArrayGet(sources, at), "");
+                    if (relative == "" || !exists(join(project, relative))) {
+                        addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_SOURCE_001",
+                            "declared generation source is missing: " + relative, project);
+                        ready <- false;
+                    }
+                    at += 1;
+                }
+                jsonRelease(sources);
+                return ready;
+            }
+
+            migrationComplete(component >> int, diagnostics >> int) -> bool {
+                name >> str <- jsonGetStringOr(jsonObjectGet(component, "name"), "component");
+                migration >> int <- jsonObjectGet(component, "migration");
+                if (migration == 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MIGRATION_001",
+                        "component requires an explicit migration inventory: " + name, "");
+                    return false;
+                }
+                nativeUnits >> int <- jsonObjectGet(migration, "native_units");
+                stage0Units >> int <- jsonObjectGet(migration, "stage0_units");
+                declaredComplete >> bool <- jsonGetBoolOr(
+                    jsonObjectGet(migration, "complete"), false);
+                valid >> bool <- jsonArrayLen(nativeUnits) > 0;
+                if (!valid) addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MIGRATION_001",
+                    "component migration requires at least one native unit: " + name, "");
+                complete >> bool <- valid && declaredComplete && jsonArrayLen(stage0Units) == 0;
+                if (declaredComplete && jsonArrayLen(stage0Units) != 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MIGRATION_001",
+                        "complete component still declares stage0 units: " + name, "");
+                    complete <- false;
+                }
+                jsonRelease(nativeUnits);
+                jsonRelease(stage0Units);
+                jsonRelease(migration);
+                return complete;
+            }
+
+            uniqueComponents(components >> int, diagnostics >> int) -> bool {
+                valid >> bool <- jsonArrayLen(components) > 0;
+                compilerCount >> int <- 0;
+                launcherCount >> int <- 0;
+                left >> int <- 0;
+                while (left < jsonArrayLen(components)) {
+                    component >> int <- jsonArrayGet(components, left);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(component, "name"), "");
+                    role >> str <- jsonGetStringOr(jsonObjectGet(component, "role"), "");
+                    if (name == "") {
+                        addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                            "every component requires a stable name", "");
+                        valid <- false;
+                    }
+                    if (role == "compiler") compilerCount += 1;
+                    else if (role == "launcher") launcherCount += 1;
+                    else {
+                        addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                            "component role must be compiler or launcher: " + name, "");
+                        valid <- false;
+                    }
+                    right >> int <- left + 1;
+                    while (right < jsonArrayLen(components)) {
+                        other >> int <- jsonArrayGet(components, right);
+                        if (name != "" && name == jsonGetStringOr(jsonObjectGet(other, "name"), "")) {
+                            addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                                "duplicate generation component: " + name, "");
+                            valid <- false;
+                        }
+                        jsonRelease(other);
+                        right += 1;
+                    }
+                    jsonRelease(component);
+                    left += 1;
+                }
+                if (compilerCount != 1 || launcherCount != 1) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_MANIFEST_001",
+                        "generation requires exactly one compiler and one launcher", "");
+                    valid <- false;
+                }
+                return valid;
+            }
+
+            buildComponent(
+                handle >> addr,
+                manifest >> int,
+                component >> int,
+                diagnostics >> int
+            ) -> int {
+                result >> int <- jsonNewObject();
+                name >> str <- jsonGetStringOr(jsonObjectGet(component, "name"), "component");
+                role >> str <- jsonGetStringOr(jsonObjectGet(component, "role"), "");
+                mode >> str <- jsonGetStringOr(jsonObjectGet(component, "mode"), "project-link");
+                project >> str <- absolute(jsonGetStringOr(jsonObjectGet(component, "project"), ""));
+                entry >> str <- jsonGetStringOr(jsonObjectGet(component, "entry"), "main.n");
+                output >> str <- absolute(jsonGetStringOr(jsonObjectGet(component, "output"), ""));
+                artifactDirectory >> str <- absolute(jsonGetStringOr(
+                    jsonObjectGet(component, "artifact_dir"), directory(output)));
+                profile >> str <- jsonGetStringOr(jsonObjectGet(manifest, "profile"), "release-fast");
+                target >> str <- jsonGetStringOr(jsonObjectGet(manifest, "target"), "");
+                if (target == "" || target == "host") target <- hostTarget();
+                linker >> str <- option(handle, "--linker");
+                if (linker == "") linker <- jsonGetStringOr(jsonObjectGet(component, "linker"), "");
+                if (linker == "") linker <- jsonGetStringOr(jsonObjectGet(manifest, "linker"), "");
+                jsonObjectSet(result, "name", jsonNewString(name));
+                jsonObjectSet(result, "role", jsonNewString(role));
+                jsonObjectSet(result, "mode", jsonNewString(mode));
+                jsonObjectSet(result, "output", jsonNewString(output));
+                sourcesReady >> bool <- sourceReady(component, diagnostics);
+                migrationReady >> bool <- migrationComplete(component, diagnostics);
+                jsonObjectSet(result, "source_ready", jsonNewBool(sourcesReady));
+                jsonObjectSet(result, "migration_complete", jsonNewBool(migrationReady));
+                if (!sourcesReady || output == "" ||
+                    !ensureDirectory(directory(output)) ||
+                    !ensureDirectory(artifactDirectory)) {
+                    jsonObjectSet(result, "status", jsonNewString("source-incomplete"));
+                    jsonObjectSet(result, "built", jsonNewBool(false));
+                    return result;
+                }
+                candidate >> str <- candidatePath(artifactDirectory, name, target);
+                jsonObjectSet(result, "candidate", jsonNewString(candidate));
+                if (exists(candidate) && !delete_file(candidate)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                        "stale component candidate could not be removed: " + name, candidate);
+                    jsonObjectSet(result, "status", jsonNewString("stale-candidate"));
+                    jsonObjectSet(result, "built", jsonNewBool(false));
+                    jsonObjectSet(result, "exit_code", jsonNewInt(-1));
+                    jsonObjectSet(result, "bytes", jsonNewInt(0));
+                    jsonObjectSet(result, "sha256", jsonNewString(""));
+                    return result;
+                }
+                code >> int <- -1;
+                if (mode == "project-link") {
+                    sync >> list<str> <- listCreateWithCapacity<str>(8);
+                    listAdd(sync, "project"); listAdd(sync, "sync"); listAdd(sync, project);
+                    listAdd(sync, "--main"); listAdd(sync, entry);
+                    if (target != "") {
+                        listAdd(sync, "--target"); listAdd(sync, target);
+                    }
+                    syncCode >> int <- run(compiler(handle), sync);
+                    if (syncCode == 0) {
+                        linkArgs >> list<str> <- listCreateWithCapacity<str>(14);
+                        listAdd(linkArgs, "project"); listAdd(linkArgs, "link"); listAdd(linkArgs, project);
+                        listAdd(linkArgs, "--main"); listAdd(linkArgs, entry);
+                        listAdd(linkArgs, "--out"); listAdd(linkArgs, candidate);
+                        if (target != "") {
+                            listAdd(linkArgs, "--target"); listAdd(linkArgs, target);
+                        }
+                        if (linker != "") {
+                            listAdd(linkArgs, "--linker"); listAdd(linkArgs, linker);
+                        }
+                        code <- run(compiler(handle), linkArgs);
+                    }
+                    else code <- syncCode;
+                }
+                else if (mode == "source-build") {
+                    guard ensureDirectory(artifactDirectory) else {
+                        jsonObjectSet(result, "status", jsonNewString("artifact-directory-error"));
+                        jsonObjectSet(result, "built", jsonNewBool(false));
+                        return result;
+                    }
+                    buildArgs >> list<str> <- listCreateWithCapacity<str>(16);
+                    listAdd(buildArgs, "build"); listAdd(buildArgs, join(project, entry));
+                    listAdd(buildArgs, candidate); listAdd(buildArgs, "--out-dir");
+                    listAdd(buildArgs, artifactDirectory); listAdd(buildArgs, "--profile");
+                    listAdd(buildArgs, profile);
+                    if (target != "") {
+                        listAdd(buildArgs, "--target"); listAdd(buildArgs, target);
+                    }
+                    code <- run(compiler(handle), buildArgs);
+                }
+                else {
+                    addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                        "unsupported component build mode: " + mode, project);
+                }
+                candidateReady >> bool <- code == 0 && exists(candidate) && fsSize(candidate) > 0;
+                smokeArguments >> int <- jsonObjectGet(component, "smoke_args");
+                smokeValues >> list<str> <- listCreateWithCapacity<str>(
+                    jsonArrayLen(smokeArguments));
+                smokeAt >> int <- 0;
+                while (smokeAt < jsonArrayLen(smokeArguments)) {
+                    listAdd(smokeValues, jsonGetStringOr(
+                        jsonArrayGet(smokeArguments, smokeAt), ""));
+                    smokeAt += 1;
+                }
+                smokeDependencyReady >> bool <- smokeDependenciesReady(component);
+                smokeCode >> int <- candidateReady && smokeDependencyReady &&
+                    jsonArrayLen(smokeArguments) > 0 ? run(candidate, smokeValues) :
+                    (candidateReady && !smokeDependencyReady ? -2 : -1);
+                smokeReady >> bool <- smokeDependencyReady && smokeCode == 0;
+                jsonRelease(smokeArguments);
+                if (candidateReady && !smokeDependencyReady) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_BUILD_001",
+                    "component smoke dependencies are not material: " + name,
+                    candidate);
+                if (candidateReady && !smokeReady) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_BUILD_001",
+                    "component smoke failed: " + name + " exit=" + renderInt(smokeCode),
+                    candidate);
+                built >> bool <- false;
+                if (candidateReady && smokeReady)
+                    built <- publishArtifact(candidate, output, name, diagnostics);
+                if (!built && exists(candidate)) delete_file(candidate);
+                if (!built) addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_BUILD_001",
+                    "component build failed or omitted material output: " + name, output);
+                jsonObjectSet(result, "status", jsonNewString(built ? "materialized" : "error"));
+                jsonObjectSet(result, "built", jsonNewBool(built));
+                jsonObjectSet(result, "exit_code", jsonNewInt(code));
+                jsonObjectSet(result, "smoke_dependencies_ready",
+                    jsonNewBool(smokeDependencyReady));
+                jsonObjectSet(result, "smoke_exit_code", jsonNewInt(smokeCode));
+                jsonObjectSet(result, "smoke_passed", jsonNewBool(smokeReady));
+                jsonObjectSet(result, "bytes", jsonNewInt(built ? fsSize(output) : 0));
+                jsonObjectSet(result, "sha256", jsonNewString(built ? sha256.sha256.file(output) : ""));
+                return result;
+            }
+
+            ignoredByte(spans >> int, byteOffset >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(spans)) {
+                    span >> int <- jsonArrayGet(spans, at);
+                    start >> int <- jsonGetIntOr(jsonObjectGet(span, "offset"), -1);
+                    bytes >> int <- jsonGetIntOr(jsonObjectGet(span, "bytes"), 0);
+                    jsonRelease(span);
+                    if (start >= 0 && bytes > 0 && byteOffset >= start &&
+                        byteOffset < start + bytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            firstMismatch(reference >> str, candidate >> str, spans >> int) -> int {
+                referenceBytes >> int <- fsSize(reference);
+                candidateBytes >> int <- fsSize(candidate);
+                if (referenceBytes < 0 || candidateBytes < 0) return -3;
+                left >> p<byte> <- cast(alloc(referenceBytes > 0 ? referenceBytes : 1));
+                right >> p<byte> <- cast(alloc(candidateBytes > 0 ? candidateBytes : 1));
+                if (left == null || right == null) {
+                    if (left != null) free(left);
+                    if (right != null) free(right);
+                    return -4;
+                }
+                if ((referenceBytes > 0 && fsReadInto(reference, left, referenceBytes) != referenceBytes) ||
+                    (candidateBytes > 0 && fsReadInto(candidate, right, candidateBytes) != candidateBytes)) {
+                    free(left); free(right); return -5;
+                }
+                limit >> int <- referenceBytes < candidateBytes ? referenceBytes : candidateBytes;
+                mismatch >> int <- -1;
+                at >> int <- 0;
+                while (at < limit && mismatch < 0) {
+                    if (!ignoredByte(spans, at) && rd(off(left, at)) != rd(off(right, at))) mismatch <- at;
+                    at += 1;
+                }
+                if (mismatch < 0 && referenceBytes != candidateBytes) mismatch <- limit;
+                free(left); free(right);
+                return mismatch;
+            }
+
+            compareArtifacts(manifest >> int, diagnostics >> int) -> int {
+                result >> int <- jsonNewArray();
+                artifacts >> int <- jsonObjectGet(manifest, "artifacts");
+                if (jsonArrayLen(artifacts) == 0) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_COMPARE_001", "generation artifact set is empty", "");
+                at >> int <- 0;
+                while (at < jsonArrayLen(artifacts)) {
+                    artifact >> int <- jsonArrayGet(artifacts, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(artifact, "name"), "artifact");
+                    reference >> str <- absolute(jsonGetStringOr(jsonObjectGet(artifact, "reference"), ""));
+                    candidate >> str <- absolute(jsonGetStringOr(jsonObjectGet(artifact, "candidate"), ""));
+                    spans >> int <- jsonObjectGet(artifact, "ignore");
+                    row >> int <- jsonNewObject();
+                    jsonObjectSet(row, "name", jsonNewString(name));
+                    jsonObjectSet(row, "reference", jsonNewString(reference));
+                    jsonObjectSet(row, "candidate", jsonNewString(candidate));
+                    equal >> bool <- false;
+                    mismatch >> int <- -3;
+                    exact >> bool <- false;
+                    if (reference != "" && candidate != "" && exists(reference) && exists(candidate)) {
+                        mismatch <- firstMismatch(reference, candidate, spans);
+                        equal <- mismatch == -1;
+                        exact <- equal && fsSize(reference) == fsSize(candidate) &&
+                            sha256.sha256.file(reference) == sha256.sha256.file(candidate);
+                    }
+                    if (!equal) addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_COMPARE_001",
+                        "generation artifact differs or is missing: " + name, candidate);
+                    jsonObjectSet(row, "status", jsonNewString(
+                        equal ? (exact ? "exact" : "normalized") : "different"));
+                    jsonObjectSet(row, "equal", jsonNewBool(equal));
+                    jsonObjectSet(row, "exact", jsonNewBool(exact));
+                    jsonObjectSet(row, "first_mismatch", jsonNewInt(mismatch));
+                    jsonObjectSet(row, "reference_sha256", jsonNewString(
+                        exists(reference) ? sha256.sha256.file(reference) : ""));
+                    jsonObjectSet(row, "candidate_sha256", jsonNewString(
+                        exists(candidate) ? sha256.sha256.file(candidate) : ""));
+                    jsonObjectSet(row, "ignored_spans", jsonClone(spans));
+                    jsonArrayPush(result, row);
+                    jsonRelease(spans);
+                    jsonRelease(artifact);
+                    at += 1;
+                }
+                jsonRelease(artifacts);
+                return result;
+            }
+
+            componentOutput(components >> int, name >> str) -> str {
+                at >> int <- 0;
+                while (at < jsonArrayLen(components)) {
+                    component >> int <- jsonArrayGet(components, at);
+                    current >> str <- jsonGetStringOr(jsonObjectGet(component, "name"), "");
+                    if (current == name) {
+                        output >> str <- absolute(jsonGetStringOr(jsonObjectGet(component, "output"), ""));
+                        jsonRelease(component);
+                        return output;
+                    }
+                    jsonRelease(component);
+                    at += 1;
+                }
+                return "";
+            }
+
+            expectedOutputHash(test >> int) -> str {
+                if (envHas("WINDIR")) {
+                    windows >> str <- jsonGetStringOr(
+                        jsonObjectGet(test, "expected_output_sha256_windows"), "");
+                    if (windows != "") return windows;
+                }
+                return jsonGetStringOr(
+                    jsonObjectGet(test, "expected_output_sha256"), "");
+            }
+
+            executeCorpus(manifest >> int, diagnostics >> int) -> int {
+                result >> int <- jsonNewArray();
+                corpus >> int <- jsonObjectGet(manifest, "corpus");
+                components >> int <- jsonObjectGet(manifest, "components");
+                if (jsonArrayLen(corpus) == 0) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_CORPUS_001", "retained generation corpus is empty", "");
+                at >> int <- 0;
+                while (at < jsonArrayLen(corpus)) {
+                    test >> int <- jsonArrayGet(corpus, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(test, "name"), "case");
+                    executable >> str <- absolute(jsonGetStringOr(jsonObjectGet(test, "executable"), ""));
+                    if (executable == "") executable <- componentOutput(components,
+                        jsonGetStringOr(jsonObjectGet(test, "component"), ""));
+                    expected >> int <- jsonGetIntOr(jsonObjectGet(test, "expected_exit"), 0);
+                    arguments >> int <- jsonObjectGet(test, "args");
+                    argumentCount >> int <- jsonArrayLen(arguments);
+                    values >> list<str> <- listCreateWithCapacity<str>(argumentCount);
+                    argAt >> int <- 0;
+                    while (argAt < argumentCount) {
+                        listAdd(values, jsonGetStringOr(jsonArrayGet(arguments, argAt), ""));
+                        argAt += 1;
+                    }
+                    capture >> int <- exists(executable) ?
+                        assurance.assurance.captureArguments(executable, values) : 0;
+                    code >> int <- capture == 0 ? -1 :
+                        jsonGetIntOr(jsonObjectGet(capture, "exit_code"), -1);
+                    output >> str <- capture == 0 ? "" : assurance.assurance.captureOutput(capture);
+                    outputHash >> str <- sha256.sha256.bytes(
+                        cast<byte>(output), strByteLen(output));
+                    expectedHash >> str <- expectedOutputHash(test);
+                    outputMatches >> bool <- expectedHash == "" || outputHash == expectedHash;
+                    row >> int <- jsonNewObject();
+                    jsonObjectSet(row, "name", jsonNewString(name));
+                    jsonObjectSet(row, "executable", jsonNewString(executable));
+                    jsonObjectSet(row, "expected_exit", jsonNewInt(expected));
+                    jsonObjectSet(row, "actual_exit", jsonNewInt(code));
+                    jsonObjectSet(row, "output_sha256", jsonNewString(outputHash));
+                    jsonObjectSet(row, "expected_output_sha256", jsonNewString(expectedHash));
+                    jsonObjectSet(row, "output_bytes", jsonNewInt(strByteLen(output)));
+                    jsonObjectSet(row, "output_matches", jsonNewBool(outputMatches));
+                    jsonObjectSet(row, "truncated", capture == 0 ? jsonNewBool(false) :
+                        jsonClone(jsonObjectGet(capture, "truncated")));
+                    jsonObjectSet(row, "passed", jsonNewBool(code == expected && outputMatches));
+                    if (!jsonGetBoolOr(jsonObjectGet(row, "passed"), false))
+                        addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_CORPUS_001",
+                            "retained corpus case failed: " + name, executable);
+                    jsonArrayPush(result, row);
+                    if (capture != 0) jsonRelease(capture);
+                    jsonRelease(arguments);
+                    jsonRelease(test);
+                    at += 1;
+                }
+                jsonRelease(components);
+                jsonRelease(corpus);
+                return result;
+            }
+
+            executePerformance(manifest >> int, diagnostics >> int) -> int {
+                result >> int <- jsonNewArray();
+                cases >> int <- jsonObjectGet(manifest, "performance");
+                components >> int <- jsonObjectGet(manifest, "components");
+                if (jsonArrayLen(cases) == 0) addDiagnostic(diagnostics,
+                    "E_GHOR_BOOTSTRAP_PERF_001",
+                    "generation performance gate requires at least one retained case", "");
+                at >> int <- 0;
+                while (at < jsonArrayLen(cases)) {
+                    test >> int <- jsonArrayGet(cases, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(test, "name"), "performance-case");
+                    reference >> str <- absolute(jsonGetStringOr(
+                        jsonObjectGet(test, "reference"), ""));
+                    candidate >> str <- absolute(jsonGetStringOr(
+                        jsonObjectGet(test, "candidate"), ""));
+                    if (candidate == "") candidate <- componentOutput(components,
+                        jsonGetStringOr(jsonObjectGet(test, "component"), ""));
+                    expected >> int <- jsonGetIntOr(jsonObjectGet(test, "expected_exit"), 0);
+                    warmup >> int <- jsonGetIntOr(jsonObjectGet(test, "warmup"), 1);
+                    iterations >> int <- jsonGetIntOr(jsonObjectGet(test, "iterations"), 5);
+                    regression >> int <- jsonGetIntOr(
+                        jsonObjectGet(test, "max_regression_percent"), 5);
+                    if (warmup < 0) warmup <- 0;
+                    if (iterations < 1) iterations <- 1;
+                    if (regression < 0) regression <- 0;
+
+                    arguments >> int <- jsonObjectGet(test, "args");
+                    values >> list<str> <- listCreateWithCapacity<str>(jsonArrayLen(arguments));
+                    argAt >> int <- 0;
+                    while (argAt < jsonArrayLen(arguments)) {
+                        listAdd(values, jsonGetStringOr(jsonArrayGet(arguments, argAt), ""));
+                        argAt += 1;
+                    }
+
+                    referenceCode >> int <- -1;
+                    candidateCode >> int <- -1;
+                    warmed >> int <- 0;
+                    while (warmed < warmup && exists(reference) && exists(candidate)) {
+                        referenceCode <- captureCode(reference, values);
+                        candidateCode <- captureCode(candidate, values);
+                        warmed += 1;
+                    }
+
+                    referenceMs >> int <- 0;
+                    candidateMs >> int <- 0;
+                    sample >> int <- 0;
+                    while (sample < iterations && exists(reference) && exists(candidate)) {
+                        started >> int <- 0;
+                        if (sample % 2 == 0) {
+                            started <- monotonicMs();
+                            referenceCode <- captureCode(reference, values);
+                            referenceMs += monotonicMs() - started;
+                            started <- monotonicMs();
+                            candidateCode <- captureCode(candidate, values);
+                            candidateMs += monotonicMs() - started;
+                        }
+                        else {
+                            started <- monotonicMs();
+                            candidateCode <- captureCode(candidate, values);
+                            candidateMs += monotonicMs() - started;
+                            started <- monotonicMs();
+                            referenceCode <- captureCode(reference, values);
+                            referenceMs += monotonicMs() - started;
+                        }
+                        sample += 1;
+                    }
+                    normalizedReference >> int <- referenceMs > 0 ? referenceMs : 1;
+                    ratioMilli >> int <- candidateMs * 1000 / normalizedReference;
+                    row >> int <- jsonNewObject();
+                    jsonObjectSet(row, "name", jsonNewString(name));
+                    jsonObjectSet(row, "reference", jsonNewString(reference));
+                    jsonObjectSet(row, "candidate", jsonNewString(candidate));
+                    jsonObjectSet(row, "warmup", jsonNewInt(warmup));
+                    jsonObjectSet(row, "iterations", jsonNewInt(iterations));
+                    jsonObjectSet(row, "max_regression_percent", jsonNewInt(regression));
+                    jsonObjectSet(row, "reference_ms", jsonNewInt(referenceMs));
+                    jsonObjectSet(row, "candidate_ms", jsonNewInt(candidateMs));
+                    jsonObjectSet(row, "ratio_milli", jsonNewInt(ratioMilli));
+                    jsonObjectSet(row, "reference_exit", jsonNewInt(referenceCode));
+                    jsonObjectSet(row, "candidate_exit", jsonNewInt(candidateCode));
+                    jsonObjectSet(row, "passed", jsonNewBool(
+                        exists(reference) && exists(candidate) &&
+                        referenceCode == expected && candidateCode == expected &&
+                        candidateMs * 100 <= normalizedReference * (100 + regression)));
+                    if (!jsonGetBoolOr(jsonObjectGet(row, "passed"), false))
+                        addDiagnostic(diagnostics, "E_GHOR_BOOTSTRAP_PERF_001",
+                            "generation performance budget failed: " + name, candidate);
+                    jsonArrayPush(result, row);
+                    jsonRelease(arguments);
+                    jsonRelease(test);
+                    at += 1;
+                }
+                jsonRelease(components);
+                jsonRelease(cases);
+                return result;
+            }
+
+            allRows(rows >> int, field >> str) -> bool {
+                if (jsonArrayLen(rows) == 0) return false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows, at);
+                    value >> bool <- jsonGetBoolOr(jsonObjectGet(row, field), false);
+                    jsonRelease(row);
+                    if (!value) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            generate(handle >> addr, build >> bool) -> int {
+                diagnostics >> int <- jsonNewArray();
+                manifest >> int <- loadManifest(handle, diagnostics);
+                guard manifest != 0 else {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString(REPORT_SCHEMA));
+                    jsonObjectSet(report, "status", jsonNewString("blocked"));
+                    jsonObjectSet(report, "stage3_ready", jsonNewBool(false));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    printReport(handle, report);
+                    jsonRelease(report);
+                    return 65;
+                }
+                components >> int <- jsonObjectGet(manifest, "components");
+                providersReady >> bool <- !build ||
+                    materializeRuntimeProviders(handle, manifest, diagnostics);
+                valid >> bool <- providersReady && uniqueComponents(components, diagnostics);
+                builds >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(components)) {
+                    component >> int <- jsonArrayGet(components, at);
+                    if (build) jsonArrayPush(builds, buildComponent(handle, manifest, component, diagnostics));
+                    else {
+                        output >> str <- jsonGetStringOr(jsonObjectGet(component, "output"), "");
+                        sourceIsReady >> bool <- sourceReady(component, diagnostics);
+                        migrationIsComplete >> bool <- migrationComplete(component, diagnostics);
+                        ready >> bool <- sourceIsReady && exists(output) && fsSize(output) > 0;
+                        row >> int <- jsonNewObject();
+                        jsonObjectSet(row, "name", jsonClone(jsonObjectGet(component, "name")));
+                        jsonObjectSet(row, "role", jsonClone(jsonObjectGet(component, "role")));
+                        jsonObjectSet(row, "output", jsonNewString(output));
+                        jsonObjectSet(row, "status", jsonNewString(ready ? "materialized" : "missing"));
+                        jsonObjectSet(row, "source_ready", jsonNewBool(sourceIsReady));
+                        jsonObjectSet(row, "migration_complete", jsonNewBool(migrationIsComplete));
+                        jsonObjectSet(row, "built", jsonNewBool(ready));
+                        jsonObjectSet(row, "bytes", jsonNewInt(ready ? fsSize(output) : 0));
+                        jsonObjectSet(row, "sha256", jsonNewString(ready ? sha256.sha256.file(output) : ""));
+                        jsonArrayPush(builds, row);
+                    }
+                    jsonRelease(component);
+                    at += 1;
+                }
+                artifacts >> int <- compareArtifacts(manifest, diagnostics);
+                corpus >> int <- executeCorpus(manifest, diagnostics);
+                performance >> int <- executePerformance(manifest, diagnostics);
+                sourcesComplete >> bool <- valid && allRows(builds, "source_ready");
+                migrationsComplete >> bool <- allRows(builds, "migration_complete");
+                buildsComplete >> bool <- allRows(builds, "built");
+                artifactsEqual >> bool <- allRows(artifacts, "equal");
+                corpusComplete >> bool <- allRows(corpus, "passed");
+                performanceComplete >> bool <- allRows(performance, "passed");
+                ready >> bool <- sourcesComplete && migrationsComplete && buildsComplete &&
+                    artifactsEqual && corpusComplete && performanceComplete &&
+                    jsonArrayLen(diagnostics) == 0;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString(REPORT_SCHEMA));
+                jsonObjectSet(report, "generation", jsonClone(jsonObjectGet(manifest, "generation")));
+                jsonObjectSet(report, "status", jsonNewString(ready ? "ready" : "blocked"));
+                jsonObjectSet(report, "compiler", jsonNewString(compiler(handle)));
+                jsonObjectSet(report, "manifest", jsonNewString(manifestPath(handle)));
+                jsonObjectSet(report, "sources_complete", jsonNewBool(sourcesComplete));
+                jsonObjectSet(report, "migration_complete", jsonNewBool(migrationsComplete));
+                jsonObjectSet(report, "builds_complete", jsonNewBool(buildsComplete));
+                jsonObjectSet(report, "runtime_providers_complete", jsonNewBool(providersReady));
+                jsonObjectSet(report, "artifacts_equal", jsonNewBool(artifactsEqual));
+                jsonObjectSet(report, "corpus_complete", jsonNewBool(corpusComplete));
+                jsonObjectSet(report, "performance_complete", jsonNewBool(performanceComplete));
+                jsonObjectSet(report, "stage3_ready", jsonNewBool(ready));
+                jsonObjectSet(report, "rust_stage0_retirement_ready", jsonNewBool(ready));
+                jsonObjectSet(report, "components", builds);
+                jsonObjectSet(report, "artifacts", artifacts);
+                jsonObjectSet(report, "corpus", corpus);
+                jsonObjectSet(report, "performance", performance);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                out >> str <- absolute(option(handle, "--out"));
+                if (out != "" && !writeAtomic(report, out)) {
+                    println("error[E_GHOR_BOOTSTRAP_REPORT_001]: generation report could not be written");
+                    ready <- false;
+                }
+                printReport(handle, report);
+                jsonRelease(components);
+                jsonRelease(manifest);
+                jsonRelease(report);
+                return ready ? 0 : 1;
+            }
+
+            printReport(handle >> addr, report >> int) -> bool {
+                if (hasFlag(handle, "--json")) {
+                    rendered >> str <- jsonStringifyPretty(report, 2);
+                    println(rendered);
+                    strRelease(rendered);
+                }
+                else println("ghor bootstrap generation: status=" +
+                    jsonGetStringOr(jsonObjectGet(report, "status"), "blocked") +
+                    " stage3_ready=" +
+                    (jsonGetBoolOr(jsonObjectGet(report, "stage3_ready"), false) ? "true" : "false"));
+                return true;
+            }
+
+            completeReport(report >> int) -> bool {
+                if (report == 0 ||
+                    jsonGetStringOr(jsonObjectGet(report, "schema"), "") != REPORT_SCHEMA ||
+                    jsonGetStringOr(jsonObjectGet(report, "generation"), "") == "" ||
+                    jsonGetStringOr(jsonObjectGet(report, "status"), "") != "ready") return false;
+                diagnostics >> int <- jsonObjectGet(report, "diagnostics");
+                components >> int <- jsonObjectGet(report, "components");
+                artifacts >> int <- jsonObjectGet(report, "artifacts");
+                corpus >> int <- jsonObjectGet(report, "corpus");
+                performance >> int <- jsonObjectGet(report, "performance");
+                componentDiagnostics >> int <- jsonNewArray();
+                componentsValid >> bool <- uniqueComponents(components, componentDiagnostics) &&
+                    jsonArrayLen(componentDiagnostics) == 0;
+                complete >> bool <-
+                    jsonGetBoolOr(jsonObjectGet(report, "sources_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "migration_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "builds_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "runtime_providers_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "artifacts_equal"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "corpus_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "performance_complete"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "stage3_ready"), false) &&
+                    jsonGetBoolOr(jsonObjectGet(report, "rust_stage0_retirement_ready"), false) &&
+                    jsonArrayLen(diagnostics) == 0 &&
+                    componentsValid &&
+                    allRows(components, "source_ready") &&
+                    allRows(components, "migration_complete") && allRows(components, "built") &&
+                    allRows(artifacts, "equal") && allRows(corpus, "passed") &&
+                    allRows(performance, "passed");
+                jsonRelease(diagnostics);
+                jsonRelease(componentDiagnostics);
+                jsonRelease(components);
+                jsonRelease(artifacts);
+                jsonRelease(corpus);
+                jsonRelease(performance);
+                return complete;
+            }
+
+            validState(state >> int) -> bool {
+                if (state == 0 ||
+                    jsonGetStringOr(jsonObjectGet(state, "schema"), "") != STATE_SCHEMA) return false;
+                generation >> str <- jsonGetStringOr(jsonObjectGet(state, "active_generation"), "");
+                report >> str <- jsonGetStringOr(jsonObjectGet(state, "active_report"), "");
+                hash >> str <- jsonGetStringOr(jsonObjectGet(state, "active_report_sha256"), "");
+                if (generation == "stage0") return report == "" && hash == "";
+                return generation != "" && report != "" && hash != "" && exists(report) &&
+                    sha256.sha256.file(report) == hash;
+            }
+
+            promote(handle >> addr) -> int {
+                reportPath >> str <- absolute(option(handle, "--report"));
+                statePath >> str <- absolute(option(handle, "--state"));
+                if (reportPath == "" || statePath == "" || !exists(reportPath)) {
+                    println("error[E_GHOR_BOOTSTRAP_PROMOTE_001]: --report and --state are required");
+                    return 64;
+                }
+                report >> int <- jsonParseFile(reportPath);
+                if (!completeReport(report)) {
+                    println("error[E_GHOR_BOOTSTRAP_PROMOTE_001]: only a complete generation report can be promoted");
+                    if (report != 0) jsonRelease(report);
+                    return 1;
+                }
+                previous >> int <- exists(statePath) ? jsonParseFile(statePath) : 0;
+                if (previous != 0 && !validState(previous)) {
+                    println("error[E_GHOR_BOOTSTRAP_PROMOTE_001]: active generation state is invalid or its report has changed");
+                    jsonRelease(previous);
+                    jsonRelease(report);
+                    return 65;
+                }
+                state >> int <- jsonNewObject();
+                jsonObjectSet(state, "schema", jsonNewString(STATE_SCHEMA));
+                jsonObjectSet(state, "active_generation", jsonClone(jsonObjectGet(report, "generation")));
+                jsonObjectSet(state, "active_report", jsonNewString(reportPath));
+                jsonObjectSet(state, "active_report_sha256", jsonNewString(sha256.sha256.file(reportPath)));
+                if (previous != 0) {
+                    jsonObjectSet(state, "previous_generation", jsonClone(jsonObjectGet(previous, "active_generation")));
+                    jsonObjectSet(state, "previous_report", jsonClone(jsonObjectGet(previous, "active_report")));
+                    jsonObjectSet(state, "previous_report_sha256", jsonClone(jsonObjectGet(previous, "active_report_sha256")));
+                }
+                else {
+                    jsonObjectSet(state, "previous_generation", jsonNewString("stage0"));
+                    jsonObjectSet(state, "previous_report", jsonNewString(""));
+                    jsonObjectSet(state, "previous_report_sha256", jsonNewString(""));
+                }
+                written >> bool <- writeAtomic(state, statePath);
+                if (previous != 0) jsonRelease(previous);
+                jsonRelease(state);
+                jsonRelease(report);
+                if (!written) {
+                    println("error[E_GHOR_BOOTSTRAP_PROMOTE_001]: generation state transaction failed");
+                    return 74;
+                }
+                println("ghor bootstrap generation: promoted");
+                return 0;
+            }
+
+            rollback(handle >> addr) -> int {
+                statePath >> str <- absolute(option(handle, "--state"));
+                if (statePath == "" || !exists(statePath)) {
+                    println("error[E_GHOR_BOOTSTRAP_ROLLBACK_001]: --state must name an active generation state");
+                    return 64;
+                }
+                current >> int <- jsonParseFile(statePath);
+                if (!validState(current)) {
+                    if (current != 0) jsonRelease(current);
+                    return 65;
+                }
+                previousGeneration >> str <- jsonGetStringOr(jsonObjectGet(current, "previous_generation"), "");
+                if (previousGeneration == "") { jsonRelease(current); return 1; }
+                previousReport >> str <- jsonGetStringOr(jsonObjectGet(current, "previous_report"), "");
+                previousHash >> str <- jsonGetStringOr(jsonObjectGet(current, "previous_report_sha256"), "");
+                if (previousGeneration != "stage0" &&
+                    (previousReport == "" || previousHash == "" || !exists(previousReport) ||
+                     sha256.sha256.file(previousReport) != previousHash)) {
+                    println("error[E_GHOR_BOOTSTRAP_ROLLBACK_001]: previous generation report is missing or has changed");
+                    jsonRelease(current);
+                    return 65;
+                }
+                state >> int <- jsonNewObject();
+                jsonObjectSet(state, "schema", jsonNewString(STATE_SCHEMA));
+                jsonObjectSet(state, "active_generation", jsonNewString(previousGeneration));
+                jsonObjectSet(state, "active_report", jsonClone(jsonObjectGet(current, "previous_report")));
+                jsonObjectSet(state, "active_report_sha256", jsonClone(jsonObjectGet(current, "previous_report_sha256")));
+                jsonObjectSet(state, "previous_generation", jsonClone(jsonObjectGet(current, "active_generation")));
+                jsonObjectSet(state, "previous_report", jsonClone(jsonObjectGet(current, "active_report")));
+                jsonObjectSet(state, "previous_report_sha256", jsonClone(jsonObjectGet(current, "active_report_sha256")));
+                written >> bool <- writeAtomic(state, statePath);
+                jsonRelease(state);
+                jsonRelease(current);
+                if (!written) return 74;
+                println("ghor bootstrap generation: rolled back to " + previousGeneration);
+                return 0;
+            }
+
+            status(handle >> addr) -> int {
+                statePath >> str <- absolute(option(handle, "--state"));
+                if (statePath == "" || !exists(statePath)) {
+                    println("ghor bootstrap generation: active=stage0 state=absent");
+                    return 0;
+                }
+                state >> int <- jsonParseFile(statePath);
+                guard validState(state) else {
+                    if (state != 0) jsonRelease(state);
+                    return 65;
+                }
+                if (hasFlag(handle, "--json")) {
+                    rendered >> str <- jsonStringifyPretty(state, 2);
+                    println(rendered);
+                    strRelease(rendered);
+                }
+                else println("ghor bootstrap generation: active=" +
+                    jsonGetStringOr(jsonObjectGet(state, "active_generation"), "stage0"));
+                jsonRelease(state);
+                return 0;
+            }
+
+        public:
+            execute(handle >> addr) -> int {
+                guard argsCount(handle) > 3 else return 64;
+                action >> str <- argsAt(handle, 3);
+                if (action == "build") return generate(handle, true);
+                if (action == "verify") return generate(handle, false);
+                if (action == "promote") return promote(handle);
+                if (action == "rollback") return rollback(handle);
+                if (action == "status") return status(handle);
+                if (action == "self-test") return selfTest() ? 0 : 1;
+                println("error[E_GHOR_BOOTSTRAP_GENERATION_001]: expected build, verify, promote, rollback, status or self-test");
+                return 64;
+            }
+
+            selfTest() -> bool {
+                components >> int <- jsonNewArray();
+                compilerNode >> int <- jsonNewObject();
+                compilerName >> int <- jsonNewString("compiler");
+                compilerRole >> int <- jsonNewString("compiler");
+                jsonObjectSet(compilerNode, "name", compilerName);
+                jsonObjectSet(compilerNode, "role", compilerRole);
+                jsonArrayPush(components, compilerNode);
+                launcherNode >> int <- jsonNewObject();
+                launcherName >> int <- jsonNewString("launcher");
+                launcherRole >> int <- jsonNewString("launcher");
+                jsonObjectSet(launcherNode, "name", launcherName);
+                jsonObjectSet(launcherNode, "role", launcherRole);
+                jsonArrayPush(components, launcherNode);
+                diagnostics >> int <- jsonNewArray();
+                valid >> bool <- uniqueComponents(components, diagnostics) &&
+                    jsonArrayLen(diagnostics) == 0;
+                jsonRelease(compilerName);
+                jsonRelease(compilerRole);
+                jsonRelease(compilerNode);
+                jsonRelease(launcherName);
+                jsonRelease(launcherRole);
+                jsonRelease(launcherNode);
+                jsonRelease(diagnostics);
+                jsonRelease(components);
+                return valid;
+            }
+
+    fa:
+        return true;
+}

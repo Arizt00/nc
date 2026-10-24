@@ -1,0 +1,149 @@
+use <io:output, render>;
+use <data:json>;
+use <process:args, command>;
+use <project:sha256>;
+
+nativeGenerationDriver72 {
+    text(model >> int, key >> str) -> str {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> str <- jsonStringView(field,"");
+        jsonRelease(field);
+        return value;
+    }
+    number(model >> int, key >> str) -> int {
+        field >> int <- jsonObjectBorrow(model,key);
+        value >> int <- jsonGetIntOr(field,0);
+        jsonRelease(field);
+        return value;
+    }
+    committed(root >> str, row >> int) -> bool {
+        key >> str <- text(row,"material_cache_key");
+        shortKey >> str <- strSubstring(key,0,20);
+        folder >> str <- root+"/.ncc/cache/c2/m/"+shortKey;
+        manifestPath >> str <- folder+"/manifest.json";
+        lockPath >> str <- root+"/.ncc/cache/c2/m/"+shortKey+".lock";
+        ready >> bool <- exists(manifestPath) && !exists(lockPath);
+        if (ready) {
+            material >> int <- jsonParseFile(manifestPath);
+            expected >> str <- text(row,"object_hash");
+            digest >> str <- strSubstring(expected,7,strByteLen(expected)-7);
+            objectPath >> str <- root+"/"+text(row,"object");
+            actual >> str <- sha256.nccSha256.file(objectPath);
+            ready <- text(material,"key") == key && text(material,"object.bin_sha256") == digest && actual == digest;
+            strRelease(actual); strRelease(objectPath); strRelease(digest); jsonRelease(material);
+        }
+        strRelease(shortKey); strRelease(folder); strRelease(manifestPath); strRelease(lockPath);
+        return ready;
+    }
+    clearLocks(root >> str, units >> int) -> bool {
+        at >> int <- 0;
+        while (at < jsonArrayLen(units)) {
+            row >> int <- jsonArrayBorrow(units,at);
+            shortKey >> str <- strSubstring(text(row,"material_cache_key"),0,20);
+            path >> str <- root+"/.ncc/cache/c2/m/"+shortKey+".lock";
+            if (exists(path)) removeDir(path);
+            valid >> bool <- !exists(path);
+            strRelease(path); strRelease(shortKey); jsonRelease(row);
+            if (!valid) return false;
+            at += 1;
+        }
+        return true;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        count >> int <- argsCount(arguments);
+        if (count != 7 && count != 8) return 64;
+        resumed >> bool <- count == 8;
+        if (resumed && argsAt(arguments,7) != "--resume-verified-materials") return 64;
+        compiler >> str <- argsAt(arguments,1);
+        root >> str <- argsAt(arguments,2);
+        reference >> int <- jsonParseFile(argsAt(arguments,3));
+        target >> str <- argsAt(arguments,4);
+        output >> str <- argsAt(arguments,5);
+        receipt >> str <- argsAt(arguments,6);
+        if ((!resumed && exists(root+"/.ncc")) || reference == 0) return 65;
+        units >> int <- jsonObjectBorrow(reference,"units");
+        at >> int <- 0;
+        while (at < jsonArrayLen(units)) {
+            row >> int <- jsonArrayBorrow(units,at);
+            path >> str <- root+"/"+text(row,"source");
+            expected >> str <- text(row,"source_hash");
+            wanted >> str <- strSubstring(expected,7,strByteLen(expected)-7);
+            actual >> str <- sha256.nccSha256.file(path);
+            valid >> bool <- actual == wanted;
+            strRelease(path); strRelease(actual); strRelease(wanted); jsonRelease(row);
+            if (!valid) return 66;
+            at += 1;
+        }
+        line >> str <- "\""+compiler+"\" project link \""+root+"\" --target "+target+" --out \""+output+"\"";
+        workers >> int <- 0;
+        completed >> int <- 0;
+        if (resumed) {
+            while (completed < jsonArrayLen(units)) {
+                row >> int <- jsonArrayBorrow(units,completed);
+                ready >> bool <- committed(root,row);
+                if (ready) { print("verified previous material "); print(text(row,"name")); println(""); }
+                jsonRelease(row);
+                if (!ready) break;
+                completed += 1;
+            }
+        }
+        previousUnits >> int <- completed;
+        println("generation workers begin");
+        started >> int <- monotonicMs();
+        finished >> bool <- false;
+        while (!finished) {
+            if (!clearLocks(root,units)) { println("generation failed: stale material lock"); return 67; }
+            println("generation worker launch");
+            child >> addr <- commandOpen(line,root,null,null,null,0);
+            if (child == null || !commandStarted(child)) { println("generation failed: worker launch"); return 68; }
+            workers += 1;
+            baseline >> int <- completed;
+            cut >> bool <- false;
+            while (!finished && !cut) {
+                status >> int <- commandWait(child,200);
+                if (status == 0) {
+                    if (commandExitCode(child) != 0) { print("generation failed: worker exit "); println(commandExitCode(child)); commandRelease(child); return 69; }
+                    finished <- true;
+                } else if (status != 258) { commandTerminate(child,15); commandWait(child,3000); commandRelease(child); return 70; }
+                if (!finished && completed < jsonArrayLen(units)) {
+                    row >> int <- jsonArrayBorrow(units,completed);
+                    if (committed(root,row)) {
+                        print("committed "); print(text(row,"name")); println("");
+                        completed += 1;
+                    }
+                    jsonRelease(row);
+                    if (completed > baseline) cut <- true;
+                }
+                if (monotonicMs()-started > 43200000) { commandTerminate(child,15); commandWait(child,3000); commandRelease(child); return 71; }
+            }
+            if (cut) {
+                if (!commandTerminate(child,15) || commandWait(child,30000) != 0) { commandRelease(child); return 72; }
+            }
+            commandRelease(child);
+        }
+        at <- 0;
+        while (at < jsonArrayLen(units)) {
+            row >> int <- jsonArrayBorrow(units,at); valid >> bool <- committed(root,row); jsonRelease(row);
+            if (!valid) return 73;
+            at += 1;
+        }
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.native.generation.process-units.v72"));
+        jsonObjectSet(report,"workers",jsonNewInt(workers));
+        jsonObjectSet(report,"units",jsonNewInt(at));
+        jsonObjectSet(report,"elapsed_ms",jsonNewInt(monotonicMs()-started));
+        jsonObjectSet(report,"clean_initial_input",jsonNewBool(!resumed));
+        jsonObjectSet(report,"resumed_verified_materials",jsonNewBool(resumed));
+        jsonObjectSet(report,"previous_attempt_units",jsonNewInt(previousUnits));
+        jsonObjectSet(report,"current_generation_material_reuse",jsonNewBool(true));
+        jsonObjectSet(report,"inherited_materials",jsonNewBool(resumed));
+        jsonObjectSet(report,"finished",jsonNewBool(exists(output)));
+        saved >> bool <- jsonSaveFile(report,receipt,2);
+        valid >> bool <- saved && exists(output);
+        jsonRelease(report); jsonRelease(units); jsonRelease(reference); strRelease(line); argsRelease(arguments);
+        return valid ? 0 : 74;
+    }
+    ref main ->> run;
+    fa: return true;
+}

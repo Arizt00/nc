@@ -1,0 +1,390 @@
+use <data:json>;
+use <io:output, render, errorOutput>;
+use <process:env>;
+use <fs:dir>;
+use <collections:result>;
+use <project:release_io, tool_cli, cert_json, sha256, release43_host, stream_sha43, physical43_json>;
+
+release43Common {
+    stc:
+        root >> str;
+        work >> str;
+        candidate >> str;
+        cargo >> str;
+        checks >> int;
+        commands >> int;
+        error >> str <- "";
+    fn:
+        public:
+            release(value >> int) -> void { if (value != 0) jsonRelease(value); }
+            field(object >> int, key >> str) -> str { return cert_json.certJson.field(object,key); }
+            put(object >> int, key >> str, value >> int) -> void { cert_json.certJson.put(object,key,value); }
+            push(array >> int, value >> int) -> void { cert_json.certJson.push(array,value); }
+            env(key >> str) -> str {
+                size >> int <- envGet(key,null,0);
+                if (size < 0 || size > 1048576) return "";
+                data >> p<byte> <- cast(alloc(size+1));
+                if (data == null) return "";
+                count >> int <- envGet(key,adr(data),size+1);
+                if (count < 0 || count > size) { free(data); return ""; }
+                wr(off(data,count),0); return cast(data);
+            }
+            absolute(path >> str) -> str {
+                result >> str <- release_io.releaseIo.forwardPath(release43_host.release43Host.absolute(path));
+                if (!envHas("WINDIR")) { while (strStartsWith(result,"//")) { result <- strSubstring(result,1,strByteLen(result)-1); } }
+                return result;
+            }
+            fileType(path >> str) -> int { return release43_host.release43Host.kind(path); }
+            fileSize(path >> str) -> int { return release43_host.release43Host.size(path); }
+            fileSize64(path >> str) -> i64 { return release43_host.release43Host.size64(path); }
+            wideText(value >> i64) -> str {
+                if (value < 0) return "-"+wideText(-value);
+                data >> p<byte> <- cast(alloc(32)); if (data == null) return ""; index >> int <- 30; wr<byte>(off<byte>(data,31),0);
+                while (true) { remainder >> i64 <- value%10; digit >> int <- remainder; wr<byte>(off<byte>(data,index),48+digit); index -= 1; value <- value/10; if (value == 0) break; }
+                digits >> str <- cast(data); result >> str <- strSubstring(digits,index+1,30-index); free(data); return result;
+            }
+            integer64(value >> i64) -> int { return jsonParse(wideText(value)); }
+            number64(object >> int, key >> str) -> i64 {
+                node >> int <- jsonObjectGet(object,key); if (node == 0) return 0; digits >> str <- jsonGetNumberText(node); value >> i64 <- 0; index >> int <- 0;
+                while (index < strByteLen(digits)) { value <- value*10+(rd<byte>(off<byte>(cast<byte>(digits),index))-48); index += 1; }
+                release(node); return value;
+            }
+            readBytes(path >> str, data >> p<byte>, count >> int) -> int { return release43_host.release43Host.read(path,data,count); }
+            writeBytes(path >> str, data >> p<byte>, count >> int, append >> bool) -> int { return release43_host.release43Host.writeRaw(path,data,count,append); }
+            deleteFile(path >> str) -> bool { return release43_host.release43Host.deleteFile(path); }
+            renamePath(source >> str, target >> str) -> bool { return release43_host.release43Host.rename(source,target); }
+            names(path >> str) -> int { rows >> int <- release43_host.release43Host.names(path); if (rows == 0) return 0; result >> int <- sorted(rows); jsonRelease(rows); return result; }
+            compareText(a >> str, b >> str) -> int {
+                index >> int <- 0;
+                while (index < strByteLen(a) && index < strByteLen(b)) {
+                    left >> int <- rd<byte>(off<byte>(cast<byte>(a),index)) & 255; right >> int <- rd<byte>(off<byte>(cast<byte>(b),index)) & 255;
+                    if (left < right) return -1; if (left > right) return 1; index += 1;
+                }
+                return strByteLen(a) < strByteLen(b) ? -1 : (strByteLen(a) > strByteLen(b) ? 1 : 0);
+            }
+            sorted(rows >> int) -> int {
+                result >> int <- jsonNewArray(); count >> int <- jsonArrayLen(rows);
+                if (count <= 1) { if (count == 1) push(result,jsonArrayGet(rows,0)); return result; }
+                leftRows >> int <- jsonNewArray(); rightRows >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < count) { push(index < count/2 ? leftRows : rightRows,jsonArrayGet(rows,index)); index += 1; }
+                left >> int <- sorted(leftRows); right >> int <- sorted(rightRows); jsonRelease(leftRows); jsonRelease(rightRows);
+                a >> int <- 0; b >> int <- 0;
+                while (a < jsonArrayLen(left) && b < jsonArrayLen(right)) {
+                    x >> int <- jsonArrayGet(left,a); y >> int <- jsonArrayGet(right,b);
+                    if (compareText(jsonGetString(x),jsonGetString(y)) <= 0) { push(result,x); jsonRelease(y); a += 1; }
+                    else { push(result,y); jsonRelease(x); b += 1; }
+                }
+                while (a < jsonArrayLen(left)) { push(result,jsonArrayGet(left,a)); a += 1; }
+                while (b < jsonArrayLen(right)) { push(result,jsonArrayGet(right,b)); b += 1; }
+                jsonRelease(left); jsonRelease(right); return result;
+            }
+            makeDirectories(path >> str) -> bool {
+                if (fileType(path) == 2) return true;
+                if (path == "" || strByteLen(path) > 32760) return false;
+                parent >> str <- release_io.releaseIo.directory(path); if (parent == path) return false;
+                if (!makeDirectories(parent)) return false;
+                if (release43_host.release43Host.mkdir(path)) return true;
+                return fileType(path) == 2;
+            }
+            text(path >> str) -> str {
+                size >> int <- fileSize(path); if (size < 0 || size > 134217728) return "";
+                data >> p<byte> <- cast(alloc(size+1)); if (data == null) return "";
+                if (readBytes(path,data,size) != size) { free(data); return ""; }
+                wr(off(data,size),0); return cast(data);
+            }
+            load(path >> str) -> int {
+                content >> str <- text(path); model >> int <- 0;
+                if (strByteLen(content) == fileSize(path)) model <- physical43_json.physical43Json.parse(content);
+                strRelease(content); return model;
+            }
+            writeText(path >> str, content >> str) -> bool {
+                if (!makeDirectories(release_io.releaseIo.directory(path))) return false;
+                return writeBytes(path,cast<byte>(content),strByteLen(content),false) == strByteLen(content);
+            }
+            save(path >> str, model >> int) -> bool {
+                content >> str <- cert_json.certJson.stringify(model); if (content == "") return false;
+                if (!makeDirectories(release_io.releaseIo.directory(path))) return false;
+                reservation >> str <- release_io.releaseIo.directory(path)+"/.release43-save-"+renderInt(nowMs());
+                if (!release43_host.release43Host.mkdir(reservation)) return false;
+                temporary >> str <- reservation+"/payload";
+                saved >> bool <- writeText(temporary,content+"\n");
+                if (saved) saved <- renamePath(temporary,path);
+                if (!saved) deleteFile(temporary);
+                release43_host.release43Host.rmdir(reservation); strRelease(content); return saved;
+            }
+            hashFile(path >> str) -> str {
+                return stream_sha43.streamSha43.file(path);
+            }
+            inside(path >> str, parent >> str) -> bool {
+                a >> str <- absolute(path); b >> str <- absolute(parent);
+                if (envHas("WINDIR")) { a <- strToLower(a); b <- strToLower(b); }
+                return a == b || strStartsWith(a,b+"/");
+            }
+            relative(path >> str) -> bool {
+                normalized >> str <- release_io.releaseIo.forwardPath(path);
+                return normalized != "" && !strStartsWith(normalized,"/") && !strContains(normalized,":") &&
+                    normalized != ".." && !strStartsWith(normalized,"../") && !strContains(normalized,"/../") && !strEndsWith(normalized,"/..");
+            }
+            fail(message >> str) -> bool { if (error == "") error <- message; return false; }
+            failed() -> bool { return error != ""; }
+            message() -> str { return error; }
+            reset() -> void { error <- ""; }
+            rootPath() -> str { return root; }
+            workPath() -> str { return work; }
+            commandRows() -> int { return commands; }
+            checkRows() -> int { return checks; }
+            record(key >> str, passed >> bool) -> void { put(checks,key,jsonNewBool(passed)); }
+            initialize(options >> int) -> bool {
+                root <- absolute(tool_cli.toolCli.value(options,"--root","."));
+                candidate <- tool_cli.toolCli.value(options,"--candidate","");
+                if (candidate != "") candidate <- absolute(candidate);
+                cargo <- tool_cli.toolCli.value(options,"--cargo","cargo");
+                checks <- jsonNewObject(); commands <- jsonNewArray(); error <- "";
+                work <- tool_cli.toolCli.value(options,"--work","");
+                if (work == "") {
+                    temp >> str <- env(envHas("WINDIR") ? "TEMP" : "TMPDIR");
+                    if (temp == "") temp <- envHas("WINDIR") ? root+"/target/tmp" : "/tmp";
+                    work <- absolute(temp)+"/nc-release43-"+renderInt(nowMs());
+                } else work <- absolute(work);
+                if (!makeDirectories(release_io.releaseIo.directory(work))) return fail("cannot create work parent");
+                reserved >> bool <- release43_host.release43Host.mkdir(work);
+                if (!reserved) return fail("work directory must be new: "+work);
+                return true;
+            }
+            remove(path >> str, boundary >> str) -> bool {
+                if (!inside(path,boundary) || absolute(path) == absolute(boundary)) return fail("refusing unsafe removal: "+path);
+                kind >> int <- fileType(path);
+                if (kind == 0) return true;
+                if (release43_host.release43Host.link(path)) {
+                    return kind == 2 ? release43_host.release43Host.rmdir(path) : release43_host.release43Host.deleteFile(path);
+                }
+                if (kind == 1) return deleteFile(path);
+                names >> int <- names(path);
+                if (names == 0) return fail("cannot enumerate removal: "+path);
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    child >> int <- jsonArrayGet(names,index);
+                    good >> bool <- remove(path+"/"+jsonGetString(child),boundary);
+                    jsonRelease(child);
+                    if (!good) { jsonRelease(names); return false; }
+                    index += 1;
+                }
+                jsonRelease(names);
+                return release43_host.release43Host.rmdir(path);
+            }
+            copyRequired(source >> str, destination >> str) -> bool {
+                if (!makeDirectories(release_io.releaseIo.directory(destination))) return fail("cannot create copy destination");
+                if (!release43_host.release43Host.copy(source,destination)) return fail("required public file is missing or could not be copied: "+source);
+                return true;
+            }
+            collect(path >> str, prefix >> str, rows >> int, depth >> int) -> bool {
+                names >> int <- names(path);
+                if (names == 0) return fail("cannot enumerate: "+path);
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    child >> int <- jsonArrayGet(names,index);
+                    name >> str <- jsonGetString(child);
+                    rel >> str <- prefix == "" ? name : prefix+"/"+name;
+                    kind >> int <- fileType(path+"/"+name);
+                    linked >> bool <- release43_host.release43Host.link(path+"/"+name);
+                    row >> int <- jsonNewObject(); put(row,"path",jsonNewString(rel)); put(row,"kind",jsonNewInt(kind)); put(row,"link",jsonNewBool(linked)); push(rows,row);
+                    if (kind == 2 && !linked) {
+                        if (!collect(path+"/"+name,rel,rows,depth+1)) { jsonRelease(child); jsonRelease(names); return false; }
+                    }
+                    if (kind == 0 && !linked) { jsonRelease(child); jsonRelease(names); return fail("unsupported or disappearing entry: "+rel); }
+                    jsonRelease(child); index += 1;
+                }
+                jsonRelease(names); return true;
+            }
+            tree(path >> str) -> int {
+                rows >> int <- jsonNewArray();
+                if (!collect(path,"",rows,0)) { jsonRelease(rows); return 0; }
+                return rows;
+            }
+            copyTree(source >> str, destination >> str) -> bool {
+                if (!makeDirectories(destination)) return false;
+                rows >> int <- tree(source);
+                if (rows == 0) return false;
+                index >> int <- 0; ok >> bool <- true;
+                while (index < jsonArrayLen(rows) && ok) {
+                    row >> int <- jsonArrayGet(rows,index); rel >> str <- field(row,"path");
+                    if (release_io.releaseIo.number(row,"kind",0) == 2) ok <- makeDirectories(destination+"/"+rel);
+                    else ok <- copyRequired(source+"/"+rel,destination+"/"+rel);
+                    jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows); return ok;
+            }
+            array(text >> str) -> int { return jsonParse(text); }
+            arg(words >> int, value >> str) -> void { push(words,jsonNewString(value)); }
+            lines(text >> str) -> int {
+                rows >> int <- jsonNewArray(); data >> p<byte> <- cast(text); first >> int <- 0; index >> int <- 0;
+                while (index <= strByteLen(text)) {
+                    if (index == strByteLen(text) || rd(off(data,index)) == 10) {
+                        push(rows,jsonNewString(strSubstring(text,first,index-first))); first <- index+1;
+                    }
+                    index += 1;
+                }
+                return rows;
+            }
+            segments(text >> str) -> int {
+                rows >> int <- jsonNewArray(); first >> int <- 0; at >> int <- 0; data >> p<byte> <- cast(text);
+                while (at <= strByteLen(text)) {
+                    if (at == strByteLen(text) || rd<byte>(off<byte>(data,at)) == 47) { push(rows,jsonNewString(strSubstring(text,first,at-first))); first <- at+1; }
+                    at += 1;
+                }
+                return rows;
+            }
+            stringAt(rows >> int, index >> int) -> str {
+                item >> int <- jsonArrayGet(rows,index); text >> str <- jsonStringView(item,"");
+                copy >> str <- strSubstring(text,0,strByteLen(text)); jsonRelease(item); return copy;
+            }
+            relativePath(path >> str, base >> str) -> str {
+                a >> str <- absolute(path); b >> str <- absolute(base);
+                if (strStartsWith(a,b+"/")) return strSubstring(a,strByteLen(b)+1,strByteLen(a)-strByteLen(b)-1);
+                if (envHas("WINDIR")) {
+                    if (strToLower(strSubstring(a,0,2)) != strToLower(strSubstring(b,0,2))) { fail("path is on a different drive"); return ""; }
+                }
+                index >> int <- 0; common >> int <- 0;
+                while (index < strByteLen(a) && index < strByteLen(b)) {
+                    ca >> int <- rd<byte>(off<byte>(cast<byte>(a),index)) & 255; cb >> int <- rd<byte>(off<byte>(cast<byte>(b),index)) & 255;
+                    if (envHas("WINDIR")) { if (ca >= 65 && ca <= 90) ca += 32; if (cb >= 65 && cb <= 90) cb += 32; }
+                    if (ca != cb) break;
+                    if (ca == 47) common <- index+1; index += 1;
+                }
+                if (index == strByteLen(a) && index == strByteLen(b)) return ".";
+                if (index == strByteLen(b) && index < strByteLen(a)) { if (rd<byte>(off<byte>(cast<byte>(a),index)) == 47) common <- index+1; }
+                if (index == strByteLen(a) && index < strByteLen(b)) { if (rd<byte>(off<byte>(cast<byte>(b),index)) == 47) common <- index+1; }
+                result >> str <- ""; index <- common;
+                if (index < strByteLen(b)) {
+                    result <- "../";
+                    while (index < strByteLen(b)) { if (rd<byte>(off<byte>(cast<byte>(b),index)) == 47) result <- result+"../"; index += 1; }
+                }
+                if (common <= strByteLen(a)) result <- result+strSubstring(a,common,strByteLen(a)-common);
+                if (strEndsWith(result,"/")) result <- strSubstring(result,0,strByteLen(result)-1);
+                return result == "" ? "." : result;
+            }
+            invoke(binary >> str, words >> int) -> int {
+                argv >> int <- jsonNewArray(); arg(argv,binary);
+                display >> str <- binary;
+                index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    child >> int <- jsonArrayGet(words,index); display <- display+" "+jsonGetString(child); push(argv,child); index += 1;
+                }
+                captured >> int <- tool_cli.toolCli.execute(argv,root,900000);
+                row >> int <- jsonNewObject(); put(row,"cmd",jsonNewString(display));
+                code >> int <- release_io.releaseIo.number(captured,"code",-1);
+                if (!tool_cli.toolCli.clean(captured)) code <- -1;
+                put(row,"code",jsonNewInt(code)); put(row,"ok",jsonNewBool(code == 0));
+                put(row,"stdout",jsonNewString(strTrim(field(captured,"stdout"))));
+                put(row,"stderr",jsonNewString(strTrim(field(captured,"stderr"))));
+                jsonArrayPush(commands,row); jsonRelease(captured); jsonRelease(argv); jsonRelease(words); return row;
+            }
+            succeeded(row >> int) -> bool { return tool_cli.toolCli.hasFlag(row,"ok"); }
+            pathArgument(value >> str) -> str {
+                result >> str <- strSubstring(value,0,strByteLen(value)); path >> bool <- strStartsWith(value,"//");
+                if (strByteLen(value) >= 3) { if (rd<byte>(off<byte>(cast<byte>(value),1)) == 58 && rd<byte>(off<byte>(cast<byte>(value),2)) == 47) path <- true; }
+                if (envHas("WINDIR") && path) { data >> p<byte> <- cast(result); at >> int <- 0; while (at < strByteLen(result)) { if (rd<byte>(off<byte>(data,at)) == 47) wr<byte>(off<byte>(data,at),92); at += 1; } }
+                return result;
+            }
+            command(tail >> int, quiet >> bool) -> int {
+                if (envHas("WINDIR")) {
+                    normalized >> int <- jsonNewArray(); at >> int <- 0;
+                    while (at < jsonArrayLen(tail)) { node >> int <- jsonArrayGet(tail,at); word >> str <- pathArgument(jsonGetString(node)); arg(normalized,word); strRelease(word); jsonRelease(node); at += 1; }
+                    jsonRelease(tail); tail <- normalized;
+                }
+                if (candidate != "") return invoke(candidate,tail);
+                words >> int <- array(quiet ? "[\"run\",\"-q\",\"-p\",\"ncc-cli\",\"--\"]" : "[\"run\",\"-p\",\"ncc-cli\",\"--\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(tail)) { push(words,jsonArrayGet(tail,index)); index += 1; }
+                jsonRelease(tail); return invoke(cargo,words);
+            }
+            commandEnv(words >> int, quiet >> bool, key >> str, value >> str) -> int {
+                had >> bool <- envHas(key); old >> str <- env(key); envSet(key,value);
+                result >> int <- command(words,quiet);
+                if (had) envSet(key,old); else envRemove(key);
+                strRelease(old); return result;
+            }
+            build() -> bool {
+                if (candidate != "") return true;
+                row >> int <- invoke(cargo,array("[\"build\",\"-p\",\"ncc-cli\",\"--bin\",\"ncc\"]"));
+                if (!succeeded(row)) return fail("cargo build failed");
+                candidate <- root+"/target/debug/ncc"+(envHas("WINDIR") ? ".exe" : ""); return true;
+            }
+            nativeTool(name >> str) -> str {
+                if (envHas("WINDIR") && fileType("C:/msys64/usr/bin/"+name+".exe") == 1) return "C:/msys64/usr/bin/"+name+".exe";
+                if (!envHas("WINDIR") && fileType("/usr/bin/"+name) == 1) return "/usr/bin/"+name;
+                return name;
+            }
+            doc(row >> int) -> int {
+                text >> str <- field(row,"stdout"); model >> int <- jsonParse(text);
+                if (model != 0) return model;
+                rows >> int <- lines(text); at >> int <- jsonArrayLen(rows)-1;
+                while (at >= 0) { line >> str <- strTrim(stringAt(rows,at)); if (line != "") { model <- jsonParse(line); break; } at -= 1; }
+                jsonRelease(rows); return model;
+            }
+            host() -> str {
+                row >> int <- invoke("rustc",array("[\"-vV\"]"));
+                if (!succeeded(row)) { fail("rustc -vV failed"); return ""; }
+                rows >> int <- lines(field(row,"stdout")); index >> int <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    line >> str <- stringAt(rows,index);
+                    if (strStartsWith(line,"host: ")) { jsonRelease(rows); return strTrim(strSubstring(line,6,strByteLen(line)-6)); }
+                    index += 1;
+                }
+                jsonRelease(rows); return "x86_64-unknown-linux-gnu";
+            }
+            rowById(state >> int, id >> str) -> int {
+                if (state == 0) return 0;
+                rows >> int <- jsonObjectGet(state,"installed_toolchains"); index >> int <- 0;
+                while (index < jsonArrayLen(rows)) {
+                    row >> int <- jsonArrayGet(rows,index);
+                    if (field(row,"id") == id) { jsonRelease(rows); return row; }
+                    jsonRelease(row); index += 1;
+                }
+                jsonRelease(rows); return 0;
+            }
+            revision(home >> str, id >> str) -> str {
+                payload >> str <- "";
+                paths >> int <- array("[\"manifest.v1.json\",\"integrity/manifest.v1.json\",\"integrity/manifest.v1.sig\"]"); index >> int <- 0;
+                while (index < 3) {
+                    child >> int <- jsonArrayGet(paths,index); path >> str <- home+"/toolchains/"+id+"/"+jsonGetString(child);
+                    if (fileType(path) == 1) payload <- payload+path+"\n"+text(path)+"\n";
+                    jsonRelease(child); index += 1;
+                }
+                jsonRelease(paths); if (payload == "") return "missing";
+                return sha256.nccSha256.bytes(cast<byte>(payload),strByteLen(payload));
+            }
+            breakTrust(home >> str, literalNewline >> bool) -> bool {
+                path >> str <- home+"/manifests/ncup-config.v1.json"; cfg >> int <- load(path);
+                if (jsonKind(cfg) != 6) return fail("invalid ncup config");
+                supply >> int <- jsonObjectGet(cfg,"supply_chain"); if (jsonKind(supply) != 6) supply <- jsonNewObject();
+                enterprise >> int <- jsonObjectGet(supply,"enterprise"); if (jsonKind(enterprise) != 6) enterprise <- jsonNewObject();
+                put(enterprise,"enabled",jsonNewBool(true)); put(enterprise,"trust_key_id",jsonNewString("enterprise-missing-key"));
+                put(supply,"enterprise",enterprise); put(cfg,"supply_chain",supply);
+                content >> str <- cert_json.certJson.stringify(cfg);
+                saved >> bool <- writeText(path,content+(literalNewline ? "\\n" : "\n")); jsonRelease(cfg);
+                if (!saved) return fail("cannot write trust failure config");
+                return remove(home+"/keys/enterprise-trust-key.v1.json",home) && remove(home+"/keys/enterprise-trust.key",home);
+            }
+            finish(schema >> str, reportPath >> str, extraName >> str, extraValue >> str, label >> str, installer >> bool) -> int {
+                if (failed()) { eprintln(error); return 1; }
+                passed >> bool <- release_io.releaseIo.allTrue(checks);
+                report >> int <- jsonNewObject(); put(report,"schema",jsonNewString(schema)); put(report,"version",jsonNewString("2.0.0"));
+                put(report,"state",jsonNewString("frozen")); put(report,"generated_at",jsonNewString(release_io.releaseIo.utc(timestamp())));
+                put(report,"status",jsonNewString(passed ? "ok" : "error")); jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"commands",commands);
+                if (extraName != "") put(report,extraName,jsonNewString(extraValue));
+                saved >> bool <- save(reportPath,report); jsonRelease(report);
+                if (!saved) { eprintln("cannot write report: "+reportPath); return 1; }
+                if (installer && !passed) {
+                    names >> str <- ""; index >> int <- 0;
+                    while (index < jsonObjectLen(checks)) {
+                        key >> str <- jsonObjectKeyAt(checks,index);
+                        if (!tool_cli.toolCli.hasFlag(checks,key)) names <- names+(names == "" ? "" : ", ")+key;
+                        free(cast<byte>(key)); index += 1;
+                    }
+                    eprintln("ERROR: phase10 installer matrix failed checks: "+names); eprintln("ERROR: phase10 installer matrix report "+reportPath);
+                } else println("OK: phase10 "+label+" report "+reportPath);
+                return passed ? 0 : 1;
+            }
+    fa: return true;
+}

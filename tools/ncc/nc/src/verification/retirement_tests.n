@@ -1,0 +1,303 @@
+use <io:output, render>;
+use <data:json>;
+use <process:args, env, command>;
+use <project:sha256, release_io, tool_cli, process_capture, contract_checks, ide_router, mct_smoke, support_policy, documentation_check, final_closure>;
+
+retirementTests {
+    stc:
+        rows >> int;
+        failures >> int <- 0;
+        candidate >> str;
+        fixture >> str;
+        stage0 >> str;
+        frozenPath >> str;
+        repository >> str;
+        work >> str;
+        frozen >> int;
+    fn:
+        private:
+            check(name >> str, passed >> bool) -> void {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item,"name",jsonNewString(name));
+                jsonObjectSet(item,"passed",jsonNewBool(passed));
+                jsonArrayPush(rows,item);
+                if (!passed) failures += 1;
+                println((passed ? "PASS " : "FAIL ")+name);
+            }
+            execute(binary >> str, tail >> int) -> int {
+                command >> int <- jsonNewArray();
+                tool_cli.toolCli.append(command,binary);
+                index >> int <- 0;
+                while (index < jsonArrayLen(tail)) { jsonArrayPush(command,jsonArrayGet(tail,index)); index += 1; }
+                result >> int <- tool_cli.toolCli.execute(command,"",30000);
+                jsonRelease(command); jsonRelease(tail);
+                return result;
+            }
+            arg(array >> int, value >> str) -> void { tool_cli.toolCli.append(array,value); }
+            normalizePath(object >> int, key >> str) -> void {
+                value >> str <- release_io.releaseIo.field(object,key);
+                jsonObjectSet(object,key,jsonNewString(release_io.releaseIo.forwardPath(value)));
+            }
+            normalizeRoute(value >> int, ghidra >> bool) -> void {
+                normalizePath(value,"file"); normalizePath(value,"ncc_path"); normalizePath(value,"bin_dir");
+                command >> int <- jsonObjectGet(value,"command");
+                transformed >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(command)) {
+                    item >> int <- jsonArrayGet(command,index);
+                    text >> str <- release_io.releaseIo.forwardPath(jsonGetString(item));
+                    // The old Ghidra router omitted the required Windows executable suffix.
+                    if (index == 0 && ghidra && envHas("WINDIR") && strEndsWith(text,"/nclsp")) text <- text+".exe";
+                    arg(transformed,text); jsonRelease(item); index += 1;
+                }
+                jsonObjectSet(value,"command",transformed); jsonRelease(command);
+            }
+            routerCase(name >> str, extension >> str, content >> str, selected >> str, ghidra >> bool, toolchain >> str, success >> bool) -> void {
+                path >> str <- work+"/"+name+extension;
+                check(name+"-write",release_io.releaseIo.write(path,content));
+                tail >> int <- jsonNewArray();
+                arg(tail,ghidra ? "route-ghidra" : "route-vscode");
+                arg(tail,"--file"); arg(tail,path); arg(tail,"--ncup"); arg(tail,fixture);
+                arg(tail,"--profile"); arg(tail,selected); arg(tail,"--toolchain"); arg(tail,toolchain); arg(tail,"--json");
+                baseline >> int <- jsonObjectGet(frozen,name);
+                native >> int <- execute(candidate,tail);
+                aCode >> int <- release_io.releaseIo.number(baseline,"exit",999);
+                bCode >> int <- release_io.releaseIo.number(native,"code",998);
+                check(name+"-status",jsonKind(baseline) == 6 && tool_cli.toolCli.clean(native) && aCode == bCode && (bCode == 0) == success);
+                if (success) {
+                    a >> int <- jsonObjectGet(baseline,"report");
+                    jsonObjectSet(a,"file",jsonNewString(release_io.releaseIo.forwardPath(path)));
+                    jsonObjectSet(a,"ncc_path",jsonNewString(release_io.releaseIo.forwardPath(fixture)));
+                    jsonObjectSet(a,"bin_dir",jsonNewString(release_io.releaseIo.forwardPath(release_io.releaseIo.directory(fixture))));
+                    argv >> int <- jsonObjectGet(a,"command"); bound >> int <- jsonNewArray(); index >> int <- 0;
+                    while (index < jsonArrayLen(argv)) {
+                        item >> int <- jsonArrayGet(argv,index); word >> str <- jsonGetString(item);
+                        if (word == "{file}") word <- release_io.releaseIo.forwardPath(path);
+                        else if (word == "{fixture}") word <- release_io.releaseIo.forwardPath(fixture);
+                        else if (strStartsWith(word,"{fixture_dir}")) word <- release_io.releaseIo.forwardPath(release_io.releaseIo.directory(fixture))+strSubstring(word,13,strByteLen(word)-13);
+                        arg(bound,word); jsonRelease(item); index += 1;
+                    }
+                    jsonObjectSet(a,"command",bound); jsonRelease(bound); jsonRelease(argv);
+                    b >> int <- jsonParse(release_io.releaseIo.field(native,"stdout"));
+                    normalizeRoute(a,ghidra); normalizeRoute(b,ghidra);
+                    check(name+"-json",jsonKind(a) == 6 && jsonKind(b) == 6 && contract_checks.contractChecks.equal(a,b));
+                    jsonRelease(a); jsonRelease(b);
+                }
+                jsonRelease(native); jsonRelease(baseline);
+            }
+            fixtureRoot() -> str {
+                root >> str <- work+"/contracts";
+                sources >> int <- jsonParse("[\"support_policy\",\"documentation\",\"final_closure\"]");
+                names >> int <- jsonParse("[\"support_policy.n\",\"documentation_check.n\",\"final_closure.n\"]");
+                points >> int <- jsonParse("[17,18,19]");
+                index >> int <- 0;
+                while (index < 3) {
+                    item >> int <- jsonArrayGet(sources,index);
+                    name >> str <- jsonGetString(item);
+                    point >> int <- jsonArrayGet(points,index);
+                    number >> str <- renderInt(jsonGetInt(point));
+                    base >> str <- "docs/spec/release/v2_0_0_phase10_"+name;
+                    release_io.releaseIo.write(root+"/"+base+"_spec.md","fixture");
+                    release_io.releaseIo.write(root+"/"+base+"_compatibility_spec.md","fixture");
+                    release_io.releaseIo.write(root+"/docs/status/STATUS_PHASE10_punto"+number+"_"+name+"_v2_0_0.md","fixture");
+                    release_io.releaseIo.write(root+"/tools/release/qa_phase10_p"+number+"_v2_0_0.sh","fixture");
+                    nativeName >> int <- jsonArrayGet(names,index);
+                    check("native-fixture-source-"+name,release_io.releaseIo.write(root+"/tools/ncc/nc/src/verification/"+jsonGetString(nativeName),"fixture"));
+                    jsonRelease(nativeName); jsonRelease(item); jsonRelease(point); index += 1;
+                }
+                jsonRelease(sources); jsonRelease(names); jsonRelease(points);
+                release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_phase10_support_policy_contract.json","{\"schema\":\"nc.phase10.support.policy.contract.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"required_gates\":[\"release_phase10_support_policy_gate_tests\"],\"channels\":{\"stable\":{\"support_level\":\"full\",\"classification\":\"production\",\"has_sla\":true},\"beta\":{\"support_level\":\"preview\",\"requires_migration_notes\":true},\"nightly\":{\"support_level\":\"experimental\",\"has_sla\":false}},\"lts\":{\"source_channel\":\"stable\",\"window_months\":24,\"enterprise_supported\":true,\"backport_scope\":[\"security\",\"critical\",\"data-loss\"]}}");
+                release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_phase10_documentation_contract.json","{\"schema\":\"nc.phase10.documentation.contract.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"required_gates\":[\"release_phase10_documentation_gate_tests\"],\"mandatory_docs\":[\"INSTALL.md\",\"TOOLCHAINS.md\",\"IDE_JETBRAINS.md\",\"IDE_VSCODE.md\",\"SECURITY_SUPPLY_CHAIN.md\",\"CI_SETUP.md\"]}");
+                release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_phase10_final_closure_contract.json","{\"schema\":\"nc.phase10.final.closure.contract.v1\",\"version\":\"2.0.0\",\"state\":\"frozen\",\"required_gates\":[\"release_phase10_final_closure_gate_tests\"],\"required_reports\":[\"fixture-report.json\"]}");
+                release_io.releaseIo.write(root+"/fixture-report.json","{\"status\":\"ok\"}");
+                release_io.releaseIo.write(root+"/tools/release/qa_phase10_v2_0_0.sh","qa_phase10_p19_v2_0_0.sh");
+                docs >> int <- jsonParse("{\"INSTALL.md\":\"ncup-init ncup doctor ncc run hello.n\",\"TOOLCHAINS.md\":\"stable beta nightly minimal default complete\",\"IDE_JETBRAINS.md\":\"nclsp nc-sys-lsp ncup which ncc\",\"IDE_VSCODE.md\":\"nide nclsp nc-sys-lsp nC: Run nC: Check nC: Format\",\"SECURITY_SUPPLY_CHAIN.md\":\"SHA-256 firmados clave root enterprise\",\"CI_SETUP.md\":\".github/actions/setup-nc/action.yml .gitlab-ci.ncup.yml tools/ci/setup_ncup_ci_v2_0_0.sh offline\"}");
+                index <- 0;
+                while (index < jsonObjectLen(docs)) {
+                    key >> str <- jsonObjectKeyAt(docs,index);
+                    release_io.releaseIo.write(root+"/"+key,release_io.releaseIo.field(docs,key));
+                    index += 1;
+                }
+                jsonRelease(docs);
+                train >> str <- "{\"required_gates\":[\"release_phase10_support_policy_gate_tests\",\"release_phase10_documentation_gate_tests\",\"release_phase10_final_closure_gate_tests\"],\"required_artifacts\":[\"INSTALL.md\",\"docs/spec/release/v2_0_0_phase10_support_policy_spec.md\",\"docs/spec/release/v2_0_0_phase10_documentation_spec.md\",\"docs/spec/release/v2_0_0_phase10_final_closure_spec.md\"]}";
+                release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_release_train_contract.json",train);
+                release_io.releaseIo.write(root+"/docs/spec/release/v2_0_0_phase10_installer_product_contract.json",train);
+                suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                release_io.releaseIo.makeDirectories(root+"/target/debug");
+                release_io.releaseIo.makeDirectories(root+"/bin");
+                check("fixture-compiler-copy",fsCopy(fixture,root+"/target/debug/ncc"+suffix) >= 0);
+                check("fixture-cargo-copy",fsCopy(fixture,root+"/bin/cargo"+suffix) >= 0);
+                if (!envHas("WINDIR")) {
+                    tail >> int <- jsonNewArray();
+                    arg(tail,"+x"); arg(tail,root+"/target/debug/ncc"); arg(tail,root+"/bin/cargo");
+                    chmod >> int <- execute("chmod",tail);
+                    check("fixture-permissions",tool_cli.toolCli.hasFlag(chmod,"ok")); jsonRelease(chmod);
+                }
+                return root;
+            }
+            contractCase(root >> str, mode >> str, originalName >> str, point >> str, expected >> int, name >> str) -> void {
+                baseline >> int <- jsonObjectGet(frozen,name);
+                before >> int <- jsonObjectGet(baseline,"report");
+                tail >> int <- jsonNewArray();
+                arg(tail,"release-"+mode); arg(tail,"--root"); arg(tail,root);
+                arg(tail,"--candidate"); arg(tail,fixture); arg(tail,"--report"); arg(tail,root+"/native-"+mode+".json");
+                native >> int <- execute(candidate,tail);
+                after >> int <- jsonParseFile(root+"/native-"+mode+".json");
+                check(name+"-exit",release_io.releaseIo.number(baseline,"exit",998) == expected && release_io.releaseIo.number(native,"code",999) == expected);
+                a >> int <- jsonObjectGet(before,"checks");
+                b >> int <- jsonObjectGet(after,"checks");
+                check(name+"-checks",jsonKind(a) == 6 && jsonKind(b) == 6 && contract_checks.contractChecks.equal(a,b));
+                jsonRelease(a); jsonRelease(b); jsonRelease(before); jsonRelease(after); jsonRelease(native); jsonRelease(baseline);
+            }
+            mctCase(root >> str, name >> str, level >> str, allowMissing >> bool, expected >> int) -> void {
+                baseline >> int <- jsonObjectGet(frozen,"mct-"+name);
+                tail >> int <- jsonNewArray();
+                arg(tail,"mct-smoke"); arg(tail,"--root"); arg(tail,root); arg(tail,"--ncc"); arg(tail,fixture);
+                arg(tail,"--out-dir"); arg(tail,root+"/native-mct-"+name);
+                arg(tail,"--json-out"); arg(tail,root+"/native-mct-"+name+".json");
+                arg(tail,"--summary-md"); arg(tail,root+"/native-mct-"+name+".md");
+                arg(tail,"--opt-level"); arg(tail,level);
+                if (allowMissing) arg(tail,"--allow-missing-tools");
+                native >> int <- execute(candidate,tail);
+                check("mct-"+name+"-exit",release_io.releaseIo.number(baseline,"exit",999) == expected && release_io.releaseIo.number(native,"code",998) == expected);
+                before >> int <- jsonObjectGet(baseline,"report");
+                after >> int <- jsonParseFile(root+"/native-mct-"+name+".json");
+                if (level == "bad-json") {
+                    check("mct-invalid-json-reported",release_io.releaseIo.field(before,"status") == "command_failed_non_json" && release_io.releaseIo.field(after,"status") == "command_failed_non_json");
+                } else check("mct-"+name+"-json",jsonKind(before) == 6 && jsonKind(after) == 6 && contract_checks.contractChecks.equal(before,after));
+                content >> str <- release_io.releaseIo.text(root+"/native-mct-"+name+".md");
+                check("mct-"+name+"-markdown",strContains(content,"# MCT LLVM Toolchain Smoke") && strContains(content,"## Rows") && strContains(content,"## Tool Versions"));
+                jsonRelease(before); jsonRelease(after); jsonRelease(native); jsonRelease(baseline);
+            }
+            captureTests() -> void {
+                command >> str <- process_capture.processCapture.quoted(fixture);
+                full >> int <- process_capture.processCapture.capture(command+" large","",30000,1048576);
+                count >> int <- release_io.releaseIo.number(full,"stdout_total",0);
+                check("capture-large-no-deadlock",tool_cli.toolCli.hasFlag(full,"ok") && count >= 340000 && count <= 360000);
+                jsonRelease(full);
+                limited >> int <- process_capture.processCapture.capture(command+" large","",30000,1024);
+                check("capture-limit-drains-child",tool_cli.toolCli.hasFlag(limited,"truncated") && !tool_cli.toolCli.hasFlag(limited,"ok") && !tool_cli.toolCli.hasFlag(limited,"timed_out") && release_io.releaseIo.number(limited,"stdout_bytes",0) == 1024 && release_io.releaseIo.number(limited,"stdout_total",0) == count);
+                jsonRelease(limited);
+                timed >> int <- process_capture.processCapture.capture(command+" sleep","",50,1024);
+                check("capture-timeout",tool_cli.toolCli.hasFlag(timed,"timed_out") && !tool_cli.toolCli.hasFlag(timed,"ok"));
+                jsonRelease(timed);
+                missing >> int <- process_capture.processCapture.capture("nc-missing-command-5eed9","",500,1024);
+                check("capture-missing-executable",!tool_cli.toolCli.hasFlag(missing,"ok") && release_io.releaseIo.number(missing,"code",0) != 0);
+                jsonRelease(missing);
+                errors >> int <- process_capture.processCapture.capture(process_capture.processCapture.quoted(stage0)+" --invalid-option-v39","",30000,1048576);
+                check("capture-stderr",release_io.releaseIo.number(errors,"stderr_bytes",0) > 0 && !tool_cli.toolCli.hasFlag(errors,"ok"));
+                jsonRelease(errors);
+            }
+            concurrentPublish() -> void {
+                directory >> str <- work+"/concurrent-output";
+                line >> str <- process_capture.processCapture.quoted(candidate)+" release-notes --root "+process_capture.processCapture.quoted(work)+" --out "+process_capture.processCapture.quoted(directory)+" --timestamp 2026-01-01T00:00:00Z";
+                children >> p<addr> <- cast(alloc(4*sizeOf<addr>()));
+                if (children == null) { check("concurrent-publish-allocation",false); return; }
+                index >> int <- 0;
+                while (index < 4) { wr(off(children,index),commandOpen(line,"",null,null,null,0)); index += 1; }
+                passed >> bool <- true;
+                index <- 0;
+                while (index < 4) {
+                    child >> addr <- rd(off(children,index));
+                    if (child == null) passed <- false;
+                    else {
+                        if (!commandStarted(child)) passed <- false;
+                        else if (commandWait(child,30000) != 0) {
+                            commandTerminate(child,15); commandWait(child,3000); passed <- false;
+                        } else if (commandExitCode(child) != 0) passed <- false;
+                        commandRelease(child);
+                    }
+                    index += 1;
+                }
+                check("four-writers-publish",passed);
+                check("concurrent-files-present",fsSize(directory+"/v2_0_0_release_notes.md") > 0 && fsSize(directory+"/v2_0_0_release_announcement.md") > 0);
+                names >> int <- release_io.releaseIo.names(directory);
+                clean >> bool <- jsonKind(names) == 5;
+                index <- 0;
+                while (index < jsonArrayLen(names)) {
+                    name >> int <- jsonArrayGet(names,index);
+                    if (strStartsWith(jsonGetString(name),".nc-pending.")) clean <- false;
+                    jsonRelease(name); index += 1;
+                }
+                check("concurrent-owned-temporaries-cleaned",clean);
+                jsonRelease(names); free(children);
+            }
+        public:
+            executeTests(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--candidate|--fixture|--stage0|--root|--work|--frozen-oracle|","|--help|");
+                if (options == 0) return 2;
+                candidate <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--candidate",""));
+                fixture <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--fixture",""));
+                stage0 <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--stage0",envHas("WINDIR") ? "target/x86_64-pc-windows-gnu/release/ncc.exe" : "target/release/ncc"));
+                repository <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                work <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--work",""));
+                if (exists(work) || release_io.releaseIo.fileType(candidate) != 1 || release_io.releaseIo.fileType(fixture) != 1) { jsonRelease(options); return 2; }
+                if (!release_io.releaseIo.makeDirectories(work)) { jsonRelease(options); return 1; }
+                rows <- jsonNewArray(); failures <- 0;
+                frozenPath <- tool_cli.toolCli.value(options,"--frozen-oracle",repository+"/bootstrap/existing43-retirement-"+(envHas("WINDIR") ? "windows" : "linux")+"-frozen.json");
+                expectedHash >> str <- envHas("WINDIR") ? "bcdf185b918502614bc331fb36ab526540a928e877de9a510d5947d9cfb42a13" : "0070594a477c8543e6226b3c681547b87d922140f3c2cb052ed691872dc7c42f";
+                if (sha256.nccSha256.file(frozenPath) != expectedHash || release_io.releaseIo.fileType(stage0) != 1) { println("ERROR: frozen oracle digest or Stage0 missing"); jsonRelease(options); return 2; }
+                frozen <- jsonParseFile(frozenPath);
+                if (jsonKind(frozen) != 6 || jsonObjectLen(frozen) != 23) { jsonRelease(frozen); jsonRelease(options); return 2; }
+                captureTests();
+                concurrentPublish();
+                routerCase("vscode-normal",".n","test {}","standard",false,"test",true);
+                routerCase("vscode-machine",".nm",""," expert ",false,"test",true);
+                routerCase("vscode-root",".nb","","novice",false,"test",true);
+                routerCase("vscode-hardware",".ncp","","unknown",false,"test",true);
+                routerCase("vscode-marker",".n","prefix "+"[@"+"machine]","standard",false,"test",true);
+                routerCase("ghidra-normal",".n","test {}","standard",true,"test",true);
+                routerCase("ghidra-low",".nm","","bad-profile",true,"test",true);
+                routerCase("resolver-malformed",".n","test {}","standard",false,"malformed",false);
+                routerCase("resolver-failure",".n","test {}","standard",false,"failure",false);
+                routerCase("escaped-toolchain",".n","test {}","standard",false,"tool chain\"path\\end\\",true);
+                check("nbb-lane-expansion",ide_router.ideRouter.lowLevel("test.nbb",""));
+                check("uppercase-low-level",ide_router.ideRouter.lowLevel("test.NM",""));
+                root >> str <- fixtureRoot();
+                pathSize >> int <- envGet("PATH",null,0);
+                oldPathBytes >> p<byte> <- cast(alloc(pathSize+1));
+                envGet("PATH",adr(oldPathBytes),pathSize+1);
+                oldPath >> str <- cast(oldPathBytes);
+                separator >> str <- envHas("WINDIR") ? ";" : ":";
+                envSet("PATH",root+"/bin"+separator+oldPath);
+                check("mct-frozen-vectors-present",jsonObjectHas(frozen,"mct-passed") && jsonObjectHas(frozen,"mct-missing-strict") && jsonObjectHas(frozen,"mct-invalid"));
+                mctCase(root,"passed","2",false,0);
+                mctCase(root,"missing-strict","missing",false,1);
+                mctCase(root,"missing-allowed","missing",true,0);
+                mctCase(root,"failed","failed",true,1);
+                mctCase(root,"invalid","bad-json",false,7);
+                mctCase(root,"false-success","false-success",false,7);
+                contractCase(root,"policy","support_policy","17",0,"policy-positive");
+                contractCase(root,"docs","documentation","18",0,"docs-positive");
+                contractCase(root,"final","final_closure","19",0,"final-positive");
+                release_io.releaseIo.write(root+"/INSTALL.md","incomplete fixture");
+                contractCase(root,"docs","documentation","18",1,"docs-missing-phrase");
+                release_io.releaseIo.write(root+"/fixture-report.json","{\"status\":\"error\",\"checks\":{\"ignored\":true}}");
+                contractCase(root,"final","final_closure","19",1,"final-error-status");
+                policy >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_phase10_support_policy_contract.json");
+                channels >> int <- jsonObjectGet(policy,"channels");
+                stable >> int <- jsonObjectGet(channels,"stable");
+                jsonObjectSet(stable,"has_sla",jsonNewInt(1));
+                jsonObjectSet(channels,"stable",stable); jsonObjectSet(policy,"channels",channels);
+                check("policy-negative-written",release_io.releaseIo.save(root+"/docs/spec/release/v2_0_0_phase10_support_policy_contract.json",policy));
+                jsonRelease(policy);
+                contractCase(root,"policy","support_policy","17",1,"policy-integer-not-bool");
+                envSet("PATH",oldPath); free(oldPathBytes);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.python-retirement.v39.tests"));
+                jsonObjectSet(report,"checks",jsonNewInt(jsonArrayLen(rows)));
+                jsonObjectSet(report,"failures",jsonNewInt(failures));
+                jsonObjectSet(report,"passed",jsonNewBool(failures == 0));
+                jsonObjectSet(report,"fixture_only_commands",jsonNewBool(true));
+                jsonObjectSet(report,"physical_execution_performed",jsonNewBool(false));
+                jsonObjectSet(report,"original_scripts_executed",jsonNewBool(false));
+                jsonObjectSet(report,"frozen_oracle_sha256",jsonNewString(sha256.nccSha256.file(frozenPath)));
+                jsonObjectSet(report,"rows",rows);
+                jsonRelease(frozen);
+                written >> bool <- release_io.releaseIo.save(work+"/report.json",report);
+                jsonRelease(report); jsonRelease(options);
+                return failures == 0 && written ? 0 : 1;
+            }
+    fa:
+        return true;
+}

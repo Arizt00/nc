@@ -1,0 +1,40 @@
+use <data:json>;
+use <project:release_io, contract_checks>;
+
+supportPolicy {
+    fn:
+        public:
+            inspect(root >> str, model >> int) -> int {
+                checks >> int <- jsonNewObject();
+                paths >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_support_policy_spec.md\",\"docs/spec/release/v2_0_0_phase10_support_policy_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_support_policy_contract.json\",\"docs/status/STATUS_PHASE10_punto17_support_policy_v2_0_0.md\",\"tools/ncc/nc/src/verification/support_policy.n\",\"tools/release/qa_phase10_p17_v2_0_0.sh\"]");
+                contract_checks.contractChecks.record(checks,"artifacts_present",contract_checks.contractChecks.files(root,paths,false));
+                jsonRelease(paths);
+                contract >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_phase10_support_policy_contract.json");
+                gate >> str <- "release_phase10_support_policy_gate_tests";
+                contract_checks.contractChecks.record(checks,"contract_consistent",contract_checks.contractChecks.contract(contract,"nc.phase10.support.policy.contract.v1",gate));
+                channels >> int <- jsonObjectGet(contract,"channels");
+                stable >> int <- jsonObjectGet(channels,"stable");
+                beta >> int <- jsonObjectGet(channels,"beta");
+                nightly >> int <- jsonObjectGet(channels,"nightly");
+                contract_checks.contractChecks.record(checks,"stable_support_full",release_io.releaseIo.field(stable,"support_level") == "full" && release_io.releaseIo.field(stable,"classification") == "production" && contract_checks.contractChecks.boolean(stable,"has_sla",true));
+                contract_checks.contractChecks.record(checks,"beta_preview_with_migration",release_io.releaseIo.field(beta,"support_level") == "preview" && contract_checks.contractChecks.boolean(beta,"requires_migration_notes",true));
+                contract_checks.contractChecks.record(checks,"nightly_experimental_no_sla",release_io.releaseIo.field(nightly,"support_level") == "experimental" && contract_checks.contractChecks.boolean(nightly,"has_sla",false));
+                jsonRelease(stable); jsonRelease(beta); jsonRelease(nightly); jsonRelease(channels);
+                lts >> int <- jsonObjectGet(contract,"lts");
+                scope >> int <- jsonObjectGet(lts,"backport_scope");
+                expected >> int <- jsonParse("[\"security\",\"critical\",\"data-loss\"]");
+                contract_checks.contractChecks.record(checks,"lts_window_defined",release_io.releaseIo.field(lts,"source_channel") == "stable" && release_io.releaseIo.number(lts,"window_months",0) == 24 && contract_checks.contractChecks.boolean(lts,"enterprise_supported",true) && contract_checks.contractChecks.equal(scope,expected));
+                jsonRelease(scope); jsonRelease(expected); jsonRelease(lts); jsonRelease(contract);
+                train >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_release_train_contract.json");
+                contract_checks.contractChecks.record(checks,"release_train_integrated",contract_checks.contractChecks.integrated(train,gate,"docs/spec/release/v2_0_0_phase10_support_policy_spec.md",false));
+                jsonRelease(train);
+                channels <- jsonObjectGet(model,"channels");
+                expected <- jsonParse("[\"stable\",\"beta\",\"nightly\"]");
+                valid >> bool <- contract_checks.contractChecks.setSame(channels,expected) && jsonArrayLen(channels) == 3;
+                contract_checks.contractChecks.record(checks,"toolchain_channels_match_policy",valid);
+                jsonRelease(channels); jsonRelease(expected);
+                return checks;
+            }
+    fa:
+        return true;
+}

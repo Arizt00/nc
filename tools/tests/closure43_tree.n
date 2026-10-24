@@ -1,0 +1,29 @@
+use <process:args>;
+use <data:json>;
+use <io:output>;
+use <project:closure43_core, release_io, sha256>;
+
+closure43Tree {
+    fn:
+        private:
+            visit(root >> str, relative >> str, result >> int) -> void {
+                path >> str <- release_io.releaseIo.path(root,relative); kind >> int <- release_io.releaseIo.fileType(path);
+                if (kind == 1) {
+                    row >> int <- jsonNewObject(); closure43_core.closure43Core.put(row,"bytes",jsonNewInt(fsSize(path))); closure43_core.closure43Core.set(row,"sha256",sha256.nccSha256.file(path)); closure43_core.closure43Core.put(result,relative,row); return;
+                }
+                if (kind != 2) return;
+                names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                while (index < jsonArrayLen(names)) { name >> int <- jsonArrayGet(names,index); visit(root,relative == "" ? jsonGetString(name) : relative+"/"+jsonGetString(name),result); jsonRelease(name); index += 1; }
+                jsonRelease(names);
+            }
+        public:
+            run() -> int {
+                args >> addr <- argsOpen(); if (argsCount(args) < 3) return 2; tree >> int <- jsonNewObject(); index >> int <- 3;
+                if (index == argsCount(args)) visit(argsAt(args,1),"",tree);
+                while (index < argsCount(args)) { visit(argsAt(args,1),argsAt(args,index),tree); index += 1; }
+                report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.complete-tree.v1"); closure43_core.closure43Core.put(report,"files",jsonNewInt(jsonObjectLen(tree))); jsonObjectSet(report,"entries",tree); closure43_core.closure43Core.stamp(report,"evidence_hash");
+                result >> bool <- release_io.releaseIo.write(argsAt(args,2),closure43_core.closure43Core.pretty(report)+"\n"); jsonRelease(tree); jsonRelease(report); argsRelease(args); return result ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

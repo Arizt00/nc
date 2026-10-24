@@ -1,0 +1,106 @@
+use <collections:list, queue, result, option>;
+
+optionResultInference :: runtime {
+    stc:
+        options >> list<Option<int>>;
+        results >> list<Result<int, str>>;
+        optionArray >> array<Option<int>, 2>;
+        resultArray >> array<Result<int, str>, 2>;
+        optionVector >> vector<Option<int>>;
+        resultQueue >> queue<Result<int, str>>;
+        maybe >> Option<int>;
+        outcome >> Result<int, str>;
+        nested >> Option<Option<int>>;
+        nestedResult >> Result<Option<int>, str>;
+        value    >> int <- 0;
+        fallback >> int <- 0;
+
+    fn:
+        makeSome(value >> int) -> Option<int> {
+            return some(value);
+        }
+
+        makeNone() -> Option<int> {
+            return none();
+        }
+
+        makeOk(value >> int) -> Result<int, str> {
+            return ok(value);
+        }
+
+        makeErr(message >> str) -> Result<int, str> {
+            return err(message);
+        }
+
+        payload(input >> Result<int, str>) -> int {
+            match (input) {
+                Ok(value) => return value;
+                Err(message) => return 0;
+            }
+        }
+
+        optionArg(input >> Option<int>) -> int {
+            return unwrapOptionOr(input, -1);
+        }
+
+        resultArg(input >> Result<int, str>) -> int {
+            return unwrapOr(input, -1);
+        }
+
+        run() -> bool {
+            options <- listCreateWithCapacity<Option<int>>(2);
+            results <- listCreateWithCapacity<Result<int, str>>(2);
+            optionArray <- [some(3), none()];
+            resultArray <- [ok(5), err("array")];
+            optionVector <- [none(), some(29)];
+            resultQueue <- queueCreate<Result<int, str>>();
+            resultQueue.reserve(1);
+
+            listAdd(options, makeSome(7));
+            listAdd(options, makeNone());
+            listAdd(results, makeOk(11));
+            listAdd(results, makeErr("fallo"));
+            resultQueue.push(makeErr("queue"));
+
+            maybe <- listGet(options, 0);
+            value <- maybe.unwrap();
+            fallback <- listGet(options, 1).unwrapOr(9);
+            outcome <- listGet(results, 0);
+            nested <- some(none());
+            nestedResult <- ok(some(13));
+
+            return maybe.isSome()
+                && listGet(options, 1).isNone()
+                && outcome.isOk()
+                && listGet(results, 1).isErr()
+                && optionArray[0].unwrap() == 3
+                && optionArray[1].unwrapOr(4) == 4
+                && resultArray[0].unwrap() == 5
+                && resultArray[1].errorOf() == "array"
+                && optionVector[0].unwrapOr(31) == 31
+                && optionVector[1].unwrap() == 29
+                && resultQueue.get(0).errorOf() == "queue"
+                && nested.unwrap().unwrapOr(17) == 17
+                && nestedResult.unwrap().unwrap() == 13
+                && isSome(makeSome(7))
+                && isNone(makeNone())
+                && isOk(makeOk(11))
+                && isErr(makeErr("helper"))
+                && unwrapOption(makeSome(7)) == 7
+                && unwrapOptionOr(makeNone(), 19) == 19
+                && unwrap(makeOk(11)) == 11
+                && unwrapOr(makeErr("fallback"), 23) == 23
+                && errorOf(makeErr("error")) == "error"
+                && optionArg(none()) == -1
+                && resultArg(err("arg")) == -1
+                && value == 7
+                && fallback == 9
+                && payload(outcome) == 11;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

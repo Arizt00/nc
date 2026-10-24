@@ -1,0 +1,37 @@
+use <process:args>;
+use <data:json>;
+use <io:output>;
+use <project:closure43_core, release_io, tool_cli>;
+
+closure43CompilerFailure {
+    fn:
+        public:
+        run() -> int {
+            args >> addr <- argsOpen(); if (argsCount(args) != 3 && argsCount(args) != 4) return 2;
+            binary >> str <- argsAt(args,1); destination >> str <- argsAt(args,2);
+            words >> int <- jsonNewArray(); closure43_core.closure43Core.push(words,jsonNewString(binary));
+            closure43_core.closure43Core.push(words,jsonNewString("generate-compiler-closure"));
+            result >> int <- tool_cli.toolCli.execute(words,"",120000);
+            code >> int <- release_io.releaseIo.number(result,"code",-1);
+            errors >> str <- closure43_core.closure43Core.field(result,"stderr");
+            passed >> bool <- tool_cli.toolCli.clean(result);
+            if (code != 1) passed <- false;
+            if (!strContains(errors,"type_contract_sections_not_primitive_ok")) passed <- false;
+            if (!strContains(errors,"E_LAYOUT_ITEM_001")) passed <- false;
+            if (strContains(errors,"test filter matched zero tests:")) passed <- false;
+            if (strContains(errors,"must-not-execute")) passed <- false;
+            if (argsCount(args) == 4 && closure43_core.closure43Core.hash(errors) != argsAt(args,3)) passed <- false;
+            report >> int <- jsonNewObject(); closure43_core.closure43Core.set(report,"schema","nc.closure43.compiler-live-failure.v1");
+            closure43_core.closure43Core.put(report,"passed",jsonNewBool(passed));
+            closure43_core.closure43Core.put(report,"code",jsonNewInt(code));
+            closure43_core.closure43Core.put(report,"native_only",jsonNewBool(true));
+            closure43_core.closure43Core.set(report,"stderr_sha256",closure43_core.closure43Core.hash(errors));
+            closure43_core.closure43Core.set(report,"stderr",errors);
+            closure43_core.closure43Core.set(report,"failure","E_LAYOUT_ITEM_001");
+            if (!release_io.releaseIo.write(destination,closure43_core.closure43Core.pretty(report)+"\n")) passed <- false;
+            println("closure43 compiler live failure: "+(passed ? "passed" : "FAILED"));
+            jsonRelease(report); jsonRelease(result); jsonRelease(words); argsRelease(args); return passed ? 0 : 1;
+        }
+    ref main ->> run;
+    fa: return true;
+}

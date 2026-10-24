@@ -1,0 +1,57 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:release43_common, release43_distribution, release_io>;
+
+release43IntegrityTests {
+    stc: failures >> int <- 0;
+    fn:
+        private:
+            expect(name >> str, good >> bool) -> void {
+                println((good ? "PASS " : "FAIL ")+name); release43_common.release43Common.record(name,good); if (!good) failures += 1;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); if (argsCount(arguments) != 4 && argsCount(arguments) != 6) return 2;
+                options >> int <- jsonNewObject(); release43_common.release43Common.put(options,"--root",jsonNewString(argsAt(arguments,1)));
+                if (!release43_common.release43Common.initialize(options)) return 2; jsonRelease(options);
+                source >> str <- release43_common.release43Common.absolute(argsAt(arguments,2)); key >> str <- argsAt(arguments,3); work >> str <- release43_common.release43Common.workPath(); dist >> str <- work+"/dist";
+                println("work="+work); expect("real-distribution-copy",release43_common.release43Common.copyTree(source,dist));
+                expect("real-distribution-positive",release43_distribution.release43Distribution.verify(dist,key));
+                expect("wrong-key-rejected",!release43_distribution.release43Distribution.verify(dist,key+"-incorrect"));
+                artifact >> str <- release43_distribution.release43Distribution.artifact(dist); originalArtifact >> str <- source+strSubstring(artifact,strByteLen(dist),strByteLen(artifact)-strByteLen(dist));
+                originalHash >> str <- release43_common.release43Common.hashFile(artifact); expect("real-artifact-hash",strByteLen(originalHash) == 64 && originalHash == release43_common.release43Common.hashFile(originalArtifact));
+                signature >> str <- release43_common.release43Common.text(dist+"/integrity/SHA256SUMS.sig"); expect("signature-nonempty",strByteLen(signature) > 0);
+                expect("signature-mutation",release43_common.release43Common.writeText(dist+"/integrity/SHA256SUMS.sig","0000000000000000000000000000000000000000000000000000000000000000\n"));
+                expect("invalid-signature-rejected",!release43_distribution.release43Distribution.verify(dist,key));
+                expect("signature-restored",release43_common.release43Common.writeText(dist+"/integrity/SHA256SUMS.sig",signature));
+                expect("artifact-mutation",release43_common.release43Common.writeText(artifact,"tampered\n"));
+                expect("corrupt-artifact-rejected",!release43_distribution.release43Distribution.verify(dist,key));
+                expect("artifact-restored",release43_common.release43Common.copyRequired(originalArtifact,artifact));
+                expect("restored-distribution-positive",release43_distribution.release43Distribution.verify(dist,key));
+                sbom >> str <- release43_common.release43Common.text(dist+"/integrity/SBOM.ncc.v1.json");
+                expect("sbom-mutation",release43_common.release43Common.writeText(dist+"/integrity/SBOM.ncc.v1.json","{invalid"));
+                expect("invalid-json-rejected",!release43_distribution.release43Distribution.verify(dist,key));
+                expect("sbom-restored",release43_common.release43Common.writeText(dist+"/integrity/SBOM.ncc.v1.json",sbom));
+                expect("signature-missing-fixture",release43_common.release43Common.renamePath(dist+"/integrity/SHA256SUMS.sig",dist+"/integrity/held.sig"));
+                expect("missing-signature-rejected",!release43_distribution.release43Distribution.verify(dist,key));
+                expect("signature-missing-restored",release43_common.release43Common.renamePath(dist+"/integrity/held.sig",dist+"/integrity/SHA256SUMS.sig"));
+                sums >> str <- release43_common.release43Common.text(dist+"/integrity/SHA256SUMS"); expect("empty-inventory-fixture",release43_common.release43Common.writeText(dist+"/integrity/SHA256SUMS",""));
+                expect("empty-inventory-rejected",!release43_distribution.release43Distribution.verify(dist,key));
+                expect("inventory-restored",release43_common.release43Common.writeText(dist+"/integrity/SHA256SUMS",sums));
+                expect("final-distribution-positive",release43_distribution.release43Distribution.verify(dist,key));
+                report >> int <- jsonNewObject(); release43_common.release43Common.put(report,"schema",jsonNewString("nc.release43.integrity.regression.v1"));
+                release43_common.release43Common.put(report,"checks",release43_common.release43Common.checkRows()); release43_common.release43Common.put(report,"failures",jsonNewInt(failures));
+                release43_common.release43Common.put(report,"source_distribution",jsonNewString(source)); release43_common.release43Common.put(report,"artifact_sha256",jsonNewString(originalHash));
+                release43_common.release43Common.put(report,"passed",jsonNewBool(failures == 0));
+                if (argsCount(arguments) == 6) {
+                    candidate >> str <- release43_common.release43Common.absolute(argsAt(arguments,4)); native >> str <- release43_common.release43Common.absolute(argsAt(arguments,5));
+                    release43_common.release43Common.put(report,"candidate_path",jsonNewString(candidate)); release43_common.release43Common.put(report,"candidate_sha256",jsonNewString(release43_common.release43Common.hashFile(candidate)));
+                    release43_common.release43Common.put(report,"native_path",jsonNewString(native)); release43_common.release43Common.put(report,"native_sha256",jsonNewString(release43_common.release43Common.hashFile(native)));
+                }
+                release43_common.release43Common.put(report,"python_required",jsonNewBool(false)); release43_common.release43Common.save(work+"/integrity-regression.json",report);
+                println("sealed="+work+"/integrity-regression.json failures="+renderInt(failures)); return failures == 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,73 @@
+vmLinuxProvider :: runtime {
+    fn:
+        private:
+            result(value >> i64) -> bool {
+                if (value < 0 && value >= -4095) {
+                    wr<int>(osErrnoSlot(),-value);
+                    return false;
+                }
+                return true;
+            }
+            pointer(value >> i64) -> p<byte> {
+                return result(value) ? from<byte>(value) : null;
+            }
+        public:
+            provider_osErrnoSlot() -> p<int> { return cast<int>(osErrnoSlot()); }
+            vmPageSize() -> int {
+                file >> i64 <- syscall6(257,-100,adr("/proc/self/auxv"),0,0,0,0);
+                if (!result(file)) return 0;
+                entry >> array<u64,2>;
+                page >> int <- 0;
+                while (syscall6(0,file,adr(&entry),16,0,0,0) == 16) {
+                    if (rd<u64>(&entry) == 6) { page <- rd<u64>(off(cast<byte>(&entry),8)); break; }
+                    if (rd<u64>(&entry) == 0) break;
+                }
+                syscall6(3,file,0,0,0,0,0);
+                return page;
+            }
+            vmAllocationGranularity() -> int { return vmPageSize(); }
+            vmReserve(address >> p<byte>, bytes >> u64, flags >> u64) -> p<byte> {
+                return pointer(syscall6(9,address,bytes,0,flags | 0x22,-1,0));
+            }
+            vmCommit(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                return result(syscall6(10,address,bytes,protection,0,0,0));
+            }
+            vmDecommit(address >> p<byte>, bytes >> u64) -> bool {
+                if (!result(syscall6(10,address,bytes,0,0,0,0))) return false;
+                return result(syscall6(28,address,bytes,4,0,0,0));
+            }
+            vmRelease(address >> p<byte>, bytes >> u64) -> bool {
+                return result(syscall6(11,address,bytes,0,0,0,0));
+            }
+            vmProtect(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                return result(syscall6(10,address,bytes,protection,0,0,0));
+            }
+            vmGuard(address >> p<byte>, bytes >> u64, protection >> u64) -> bool {
+                return result(syscall6(10,address,bytes,0,0,0,0));
+            }
+            vmExecutable(address >> p<byte>, bytes >> u64) -> bool { return vmProtect(address,bytes,5); }
+            vmLastError() -> int { return rd<int>(osErrnoSlot()); }
+            vmReadWriteProtection() -> int { return 3; }
+            vmLock(address >> p<byte>, bytes >> u64) -> bool {
+                return result(syscall6(149,address,bytes,0,0,0,0));
+            }
+            vmUnlock(address >> p<byte>, bytes >> u64) -> bool {
+                return result(syscall6(150,address,bytes,0,0,0,0));
+            }
+            vmMap(address >> p<byte>, bytes >> u64, protection >> u64, flags >> u64,
+                handle >> u64, offset >> u64) -> p<byte> {
+                return pointer(syscall6(9,address,bytes,protection,flags,handle,offset));
+            }
+            vmUnmap(address >> p<byte>, bytes >> u64) -> bool { return vmRelease(address,bytes); }
+            vmAdvise(address >> p<byte>, bytes >> u64, advice >> u64) -> bool {
+                return result(syscall6(28,address,bytes,advice,0,0,0));
+            }
+            vmSync(address >> p<byte>, bytes >> u64, flags >> u64) -> bool {
+                return result(syscall6(26,address,bytes,flags,0,0,0));
+            }
+            vmRemap(address >> p<byte>, oldBytes >> u64, newBytes >> u64, protection >> u64,
+                flags >> u64, requested >> p<byte>) -> p<byte> {
+                return pointer(syscall6(25,address,oldBytes,newBytes,flags,requested,0));
+            }
+    fa: return true;
+}

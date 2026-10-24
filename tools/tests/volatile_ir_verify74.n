@@ -1,0 +1,44 @@
+use <io:output>;
+use <process:args>;
+
+volatileIrVerify74 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        path >> str <- argsAt(arguments,1);
+        bytes >> int <- fsSize(path);
+        if (bytes < 128) return 65;
+        graph >> p<byte> <- alloc(bytes);
+        if (graph == null || fsReadInto(path,graph,bytes) != bytes) return 66;
+        valid >> bool <- rd<int>(graph) == 1380537166 && rd<int>(off(graph,4)) == 7 &&
+            rd<int>(off(graph,32)) == 104;
+        count >> int <- rd<int>(off(graph,28));
+        valid <- valid && count > 0 && count <= (bytes-128)/104;
+        reads >> int <- 0;
+        writes >> int <- 0;
+        widths >> int <- 0;
+        at >> int <- 0;
+        while (valid && at < count) {
+            row >> p<byte> <- off(graph,128+at*104);
+            id >> int <- (rd<int>(off(row,52))/2097152) % 128;
+            if (id == 60 || id == 61) {
+                effect >> int <- rd<int>(off(row,48));
+                valid <- (effect & 256) != 0 && (effect & 32) != 0 &&
+                    (effect & (id == 60 ? 1 : 2)) != 0 && rd<int>(off(row,88)) == -1;
+                type >> int <- rd<int>(off(row,28));
+                width >> int <- type & 15;
+                valid <- valid && (width == 1 || width == 2 || width == 4 || width == 8);
+                widths <- widths | width;
+                if (id == 60) reads += 1;
+                else writes += 1;
+            }
+            at += 1;
+        }
+        valid <- valid && widths == 15 && reads >= 7 && writes >= 6;
+        free(graph); argsRelease(arguments);
+        println(valid ? "volatile IR contract PASS" : "volatile IR contract FAIL");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

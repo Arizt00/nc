@@ -1,0 +1,241 @@
+use <data:json>;
+use <text:parse>;
+use <project:docs43_pdf, docs43_zip, docs43_books, docs43_wrap, docs43_utf8, release_io, cert_json>;
+
+docs43Document {
+    stc:
+        body >> str <- "";
+        y >> int <- 720000;
+        pageNumber >> int <- 1;
+        tableHeader >> str <- "";
+        tableWidths >> str <- "";
+        columns >> int <- 0;
+        codeMode >> bool <- false;
+        good >> bool <- true;
+    fn:
+        private:
+            xml(text >> str) -> str {
+                bytes >> p<byte> <- cast(text); at >> int <- 0;
+                while (at < strByteLen(text)) {
+                    code >> int <- docs43_utf8.docs43Utf8.point(bytes,at);
+                    if ((code < 32 && code != 9 && code != 10 && code != 13) || code == 65534 || code == 65535) good <- false;
+                    at += docs43_utf8.docs43Utf8.span(rd(off(bytes,at)) & 255);
+                }
+                a >> str <- docs43_books.docs43Books.replace(text,"&","&amp;");
+                b >> str <- docs43_books.docs43Books.replace(a,"<","&lt;"); strRelease(a);
+                a <- docs43_books.docs43Books.replace(b,">","&gt;"); strRelease(b); return a;
+            }
+            append(text >> str) -> void { body <- cert_json.certJson.append(body,text); }
+            run(text >> str, font >> str, size >> int, color >> str, bold >> bool) -> str {
+                encoded >> str <- xml(text);
+                transformed >> str <- docs43_books.docs43Books.replace(encoded,"\t","</w:t><w:tab/><w:t xml:space=\"preserve\">"); strRelease(encoded); encoded <- transformed;
+                transformed <- docs43_books.docs43Books.replace(encoded,"\n","</w:t><w:br/><w:t xml:space=\"preserve\">"); strRelease(encoded); encoded <- transformed;
+                properties >> str <- font == "" ? "" : "<w:rPr><w:rFonts w:ascii=\""+font+"\" w:hAnsi=\""+font+"\"/><w:sz w:val=\""+renderInt(size)+"\"/>"+(color == "" ? "" : "<w:color w:val=\""+color+"\"/>")+(bold ? "<w:b/>" : "")+"</w:rPr>";
+                result >> str <- "<w:r>"+properties+"<w:t xml:space=\"preserve\">"+encoded+"</w:t></w:r>";
+                strRelease(encoded); return result;
+            }
+            paragraphRun(text >> str) -> str {
+                styled >> str <- run(text,"Calibri",22,"",false);
+                result >> str <- docs43_books.docs43Books.replace(styled,"</w:rPr>","<w:b w:val=\"0\"/></w:rPr>");
+                strRelease(styled); return result;
+            }
+            furniture() -> void {
+                docs43_pdf.docs43Pdf.color("0.333333 0.4 0.466667");
+                docs43_pdf.docs43Pdf.right("nC Manual completo",540000,756576,1,9000);
+                docs43_pdf.docs43Pdf.text("Documento generado desde docs/spec, docs/status y examples del workspace nC.",100000,35424,1,8000);
+                docs43_pdf.docs43Pdf.right(renderInt(pageNumber),540000,54000,1,8000);
+                docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216");
+            }
+            ensure(height >> int) -> void {
+                if (y-height < 72000) { docs43_pdf.docs43Pdf.page(); pageNumber += 1; y <- 720000; furniture(); }
+            }
+            pdfLines(text >> str, x >> int, w >> int, font >> int, size >> int, leading >> int) -> void {
+                lines >> int <- docs43_pdf.docs43Pdf.wrap(text,font,size,w); i >> int <- 0;
+                while (i < jsonArrayLen(lines)) {
+                    ensure(leading); item >> int <- jsonArrayBorrow(lines,i);
+                    docs43_pdf.docs43Pdf.text(jsonStringView(item,""),x,y,font,size); jsonRelease(item); y -= leading; i += 1;
+                }
+                jsonRelease(lines);
+            }
+            cell(text >> str, width >> int, header >> bool) -> void {
+                append("<w:tc><w:tcPr><w:tcW w:w=\""+renderInt(width)+"\" w:type=\"dxa\"/><w:vAlign w:val=\"center\"/><w:tcMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:start w:w=\"120\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:end w:w=\"120\" w:type=\"dxa\"/></w:tcMar>"+(header ? "<w:shd w:fill=\"E8EEF5\"/>" : "")+"</w:tcPr><w:p>"+(header ? "" : "<w:pPr><w:spacing w:after=\"0\" w:line=\"264\" w:lineRule=\"auto\"/></w:pPr>")+"<w:r/>"+run(text,"Calibri",header ? 19 : 18,"14213D",header)+"</w:p></w:tc>");
+            }
+            column(text >> str, values >> int, at >> int) -> str {
+                if (values == 0) return docs43_books.docs43Books.part(text,at);
+                value >> int <- jsonArrayBorrow(values,at); result >> str <- strSubstring(jsonStringView(value,""),0,strByteLen(jsonStringView(value,""))); jsonRelease(value); return result;
+            }
+            tableRow(text >> str, header >> bool, record >> bool, values >> int) -> void {
+                lines >> array<int,8>; widths >> array<int,8>; height >> int <- 0; i >> int <- 0;
+                while (i < columns) {
+                    widths[i] <- parseInt(docs43_books.docs43Books.part(tableWidths,i))*50;
+                    lines[i] <- docs43_pdf.docs43Pdf.wrap(column(text,values,i),header ? 2 : 1,header ? 9500 : 9200,widths[i]-12000);
+                    needed >> int <- jsonArrayLen(lines[i])*11000+10000;
+                    if (needed > height) height <- needed;
+                    i += 1;
+                }
+                if (y-height < 72000) {
+                    docs43_pdf.docs43Pdf.page(); pageNumber += 1; y <- 720000; furniture();
+                    if (!header) tableRow(tableHeader,true,false,0);
+                }
+                if (record) append("<w:tr>"+(header ? "<w:trPr><w:tblHeader w:val=\"true\"/></w:trPr>" : ""));
+                x >> int <- 72000; i <- 0;
+                while (i < columns) {
+                    docs43_pdf.docs43Pdf.stroke("0.854902 0.862745 0.878431");
+                    docs43_pdf.docs43Pdf.color(header ? "0.909804 0.933333 0.960784" : "1 1 1");
+                    docs43_pdf.docs43Pdf.rect(x,y-height,widths[i],height,true,true);
+                    docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216");
+                    yy >> int <- y-13000; j >> int <- 0;
+                    while (j < jsonArrayLen(lines[i])) {
+                        line >> int <- jsonArrayBorrow(lines[i],j);
+                        docs43_pdf.docs43Pdf.text(jsonStringView(line,""),x+6000,yy,header ? 2 : 1,header ? 9500 : 9200);
+                        jsonRelease(line); yy -= 11000; j += 1;
+                    }
+                    if (record) cell(column(text,values,i),widths[i]/50,header);
+                    jsonRelease(lines[i]); x += widths[i]; i += 1;
+                }
+                if (record) append("</w:tr>"); y -= height;
+            }
+        public:
+            begin(pdf >> str) -> bool {
+                body <- ""; y <- 648000; pageNumber <- 1; good <- true;
+                guard docs43_pdf.docs43Pdf.begin(pdf,"Manual completo de nC","nC",612000,792000) else return false;
+                furniture(); return true;
+            }
+            page() -> void {
+                append("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+                docs43_pdf.docs43Pdf.page(); pageNumber += 1; y <- 720000; furniture();
+            }
+            heading(text >> str, level >> int) -> void {
+                append("<w:p><w:pPr><w:pStyle w:val=\"Heading"+renderInt(level)+"\"/></w:pPr>"+run(text,"",0,"",false)+"</w:p>");
+                ensure(70000); y -= level == 1 ? 18000 : 14000;
+                docs43_pdf.docs43Pdf.color("0.180392 0.454902 0.709804");
+                pdfLines(text,72000,468000,2,level == 1 ? 16000 : 13000,20000); y -= 10000;
+                docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216");
+            }
+            paragraph(text >> str) -> void {
+                append("<w:p><w:pPr><w:spacing w:after=\"120\" w:line=\"300\" w:lineRule=\"auto\"/></w:pPr>"+paragraphRun(text)+"</w:p>");
+                pdfLines(text,72000,468000,1,11000,13750); y -= 6000;
+            }
+            centered(text >> str, size >> int, bold >> bool) -> void {
+                append("<w:p><w:pPr><w:jc w:val=\"center\"/>"+(bold ? "<w:spacing w:before=\"1440\" w:after=\"160\"/>" : "")+"</w:pPr>"+run(text,"Calibri",size/500,bold ? "14213D" : "556677",bold)+"</w:p>");
+                ensure(size+20000); docs43_pdf.docs43Pdf.text(text,(612000-docs43_pdf.docs43Pdf.measure(text,bold ? 2 : 1,size))/2,y,bold ? 2 : 1,size); y -= size+12000;
+            }
+            bullets(text >> str, numbered >> bool) -> void {
+                i >> int <- 0; item >> str <- docs43_books.docs43Books.part(text,i);
+                while (item != "") {
+                    append("<w:p><w:pPr><w:pStyle w:val=\"List"+(numbered ? "Number" : "Bullet")+"\"/><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\""+(numbered ? "2" : "1")+"\"/></w:numPr><w:spacing w:after=\"80\" w:line=\"300\" w:lineRule=\"auto\"/></w:pPr>"+run(item,"Calibri",22,"",false)+"</w:p>");
+                    pdfLines((numbered ? renderInt(i+1)+". " : "- ")+item,90000,450000,1,11000,13750); y -= 4000;
+                    strRelease(item); i += 1; item <- docs43_books.docs43Books.part(text,i);
+                }
+            }
+            sources(paths >> str) -> void {
+                title >> str <- "Fuentes internas usadas en esta sección:";
+                append("<w:p><w:pPr><w:spacing w:after=\"120\" w:line=\"300\" w:lineRule=\"auto\"/></w:pPr>"+run(title,"Calibri",22,"556677",true)+"</w:p>");
+                docs43_pdf.docs43Pdf.color("0.333333 0.4 0.466667"); pdfLines(title,72000,468000,2,11000,13750); y -= 6000;
+                docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216"); bullets(paths,false);
+            }
+            callout(title >> str, text >> str) -> void {
+                tableStart("", "9360");
+                append("<w:tr><w:trPr><w:tblHeader w:val=\"true\"/></w:trPr><w:tc><w:tcPr><w:tcW w:w=\"9360\" w:type=\"dxa\"/><w:vAlign w:val=\"center\"/><w:tcMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:start w:w=\"120\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:end w:w=\"120\" w:type=\"dxa\"/></w:tcMar><w:shd w:fill=\"F4F6F9\"/></w:tcPr><w:p><w:r/>"+run(title,"Calibri",21,"1F4D78",true)+"</w:p><w:p><w:pPr><w:spacing w:after=\"0\"/></w:pPr>"+run(text,"Calibri",20,"14213D",false)+"</w:p></w:tc></w:tr>");
+                ensure(110000); docs43_pdf.docs43Pdf.color("0.956863 0.964706 0.976471");
+                lines >> int <- docs43_pdf.docs43Pdf.wrap(text,1,10000,452000);
+                h >> int <- 35000+jsonArrayLen(lines)*12500; jsonRelease(lines);
+                docs43_pdf.docs43Pdf.rect(72000,y-h,468000,h,true,false);
+                y -= 15000; docs43_pdf.docs43Pdf.color("0.121569 0.301961 0.470588");
+                docs43_pdf.docs43Pdf.text(title,80000,y,2,10500); y -= 18000;
+                docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216"); pdfLines(text,80000,452000,1,10000,12500); tableEnd();
+            }
+            tableStart(headers >> str, widths >> str) -> void {
+                tableHeader <- headers; tableWidths <- widths; columns <- 1; i >> int <- 0;
+                data >> p<byte> <- cast(widths);
+                while (i < strByteLen(widths)) { if (rd(off(data,i)) == 124) columns += 1; i += 1; }
+                append("<w:tbl><w:tblPr><w:tblW w:w=\"9360\" w:type=\"dxa\"/><w:tblInd w:w=\"120\" w:type=\"dxa\"/><w:jc w:val=\"left\"/><w:tblLayout w:type=\"fixed\"/><w:tblBorders>");
+                edges >> str <- "top|left|bottom|right|insideH|insideV"; i <- 0;
+                while (i < 6) { edge >> str <- docs43_books.docs43Books.part(edges,i); append("<w:"+edge+" w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"DADCE0\"/>"); i += 1; }
+                append("</w:tblBorders></w:tblPr><w:tblGrid>"); i <- 0;
+                while (i < columns) { append("<w:gridCol w:w=\""+renderInt(9360/columns)+"\"/>"); i += 1; }
+                append("</w:tblGrid>");
+                if (headers != "") tableRow(headers,true,true,0);
+            }
+            row(cells >> str) -> void { tableRow(cells,false,true,0); }
+            rowValues(a >> str, b >> str, c >> str, d >> str) -> void {
+                values >> int <- jsonNewArray(); cert_json.certJson.push(values,jsonNewString(a)); cert_json.certJson.push(values,jsonNewString(b)); cert_json.certJson.push(values,jsonNewString(c)); cert_json.certJson.push(values,jsonNewString(d));
+                tableRow("",false,true,values); jsonRelease(values);
+            }
+            tableEnd() -> void { append("</w:tbl><w:p/>"); y -= 12000; }
+            table(headers >> str, rows >> str, widths >> str) -> void {
+                tableStart(headers,widths); data >> p<byte> <- cast(rows); at >> int <- 0; start >> int <- 0;
+                while (at <= strByteLen(rows)) {
+                    if (at == strByteLen(rows) || rd(off(data,at)) == 10) {
+                        line >> str <- strSubstring(rows,start,at-start); row(line); strRelease(line); start <- at+1;
+                    }
+                    at += 1;
+                }
+                tableEnd();
+            }
+            code(caption >> str, text >> str) -> void {
+                if (caption != "") {
+                    styled >> str <- run(caption,"Calibri",19,"556677",false);
+                    italic >> str <- docs43_books.docs43Books.replace(styled,"</w:rPr>","<w:i/></w:rPr>"); strRelease(styled);
+                    append("<w:p><w:pPr><w:spacing w:before=\"80\" w:after=\"60\"/></w:pPr>"+italic+"</w:p>"); strRelease(italic);
+                    y -= 4000; docs43_pdf.docs43Pdf.color("0.333333 0.4 0.466667"); pdfLines(caption,72000,468000,1,9500,11875); y -= 3000;
+                }
+                data >> p<byte> <- cast(text); at >> int <- 0; start >> int <- 0;
+                while (text != "" && at <= strByteLen(text)) {
+                    if (at == strByteLen(text) || rd(off(data,at)) == 10) {
+                        line >> str <- strSubstring(text,start,at-start);
+                        // Word retains 104-column source chunks; PDF fits physical page width.
+                        chunks >> int <- docs43_wrap.docs43Wrap.wrap(line); chunk >> int <- 0;
+                        while (chunk < jsonArrayLen(chunks)) {
+                            item >> int <- jsonArrayBorrow(chunks,chunk); value >> str <- jsonStringView(item,"");
+                            append("<w:p><w:pPr><w:pStyle w:val=\"CodeBlock\"/><w:ind w:left=\"259\" w:right=\"144\"/></w:pPr>"+run(value,"Consolas",17,"14213D",false)+"</w:p>");
+                            p >> int <- 0;
+                            while (p < strByteLen(value) || (p == 0 && value == "")) {
+                                ensure(10000); docs43_pdf.docs43Pdf.color("0.956863 0.964706 0.976471"); docs43_pdf.docs43Pdf.rect(80000,y-2500,453000,10000,true,false);
+                                end >> int <- p; characters >> int <- 0; bytes >> p<byte> <- cast(value);
+                                while (end < strByteLen(value) && characters < 88) {
+                                    end += docs43_utf8.docs43Utf8.span(rd(off(bytes,end)) & 255); characters += 1;
+                                }
+                                sample >> str <- strSubstring(value,p,end-p); width >> int <- docs43_pdf.docs43Pdf.measure(sample,3,8500); strRelease(sample);
+                                while (width > 443000 && characters > 1) {
+                                    end -= 1; while (end > p && (rd(off(bytes,end)) & 192) == 128) { end -= 1; }
+                                    sample <- strSubstring(value,p,end-p); width <- docs43_pdf.docs43Pdf.measure(sample,3,8500); strRelease(sample); characters -= 1;
+                                }
+                                docs43_pdf.docs43Pdf.color("0.078431 0.129412 0.239216"); docs43_pdf.docs43Pdf.text(strSubstring(value,p,end-p),85000,y,3,8500); y -= 10000; p <- end;
+                                if (value == "") break;
+                            }
+                            jsonRelease(item); chunk += 1;
+                        }
+                        jsonRelease(chunks); strRelease(line); start <- at+1;
+                    }
+                    at += 1;
+                }
+                append("<w:p/>"); y -= 12000;
+            }
+            finish(docx >> str) -> bool {
+                guard good else return false;
+                docs43_pdf.docs43Pdf.page(); guard docs43_pdf.docs43Pdf.finish() else return false;
+                return saveDocx(docx);
+            }
+            saveDocx(path >> str) -> bool {
+                guard docs43_zip.docs43Zip.begin(path) else return false;
+                docs43_zip.docs43Zip.add("[Content_Types].xml","<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/><Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/><Override PartName=\"/word/header1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml\"/><Override PartName=\"/word/footer1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml\"/><Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/></Types>");
+                docs43_zip.docs43Zip.add("_rels/.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>");
+                docs43_zip.docs43Zip.add("word/document.xml","<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>"+body+"<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId3\"/><w:footerReference w:type=\"default\" r:id=\"rId4\"/><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\" w:header=\"708\" w:footer=\"708\"/><w:cols w:space=\"720\"/><w:docGrid w:linePitch=\"360\"/></w:sectPr></w:body></w:document>");
+                strRelease(body); body <- "";
+                docs43_zip.docs43Zip.add("word/_rels/document.xml.rels","<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/><Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/><Relationship Id=\"rId4\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/><Relationship Id=\"rId5\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings\" Target=\"settings.xml\"/></Relationships>");
+                styles >> str <- "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/><w:lang w:val=\"en-US\" w:eastAsia=\"en-US\" w:bidi=\"ar-SA\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"200\" w:line=\"276\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:pPr><w:spacing w:after=\"120\" w:line=\"300\" w:lineRule=\"auto\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\"/><w:sz w:val=\"22\"/></w:rPr></w:style>";
+                i >> int <- 1;
+                while (i <= 3) {
+                    styles <- cert_json.certJson.append(styles,"<w:style w:type=\"paragraph\" w:styleId=\"Heading"+renderInt(i)+"\"><w:name w:val=\"heading "+renderInt(i)+"\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:keepNext/><w:outlineLvl w:val=\""+renderInt(i-1)+"\"/><w:spacing w:before=\""+renderInt(i == 1 ? 360 : (i == 2 ? 280 : 200))+"\" w:after=\""+renderInt(i == 1 ? 200 : (i == 2 ? 140 : 100))+"\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\"/><w:b/><w:color w:val=\""+(i == 3 ? "1F4D78" : "2E74B5")+"\"/><w:sz w:val=\""+renderInt(i == 1 ? 32 : (i == 2 ? 26 : 24))+"\"/></w:rPr></w:style>"); i += 1;
+                }
+                styles <- cert_json.certJson.append(styles,"<w:style w:type=\"paragraph\" w:styleId=\"CodeBlock\"><w:name w:val=\"CodeBlock\"/><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/><w:sz w:val=\"17\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"ListBullet\"><w:name w:val=\"List Bullet\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:contextualSpacing/></w:pPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"ListNumber\"><w:name w:val=\"List Number\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:contextualSpacing/></w:pPr></w:style></w:styles>");
+                docs43_zip.docs43Zip.add("word/styles.xml",styles); strRelease(styles);
+                docs43_zip.docs43Zip.add("word/numbering.xml","<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/><w:lvlText w:val=\"\"/><w:rPr><w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\"/></w:rPr><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"360\"/></w:tabs><w:ind w:left=\"360\" w:hanging=\"360\"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId=\"1\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"360\"/></w:tabs><w:ind w:left=\"360\" w:hanging=\"360\"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num><w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num></w:numbering>");
+                docs43_zip.docs43Zip.add("word/header1.xml","<w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"right\"/><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"+run("nC Manual completo","Calibri",18,"556677",false)+"</w:p></w:hdr>");
+                docs43_zip.docs43Zip.add("word/footer1.xml","<w:ftr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"+run("Documento generado desde docs/spec, docs/status y examples del workspace nC.","Calibri",16,"556677",false)+"</w:p></w:ftr>");
+                docs43_zip.docs43Zip.add("word/settings.xml","<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:compat><w:useFELayout/><w:compatSetting w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"14\"/><w:compatSetting w:name=\"overrideTableStyleFontSizeAndJustification\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"1\"/><w:compatSetting w:name=\"enableOpenTypeFeatures\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"1\"/><w:compatSetting w:name=\"doNotFlipMirrorIndents\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"1\"/></w:compat></w:settings>");
+                return docs43_zip.docs43Zip.finish();
+            }
+    fa: return true;
+}

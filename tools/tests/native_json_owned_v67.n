@@ -1,0 +1,42 @@
+use <data:json>;
+use <io:output>;
+
+nativeJsonOwned67 {
+    run() -> int {
+        source >> int <- jsonParse("{\"text\":\"A\\u0000B\",\"array\":[{\"n\":7}],\"nil\":null}");
+        textNode >> int <- jsonObjectBorrow(source, "text");
+        text >> str <- jsonGetString(textNode);
+        bytes >> p<byte> <- cast<byte>(text);
+        if (rd(bytes) != 65 || rd(off(bytes, 1)) != 0 || rd(off(bytes, 2)) != 66) return 1;
+        jsonRelease(textNode);
+        array >> int <- jsonObjectBorrow(source, "array");
+        copy >> int <- jsonArrayGet(array, 0);
+        seven >> int <- jsonObjectBorrow(copy, "n");
+        if (jsonGetInt(seven) != 7) return 2;
+        jsonRelease(seven);
+        replacement >> int <- jsonNewInt(19);
+        if (!jsonObjectSet(copy, "n", replacement)) return 3;
+        jsonRelease(replacement);
+        original >> int <- jsonArrayBorrow(array, 0);
+        seven <- jsonObjectBorrow(original, "n");
+        if (jsonGetInt(seven) != 7 || jsonArrayGet(array, -1) != 0 || jsonArrayGet(array, 1) != 0) return 4;
+        jsonRelease(seven); jsonRelease(original);
+        nil >> int <- jsonObjectBorrow(source, "nil");
+        if (!jsonIsNull(nil) || jsonIsNull(0) || jsonIsNull(copy)) return 5;
+        jsonRelease(nil); jsonRelease(array); jsonRelease(source);
+        if (rd(bytes) != 65 || rd(off(bytes, 2)) != 66) return 6;
+        owned >> int <- jsonObjectBorrow(copy, "n");
+        if (jsonGetInt(owned) != 19) return 7;
+        jsonRelease(owned); jsonRelease(copy); strRelease(text);
+        value >> int <- jsonNewInt(-2147483648);
+        number >> str <- jsonGetNumberText(value);
+        if (number != "-2147483648" || jsonGetNumberText(0) != "") return 8;
+        jsonRelease(value);
+        if (number != "-2147483648") return 9;
+        strRelease(number);
+        println("json-owned-ok");
+        return 212;
+    }
+    ref main ->> run;
+    fa: return true;
+}

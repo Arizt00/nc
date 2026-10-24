@@ -1,0 +1,38 @@
+
+argsHost {
+    fn:
+        public:
+            capture(data >> p<byte>) -> int {
+                line >> addr <- osWGetCommandLineW();
+                if (line == null) return osWGetLastError();
+                count >> i32 <- 0;
+                wide >> addr <- osWCommandLineToArgvW(line,adr(&count));
+                if (wide == null) return osWGetLastError();
+                if (count < 0) { osWLocalFree(wide); return 87; }
+                vector >> p<addr> <- cast<addr>(calloc(count == 0 ? 1 : count,8));
+                if (vector == null) { osWLocalFree(wide); return 8; }
+                source >> p<addr> <- from<addr>(wide);
+                at >> int <- 0; total >> u64 <- 0; status >> int <- 0;
+                while (at < count && status == 0) {
+                    argument >> addr <- rd(off(source,at));
+                    bytes >> int <- osWWideCharToMultiByte(65001,128,argument,-1,null,0,null,null);
+                    if (bytes <= 0) { status <- osWGetLastError(); if (status == 0) status <- 1113; break; }
+                    // Public byte count is an int; reject an unrepresentable snapshot, never truncate it.
+                    if (total + bytes > 2147483647) { status <- 534; break; }
+                    text >> p<byte> <- cast<byte>(alloc(bytes));
+                    if (text == null) { status <- 8; break; }
+                    if (osWWideCharToMultiByte(65001,128,argument,-1,adr(text),bytes,null,null) != bytes) {
+                        status <- osWGetLastError(); if (status == 0) status <- 1113; free(text); break;
+                    }
+                    wr(off(vector,at),adr(text)); total += bytes; at += 1;
+                }
+                osWLocalFree(wide);
+                if (status != 0) {
+                    while (at > 0) { at -= 1; free(from<byte>(rd(off(vector,at)))); }
+                    free(vector); return status;
+                }
+                wr<u64>(data,count); wr<addr>(off(data,8),adr(vector)); wr<u64>(off(data,16),total);
+                return 0;
+            }
+    fa: return true;
+}

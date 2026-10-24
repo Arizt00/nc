@@ -1,0 +1,148 @@
+use <data:json>;
+use <process:env>;
+use <io:render>;
+use <project:physical43_common, physical43_json, physical43_unicode, portable43_repr, release_io, tool_cli, sha256>;
+
+physical43Stages {
+    const:
+        PHASES >> str <- "[\"parser\",\"sema\",\"typed_ir\",\"build\",\"llvm_ir\",\"machine_ir\",\"object\",\"object_verify\",\"disassembly\",\"link\",\"execution\"]";
+    fn:
+        public:
+            set(model >> int, name >> str, value >> int) -> void { physical43_common.physical43Common.put(model,name,value); }
+            add(model >> int, value >> int) -> void { physical43_common.physical43Common.push(model,value); }
+            get(model >> int, name >> str) -> str { return physical43_common.physical43Common.field(model,name); }
+            query(model >> int, path >> str) -> str { return physical43_common.physical43Common.textAt(model,path); }
+            truth(model >> int, path >> str) -> bool { return physical43_common.physical43Common.boolAt(model,path); }
+            phases() -> int { return jsonParse(PHASES); }
+            safeName(text >> str) -> str {
+                data >> p<byte> <- cast(alloc(strByteLen(text)+1)); source >> p<byte> <- cast(text); at >> int <- 0; written >> int <- 0;
+                guard data != null else return "";
+                widthData >> p<byte> <- cast(alloc(sizeOf(int))); guard widthData != null else { free(data); return ""; }
+                while (at < strByteLen(text)) { code >> int <- physical43_unicode.physical43Unicode.decode(source,strByteLen(text),at,widthData); width >> int <- rd<int>(widthData); if (physical43_unicode.physical43Unicode.alnum(code)) { cp(off(data,written),off(source,at),width); written += width; } else { wr(off(data,written),95); written += 1; } at += width; }
+                free(widthData); wr(off(data,written),0); result >> str <- cast(data); return result;
+            }
+            failure(phase >> str, name >> str, diagnostic >> str, code >> int) -> int {
+                row >> int <- jsonNewObject(); set(row,"phase",jsonNewString(phase)); set(row,"name",jsonNewString(name)); set(row,"status",jsonNewString("failed")); set(row,"returncode",jsonNewInt(code)); set(row,"diagnostic",jsonNewString(diagnostic)); return row;
+            }
+            newlines(text >> str) -> str { return physical43_common.physical43Common.replace(physical43_common.physical43Common.replace(text,"\r\n","\n"),"\r","\n"); }
+            exactText(path >> str, expected >> str) -> bool {
+                decoded >> p<byte> <- physical43_common.physical43Common.readDecoded(path); if (decoded == null) return false;
+                data >> p<byte> <- physical43_json.physical43Json.decodedData(decoded); length >> int <- physical43_json.physical43Json.decodedLength(decoded); wanted >> p<byte> <- physical43_json.physical43Json.rawData(expected); count >> int <- physical43_json.physical43Json.rawLength(expected);
+                valid >> bool <- length == count; at >> int <- 0;
+                while (valid && at < count) { if (rd(off(data,at)) != rd(off(wanted,at))) valid <- false; at += 1; }
+                free(decoded); return valid;
+            }
+            runStage(phase >> str, name >> str, argv >> int, cwd >> str, logs >> str, timeout >> int) -> int {
+                started >> i64 <- monotonicNs(); had >> bool <- envHas("NC_NO_COLOR"); old >> str <- physical43_common.physical43Common.env("NC_NO_COLOR"); envSet("NC_NO_COLOR","1");
+                captured >> int <- physical43_common.physical43Common.command(argv,cwd,timeout*1000); if (had) envSet("NC_NO_COLOR",old); else envRemove("NC_NO_COLOR"); strRelease(old);
+                timed >> bool <- truth(captured,"/timed_out"); complete >> bool <- tool_cli.toolCli.clean(captured);
+                code >> int <- timed ? 124 : release_io.releaseIo.number(captured,"code",1); if (!complete && !timed && code == 0) code <- 1;
+                stdout >> str <- get(captured,"stdout"); stderr >> str <- get(captured,"stderr"); stem >> str <- safeName(name); stdoutPath >> str <- physical43_common.physical43Common.nativePath(logs+"/"+stem+".stdout.txt"); stderrPath >> str <- physical43_common.physical43Common.nativePath(logs+"/"+stem+".stderr.txt");
+                if (!physical43_common.physical43Common.writeText(stdoutPath,stdout) || !physical43_common.physical43Common.writeText(stderrPath,stderr)) code <- 1;
+                elapsed >> i64 <- monotonicNs()-started;
+                row >> int <- jsonNewObject(); set(row,"phase",jsonNewString(phase)); set(row,"name",jsonNewString(name)); jsonObjectSet(row,"argv",argv); set(row,"returncode",jsonNewInt(code)); set(row,"status",jsonNewString(code == 0 ? "passed" : "failed")); set(row,"elapsed_ns",physical43_common.physical43Common.integer64(elapsed)); set(row,"stdout",jsonNewString(stdoutPath)); set(row,"stderr",jsonNewString(stderrPath)); set(row,"diagnostic",timed ? jsonNewString("stage exceeded "+renderInt(timeout)+" seconds") : (!complete ? jsonNewString("native process capture failed or exceeded its retained output limit") : jsonNewNull()));
+                jsonRelease(captured); strRelease(stdout); strRelease(stderr); return row;
+            }
+            invoke(phase >> str, name >> str, ncc >> str, tail >> str, cwd >> str, logs >> str, timeout >> int) -> int {
+                argv >> int <- jsonParse(tail); jsonArrayInsert(argv,0,jsonNewString(ncc)); row >> int <- runStage(phase,name,argv,cwd,logs,timeout); jsonRelease(argv); return row;
+            }
+            fileStage(phase >> str, name >> str, paths >> int, diagnostic >> str) -> int {
+                material >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(paths)) { child >> int <- jsonArrayBorrow(paths,at); path >> str <- jsonStringView(child,""); if (physical43_common.physical43Common.fileType(path) == 1 && physical43_common.physical43Common.fileSize(path) > 0) add(material,jsonNewString(physical43_common.physical43Common.nativePath(path))); jsonRelease(child); at += 1; }
+                valid >> bool <- jsonArrayLen(material) > 0; row >> int <- jsonNewObject(); set(row,"phase",jsonNewString(phase)); set(row,"name",jsonNewString(name)); set(row,"status",jsonNewString(valid ? "passed" : "failed")); set(row,"returncode",jsonNewInt(valid ? 0 : 1)); set(row,"artifacts",material); set(row,"diagnostic",valid ? jsonNewNull() : jsonNewString(diagnostic)); return row;
+            }
+            oneFile(phase >> str, name >> str, path >> str, diagnostic >> str) -> int { paths >> int <- jsonNewArray(); if (path != "") add(paths,jsonNewString(path)); result >> int <- fileStage(phase,name,paths,diagnostic); jsonRelease(paths); return result; }
+            suffixFiles(root >> str, suffix >> str) -> int {
+                discovered >> int <- physical43_common.physical43Common.files(root,false); names >> int <- portable43_repr.portable43Repr.sortedPaths(discovered); jsonRelease(discovered); result >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); if (strEndsWith(name,suffix)) add(result,jsonNewString(physical43_common.physical43Common.nativePath(root+"/"+name))); jsonRelease(item); at += 1; } jsonRelease(names); return result;
+            }
+            magic(path >> str, format >> str) -> bool {
+                size >> i64 <- physical43_common.physical43Common.fileSize(path); if (size < 2) return false; data >> p<byte> <- cast(alloc(5)); guard data != null else return false;
+                wanted >> int <- size < 5 ? size : 5; count >> int <- physical43_common.physical43Common.readBytes(path,data,wanted); valid >> bool <- false;
+                if (count >= 2 && format == "coff") { a >> int <- rd(data) & 255; b >> int <- rd(off(data,1)) & 255; valid <- (a == 76 && b == 1) || (a == 100 && (b == 134 || b == 170)); }
+                if (count >= 4) {
+                    a >> int <- rd(data) & 255; b >> int <- rd(off(data,1)) & 255; c >> int <- rd(off(data,2)) & 255; d >> int <- rd(off(data,3)) & 255;
+                    if (strStartsWith(format,"elf32") || strStartsWith(format,"elf64")) valid <- size >= 5 && a == 127 && b == 69 && c == 76 && d == 70 && (rd(off(data,4)) & 255) == (strStartsWith(format,"elf32") ? 1 : 2);
+                    if (format == "macho64") valid <- (a == 207 && b == 250 && c == 237 && d == 254) || (a == 254 && b == 237 && c == 250 && d == 207);
+                    if (format == "wasm") valid <- a == 0 && b == 97 && c == 115 && d == 109;
+                }
+                free(data); return valid;
+            }
+            chooseObject(root >> str, format >> str) -> str {
+                names >> int <- physical43_common.physical43Common.files(root,false); result >> str <- ""; at >> int <- 0; bestBody >> int <- -1; bestKernel >> int <- -1; bestObj >> int <- -1; bestSize >> i64 <- -1; hasObject >> bool <- false;
+                while (at < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,at); name >> str <- strToLower(jsonStringView(item,"")); if (strEndsWith(name,".o") || strEndsWith(name,".obj")) hasObject <- true; jsonRelease(item); at += 1; }
+                at <- 0; while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); lower >> str <- strToLower(name); path >> str <- root+"/"+name;
+                    candidate >> bool <- strEndsWith(lower,".o") || strEndsWith(lower,".obj") || (!hasObject && format == "wasm" && strEndsWith(name,".wasm"));
+                    if (candidate && magic(path,format)) { body >> int <- strContains(physical43_common.physical43Common.basename(path),".body.") ? 0 : 1; kernel >> int <- strContains(physical43_common.physical43Common.basename(path),".kernel.") ? 1 : 0; obj >> int <- strEndsWith(lower,".obj") ? 1 : 0; size >> i64 <- physical43_common.physical43Common.fileSize(path);
+                        better >> bool <- body > bestBody || (body == bestBody && (kernel > bestKernel || (kernel == bestKernel && (obj > bestObj || (obj == bestObj && size > bestSize)))));
+                        if (better) { result <- path; bestBody <- body; bestKernel <- kernel; bestObj <- obj; bestSize <- size; }
+                    }
+                    jsonRelease(item); at += 1;
+                }
+                jsonRelease(names); return physical43_common.physical43Common.nativePath(result);
+            }
+            linked(root >> str) -> str {
+                if (physical43_common.physical43Common.fileType(root+"/bin") != 2) return "";
+                names >> int <- physical43_common.physical43Common.files(root+"/bin",false); result >> str <- ""; largest >> i64 <- -1; at >> int <- 0;
+                while (at < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); lower >> str <- strToLower(name); path >> str <- root+"/bin/"+name; if (!strEndsWith(lower,".json") && !strEndsWith(lower,".map") && !strEndsWith(lower,".txt") && physical43_common.physical43Common.fileSize(path) > largest) { result <- path; largest <- physical43_common.physical43Common.fileSize(path); } jsonRelease(item); at += 1; } jsonRelease(names); return physical43_common.physical43Common.nativePath(result);
+            }
+            manifest(root >> str, target >> str) -> int {
+                result >> int <- jsonNewObject(); if (physical43_common.physical43Common.fileType(root+"/run") != 2) return result;
+                names >> int <- physical43_common.physical43Common.names(root+"/run"); pass >> int <- 0;
+                while (pass < 2) { at >> int <- 0; while (at < jsonArrayLen(names)) { item >> int <- jsonArrayBorrow(names,at); name >> str <- jsonStringView(item,""); if (strEndsWith(name,"build.json") && (pass == 1 || strContains(name,target))) {
+                            path >> str <- root+"/run/"+name; payload >> int <- physical43_common.physical43Common.read(path,false); paths >> int <- jsonObjectBorrow(payload,"paths"); valid >> bool <- jsonKind(paths) == 6; jsonRelease(paths);
+                            if (valid) { set(result,"path",jsonNewString(physical43_common.physical43Common.nativePath(path))); set(result,"payload",payload); jsonRelease(item); jsonRelease(names); return result; } jsonRelease(payload);
+                        } jsonRelease(item); at += 1; } pass += 1; }
+                jsonRelease(names); return result;
+            }
+            manifestPath(payload >> int, key >> str) -> str { value >> str <- query(payload,"/paths/"+key); return physical43_common.physical43Common.fileType(value) == 1 && physical43_common.physical43Common.fileSize(value) > 0 ? physical43_common.physical43Common.nativePath(value) : ""; }
+            matrix(path >> str, repo >> str) -> int {
+                model >> int <- physical43_common.physical43Common.read(path,false);
+                if (get(model,"schema") != "ncc.final_certification.target_matrix.v1") { physical43_common.physical43Common.fail("E_FINAL_CERT_MATRIX_SCHEMA_001: unknown target matrix schema"); return 0; }
+                wanted >> int <- phases(); actual >> int <- jsonObjectBorrow(model,"required_pipeline_phases"); routes >> int <- jsonObjectBorrow(model,"routes"); shape >> bool <- physical43_common.physical43Common.equal(actual,wanted) && jsonKind(routes) == 5; jsonRelease(actual); jsonRelease(wanted);
+                if (!shape) { physical43_common.physical43Common.fail("E_FINAL_CERT_MATRIX_SHAPE_001: incomplete phase or route matrix"); return 0; }
+                seen >> int <- jsonNewArray(); at >> int <- 0; keys >> int <- jsonParse("[\"abi\",\"architecture\",\"execution\",\"id\",\"object_format\",\"physical_required\",\"profile\",\"runner\",\"source\",\"target\"]");
+                while (at < jsonArrayLen(routes)) { route >> int <- jsonArrayBorrow(routes,at); id >> str <- get(route,"id"); if (id == "" || release_io.releaseIo.contains(seen,id)) { physical43_common.physical43Common.fail("E_FINAL_CERT_MATRIX_ROUTE_001: route ids must be non-empty and unique"); return 0; } add(seen,jsonNewString(id)); index >> int <- 0;
+                    missing >> int <- jsonNewArray(); while (index < jsonArrayLen(keys)) { key >> int <- jsonArrayBorrow(keys,index); name >> str <- jsonStringView(key,""); if (!jsonObjectHas(route,name)) jsonArrayPush(missing,key); jsonRelease(key); index += 1; }
+                    if (jsonArrayLen(missing) > 0) { list >> str <- portable43_repr.portable43Repr.repr(missing); physical43_common.physical43Common.fail("E_FINAL_CERT_MATRIX_ROUTE_002: "+id+" missing "+list); strRelease(list); jsonRelease(missing); return 0; } jsonRelease(missing);
+                    if (physical43_common.physical43Common.fileType(physical43_common.physical43Common.joinPath(repo,get(route,"source"))) != 1) { physical43_common.physical43Common.fail("E_FINAL_CERT_MATRIX_SOURCE_001: "+id+" source does not exist: "+get(route,"source")); return 0; } jsonRelease(route); at += 1;
+                }
+                jsonRelease(routes); jsonRelease(seen); jsonRelease(keys); return model;
+            }
+            qemu(name >> str, contract >> int, cwd >> str, logs >> str) -> int {
+                words >> int <- jsonObjectGet(contract,"command"); serial >> str <- get(contract,"serial_log"); markers >> int <- jsonObjectGet(contract,"expected_serial_sequence"); timeoutNode >> int <- jsonObjectBorrow(contract,"timeout_seconds"); timeoutKind >> int <- jsonKind(timeoutNode); timeout >> int <- 10;
+                if (timeoutKind == 2) timeout <- jsonGetBoolOr(timeoutNode,false) ? 1 : 0;
+                if (timeoutKind == 3) timeout <- jsonGetIntOr(timeoutNode,0);
+                valid >> bool <- jsonKind(words) == 5 && jsonArrayLen(words) > 0; at >> int <- 0;
+                while (at < jsonArrayLen(words)) { wordNode >> int <- jsonArrayBorrow(words,at); if (!physical43_common.physical43Common.isString(wordNode)) valid <- false; jsonRelease(wordNode); at += 1; }
+                if (!valid) return failure("execution",name,"E_FINAL_CERT_QEMU_CONTRACT_001: invalid command array",1);
+                serialNode >> int <- jsonObjectBorrow(contract,"serial_log"); valid <- physical43_common.physical43Common.isString(serialNode) && jsonKind(markers) == 5 && jsonArrayLen(markers) > 0; jsonRelease(serialNode);
+                if (!valid) return failure("execution",name,"E_FINAL_CERT_QEMU_CONTRACT_002: missing serial oracle",1);
+                at <- 0; while (at < jsonArrayLen(markers)) { markerNode >> int <- jsonArrayBorrow(markers,at); valid <- physical43_common.physical43Common.isString(markerNode) && physical43_json.physical43Json.rawLength(jsonStringView(markerNode,"")) > 0; jsonRelease(markerNode); if (!valid) return failure("execution",name,"E_FINAL_CERT_QEMU_CONTRACT_003: invalid serial marker",1); at += 1; }
+                if ((timeoutKind != 0 && timeoutKind != 2 && timeoutKind != 3) || timeout <= 0 || timeout > 120 || (timeoutKind == 3 && (strByteLen(jsonGetNumberText(timeoutNode)) > 3 || strContains(jsonGetNumberText(timeoutNode),".") || strContains(jsonGetNumberText(timeoutNode),"e") || strContains(jsonGetNumberText(timeoutNode),"E")))) return failure("execution",name,"E_FINAL_CERT_QEMU_CONTRACT_004: invalid timeout",1);
+                jsonRelease(timeoutNode); executable >> int <- jsonArrayBorrow(words,0); available >> bool <- physical43_common.physical43Common.available(jsonStringView(executable,""));
+                if (!available) { row >> int <- failure("execution",name,"QEMU runner is unavailable: "+jsonStringView(executable,""),1); set(row,"status",jsonNewString("not_executed_runner_mismatch")); set(row,"returncode",jsonNewNull()); return row; } jsonRelease(executable);
+                serial <- physical43_common.physical43Common.absolutePath(serial); physical43_common.physical43Common.directories(physical43_common.physical43Common.directory(serial)); if (physical43_common.physical43Common.fileType(serial) != 0 && !physical43_common.physical43Common.deleteFile(serial)) return failure("execution",name,"cannot remove stale QEMU serial log",1);
+                firmware >> str <- ""; candidates >> int <- jsonObjectBorrow(contract,"firmware_candidates"); at <- 0;
+                while (at < jsonArrayLen(candidates)) { candidate >> int <- jsonArrayBorrow(candidates,at); if (jsonKind(candidate) == 4 && jsonStringView(candidate,"") != "") { text >> str <- jsonStringView(candidate,""); value >> str <- physical43_common.physical43Common.env(text); path >> str <- value == "" ? text : value; if (firmware == "" && physical43_common.physical43Common.fileType(path) == 1) firmware <- physical43_common.physical43Common.absolutePath(path); } jsonRelease(candidate); at += 1; } jsonRelease(candidates);
+                expanded >> int <- jsonNewArray(); at <- 0;
+                while (at < jsonArrayLen(words)) { item >> int <- jsonArrayBorrow(words,at); word >> str <- physical43_common.physical43Common.replace(jsonStringView(item,""),"${SERIAL_LOG}",serial);
+                    if (word == "${NCC_AAVMF_CODE_OR_SYSTEM_AAVMF}") { if (firmware == "") return failure("execution",name,"E_FINAL_CERT_QEMU_FIRMWARE_001: no declared AAVMF firmware candidate exists",1); word <- firmware; }
+                    if (strContains(word,"${")) return failure("execution",name,"E_FINAL_CERT_QEMU_PLACEHOLDER_001: unresolved command placeholder in '"+word+"'",1); add(expanded,jsonNewString(word)); jsonRelease(item); at += 1;
+                }
+                started >> i64 <- monotonicNs(); had >> bool <- envHas("NC_NO_COLOR"); old >> str <- physical43_common.physical43Common.env("NC_NO_COLOR"); envSet("NC_NO_COLOR","1"); captured >> int <- physical43_common.physical43Common.command(expanded,cwd,timeout*1000); if (had) envSet("NC_NO_COLOR",old); else envRemove("NC_NO_COLOR");
+                decoded >> p<byte> <- physical43_common.physical43Common.readDecoded(serial); text >> p<byte> <- physical43_json.physical43Json.decodedData(decoded); textLength >> int <- physical43_json.physical43Json.decodedLength(decoded); cursor >> int <- 0; ordered >> bool <- true; at <- 0;
+                while (at < jsonArrayLen(markers)) { item >> int <- jsonArrayBorrow(markers,at); marker >> str <- jsonStringView(item,""); found >> bool <- false;
+                    markerData >> p<byte> <- physical43_json.physical43Json.rawData(marker); markerLength >> int <- physical43_json.physical43Json.rawLength(marker);
+                    while (cursor+markerLength <= textLength) { index >> int <- 0; same >> bool <- true; while (same && index < markerLength) { if (rd(off(text,cursor+index)) != rd(off(markerData,index))) same <- false; index += 1; } if (same) { found <- true; cursor += markerLength; break; } cursor += 1; }
+                    jsonRelease(item); if (!found) { ordered <- false; break; } at += 1;
+                }
+                stem >> str <- safeName(name); stdoutPath >> str <- physical43_common.physical43Common.nativePath(logs+"/"+stem+".stdout.txt"); stderrPath >> str <- physical43_common.physical43Common.nativePath(logs+"/"+stem+".stderr.txt"); serialCopy >> str <- physical43_common.physical43Common.nativePath(logs+"/"+stem+".serial.txt");
+                stdoutText >> str <- get(captured,"stdout"); stderrText >> str <- get(captured,"stderr");
+                valid <- physical43_common.physical43Common.writeText(stdoutPath,stdoutText) && physical43_common.physical43Common.writeText(stderrPath,stderrText) && physical43_common.physical43Common.writeTextBytes(serialCopy,text,textLength); free(decoded); strRelease(stdoutText); strRelease(stderrText); ordered <- ordered && valid && !truth(captured,"/truncated") && truth(captured,"/started");
+                elapsed >> i64 <- monotonicNs()-started;
+                row >> int <- jsonNewObject(); set(row,"phase",jsonNewString("execution")); set(row,"name",jsonNewString(name)); set(row,"argv",expanded); set(row,"returncode",jsonObjectBorrow(captured,"code")); set(row,"status",jsonNewString(ordered ? "passed" : "failed")); set(row,"elapsed_ns",physical43_common.physical43Common.integer64(elapsed)); set(row,"stdout",jsonNewString(stdoutPath)); set(row,"stderr",jsonNewString(stderrPath)); set(row,"serial",jsonNewString(serialCopy)); set(row,"serial_sha256",jsonNewString(physical43_common.physical43Common.fileHash(serialCopy))); set(row,"expected_serial_sequence",markers); set(row,"ordered_markers_present",jsonNewBool(ordered)); set(row,"timed_out_after_oracle_window",jsonObjectBorrow(captured,"timed_out")); set(row,"diagnostic",ordered ? jsonNewNull() : jsonNewString("QEMU serial output did not contain the ordered oracle")); jsonRelease(captured); jsonRelease(words); return row;
+            }
+    fa: return true;
+}

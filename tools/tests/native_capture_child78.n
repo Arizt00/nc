@@ -1,0 +1,48 @@
+use <process:args, command>;
+use <io:std, output>;
+
+nativeCaptureChild78 {
+    write(pipe >> addr, data >> p<byte>, bytes >> int) -> bool {
+        at >> int <- 0;
+        while (at < bytes) {
+            count >> int <- commandPipeWrite(pipe,adr(off(data,at)),bytes-at);
+            if (count <= 0 || count > bytes-at) return false;
+            at += count;
+        }
+        return true;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        mode >> str <- argsAt(arguments,1);
+        if (mode == "slow") { sleepMs(2000); return 0; }
+        if (mode == "exit") return 37;
+        if (mode == "argv") {
+            if (argsCount(arguments) != 6 || argsAt(arguments,2) != "" || argsAt(arguments,3) != "trail\\" ||
+                argsAt(arguments,4) != "quote\"mark" || argsAt(arguments,5) != "two words") return 38;
+            println("native-capture-argv-ok"); return 0;
+        }
+        if (mode != "bulk" && mode != "invalid") return 64;
+        data >> p<byte> <- alloc(1024);
+        slot >> p<byte> <- calloc(1,24);
+        if (data == null || slot == null) return 1;
+        at >> int <- 0;
+        while (at < 1024) { wr(off(data,at),(at*37+11) & 255); at += 1; }
+        wr<addr>(off(slot,8),stdOut());
+        if (mode == "invalid") {
+            wr(data,0xC0); wr(off(data,1),0xAF);
+            valid >> bool <- write(adr(slot),data,2);
+            free(data); free(slot); argsRelease(arguments); return valid ? 0 : 4;
+        }
+        at <- 0;
+        while (at < 256) {
+            if (!write(adr(slot),data,1024)) return 2;
+            at += 1;
+        }
+        wr<addr>(off(slot,8),stdErr());
+        if (!write(adr(slot),data,257)) return 3;
+        free(data); free(slot); argsRelease(arguments);
+        return 23;
+    }
+    ref main ->> run;
+    fa: return true;
+}

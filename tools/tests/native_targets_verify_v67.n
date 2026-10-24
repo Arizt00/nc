@@ -1,0 +1,108 @@
+use <data:json>;
+use <io:output, render, std>;
+use <process:args, command, env>;
+use <fs:dir>;
+use <text:parse>;
+
+nativeTargetsVerify67 {
+    quote(text >> str) -> str {
+        if (strContains(text, "\"") || strContains(text, "\n") || strContains(text, "\r")) return "";
+        return "\"" + text + "\"";
+    }
+    execute(line >> str, milliseconds >> int, windows >> bool) -> int {
+        child >> addr <- commandOpen(line, ".", windows ? stdIn() : null,
+            windows ? stdOut() : null, windows ? stdErr() : null, 0);
+        if (child == null) return -1000;
+        started >> bool <- commandStarted(child);
+        waited >> int <- started ? commandWait(child, milliseconds) : -1;
+        if (started && waited != 0) { commandTerminate(child, 15); commandWait(child, 3000); }
+        code >> int <- commandExitCode(child);
+        commandRelease(child);
+        return !started ? -1000 : (waited != 0 ? -1001 : code);
+    }
+    target(index >> int) -> str {
+        if (index == 0) return "x86_64-unknown-linux-gnu";
+        if (index == 1) return "x86_64-pc-windows-msvc";
+        if (index == 2) return "x86_64-apple-darwin";
+        if (index == 3) return "i386-unknown-linux-gnu";
+        if (index == 4) return "aarch64-unknown-linux-gnu";
+        if (index == 5) return "aarch64-apple-darwin";
+        if (index == 6) return "armv7-unknown-linux-gnueabihf";
+        if (index == 7) return "riscv32imac-unknown-elf";
+        if (index == 8) return "riscv64gc-unknown-linux-gnu";
+        return "wasm32-wasi";
+    }
+    runner(index >> int, windows >> bool) -> str {
+        if ((windows && index == 1) || (!windows && index == 0)) return "direct";
+        if (windows) return "";
+        if (index == 3) return "/usr/bin/qemu-i386";
+        if (index == 4) return "/usr/bin/qemu-aarch64";
+        if (index == 6) return "/usr/bin/qemu-arm";
+        if (index == 7) return "/usr/bin/qemu-riscv32";
+        if (index == 8) return "/usr/bin/qemu-riscv64";
+        return "";
+    }
+    verify(candidate >> str, source >> str, out >> str, expected >> int, windows >> bool) -> int {
+        if (quote(candidate) == "" || quote(source) == "" || quote(out) == "" ||
+            !exists(candidate) || !exists(source) || !exists(out)) return 64;
+        rows >> int <- jsonNewArray();
+        passed >> bool <- true;
+        index >> int <- 0;
+        while (index < 10) {
+            triple >> str <- target(index);
+            image >> str <- out + "/" + triple + (index == 1 ? ".exe" : ".image");
+            object >> str <- out + "/" + triple + ".object";
+            if (exists(image) || exists(object)) return 65;
+            row >> int <- jsonNewObject();
+            objectStatus >> int <- execute(quote(candidate) + " emit-object " + quote(source) +
+                " --target " + triple + " --out " + quote(object), 30000, windows);
+            imageStatus >> int <- execute(quote(candidate) + " emit-executable " + quote(source) +
+                " --target " + triple + " --out " + quote(image), 30000, windows);
+            available >> str <- runner(index, windows);
+            executed >> bool <- false;
+            status >> int <- -1002;
+            imageReady >> bool <- imageStatus == 0 && fsSize(image) > 0;
+            if (imageReady && available != "" && (available == "direct" || exists(available))) {
+                executable >> bool <- windows || execute("/usr/bin/chmod +x " + quote(image), 30000, windows) == 0;
+                if (executable) {
+                    status <- execute((available == "direct" ? "" : quote(available) + " ") + quote(image), 5000, windows);
+                    executed <- status != -1000;
+                }
+            }
+            ok >> bool <- objectStatus == 0 && fsSize(object) > 0 && imageReady && executed && status == expected;
+            jsonObjectSet(row, "target", jsonNewString(triple));
+            jsonObjectSet(row, "object_exit", jsonNewInt(objectStatus));
+            jsonObjectSet(row, "object_bytes", jsonNewInt(fsSize(object)));
+            jsonObjectSet(row, "image_exit", jsonNewInt(imageStatus));
+            jsonObjectSet(row, "image_bytes", jsonNewInt(fsSize(image)));
+            jsonObjectSet(row, "runner", jsonNewString(available));
+            jsonObjectSet(row, "execution_performed", jsonNewBool(executed));
+            jsonObjectSet(row, "execution_exit", jsonNewInt(status));
+            jsonObjectSet(row, "expected_exit", jsonNewInt(expected));
+            jsonObjectSet(row, "passed", jsonNewBool(ok));
+            jsonArrayPush(rows, row); jsonRelease(row);
+            passed <- passed && ok;
+            index += 1;
+        }
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report, "schema", jsonNewString("nc.native.target-evidence.v67"));
+        jsonObjectSet(report, "source", jsonNewString(source));
+        jsonObjectSet(report, "candidate", jsonNewString(candidate));
+        jsonObjectSet(report, "all_targets_passed", jsonNewBool(passed));
+        jsonObjectSet(report, "physical_execution", jsonNewBool(false));
+        jsonObjectSet(report, "targets", rows); jsonRelease(rows);
+        saved >> bool <- jsonSaveFile(report, out + "/report.json", 2);
+        jsonRelease(report);
+        return !saved ? 74 : (passed ? 0 : 1);
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 5) { argsRelease(arguments); return 64; }
+        result >> int <- verify(argsAt(arguments, 1), argsAt(arguments, 2), argsAt(arguments, 3),
+            parseInt(argsAt(arguments, 4)), envHas("WINDIR"));
+        argsRelease(arguments);
+        return result;
+    }
+    ref main ->> run;
+    fa: return true;
+}

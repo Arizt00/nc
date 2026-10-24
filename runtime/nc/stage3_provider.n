@@ -1,0 +1,215 @@
+/*
+ * Compatibility facade for the Stage0 runtime adapter.
+ *
+ * These forwarding bodies require an already implemented adapter; they are
+ * not self-contained native provider implementations. Native self-builds use
+ * the pinned runtime-native-units manifest instead. In particular, the native
+ * absolutePathInto body lives in fs_path_provider/fs_path_host, not this facade.
+ */
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:render, concat>;
+use <process:args, command, env, spawn, wait>;
+use <text:parse, string>;
+
+stage3Provider :: runtime {
+    fn:
+        public:
+            provider_concat_concat(left >> str, right >> str) -> str { return concat(left,right); }
+            provider_concat_concat3(a >> str, b >> str, c >> str) -> str { return concat3(a,b,c); }
+            provider_args_argsOpen() -> addr { return argsOpen(); }
+            provider_args_argsCount(handle >> addr) -> int { return argsCount(handle); }
+            provider_args_argsAt(handle >> addr, index >> int) -> str { return argsAt(handle, index); }
+            provider_args_argsData(handle >> addr) -> addr { return argsData(handle); }
+            provider_args_argsBytes(handle >> addr) -> int { return argsBytes(handle); }
+            provider_args_argsError(handle >> addr) -> int { return argsError(handle); }
+            provider_args_argsRelease(handle >> addr) -> bool { return argsRelease(handle); }
+
+            provider_command_commandOpen(
+                program >> str,
+                arguments >> str,
+                environment >> addr,
+                input >> addr,
+                output >> addr,
+                flags >> int
+            ) -> addr {
+                return commandOpen(program, arguments, environment, input, output, flags);
+            }
+            provider_command_commandStarted(handle >> addr) -> bool { return commandStarted(handle); }
+            provider_command_commandWait(handle >> addr, timeout >> int) -> int { return commandWait(handle, timeout); }
+            provider_command_commandExitCode(handle >> addr) -> int { return commandExitCode(handle); }
+            provider_command_commandTerminate(handle >> addr, code >> int) -> bool { return commandTerminate(handle, code); }
+            provider_command_commandRelease(handle >> addr) -> bool { return commandRelease(handle); }
+            provider_command_commandPipeOpen(readable >> bool, writable >> bool) -> addr {
+                return commandPipeOpen(readable, writable);
+            }
+            provider_command_commandPipeRead(handle >> addr, out >> addr, bytes >> int) -> int {
+                return commandPipeRead(handle, out, bytes);
+            }
+            provider_command_commandPipeWriteHandle(handle >> addr) -> addr {
+                return commandPipeWriteHandle(handle);
+            }
+            provider_command_commandPipeCloseWrite(handle >> addr) -> bool {
+                return commandPipeCloseWrite(handle);
+            }
+            provider_command_commandPipeError(handle >> addr) -> int { return commandPipeError(handle); }
+            provider_command_commandPipeRelease(handle >> addr) -> bool { return commandPipeRelease(handle); }
+
+            provider_dir_currentDir() -> Result<str, FsError> { return currentDir(); }
+            provider_dir_createDir(path >> str) -> Result<bool, FsError> { return createDir(path); }
+            provider_dir_removeDir(path >> str) -> Result<bool, FsError> { return removeDir(path); }
+
+            provider_env_envGet(name >> str, out >> addr, bytes >> int) -> int {
+                return envGet(name, out, bytes);
+            }
+            provider_env_envHas(name >> str) -> bool { return envHas(name); }
+            provider_env_envSet(name >> str, value >> str) -> bool { return envSet(name, value); }
+            provider_env_envOpen() -> addr { return envOpen(); }
+            provider_env_envCount(handle >> addr) -> int { return envCount(handle); }
+            provider_env_envAt(handle >> addr, index >> int) -> str { return envAt(handle,index); }
+            provider_env_envData(handle >> addr) -> addr { return envData(handle); }
+            provider_env_envBytes(handle >> addr) -> int { return envBytes(handle); }
+            provider_env_envError(handle >> addr) -> int { return envError(handle); }
+            provider_env_envRelease(handle >> addr) -> bool { return envRelease(handle); }
+            provider_env_envRemove(name >> str) -> bool { return envRemove(name); }
+            provider_env_envExpand(source >> str, out >> addr, capacity >> int) -> int { return envExpand(source,out,capacity); }
+            provider_env_envLastError() -> int { return envLastError(); }
+
+            provider_fs_absolutePathInto(path >> str, out >> p<byte>, bytes >> u64) -> int {
+                return absolutePathInto(path, out, bytes);
+            }
+            provider_fs_delete_file(path >> str) -> bool { return delete_file(path); }
+            provider_fs_exists(path >> str) -> bool { return exists(path); }
+            provider_fs_fsCopy(source >> str, destination >> str) -> int {
+                return fsCopy(source, destination);
+            }
+            provider_fs_fsLock(path >> str, exclusive >> bool, blocking >> bool) -> addr {
+                return fsLock(path, exclusive, blocking);
+            }
+            provider_fs_fsMetadataInto(path >> str, out >> p<byte>, bytes >> u64) -> int {
+                return fsMetadataInto(path, out, bytes);
+            }
+            provider_fs_fsPermissionsInto(path >> str, out >> p<byte>, bytes >> u64) -> int {
+                return fsPermissionsInto(path, out, bytes);
+            }
+            provider_fs_fsReadInto(path >> str, out >> p<byte>, bytes >> u64) -> int {
+                return fsReadInto(path, out, bytes);
+            }
+            provider_fs_fsSize(path >> str) -> int { return fsSize(path); }
+            provider_fs_fsTextRelease(result >> Result<str, FsError>) -> bool {
+                return fsTextRelease(result);
+            }
+            provider_fs_fsUnlock(handle >> addr) -> bool { return fsUnlock(handle); }
+            provider_fs_fswrite(path >> str, value >> str) -> bool {
+                return fswrite(path, value);
+            }
+            provider_fs_fsWriteFrom(path >> str, data >> p<byte>, bytes >> u64, append >> bool) -> int {
+                return fsWriteFrom(path, data, bytes, append);
+            }
+            provider_fs_fsync(path >> str) -> Result<bool, FsError> { return fsync(path); }
+            provider_fs_listDirInto(path >> str, out >> p<byte>, bytes >> u64) -> int {
+                return listDirInto(path, out, bytes);
+            }
+            provider_fs_rename_file(source >> str, destination >> str) -> bool {
+                return rename_file(source, destination);
+            }
+
+            provider_json_jsonParse(text >> str) -> int { return jsonParse(text); }
+            provider_json_jsonParseFile(path >> str) -> int { return jsonParseFile(path); }
+            provider_json_jsonStringify(handle >> int) -> str { return jsonStringify(handle); }
+            provider_json_jsonStringifyPretty(handle >> int, indent >> int) -> str {
+                return jsonStringifyPretty(handle, indent);
+            }
+            provider_json_jsonSaveFile(handle >> int, path >> str, indent >> int) -> bool {
+                return jsonSaveFile(handle, path, indent);
+            }
+            provider_json_jsonClone(handle >> int) -> int { return jsonClone(handle); }
+            provider_json_jsonRelease(handle >> int) -> bool { return jsonRelease(handle); }
+            provider_json_jsonKind(handle >> int) -> int { return jsonKind(handle); }
+            provider_json_jsonEquals(left >> int, right >> int) -> bool { return jsonEquals(left, right); }
+            provider_json_jsonGetString(handle >> int) -> str { return jsonGetString(handle); }
+            provider_json_jsonGetStringOr(handle >> int, fallback >> str) -> str {
+                return jsonGetStringOr(handle, fallback);
+            }
+            provider_json_jsonGetBoolOr(handle >> int, fallback >> bool) -> bool {
+                return jsonGetBoolOr(handle, fallback);
+            }
+            provider_json_jsonGetIntOr(handle >> int, fallback >> int) -> int {
+                return jsonGetIntOr(handle, fallback);
+            }
+            provider_json_jsonArrayLen(handle >> int) -> int { return jsonArrayLen(handle); }
+            provider_json_jsonArrayGet(handle >> int, index >> int) -> int {
+                return jsonArrayGet(handle, index);
+            }
+            provider_json_jsonArrayPush(handle >> int, value >> int) -> bool {
+                return jsonArrayPush(handle, value);
+            }
+            provider_json_jsonArrayInsert(handle >> int, index >> int, value >> int) -> bool {
+                return jsonArrayInsert(handle, index, value);
+            }
+            provider_json_jsonArrayRemove(handle >> int, index >> int) -> int {
+                return jsonArrayRemove(handle, index);
+            }
+            provider_json_jsonObjectLen(handle >> int) -> int { return jsonObjectLen(handle); }
+            provider_json_jsonObjectHas(handle >> int, key >> str) -> bool {
+                return jsonObjectHas(handle, key);
+            }
+            provider_json_jsonObjectGet(handle >> int, key >> str) -> int {
+                return jsonObjectGet(handle, key);
+            }
+            provider_json_jsonObjectKeyAt(handle >> int, index >> int) -> str {
+                return jsonObjectKeyAt(handle, index);
+            }
+            provider_json_jsonObjectSet(handle >> int, key >> str, value >> int) -> bool {
+                return jsonObjectSet(handle, key, value);
+            }
+            provider_json_jsonObjectRemove(handle >> int, key >> str) -> int {
+                return jsonObjectRemove(handle, key);
+            }
+            provider_json_jsonNewNull() -> int { return jsonNewNull(); }
+            provider_json_jsonNewBool(value >> bool) -> int { return jsonNewBool(value); }
+            provider_json_jsonNewInt(value >> int) -> int { return jsonNewInt(value); }
+            provider_json_jsonNewString(value >> str) -> int { return jsonNewString(value); }
+            provider_json_jsonNewArray() -> int { return jsonNewArray(); }
+            provider_json_jsonNewObject() -> int { return jsonNewObject(); }
+            provider_json_jsonClearError() -> bool { return jsonClearError(); }
+
+            provider_parse_parseInt(value >> str) -> int { return parseInt(value); }
+            provider_process_spawn(program >> str, arguments >> list<str>) -> Result<ProcessHandle, ProcessError> {
+                return spawn(program, arguments);
+            }
+            provider_process_spawnIn(
+                program >> str,
+                arguments >> list<str>,
+                directory >> str
+            ) -> Result<ProcessHandle, ProcessError> {
+                return spawnIn(program, arguments, directory);
+            }
+            provider_process_wait(handle >> ProcessHandle) -> Result<int, ProcessError> {
+                return wait(handle);
+            }
+            provider_render_renderInt(value >> int) -> str { return renderInt(value); }
+
+            /* Result<T,E> is an eight-byte runtime value at the Stage3 boundary. */
+            provider_result_isOk(value >> addr) -> bool { return value != null; }
+            provider_result_unwrap(value >> addr) -> addr { return value; }
+
+            provider_sleep_sleepMs(milliseconds >> int) -> void { sleepMs(milliseconds); }
+            provider_string_strByteLen(value >> str) -> int { return strByteLen(value); }
+            provider_string_strCompare(left >> str, right >> str) -> int { return strCompare(left, right); }
+            provider_string_strContains(value >> str, needle >> str) -> bool {
+                return strContains(value, needle);
+            }
+            provider_string_strEndsWith(value >> str, suffix >> str) -> bool {
+                return strEndsWith(value, suffix);
+            }
+            provider_string_strRelease(value >> str) -> bool { return strRelease(value); }
+            provider_string_strStartsWith(value >> str, prefix >> str) -> bool {
+                return strStartsWith(value, prefix);
+            }
+            provider_string_strSubstring(value >> str, start >> int, bytes >> int) -> str {
+                return strSubstring(value, start, bytes);
+            }
+            provider_time_monotonicNs() -> int { return monotonicNs(); }
+}

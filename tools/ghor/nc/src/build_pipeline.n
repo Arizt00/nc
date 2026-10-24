@@ -1,0 +1,768 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env, spawn, wait>;
+use <project:text, package_graph, resolver, sha256>;
+
+buildPipeline[@runtime] {
+    const:
+        PATH_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            baseName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return cast(off(source, at + 1));
+            }
+
+            stem(path >> str) -> str {
+                name >> str <- baseName(path);
+                width >> int <- strByteLen(name);
+                if (width > 2 && strEndsWith(name, ".n")) return strSubstring(name, 0, width - 2);
+                return name;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") return "";
+                    if (text.ghorText.same(current, name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") return false;
+                    if (text.ghorText.same(current, name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            compiler(handle >> addr) -> str {
+                selected >> str <- option(handle, "--ncc");
+                if (selected != "") return selected;
+                selected <- envText("NC_GHOR_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            hostTarget() -> str {
+                configured >> str <- envText("NC_GHOR_HOST_TARGET");
+                if (configured != "") return configured;
+                arch >> str <- envText("PROCESSOR_ARCHITECTURE");
+                if (arch == "") arch <- envText("HOSTTYPE");
+                normalized >> str <- arch;
+                if (arch == "AMD64" || arch == "amd64" || arch == "x64") normalized <- "x86_64";
+                else if (arch == "arm64") normalized <- "aarch64";
+                if (normalized == "") normalized <- "x86_64";
+                if (envText("OS") == "Windows_NT") return normalized + "-pc-windows-msvc";
+                platform >> str <- envText("OSTYPE");
+                if (strContains(platform, "darwin")) return normalized + "-apple-darwin";
+                return normalized + "-unknown-linux-gnu";
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            addDiagnostic(entries >> int, code >> str, message >> str, path >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                if (path != "") jsonObjectSet(item, "path", jsonNewString(path));
+                return jsonArrayPush(entries, item);
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                failed >> bool <- jsonArrayLen(jsonObjectGet(model, "diagnostics")) > 0;
+                jsonRelease(model);
+                return failed ? 2 : 0;
+            }
+
+            collectSources(root >> str, files >> int) -> int {
+                if (!exists(root) || !isDirectory(root)) return 0;
+                names >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard names != null else return -1;
+                listed >> int <- listDirInto(root, names, PATH_BYTES);
+                if (listed < 0) { free(names); return -1; }
+                if (listed >= PATH_BYTES) listed <- PATH_BYTES - 1;
+                wr(off(names, listed), 0);
+                count >> int <- 0;
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(root, name);
+                            if (isDirectory(child)) {
+                                nested >> int <- collectSources(child, files);
+                                if (nested < 0) { free(names); return -1; }
+                                count += nested;
+                            }
+                            else if (strEndsWith(name, ".n")) {
+                                jsonArrayPush(files, jsonNewString(child));
+                                count += 1;
+                            }
+                        }
+                        while (at < listed &&
+                            (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return count;
+            }
+
+            execution(command >> str, source >> str, arguments >> list<str>, mode >> str) -> int {
+                envSet("NCC_CHILD_QUIET", "1");
+                process >> Result<ProcessHandle, ProcessError> <- spawn(command, arguments);
+                status >> Result<int, ProcessError> <- wait(process);
+                code >> int <- isOk(status) ? unwrap(status) : -1;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "tool", jsonNewString(command));
+                jsonObjectSet(report, "source", jsonNewString(source));
+                jsonObjectSet(report, "mode", jsonNewString(mode));
+                jsonObjectSet(report, "status", jsonNewString(code == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "exit_code", jsonNewInt(code));
+                return report;
+            }
+
+            singleMember(model >> int) -> int {
+                entry >> int <- jsonNewObject();
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(model, "path"), "");
+                package >> int <- jsonObjectGet(model, "package");
+                jsonObjectSet(entry, "manifest", jsonNewString(manifestPath));
+                jsonObjectSet(entry, "root", jsonNewString(directory(manifestPath)));
+                jsonObjectSet(entry, "package", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(package, "name"), "package")));
+                jsonObjectSet(entry, "version", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(package, "version"), "0.0.0")));
+                return entry;
+            }
+
+            selectedMembers(handle >> addr, model >> int) -> int {
+                all >> bool <- hasFlag(handle, "--workspace");
+                virtualManifest >> bool <- jsonGetBoolOr(jsonObjectGet(model, "virtual_manifest"), false);
+                result >> int <- jsonNewArray();
+                if (!all && !virtualManifest) {
+                    jsonArrayPush(result, singleMember(model));
+                    return result;
+                }
+                workspace >> int <- package_graph.ghorPackageGraph.effectiveWorkspace(handle);
+                guard workspace != 0 else return result;
+                source >> int <- all ? jsonObjectGet(workspace, "members") :
+                    jsonObjectGet(workspace, "default_members");
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    jsonArrayPush(result, jsonClone(jsonArrayGet(source, at)));
+                    at += 1;
+                }
+                jsonRelease(workspace);
+                return result;
+            }
+
+            checkRoot(
+                compilerPath >> str,
+                root >> str
+            ) -> int {
+                diagnostics >> int <- jsonNewArray();
+                executions >> int <- jsonNewArray();
+                files >> int <- jsonNewArray();
+                found >> int <- collectSources(join(root, "src"), files);
+                if (found < 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_CHECK_001",
+                        "source directory cannot be enumerated", root);
+                    found <- 0;
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    source >> str <- jsonGetString(jsonArrayGet(files, at));
+                    arguments >> list<str> <- listCreateWithCapacity<str>(3);
+                    listAdd(arguments, "check");
+                    listAdd(arguments, source);
+                    listAdd(arguments, "--quiet");
+                    result >> int <- execution(compilerPath, source, arguments, "compile-check");
+                    jsonArrayPush(executions, result);
+                    if (jsonGetStringOr(jsonObjectGet(result, "status"), "error") != "ok") {
+                        addDiagnostic(diagnostics, "E_GHOR_CHECK_001",
+                            "ncc check failed for " + source, source);
+                    }
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "checked", jsonNewInt(found));
+                jsonObjectSet(report, "executions", executions);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return report;
+            }
+
+            packageEntries(handle >> addr, model >> int, diagnostics >> int) -> int {
+                members >> int <- selectedMembers(handle, model);
+                if (jsonArrayLen(members) == 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_WORKSPACE_001",
+                        "no package members were selected", jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                }
+                return members;
+            }
+
+            sharedTarget(model >> int) -> str {
+                configured >> str <- jsonGetStringOr(jsonObjectGet(model, "shared_target"), "");
+                if (configured != "") return configured;
+                workspaceRoot >> str <- jsonGetStringOr(jsonObjectGet(model, "workspace_root"), "");
+                if (workspaceRoot == "") workspaceRoot <- directory(
+                    jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                return join(workspaceRoot, "target/ghor");
+            }
+
+            sanitize(value >> str) -> str {
+                bytes >> int <- strByteLen(value);
+                out >> p<byte> <- cast(alloc(bytes + 1));
+                guard out != null else return value;
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (at < bytes) {
+                    current >> byte <- rd(off(source, at));
+                    wr(off(out, at), separator(current) || current == 58 ? 95 : current);
+                    at += 1;
+                }
+                wr(off(out, bytes), 0);
+                return cast(out);
+            }
+
+            testTarget(handle >> addr) -> str {
+                selected >> str <- option(handle, "--target");
+                return selected == "" ? hostTarget() : selected;
+            }
+
+            buildOne(
+                handle >> addr,
+                model >> int,
+                member >> int,
+                outputRoot >> str,
+                diagnostics >> int
+            ) -> int {
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(member, "manifest"), "");
+                root >> str <- jsonGetStringOr(jsonObjectGet(member, "root"), directory(manifestPath));
+                packageName >> str <- jsonGetStringOr(jsonObjectGet(member, "package"), "package");
+                version >> str <- jsonGetStringOr(jsonObjectGet(member, "version"), "0.0.0");
+                memberModel >> int <- package_graph.ghorPackageGraph.loadEffective(manifestPath);
+                guard memberModel != 0 else {
+                    addDiagnostic(diagnostics, "E_GHOR_MANIFEST_001",
+                        "member manifest cannot be loaded", manifestPath);
+                    return 0;
+                }
+                language >> str <- jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(memberModel, "languages"), "primary"), "nC");
+                if (language != "nC" && language != "nc") {
+                    addDiagnostic(diagnostics, "E_GHOR_BUILD_LANGUAGE_001",
+                        "native machine build requires an nC primary package", manifestPath);
+                    jsonRelease(memberModel);
+                    return 0;
+                }
+                cargoBin >> int <- jsonObjectGet(memberModel, "cargo_bin");
+                relativeSource >> str <- jsonGetStringOr(jsonObjectGet(cargoBin, "path"), "src/main.n");
+                source >> str <- join(root, relativeSource);
+                if (!exists(source)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BUILD_ENTRY_001",
+                        "package has no executable entry source", source);
+                    jsonRelease(memberModel);
+                    return 0;
+                }
+                profile >> str <- option(handle, "--profile");
+                if (profile == "") profile <- "debug";
+                nativeProfile >> str <- profile == "release" || profile == "bench" ? "release-fast" :
+                    (profile == "test" ? "debug" : profile);
+                target >> str <- option(handle, "--target");
+                if (target == "") target <- jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(memberModel, "target_default"), "triple"), hostTarget());
+                outputDirectory >> str <- join(join(outputRoot, profile), sanitize(target));
+                if (!ensureDirectory(outputDirectory)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BUILD_ARTIFACT_001",
+                        "native output directory cannot be created", outputDirectory);
+                    jsonRelease(memberModel);
+                    return 0;
+                }
+                executableName >> str <- strContains(target, "windows") ? packageName + ".exe" : packageName;
+                executablePath >> str <- join(outputDirectory, executableName);
+                arguments >> list<str> <- listCreateWithCapacity<str>(19);
+                listAdd(arguments, "build");
+                listAdd(arguments, source);
+                listAdd(arguments, executablePath);
+                listAdd(arguments, "--out-dir");
+                listAdd(arguments, outputDirectory);
+                listAdd(arguments, "--profile");
+                listAdd(arguments, nativeProfile);
+                listAdd(arguments, "--target");
+                listAdd(arguments, target);
+                listAdd(arguments, "--quiet");
+                cpu >> str <- option(handle, "--cpu");
+                tune >> str <- option(handle, "--tune-profile");
+                cc >> str <- option(handle, "--cc");
+                linker >> str <- option(handle, "--linker");
+                if (cpu != "") { listAdd(arguments, "--cpu"); listAdd(arguments, cpu); }
+                if (tune != "") { listAdd(arguments, "--tune-profile"); listAdd(arguments, tune); }
+                if (cc != "") { listAdd(arguments, "--cc"); listAdd(arguments, cc); }
+                if (linker != "") { listAdd(arguments, "--linker"); listAdd(arguments, linker); }
+                compilerResult >> int <- execution(compiler(handle), source, arguments, "native-machine-build");
+                if (jsonGetStringOr(jsonObjectGet(compilerResult, "status"), "error") != "ok" ||
+                    !exists(executablePath)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BUILD_NATIVE_001",
+                        "ncc native build failed or omitted its executable", source);
+                    jsonRelease(memberModel);
+                    jsonRelease(compilerResult);
+                    return 0;
+                }
+                unit >> str <- stem(source);
+                compilerManifestPath >> str <- join(
+                    join(outputDirectory, "run"), unit + ".native-build.json");
+                compilerManifest >> int <- exists(compilerManifestPath) ?
+                    jsonParseFile(compilerManifestPath) : 0;
+                machineSource >> str <- "";
+                objectPath >> str <- "";
+                if (compilerManifest != 0) {
+                    compilerArtifacts >> int <- jsonObjectGet(compilerManifest, "artifacts");
+                    artifactAt >> int <- 0;
+                    while (artifactAt < jsonArrayLen(compilerArtifacts)) {
+                        compilerArtifact >> int <- jsonArrayGet(compilerArtifacts, artifactAt);
+                        artifactKind >> str <- jsonGetStringOr(
+                            jsonObjectGet(compilerArtifact, "kind"), "");
+                        artifactFile >> str <- jsonGetStringOr(
+                            jsonObjectGet(compilerArtifact, "path"), "");
+                        if (artifactKind == "machine_source") machineSource <- artifactFile;
+                        if (artifactKind == "object") objectPath <- artifactFile;
+                        artifactAt += 1;
+                    }
+                }
+                if (!exists(machineSource) || !exists(objectPath)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BUILD_ARTIFACT_001",
+                        "native build omitted its .nm or .obj material artifact", outputDirectory);
+                    if (compilerManifest != 0) jsonRelease(compilerManifest);
+                    jsonRelease(memberModel);
+                    jsonRelease(compilerResult);
+                    return 0;
+                }
+                nativeBuild >> int <- jsonNewObject();
+                jsonObjectSet(nativeBuild, "schema", jsonNewString("ghor.native-build.v1"));
+                jsonObjectSet(nativeBuild, "status", jsonNewString("materialized"));
+                jsonObjectSet(nativeBuild, "route", jsonNewString(
+                    ".n -> optimized IR -> MCT -> machine -> object -> executable"));
+                jsonObjectSet(nativeBuild, "source", jsonNewString(source));
+                jsonObjectSet(nativeBuild, "target", jsonNewString(target));
+                jsonObjectSet(nativeBuild, "profile", jsonNewString(nativeProfile));
+                jsonObjectSet(nativeBuild, "executable", jsonNewString(executablePath));
+                jsonObjectSet(nativeBuild, "executable_bytes", jsonNewInt(fsSize(executablePath)));
+                jsonObjectSet(nativeBuild, "executable_sha256", jsonNewString(sha256.sha256.file(executablePath)));
+                jsonObjectSet(nativeBuild, "nm", jsonNewString(machineSource));
+                jsonObjectSet(nativeBuild, "object", jsonNewString(objectPath));
+                jsonObjectSet(nativeBuild, "compiler_manifest", jsonNewString(compilerManifestPath));
+                jsonObjectSet(nativeBuild, "compiler", compilerResult);
+
+                artifact >> int <- jsonNewObject();
+                jsonObjectSet(artifact, "schema", jsonNewString("ghor.build-artifact.v1"));
+                jsonObjectSet(artifact, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(artifact, "package", jsonNewString(packageName));
+                jsonObjectSet(artifact, "version", jsonNewString(version));
+                jsonObjectSet(artifact, "profile", jsonNewString(profile));
+                jsonObjectSet(artifact, "target", jsonNewString(target));
+                jsonObjectSet(artifact, "target_default", jsonClone(jsonObjectGet(memberModel, "target_default")));
+                jsonObjectSet(artifact, "graph_hash", jsonNewString(sha256.sha256.file(manifestPath)));
+                jsonObjectSet(artifact, "machine_consulted", jsonNewBool(true));
+                jsonObjectSet(artifact, "artifact_kind", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(jsonObjectGet(memberModel, "artifact"), "kind"), "native_program")));
+                jsonObjectSet(artifact, "native_build", nativeBuild);
+                matrix >> int <- jsonNewArray();
+                jsonArrayPush(matrix, jsonNewString("nC-native"));
+                jsonObjectSet(artifact, "foreign_toolchain_matrix", matrix);
+                artifactDirectory >> str <- join(outputRoot, profile);
+                ensureDirectory(artifactDirectory);
+                artifactPath >> str <- join(artifactDirectory, packageName + ".build.json");
+                written >> bool <- jsonSaveFile(artifact, artifactPath, 2);
+                entry >> int <- 0;
+                if (written && exists(artifactPath)) {
+                    entry <- jsonNewObject();
+                    jsonObjectSet(entry, "package", jsonNewString(packageName));
+                    jsonObjectSet(entry, "artifact", jsonNewString(artifactPath));
+                    jsonObjectSet(entry, "artifact_hash", jsonNewString(sha256.sha256.file(artifactPath)));
+                    jsonObjectSet(entry, "executable", jsonNewString(executablePath));
+                    jsonObjectSet(entry, "executable_hash", jsonNewString(
+                        sha256.sha256.file(executablePath)));
+                    jsonObjectSet(entry, "nm", jsonNewString(machineSource));
+                    jsonObjectSet(entry, "object", jsonNewString(objectPath));
+                }
+                else addDiagnostic(diagnostics, "E_GHOR_BUILD_ARTIFACT_001",
+                    "build report cannot be written", artifactPath);
+                if (compilerManifest != 0) jsonRelease(compilerManifest);
+                jsonRelease(artifact);
+                jsonRelease(memberModel);
+                return entry;
+            }
+
+            testDirectory(
+                compilerPath >> str,
+                root >> str,
+                name >> str,
+                executeNative >> bool,
+                target >> str
+            ) -> int {
+                diagnostics >> int <- jsonNewArray();
+                executions >> int <- jsonNewArray();
+                files >> int <- jsonNewArray();
+                found >> int <- collectSources(join(root, name), files);
+                if (found < 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_TEST_001",
+                        "test directory cannot be enumerated", join(root, name));
+                    found <- 0;
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    source >> str <- jsonGetString(jsonArrayGet(files, at));
+                    arguments >> list<str> <- listCreateWithCapacity<str>(6);
+                    listAdd(arguments, executeNative ? "run" : "check");
+                    listAdd(arguments, source);
+                    if (executeNative) {
+                        listAdd(arguments, "--profile");
+                        listAdd(arguments, "debug");
+                        listAdd(arguments, "--target");
+                        listAdd(arguments, target);
+                    }
+                    else listAdd(arguments, "--quiet");
+                    result >> int <- execution(compilerPath, source, arguments,
+                        executeNative ? "native-execution" : "compile-check");
+                    jsonArrayPush(executions, result);
+                    if (jsonGetStringOr(jsonObjectGet(result, "status"), "error") != "ok") {
+                        addDiagnostic(diagnostics, "E_GHOR_TEST_001",
+                            "test/example validation failed", source);
+                    }
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "checked", jsonNewInt(found));
+                jsonObjectSet(report, "executions", executions);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return report;
+            }
+
+            checkModel(handle >> addr) -> int {
+                model >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard model != 0 else {
+                    return 0;
+                }
+                diagnostics >> int <- jsonNewArray();
+                members >> int <- packageEntries(handle, model, diagnostics);
+                packages >> int <- jsonNewArray();
+                executions >> int <- jsonNewArray();
+                checked >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(members)) {
+                    member >> int <- jsonArrayGet(members, at);
+                    root >> str <- jsonGetStringOr(jsonObjectGet(member, "root"), "");
+                    rootReport >> int <- checkRoot(compiler(handle), root);
+                    checked += jsonGetIntOr(jsonObjectGet(rootReport, "checked"), 0);
+                    rootDiagnostics >> int <- jsonObjectGet(rootReport, "diagnostics");
+                    detail >> int <- 0;
+                    while (detail < jsonArrayLen(rootDiagnostics)) {
+                        jsonArrayPush(diagnostics, jsonArrayGet(rootDiagnostics, detail));
+                        detail += 1;
+                    }
+                    package >> int <- jsonNewObject();
+                    jsonObjectSet(package, "package", jsonClone(jsonObjectGet(member, "package")));
+                    jsonObjectSet(package, "manifest_path", jsonClone(jsonObjectGet(member, "manifest")));
+                    jsonArrayPush(packages, package);
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.check.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "workspace", jsonNewBool(hasFlag(handle, "--workspace")));
+                jsonObjectSet(report, "packages", packages);
+                jsonObjectSet(report, "checked", jsonNewInt(checked));
+                jsonObjectSet(report, "native_dependencies", jsonClone(jsonObjectGet(model, "native_dependencies")));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(members);
+                jsonRelease(model);
+                return report;
+            }
+
+            executeCheck(handle >> addr) -> int {
+                report >> int <- checkModel(handle);
+                guard report != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be materialized");
+                    return 2;
+                }
+                return printModel(report);
+            }
+
+            executeBuild(handle >> addr) -> int {
+                model >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be materialized");
+                    return 2;
+                }
+                diagnostics >> int <- jsonNewArray();
+                if ((hasFlag(handle, "--locked") || hasFlag(handle, "--frozen")) &&
+                    !resolver.resolver.lockCurrent(handle)) {
+                    addDiagnostic(diagnostics, "E_GHOR_LOCK_DRIFT_001",
+                        "ghor.lock does not match manifest resolution", jsonGetStringOr(jsonObjectGet(model, "path"), ""));
+                }
+                members >> int <- packageEntries(handle, model, diagnostics);
+                checkExecutions >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(members)) {
+                    member >> int <- jsonArrayGet(members, at);
+                    rootReport >> int <- checkRoot(compiler(handle),
+                        jsonGetStringOr(jsonObjectGet(member, "root"), ""));
+                    rootDiagnostics >> int <- jsonObjectGet(rootReport, "diagnostics");
+                    detail >> int <- 0;
+                    while (detail < jsonArrayLen(rootDiagnostics)) {
+                        jsonArrayPush(diagnostics, jsonArrayGet(rootDiagnostics, detail));
+                        detail += 1;
+                    }
+                    rootExecutions >> int <- jsonObjectGet(rootReport, "executions");
+                    detail <- 0;
+                    while (detail < jsonArrayLen(rootExecutions)) {
+                        jsonArrayPush(checkExecutions, jsonArrayGet(rootExecutions, detail));
+                        detail += 1;
+                    }
+                    at += 1;
+                }
+                artifacts >> int <- jsonNewArray();
+                outputRoot >> str <- sharedTarget(model);
+                if (jsonArrayLen(diagnostics) == 0) {
+                    at <- 0;
+                    while (at < jsonArrayLen(members)) {
+                        entry >> int <- buildOne(handle, model, jsonArrayGet(members, at), outputRoot, diagnostics);
+                        if (entry != 0) jsonArrayPush(artifacts, entry);
+                        at += 1;
+                    }
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.build.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(jsonArrayLen(diagnostics) == 0 ? "built" : "error"));
+                jsonObjectSet(report, "workspace", jsonNewBool(hasFlag(handle, "--workspace")));
+                jsonObjectSet(report, "artifacts", artifacts);
+                jsonObjectSet(report, "shared_target", jsonNewString(outputRoot));
+                jsonObjectSet(report, "checks", checkExecutions);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(members);
+                jsonRelease(model);
+                return printModel(report);
+            }
+
+            executeTest(handle >> addr) -> int {
+                model >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: manifest cannot be materialized");
+                    return 2;
+                }
+                diagnostics >> int <- jsonNewArray();
+                members >> int <- packageEntries(handle, model, diagnostics);
+                packages >> int <- jsonNewArray();
+                executions >> int <- jsonNewArray();
+                checked >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(members)) {
+                    member >> int <- jsonArrayGet(members, at);
+                    root >> str <- jsonGetStringOr(jsonObjectGet(member, "root"), "");
+                    testReport >> int <- testDirectory(compiler(handle), root, "tests", true,
+                        testTarget(handle));
+                    checked += jsonGetIntOr(jsonObjectGet(testReport, "checked"), 0);
+                    testExecutions >> int <- jsonObjectGet(testReport, "executions");
+                    detail >> int <- 0;
+                    while (detail < jsonArrayLen(testExecutions)) {
+                        jsonArrayPush(executions, jsonArrayGet(testExecutions, detail));
+                        detail += 1;
+                    }
+                    testDiagnostics >> int <- jsonObjectGet(testReport, "diagnostics");
+                    detail <- 0;
+                    while (detail < jsonArrayLen(testDiagnostics)) {
+                        jsonArrayPush(diagnostics, jsonArrayGet(testDiagnostics, detail));
+                        detail += 1;
+                    }
+                    exampleReport >> int <- testDirectory(compiler(handle), root, "examples", false,
+                        testTarget(handle));
+                    checked += jsonGetIntOr(jsonObjectGet(exampleReport, "checked"), 0);
+                    exampleExecutions >> int <- jsonObjectGet(exampleReport, "executions");
+                    detail <- 0;
+                    while (detail < jsonArrayLen(exampleExecutions)) {
+                        jsonArrayPush(executions, jsonArrayGet(exampleExecutions, detail));
+                        detail += 1;
+                    }
+                    exampleDiagnostics >> int <- jsonObjectGet(exampleReport, "diagnostics");
+                    detail <- 0;
+                    while (detail < jsonArrayLen(exampleDiagnostics)) {
+                        jsonArrayPush(diagnostics, jsonArrayGet(exampleDiagnostics, detail));
+                        detail += 1;
+                    }
+                    package >> int <- jsonNewObject();
+                    jsonObjectSet(package, "package", jsonClone(jsonObjectGet(member, "package")));
+                    jsonObjectSet(package, "manifest_path", jsonClone(jsonObjectGet(member, "manifest")));
+                    jsonArrayPush(packages, package);
+                    at += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.test.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "workspace", jsonNewBool(hasFlag(handle, "--workspace")));
+                jsonObjectSet(report, "packages", packages);
+                jsonObjectSet(report, "checked", jsonNewInt(checked));
+                jsonObjectSet(report, "executions", executions);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonRelease(members);
+                jsonRelease(model);
+                return printModel(report);
+            }
+
+        public:
+            host() -> str {
+                return hostTarget();
+            }
+
+            checkReport(handle >> addr) -> int {
+                return checkModel(handle);
+            }
+
+            materializeManifest(
+                handle >> addr,
+                manifestPath >> str,
+                outputRoot >> str,
+                diagnostics >> int
+            ) -> int {
+                model >> int <- package_graph.ghorPackageGraph.loadEffective(manifestPath);
+                guard model != 0 else {
+                    addDiagnostic(diagnostics, "E_GHOR_MANIFEST_001",
+                        "install manifest cannot be materialized", manifestPath);
+                    return 0;
+                }
+                root >> str <- directory(manifestPath);
+                check >> int <- checkRoot(compiler(handle), root);
+                checkDiagnostics >> int <- jsonObjectGet(check, "diagnostics");
+                at >> int <- 0;
+                while (at < jsonArrayLen(checkDiagnostics)) {
+                    jsonArrayPush(diagnostics, jsonClone(jsonArrayGet(checkDiagnostics, at)));
+                    at += 1;
+                }
+                if (jsonArrayLen(diagnostics) != 0) {
+                    jsonRelease(check); jsonRelease(model);
+                    return 0;
+                }
+                package >> int <- jsonObjectGet(model, "package");
+                member >> int <- jsonNewObject();
+                jsonObjectSet(member, "manifest", jsonNewString(manifestPath));
+                jsonObjectSet(member, "root", jsonNewString(root));
+                jsonObjectSet(member, "package", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(package, "name"), "package")));
+                jsonObjectSet(member, "version", jsonNewString(
+                    jsonGetStringOr(jsonObjectGet(package, "version"), "0.0.0")));
+                entry >> int <- buildOne(handle, model, member, outputRoot, diagnostics);
+                jsonRelease(member); jsonRelease(check); jsonRelease(model);
+                return entry;
+            }
+
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "check" || command == "build" || command == "test";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "check") return executeCheck(handle);
+                if (command == "build") return executeBuild(handle);
+                return executeTest(handle);
+            }
+
+            selfTest() -> bool {
+                return sanitize("x86_64:pc/windows") == "x86_64_pc_windows" &&
+                    stem("src/main.n") == "main";
+            }
+
+    fa:
+        return true;
+}

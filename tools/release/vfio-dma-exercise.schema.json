@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nc-lang.invalid/schemas/vfio-dma-exercise.v1.json",
+  "title": "ncc physical VFIO DMA exercise",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "acknowledge_exclusive_device_control",
+    "device",
+    "mmio",
+    "dma",
+    "interrupt",
+    "reset"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ncc.machine.vfio_dma_exercise.v1"
+    },
+    "acknowledge_exclusive_device_control": {
+      "const": true
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bdf", "vendor", "device"],
+      "properties": {
+        "bdf": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\\.[0-7]$"
+        },
+        "vendor": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "device": {
+          "$ref": "#/$defs/hexOrInteger"
+        }
+      }
+    },
+    "mmio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region_index", "operations"],
+      "properties": {
+        "region_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "contains": {
+            "type": "object",
+            "required": ["op"],
+            "properties": {
+              "op": {
+                "const": "write"
+              }
+            }
+          },
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/write"
+              },
+              {
+                "$ref": "#/$defs/readExpect"
+              },
+              {
+                "$ref": "#/$defs/poll"
+              },
+              {
+                "$ref": "#/$defs/fence"
+              },
+              {
+                "$ref": "#/$defs/sleep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "dma": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completion"],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 1073741824,
+          "multipleOf": 4096,
+          "default": 16384
+        },
+        "seed_byte": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 90
+        },
+        "completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expect_changed"],
+          "properties": {
+            "expect_changed": {
+              "const": true
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$"
+            },
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/valueCheck"
+              }
+            }
+          },
+          "anyOf": [
+            {
+              "required": ["sha256"]
+            },
+            {
+              "required": ["checks"]
+            }
+          ]
+        }
+      }
+    },
+    "interrupt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "vector",
+        "require_vfio_interrupt_remapping"
+      ],
+      "properties": {
+        "mode": {
+          "const": "msix"
+        },
+        "vector": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "minimum_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 5000
+        },
+        "require_vfio_interrupt_remapping": {
+          "const": true
+        }
+      }
+    },
+    "reset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before", "after"],
+      "properties": {
+        "before": {
+          "const": true
+        },
+        "after": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hexOrInteger": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^(0[xX][0-9a-fA-F_]+|[0-9_]+)$"
+        }
+      ]
+    },
+    "width": {
+      "enum": [1, 2, 4, 8],
+      "default": 4
+    },
+    "location": {
+      "type": "object",
+      "required": ["offset"],
+      "properties": {
+        "offset": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "width": {
+          "$ref": "#/$defs/width"
+        }
+      }
+    },
+    "write": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/location"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "offset", "value"],
+          "properties": {
+            "op": {
+              "const": "write"
+            },
+            "offset": {
+              "$ref": "#/$defs/hexOrInteger"
+            },
+            "width": {
+              "$ref": "#/$defs/width"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/hexOrInteger"
+                },
+                {
+                  "enum": ["dma_iova", "dma_iova_low", "dma_iova_high", "dma_bytes"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "readExpect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "offset", "equals"],
+      "properties": {
+        "op": {
+          "const": "read_expect"
+        },
+        "offset": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "width": {
+          "$ref": "#/$defs/width"
+        },
+        "mask": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "equals": {
+          "$ref": "#/$defs/hexOrInteger"
+        }
+      }
+    },
+    "poll": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "offset", "equals"],
+      "properties": {
+        "op": {
+          "const": "poll"
+        },
+        "offset": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "width": {
+          "$ref": "#/$defs/width"
+        },
+        "mask": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "equals": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 5000
+        },
+        "interval_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000,
+          "default": 50
+        }
+      }
+    },
+    "fence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "const": "fence"
+        }
+      }
+    },
+    "sleep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "milliseconds"],
+      "properties": {
+        "op": {
+          "const": "sleep"
+        },
+        "milliseconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        }
+      }
+    },
+    "valueCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "equals"],
+      "properties": {
+        "offset": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "width": {
+          "$ref": "#/$defs/width"
+        },
+        "mask": {
+          "$ref": "#/$defs/hexOrInteger"
+        },
+        "equals": {
+          "$ref": "#/$defs/hexOrInteger"
+        }
+      }
+    }
+  }
+}

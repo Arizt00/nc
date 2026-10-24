@@ -1,0 +1,32 @@
+
+timeFsHost {
+    type:
+        Timespec {
+            public:
+                seconds >> u64;
+                nanoseconds >> u64;
+        }
+    fn:
+        public:
+            sleepMilliseconds(milliseconds >> int) -> void {
+                if (milliseconds <= 0) return;
+                request >> Timespec <- Timespec(seconds: milliseconds/1000, nanoseconds: (milliseconds%1000)*1000000);
+                remaining >> Timespec <- Timespec(seconds: 0, nanoseconds: 0);
+                while (osLnanosleep(adr(&request),adr(&remaining)) != 0) {
+                    if (rd<i32>(from<i32>(osL__errno_location())) != 4) return;
+                    request.seconds <- remaining.seconds;
+                    request.nanoseconds <- remaining.nanoseconds;
+                }
+            }
+            monotonicMilliseconds() -> int {
+                value >> Timespec <- Timespec(seconds: 0, nanoseconds: 0);
+                if (osLclock_gettime(1,adr(&value)) != 0) return -1;
+                return value.seconds*1000+value.nanoseconds/1000000;
+            }
+            removeDirectory(path >> str) -> bool { return cast<byte>(path) != null && osLrmdir(adr(path)) == 0; }
+            deleteFile(path >> str) -> bool { return cast<byte>(path) != null && osLunlink(adr(path)) == 0; }
+            renameFile(source >> str, destination >> str) -> bool {
+                return cast<byte>(source) != null && cast<byte>(destination) != null && osLrename(adr(source),adr(destination)) == 0;
+            }
+    fa: return true;
+}

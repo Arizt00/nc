@@ -1,0 +1,806 @@
+use <collections:list, result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output, render>;
+use <process:args, env, spawn, wait>;
+use <project:text, manifest, sha256>;
+
+projectTools[@runtime] {
+    const:
+        PATH_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return left == "" ? right : "./" + right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                return left + "/" + right;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 0) return "/";
+                out >> p<byte> <- cast(alloc(at + 1));
+                guard out != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(out, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                wr(off(out, copied), 0);
+                return cast(out);
+            }
+
+            baseName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                end >> int <- length(source);
+                while (end > 0 && separator(rd(off(source, end - 1)))) { end -= 1; }
+                start >> int <- end - 1;
+                while (start >= 0 && !separator(rd(off(source, start)))) { start -= 1; }
+                start += 1;
+                out >> p<byte> <- cast(alloc(end - start + 1));
+                guard out != null else return "nc_project";
+                copied >> int <- 0;
+                while (start + copied < end) {
+                    wr(off(out, copied), rd(off(source, start + copied)));
+                    copied += 1;
+                }
+                wr(off(out, copied), 0);
+                if (copied == 0) {
+                    free(out);
+                    return "nc_project";
+                }
+                return cast(out);
+            }
+
+            startsFlag(value >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                return source != null && rd(source) == 45;
+            }
+
+            takesValue(value >> str) -> bool {
+                return value == "--out" || value == "--path" || value == "--lang" ||
+                    value == "--manifest" || value == "--manifest-path" ||
+                    value == "--target-dir";
+            }
+
+            option(handle >> addr, key >> str) -> str {
+                at >> int <- 2;
+                count >> int <- argsCount(handle);
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == key && at + 1 < count) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, key >> str) -> bool {
+                at >> int <- 2;
+                count >> int <- argsCount(handle);
+                while (at < count) {
+                    if (argsAt(handle, at) == key) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            positional(handle >> addr) -> str {
+                at >> int <- 2;
+                count >> int <- argsCount(handle);
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (startsFlag(current)) {
+                        at += takesValue(current) ? 2 : 1;
+                        continue;
+                    }
+                    return current;
+                }
+                return "";
+            }
+
+            langName(handle >> addr) -> str {
+                at >> int <- 3;
+                count >> int <- argsCount(handle);
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (startsFlag(current)) {
+                        at += takesValue(current) ? 2 : 1;
+                        continue;
+                    }
+                    return current;
+                }
+                return "";
+            }
+
+            ensureDir(path >> str) -> bool {
+                if (exists(path)) return isDirectory(path);
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDir(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                if (!isOk(created)) return false;
+                if (!unwrap(created)) return false;
+                return exists(path) && isDirectory(path);
+            }
+
+            removeTree(path >> str) -> bool {
+                if (!exists(path)) return true;
+                if (!isDirectory(path)) return delete_file(path);
+                names >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard names != null else return false;
+                listed >> int <- listDirInto(path, names, PATH_BYTES);
+                if (listed < 0 || listed >= PATH_BYTES) { free(names); return false; }
+                wr(off(names, listed), 0);
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(path, name);
+                            if (!removeTree(child)) { free(names); return false; }
+                        }
+                        while (at < listed &&
+                            (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                removed >> Result<bool, FsError> <- removeDir(path);
+                if (!isOk(removed)) return false;
+                if (!unwrap(removed)) return false;
+                return !exists(path);
+            }
+
+            writeText(path >> str, value >> str) -> bool {
+                bytes >> int <- strByteLen(value);
+                return fsWriteFrom(path, cast(value), bytes, false) == bytes &&
+                    fsSize(path) == bytes;
+            }
+
+            supportedLanguage(language >> str) -> bool {
+                return language == "nC" || language == "c" || language == "cpp" ||
+                    language == "asm" || language == "rust" || language == "java" ||
+                    language == "python" || language == "javascript" ||
+                    language == "typescript";
+            }
+
+            safeIdentifier(name >> str) -> str {
+                source >> p<byte> <- cast(name);
+                width >> int <- length(source);
+                out >> p<byte> <- cast(alloc(width + 2));
+                guard out != null else return "nc_project";
+                written >> int <- 0;
+                at >> int <- 0;
+                while (at < width) {
+                    value >> byte <- rd(off(source, at));
+                    letter >> bool <- (value >= 65 && value <= 90) ||
+                        (value >= 97 && value <= 122);
+                    digit >> bool <- value >= 48 && value <= 57;
+                    if (letter) {
+                        wr(off(out, written), value >= 65 && value <= 90 ? value + 32 : value);
+                    }
+                    else if (digit || value == 95) wr(off(out, written), value);
+                    else wr(off(out, written), 95);
+                    written += 1;
+                    at += 1;
+                }
+                if (written == 0) {
+                    free(out);
+                    return "nc_project";
+                }
+                if (rd(out) >= 48 && rd(out) <= 57) {
+                    moved >> int <- written;
+                    while (moved > 0) {
+                        wr(off(out, moved), rd(off(out, moved - 1)));
+                        moved -= 1;
+                    }
+                    wr(out, 95);
+                    written += 1;
+                }
+                wr(off(out, written), 0);
+                return cast(out);
+            }
+
+            projectKind(handle >> addr, language >> str) -> str {
+                if (hasFlag(handle, "--lib")) return "lib";
+                if (hasFlag(handle, "--machine")) return "machine";
+                if (hasFlag(handle, "--basal")) return "basal";
+                if (hasFlag(handle, "--primitive")) return "primitive";
+                return language == "nC" ? "bin" : "foreign";
+            }
+
+            hostTarget() -> str {
+                target >> str <- envText("NC_GHOR_HOST_TARGET");
+                return target == "" ? "x86_64-unknown-linux-gnu" : target;
+            }
+
+            hostAbi(target >> str) -> str {
+                if (strContains(target, "windows")) return "win64";
+                if (strStartsWith(target, "aarch64")) return "aapcs64";
+                if (strStartsWith(target, "riscv")) return "riscv";
+                if (strStartsWith(target, "i386") || strStartsWith(target, "i686")) return "sysv32";
+                return "sysv64";
+            }
+
+            languageBlock(language >> str) -> str {
+                if (language == "nC") return "[languages]\nprimary = \"nC\"\nadapters = []\n";
+                if (language == "c") return "[languages]\nprimary = \"c\"\nadapters = [\"c\"]\n\n[language_adapter.c]\ntoolchain = \"clang\"\nstandard = \"c17\"\n";
+                if (language == "cpp") return "[languages]\nprimary = \"cpp\"\nadapters = [\"cpp\"]\n\n[language_adapter.cpp]\ntoolchain = \"clang++\"\nstandard = \"c++20\"\n";
+                if (language == "asm") return "[languages]\nprimary = \"asm\"\nadapters = [\"asm\"]\n\n[language_adapter.asm]\ntoolchain = \"as\"\nsyntax = \"gas\"\n";
+                if (language == "rust") return "[languages]\nprimary = \"rust\"\nadapters = [\"rust\"]\n\n[language_adapter.rust]\ntoolchain = \"stable\"\ncargo = true\n";
+                if (language == "java") return "[languages]\nprimary = \"java\"\nadapters = [\"java\"]\n\n[language_adapter.java]\ntoolchain = \"javac\"\nbuild = \"gradle\"\n";
+                if (language == "python") return "[languages]\nprimary = \"python\"\nadapters = [\"python\"]\n\n[language_adapter.python]\nversion = \"3.12\"\nvenv = true\ntest = \"pytest\"\n";
+                if (language == "javascript") return "[languages]\nprimary = \"javascript\"\nadapters = [\"javascript\"]\n\n[language_adapter.javascript]\nruntime = \"node\"\npackage_manager = \"npm\"\n";
+                return "[languages]\nprimary = \"typescript\"\nadapters = [\"typescript\"]\n\n[language_adapter.typescript]\nruntime = \"node\"\npackage_manager = \"pnpm\"\ncompiler = \"tsc\"\n";
+            }
+
+            manifestText(name >> str, kind >> str, language >> str) -> str {
+                target >> str <- hostTarget();
+                return "[package]\nname = \"" + name + "\"\nversion = \"0.1.0\"\nedition = \"2026\"\nkind = \"" + kind + "\"\nlicense = \"MIT\"\n\n" +
+                    "[toolchain]\nchannel = \"stable\"\nmanager = \"ncup\"\ncomponents = [\"ncc\", \"nfmt\", \"nlint\", \"nclsp\"]\n\n" +
+                    "[target.default]\ntriple = \"" + target + "\"\nabi = \"" + hostAbi(target) + "\"\n\n" +
+                    "[machine]\nrequired = true\ndoctor = true\nverify_object = true\ndisasm = true\nroundtrip = true\nparity = true\nevidence = true\n\n" +
+                    "[basal]\nenabled = true\nseal = true\nnbb = true\nevidence = true\n\n" +
+                    "[runtime]\nenabled = true\n\n[compiler]\ndiagnostics = \"strict\"\n\n" +
+                    "[primitive]\nenabled = false\nreal_hardware = false\n\n" +
+                    "[build]\norchestrator = \"ghor\"\ngraph = true\n\n" +
+                    "[features]\ndefault = []\n\n[capabilities]\nmachine = true\nbasal = true\nforeign_adapters = true\n\n" +
+                    "[artifact]\nkind = \"ghor_project_build_plan\"\nformat = \"json\"\n\n" +
+                    languageBlock(language) + "\n[dependencies]\n\n[native-dependencies]\n\n" +
+                    "[profiles.debug]\nopt = 0\ndebug = true\nevidence = true\n\n" +
+                    "[profiles.release]\nopt = 3\ndebug = false\nseal = true\nevidence = true\n";
+            }
+
+            ncSource(name >> str, kind >> str) -> str {
+                id >> str <- safeIdentifier(name);
+                if (kind == "lib") return id + " {\n    fn:\n        public:\n            value() -> int { return 0; }\n\n    fa:\n        return true;\n}\n";
+                return id + " {\n    fn:\n        run() -> bool {\n            return true;\n        }\n\n    ref main ->> run;\n\n    fa:\n        return true;\n}\n";
+            }
+
+            scaffoldLanguage(root >> str, name >> str, language >> str, kind >> str) -> bool {
+                id >> str <- safeIdentifier(name);
+                if (language == "nC") return writeText(join(root, "src/main.n"), ncSource(name, kind));
+                if (language == "c") {
+                    guard ensureDir(join(root, "include")) else return false;
+                    return writeText(join(root, "include/" + id + ".h"), "int nc_adapter_entry(void);\n") &&
+                        writeText(join(root, "src/main.c"), "#include <stdio.h>\n\nint nc_adapter_entry(void) { return 0; }\n\nint main(void) { return nc_adapter_entry(); }\n");
+                }
+                if (language == "cpp") {
+                    guard ensureDir(join(root, "include")) else return false;
+                    return writeText(join(root, "include/" + id + ".hpp"), "#pragma once\nint nc_adapter_entry();\n") &&
+                        writeText(join(root, "src/main.cpp"), "#include <iostream>\n\nint nc_adapter_entry() { return 0; }\n\nint main() { return nc_adapter_entry(); }\n");
+                }
+                if (language == "asm") return writeText(join(root, "src/main.S"), ".text\n.global nc_adapter_entry\nnc_adapter_entry:\n    ret\n");
+                if (language == "rust") return writeText(join(root, "Cargo.toml"), "[package]\nname = \"" + id + "\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n") &&
+                    writeText(join(root, "src/main.rs"), "fn main() {}\n");
+                if (language == "java") {
+                    guard ensureDir(join(root, "src/main/java")) else return false;
+                    return writeText(join(root, "src/main/java/Main.java"), "public final class Main {\n    private Main() {}\n    public static void main(String[] args) {}\n}\n");
+                }
+                if (language == "python") {
+                    guard ensureDir(join(root, "src/" + id)) else return false;
+                    return writeText(join(root, "pyproject.toml"), "[project]\nname = \"" + id + "\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\n") &&
+                        writeText(join(root, "src/" + id + "/__init__.py"), "__all__ = []\n") &&
+                        writeText(join(root, "src/" + id + "/__main__.py"), "def main() -> int:\n    return 0\n\nraise SystemExit(main())\n");
+                }
+                if (language == "javascript") return writeText(join(root, "package.json"), "{\n  \"name\": \"" + id + "\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\"\n}\n") &&
+                    writeText(join(root, "src/main.js"), "export function main() { return 0; }\n\nmain();\n");
+                return writeText(join(root, "package.json"), "{\n  \"name\": \"" + id + "\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\"\n}\n") &&
+                    writeText(join(root, "tsconfig.json"), "{\n  \"compilerOptions\": { \"target\": \"ES2022\", \"module\": \"ES2022\", \"strict\": true, \"outDir\": \"dist\" },\n  \"include\": [\"src/**/*.ts\"]\n}\n") &&
+                    writeText(join(root, "src/main.ts"), "export function main(): number { return 0; }\n\nmain();\n");
+            }
+
+            scaffoldSpecial(root >> str, name >> str, language >> str, kind >> str) -> bool {
+                if (language != "nC") return true;
+                if (kind == "machine") {
+                    return ensureDir(join(root, "machine")) && writeText(join(root, "machine/main.nm"),
+                        "target: x86_64-unknown-linux-gnu\nproc: main\n    ret\n");
+                }
+                if (kind == "basal") {
+                    return ensureDir(join(root, "basal")) && writeText(join(root, "basal/root.nb"),
+                        safeIdentifier(name) + "Root[@] {\n    root:\n        identity: \"nC.root." + safeIdentifier(name) + "\";\n        version: 1;\n        profile: basal;\n        binary: optional;\n        evidence: optional;\n        lowering: deferred;\n}\n");
+                }
+                if (kind == "primitive") {
+                    return ensureDir(join(root, "primitive")) && writeText(join(root, "primitive/device.ncp"),
+                        "// primitive device scaffold\n");
+                }
+                return true;
+            }
+
+            hostSourceExt(host >> str) -> str {
+                if (host == "c") return "c";
+                if (host == "cpp") return "cpp";
+                if (host == "asm") return "S";
+                if (host == "rust") return "rs";
+                if (host == "java") return "java";
+                if (host == "python") return "py";
+                if (host == "javascript") return "js";
+                if (host == "typescript") return "ts";
+                return "n";
+            }
+
+            languageUnitSource(unit >> str, host >> str) -> str {
+                if (host == "c") return "/* ghor " + unit + " unit */\nint " +
+                    unit + "_unit(void) { return 0; }\n";
+                if (host == "cpp") return "// ghor " + unit + " unit\nint " +
+                    unit + "_unit() { return 0; }\n";
+                if (host == "asm") return ".text\n.global " + unit + "_unit\n" +
+                    unit + "_unit:\n    ret\n";
+                if (host == "rust") return "pub fn " + unit +
+                    "_unit() -> bool { true }\n";
+                if (host == "java") return "final class " + unit +
+                    "Unit { boolean ok() { return true; } }\n";
+                if (host == "python") return "def " + unit +
+                    "_unit() -> bool:\n    return True\n";
+                if (host == "javascript") return "export function " + unit +
+                    "Unit() { return true; }\n";
+                if (host == "typescript") return "export function " + unit +
+                    "Unit(): boolean { return true; }\n";
+                return unit + " {\n    fn:\n        public:\n            ok() -> bool { return true; }\n\n    fa:\n        return true;\n}\n";
+            }
+
+            writeLanguageUnit(root >> str, unit >> str, host >> str) -> bool {
+                return writeText(join(root, "src/" + unit + "." + hostSourceExt(host)),
+                    languageUnitSource(unit, host));
+            }
+
+            scaffoldLanguageForge(root >> str, name >> str, host >> str) -> bool {
+                guard ensureDir(root) && ensureDir(join(root, "src")) &&
+                    ensureDir(join(root, "tests")) && ensureDir(join(root, "examples")) &&
+                    ensureDir(join(root, "docs")) && ensureDir(join(root, "reports")) else return false;
+                model >> str <- manifestText(name, "foreign", host);
+                guard writeText(join(root, "ghor.toml"), model) &&
+                    writeText(join(root, "nc.toml"), model) &&
+                    scaffoldLanguage(root, name, host, "foreign") else return false;
+                guard writeLanguageUnit(root, "lexer", host) &&
+                    writeLanguageUnit(root, "parser", host) &&
+                    writeLanguageUnit(root, "ast", host) &&
+                    writeLanguageUnit(root, "diagnostics", host) &&
+                    writeLanguageUnit(root, "sema", host) &&
+                    writeLanguageUnit(root, "ir", host) &&
+                    writeLanguageUnit(root, "lowering", host) &&
+                    writeLanguageUnit(root, "backend", host) &&
+                    writeLanguageUnit(root, "runtime", host) else return false;
+                ext >> str <- hostSourceExt(host);
+                guard writeText(join(root, "tests/" + safeIdentifier(name) +
+                    "_conformance." + ext), languageUnitSource("conformance_test", host)) &&
+                    writeText(join(root, "examples/minimal." + ext),
+                        languageUnitSource("minimal_example", host)) &&
+                    writeText(join(root, "docs/conformance.md"), "# " + name +
+                        " language forge\n\nHost: `" + host + "`.\n\nLexer, parser, AST, diagnostics, sema, IR, lowering, backend and runtime are explicit material units.\n") else return false;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema",
+                    jsonNewString("ghor.language.conformance.scaffold.v1"));
+                jsonObjectSet(report, "name", jsonNewString(name));
+                jsonObjectSet(report, "host", jsonNewString(host));
+                jsonObjectSet(report, "status", jsonNewString("created"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "machine_origin", jsonNewBool(host == "nC"));
+                saved >> bool <- jsonSaveFile(report,
+                    join(root, "reports/conformance_scaffold.json"), 2);
+                jsonRelease(report);
+                return saved;
+            }
+
+            scaffold(root >> str, name >> str, language >> str, kind >> str) -> bool {
+                guard ensureDir(root) && ensureDir(join(root, "src")) &&
+                    ensureDir(join(root, "tests")) && ensureDir(join(root, "examples")) &&
+                    ensureDir(join(root, "docs")) && ensureDir(join(root, "target")) else return false;
+                model >> str <- manifestText(name, kind, language);
+                guard writeText(join(root, "ghor.toml"), model) &&
+                    writeText(join(root, "nc.toml"), model) &&
+                    writeText(join(root, "README.md"), "# " + name + "\n\nManaged by ghor nC stage1.\n") else return false;
+                return scaffoldLanguage(root, name, language, kind) &&
+                    scaffoldSpecial(root, name, language, kind);
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            reportCreate(command >> str, root >> str, name >> str,
+                language >> str, kind >> str, json >> bool) -> int {
+                if (!json) {
+                    println("OK: " + (command == "new" ? "created " : "initialized ") +
+                        language + " project " + root);
+                    return 0;
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor." + command + ".v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(command == "new" ? "created" : "initialized"));
+                jsonObjectSet(model, "name", jsonNewString(name));
+                jsonObjectSet(model, "language", jsonNewString(language));
+                jsonObjectSet(model, "kind", jsonNewString(kind));
+                jsonObjectSet(model, "path", jsonNewString(root));
+                jsonObjectSet(model, "manifest", jsonNewString(join(root, "ghor.toml")));
+                return printModel(model);
+            }
+
+            executeNew(handle >> addr) -> int {
+                name >> str <- positional(handle);
+                guard name != "" else { println("error[E_GHOR_NEW_001]: ghor new expects <name>"); return 2; }
+                language >> str <- option(handle, "--lang");
+                if (language == "") language <- "nC";
+                guard supportedLanguage(language) else {
+                    println("error[E_GHOR_LANGUAGE_UNSUPPORTED_001]: unsupported --lang value");
+                    return 2;
+                }
+                root >> str <- option(handle, "--out");
+                if (root == "") root <- name;
+                guard !exists(root) else {
+                    println("error[E_GHOR_NEW_002]: target project directory already exists: " + root);
+                    return 2;
+                }
+                kind >> str <- projectKind(handle, language);
+                if (!scaffold(root, name, language, kind)) {
+                    removeTree(root);
+                    println("error[E_GHOR_NEW_001]: project scaffold transaction failed");
+                    return 2;
+                }
+                return reportCreate("new", root, name, language, kind, hasFlag(handle, "--json"));
+            }
+
+            executeInit(handle >> addr) -> int {
+                root >> str <- option(handle, "--path");
+                cwd >> Result<str, FsError>;
+                ownsCwd >> bool <- false;
+                if (root == "") {
+                    cwd <- currentDir();
+                    guard isOk(cwd) else { println("error[E_GHOR_INIT_001]: current directory unavailable"); return 2; }
+                    root <- unwrap(cwd);
+                    ownsCwd <- true;
+                }
+                existed >> bool <- exists(root);
+                guard !exists(join(root, "ghor.toml")) && !exists(join(root, "nc.toml")) else {
+                    if (ownsCwd) fsTextRelease(cwd);
+                    println("error[E_GHOR_INIT_001]: project manifest already exists");
+                    return 2;
+                }
+                language >> str <- option(handle, "--lang");
+                if (language == "") language <- "nC";
+                guard supportedLanguage(language) else {
+                    if (ownsCwd) fsTextRelease(cwd);
+                    println("error[E_GHOR_LANGUAGE_UNSUPPORTED_001]: unsupported --lang value");
+                    return 2;
+                }
+                name >> str <- baseName(root);
+                kind >> str <- projectKind(handle, language);
+                if (!scaffold(root, name, language, kind)) {
+                    delete_file(join(root, "ghor.toml"));
+                    delete_file(join(root, "nc.toml"));
+                    if (!existed) removeTree(root);
+                    if (ownsCwd) fsTextRelease(cwd);
+                    println("error[E_GHOR_INIT_001]: project initialization transaction failed");
+                    return 2;
+                }
+                code >> int <- reportCreate("init", root, name, language, kind, hasFlag(handle, "--json"));
+                if (ownsCwd) fsTextRelease(cwd);
+                return code;
+            }
+
+            executeLang(handle >> addr) -> int {
+                guard argsCount(handle) > 2 && argsAt(handle, 2) == "new" else {
+                    println("error[E_GHOR_LANGUAGE_TEMPLATE_001]: lang expects subcommand new");
+                    return 2;
+                }
+                name >> str <- langName(handle);
+                guard name != "" else {
+                    println("error[E_GHOR_LANGUAGE_TEMPLATE_001]: lang new expects <name>");
+                    return 2;
+                }
+                host >> str <- option(handle, "--host");
+                if (host == "") host <- "nC";
+                guard supportedLanguage(host) else {
+                    println("error[E_GHOR_LANGUAGE_UNSUPPORTED_001]: unsupported --host value");
+                    return 2;
+                }
+                root >> str <- option(handle, "--out");
+                if (root == "") root <- name;
+                guard !exists(root) else {
+                    println("error[E_GHOR_LANGUAGE_TEMPLATE_001]: target language directory already exists: " + root);
+                    return 2;
+                }
+                if (!scaffoldLanguageForge(root, name, host)) {
+                    removeTree(root);
+                    println("error[E_GHOR_LANGUAGE_TEMPLATE_001]: language forge transaction failed");
+                    return 2;
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.language.new.v1"));
+                jsonObjectSet(model, "status", jsonNewString("created"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "name", jsonNewString(name));
+                jsonObjectSet(model, "host", jsonNewString(host));
+                jsonObjectSet(model, "path", jsonNewString(root));
+                return printModel(model);
+            }
+
+            hasNcExtension(path >> str) -> bool {
+                return strEndsWith(path, ".n");
+            }
+
+            collectSources(root >> str, output >> int) -> bool {
+                if (!exists(root)) return true;
+                names >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard names != null else return false;
+                listed >> int <- listDirInto(root, names, PATH_BYTES);
+                if (listed < 0 || listed >= PATH_BYTES) { free(names); return false; }
+                wr(off(names, listed), 0);
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(root, name);
+                            if (isDirectory(child)) {
+                                if (!collectSources(child, output)) { free(names); return false; }
+                            }
+                            else if (hasNcExtension(child)) {
+                                jsonArrayPush(output, jsonNewString(child));
+                            }
+                        }
+                        while (at < listed &&
+                            (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return true;
+            }
+
+            projectSources(root >> str) -> int {
+                output >> int <- jsonNewArray();
+                collectSources(join(root, "src"), output);
+                collectSources(join(root, "tests"), output);
+                collectSources(join(root, "examples"), output);
+                collectSources(join(root, "benches"), output);
+                return output;
+            }
+
+            compiler() -> str {
+                selected >> str <- envText("NC_GHOR_NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            runTool(command >> str, source >> str, check >> bool, compact >> bool) -> int {
+                arguments >> list<str> <- listCreateWithCapacity<str>(8);
+                listAdd(arguments, command);
+                listAdd(arguments, source);
+                if (check) listAdd(arguments, "--check");
+                if (!check && command == "nfmt") listAdd(arguments, "--in-place");
+                if (compact) listAdd(arguments, "--compact");
+                listAdd(arguments, "--quiet");
+                process >> Result<ProcessHandle, ProcessError> <- spawn(compiler(), arguments);
+                guard isOk(process) else return -1;
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) ? unwrap(status) : -1;
+            }
+
+            effectiveManifest(handle >> addr) -> str {
+                return manifest.manifest.select(handle);
+            }
+
+            executeFormat(handle >> addr, lint >> bool) -> int {
+                manifestPath >> str <- effectiveManifest(handle);
+                guard manifestPath != "" && exists(manifestPath) else {
+                    println("error[E_GHOR_MANIFEST_001]: ghor.toml not found");
+                    return 2;
+                }
+                root >> str <- directory(manifestPath);
+                sources >> int <- projectSources(root);
+                outputs >> int <- jsonNewArray();
+                failed >> bool <- false;
+                at >> int <- 0;
+                while (at < jsonArrayLen(sources)) {
+                    source >> str <- jsonGetStringOr(jsonArrayGet(sources, at), "");
+                    code >> int <- runTool(lint ? "nlint" : "nfmt", source,
+                        !lint && hasFlag(handle, "--check"),
+                        !lint && hasFlag(handle, "--compact"));
+                    entry >> int <- jsonNewObject();
+                    jsonObjectSet(entry, "source", jsonNewString(source));
+                    jsonObjectSet(entry, "exit_code", jsonNewInt(code));
+                    jsonObjectSet(entry, "status", jsonNewString(code == 0 ? "ok" : "error"));
+                    jsonArrayPush(outputs, entry);
+                    if (code != 0) failed <- true;
+                    at += 1;
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString(lint ? "ghor.lint.v1" : "ghor.fmt.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(failed ? "error" : "ok"));
+                jsonObjectSet(model, "checked", jsonNewInt(jsonArrayLen(sources)));
+                jsonObjectSet(model, "outputs", outputs);
+                jsonRelease(sources);
+                printModel(model);
+                return failed ? 1 : 0;
+            }
+
+            dangerousCleanPath(path >> str) -> bool {
+                if (path == "" || path == "." || path == ".." || path == "/" || path == "\\") return true;
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                return width == 3 && rd(off(source, 1)) == 58 && separator(rd(off(source, 2)));
+            }
+
+            executeClean(handle >> addr) -> int {
+                manifestPath >> str <- effectiveManifest(handle);
+                guard manifestPath != "" && exists(manifestPath) else {
+                    println("error[E_GHOR_MANIFEST_001]: ghor.toml not found");
+                    return 2;
+                }
+                root >> str <- directory(manifestPath);
+                target >> str <- option(handle, "--target-dir");
+                explicit >> bool <- target != "";
+                if (!explicit) target <- join(root, "target");
+                guard !dangerousCleanPath(target) && target != root else {
+                    println("error[E_GHOR_OPERATION_001]: refusing dangerous clean target");
+                    return 2;
+                }
+                existed >> bool <- exists(target);
+                dryRun >> bool <- hasFlag(handle, "--dry-run");
+                removed >> bool <- true;
+                if (!dryRun) removed <- removeTree(target);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.clean.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(removed ? "ok" : "error"));
+                jsonObjectSet(model, "removed", jsonNewString(target));
+                jsonObjectSet(model, "existed", jsonNewBool(existed));
+                jsonObjectSet(model, "explicit_target", jsonNewBool(explicit));
+                jsonObjectSet(model, "dry_run", jsonNewBool(dryRun));
+                printModel(model);
+                return removed ? 0 : 1;
+            }
+
+            executeDoc(handle >> addr) -> int {
+                manifestPath >> str <- effectiveManifest(handle);
+                guard manifestPath != "" && exists(manifestPath) else {
+                    println("error[E_GHOR_MANIFEST_001]: ghor.toml not found");
+                    return 2;
+                }
+                parsed >> int <- manifest.manifest.load(manifestPath);
+                guard parsed != 0 else { println("error[E_GHOR_MANIFEST_001]: manifest cannot be read"); return 2; }
+                root >> str <- directory(manifestPath);
+                output >> str <- option(handle, "--out");
+                if (output == "") output <- join(root, "target/doc");
+                guard ensureDir(output) else { jsonRelease(parsed); return 2; }
+                package >> int <- jsonObjectGet(parsed, "package");
+                name >> str <- jsonGetStringOr(jsonObjectGet(package, "name"), "package");
+                version >> str <- jsonGetStringOr(jsonObjectGet(package, "version"), "0.0.0");
+                sources >> int <- projectSources(root);
+                inventory >> int <- jsonNewArray();
+                markdown >> str <- "# " + name + "\n\nVersion: `" + version + "`\n\nManifest: `" + manifestPath + "`\n\n## Sources\n";
+                at >> int <- 0;
+                while (at < jsonArrayLen(sources)) {
+                    source >> str <- jsonGetStringOr(jsonArrayGet(sources, at), "");
+                    bytes >> int <- fsSize(source);
+                    digest >> str <- sha256.sha256.file(source);
+                    entry >> int <- jsonNewObject();
+                    jsonObjectSet(entry, "path", jsonNewString(source));
+                    jsonObjectSet(entry, "bytes", jsonNewInt(bytes));
+                    jsonObjectSet(entry, "sha256", jsonNewString(digest));
+                    jsonArrayPush(inventory, entry);
+                    markdown <- markdown + "- `" + source + "` (" + renderInt(bytes) + " bytes, `" + digest + "`)\n";
+                    at += 1;
+                }
+                indexPath >> str <- join(output, "index.md");
+                inventoryPath >> str <- join(output, "inventory.json");
+                guard writeText(indexPath, markdown) else { jsonRelease(parsed); jsonRelease(inventory); return 2; }
+                inventoryModel >> int <- jsonNewObject();
+                jsonObjectSet(inventoryModel, "schema", jsonNewString("ghor.doc.inventory.v1"));
+                jsonObjectSet(inventoryModel, "package", jsonNewString(name));
+                jsonObjectSet(inventoryModel, "version", jsonNewString(version));
+                jsonObjectSet(inventoryModel, "sources", inventory);
+                guard jsonSaveFile(inventoryModel, inventoryPath, 2) else {
+                    jsonRelease(parsed); jsonRelease(inventoryModel); return 2;
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.doc.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("ok"));
+                jsonObjectSet(model, "package", jsonNewString(name));
+                jsonObjectSet(model, "version", jsonNewString(version));
+                jsonObjectSet(model, "path", jsonNewString(indexPath));
+                jsonObjectSet(model, "inventory", jsonNewString(inventoryPath));
+                jsonObjectSet(model, "source_count", jsonNewInt(jsonArrayLen(sources)));
+                jsonRelease(parsed);
+                jsonRelease(sources);
+                jsonRelease(inventoryModel);
+                return printModel(model);
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "new" || command == "init" || command == "lang" || command == "clean" ||
+                    command == "fmt" || command == "fix" || command == "lint" || command == "doc";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "new") return executeNew(handle);
+                if (command == "init") return executeInit(handle);
+                if (command == "lang") return executeLang(handle);
+                if (command == "clean") return executeClean(handle);
+                if (command == "fmt") return executeFormat(handle, false);
+                if (command == "fix") return executeFormat(handle, false);
+                if (command == "lint") return executeFormat(handle, true);
+                return executeDoc(handle);
+            }
+
+            selfTest() -> bool {
+                return supportedLanguage("nC") && supportedLanguage("typescript") &&
+                    !supportedLanguage("unknown") && safeIdentifier("Hello-world") == "hello_world" &&
+                    hostSourceExt("python") == "py" &&
+                    baseName("packages/demo") == "demo" && !dangerousCleanPath("target") &&
+                    dangerousCleanPath("/");
+            }
+
+    fa:
+        return true;
+}

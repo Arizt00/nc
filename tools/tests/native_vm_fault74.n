@@ -1,0 +1,30 @@
+use <process:args>;
+
+nativeVmFault74 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 2) return 64;
+        mode >> str <- argsAt(arguments,1);
+        page >> int <- vmPageSize();
+        rw >> int <- vmReadWriteProtection();
+        base >> p<byte> <- vmReserve(null,page,0);
+        if (base == null || page <= 0) return 65;
+        if (mode == "reserved") { volatileWrite<byte>(base,7); return 1; }
+        if (!vmCommit(base,page,rw)) return 66;
+        if (mode == "readonly") {
+            if (!vmProtect(base,page,rw == 4 ? 2 : 1)) return 67;
+        } else if (mode == "decommitted") {
+            if (!vmDecommit(base,page)) return 68;
+        } else if (mode == "released") {
+            if (!vmRelease(base,page)) return 69;
+        } else if (mode == "rx") {
+            if (!vmExecutable(base,page)) return 70;
+        } else if (mode == "guard") {
+            if (!vmGuard(base,page,rw)) return 72;
+        } else return 71;
+        volatileWrite<byte>(base,9);
+        return 2;
+    }
+    ref main ->> run;
+    fa: return true;
+}

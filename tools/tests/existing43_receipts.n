@@ -1,0 +1,279 @@
+use <data:json>;
+use <process:args, env>;
+use <io:output, render>;
+use <project:retirement43_receipts, release_io, cert_json, sha256, editor_json>;
+
+existing43Receipts {
+    const:
+        ORIGINAL >> str <- "tools/tests/receipt_fixture_original.py";
+        ABC >> str <- "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        GOOD >> str <- "{\"schema\":\"nc.native-tools.native-frozen.v43\",\"passed\":true,\"failures\":0,\"cases\":[{\"name\":\"native\",\"passed\":true}]}";
+    stc:
+        root >> str;
+        host >> str;
+        work >> str;
+        candidatePath >> str;
+        candidateSHA >> str;
+        receiptPath >> str;
+        proofPath >> str;
+        results >> int;
+        failures >> int <- 0;
+    fn:
+        private:
+            record(name >> str, good >> bool) -> void {
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"name",jsonNewString(name));
+                cert_json.certJson.put(row,"passed",jsonNewBool(good));
+                cert_json.certJson.push(results,row);
+                if (!good) { failures += 1; println("FAIL "+name); }
+            }
+            write(path >> str, text >> str) -> void {
+                record("write "+path,release_io.releaseIo.write(root+"/"+path,text));
+            }
+            proofEntry(path >> str) -> int {
+                entry >> int <- jsonNewObject();
+                cert_json.certJson.put(entry,"path",jsonNewString(path));
+                hash >> str <- sha256.nccSha256.file(root+"/"+path);
+                cert_json.certJson.put(entry,"sha256",jsonNewString(hash)); strRelease(hash);
+                return entry;
+            }
+            receipt() -> int {
+                model >> int <- jsonNewObject();
+                cert_json.certJson.put(model,"schema",jsonNewString("nc.native-tools.equivalence-receipt.v43"));
+                cert_json.certJson.put(model,"original",jsonNewString(ORIGINAL));
+                cert_json.certJson.put(model,"host",jsonNewString(host));
+                cert_json.certJson.put(model,"qualified",jsonNewBool(true));
+                item >> int <- jsonNewObject();
+                cert_json.certJson.put(item,"path",jsonNewString(candidatePath));
+                cert_json.certJson.put(item,"sha256",jsonNewString(candidateSHA));
+                cert_json.certJson.put(model,"candidate",item);
+                proofs >> int <- jsonNewArray(); cert_json.certJson.push(proofs,proofEntry(proofPath));
+                cert_json.certJson.put(model,"proof_reports",proofs);
+                return model;
+            }
+            invoke(name >> str, model >> int, expected >> bool) -> void {
+                record("save "+name,cert_json.certJson.save(root+"/"+receiptPath,model));
+                good >> bool <- retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,root);
+                record(name,good == expected);
+                jsonRelease(model);
+            }
+            reportCase(name >> str, text >> str, expected >> bool) -> void {
+                write(proofPath,text);
+                invoke(name,receipt(),expected);
+            }
+            fieldCase(name >> str, field >> str, value >> int) -> void {
+                model >> int <- receipt(); cert_json.certJson.put(model,field,value); invoke(name,model,false);
+            }
+            missingFieldCase(name >> str, field >> str) -> void {
+                model >> int <- receipt(); removed >> int <- jsonObjectRemove(model,field);
+                if (removed > 0) jsonRelease(removed); invoke(name,model,false);
+            }
+            missingEntryCase(name >> str, field >> str, proof >> bool) -> void {
+                model >> int <- receipt();
+                item >> int <- 0; proofs >> int <- 0;
+                if (proof) { proofs <- jsonObjectGet(model,"proof_reports"); item <- jsonArrayGet(proofs,0); }
+                else item <- jsonObjectGet(model,"candidate");
+                removed >> int <- jsonObjectRemove(item,field); if (removed > 0) jsonRelease(removed);
+                if (proof) {
+                    removed <- jsonArrayRemove(proofs,0); if (removed > 0) jsonRelease(removed);
+                    cert_json.certJson.push(proofs,item); cert_json.certJson.put(model,"proof_reports",proofs);
+                } else cert_json.certJson.put(model,"candidate",item);
+                invoke(name,model,false);
+            }
+            proofFieldCase(name >> str, field >> str, value >> int) -> void {
+                model >> int <- receipt(); proofs >> int <- jsonObjectGet(model,"proof_reports");
+                item >> int <- jsonArrayGet(proofs,0); cert_json.certJson.put(item,field,value);
+                removed >> int <- jsonArrayRemove(proofs,0); if (removed > 0) jsonRelease(removed);
+                cert_json.certJson.push(proofs,item);
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke(name,model,false);
+            }
+            candidateFieldCase(name >> str, field >> str, value >> int) -> void {
+                model >> int <- receipt(); item >> int <- jsonObjectGet(model,"candidate");
+                cert_json.certJson.put(item,field,value); cert_json.certJson.put(model,"candidate",item);
+                invoke(name,model,false);
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                if (argsCount(arguments) == 8 && argsAt(arguments,1) == "--check") {
+                    accepted >> bool <- retirement43_receipts.retirement43Receipts.check(argsAt(arguments,2),argsAt(arguments,3),argsAt(arguments,4),argsAt(arguments,5),argsAt(arguments,6),argsAt(arguments,7));
+                    println(accepted ? "receipt accepted" : "receipt rejected"); argsRelease(arguments); return accepted ? 0 : 1;
+                }
+                if (argsCount(arguments) != 6) { argsRelease(arguments); return 2; }
+                root <- argsAt(arguments,1); host <- argsAt(arguments,2); work <- argsAt(arguments,3);
+                if (host != (envHas("WINDIR") ? "windows" : "linux")) { argsRelease(arguments); return 2; }
+                results <- jsonNewArray();
+                candidatePath <- work+"/candidate.bin"; candidateSHA <- ABC;
+                receiptPath <- work+"/receipt.json"; proofPath <- work+"/native.json";
+                record("native-sha256-self-test",sha256.nccSha256.selfTest());
+                write(candidatePath,"abc");
+                hash >> str <- sha256.nccSha256.file(root+"/"+candidatePath);
+                record("candidate-sha256-independent-vector",hash == ABC); strRelease(hash);
+                reportCase("minimum-one-native-report",GOOD,true);
+                reportCase("checks-array","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":[{\"passed\":true}],\"failed\":0}",true);
+                reportCase("checks-object-rows","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":{\"native\":{\"passed\":true}}}",true);
+                reportCase("explicit-rows-integer-checks","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75,\"rows\":[{\"passed\":true}],\"failures\":0}",true);
+                reportCase("explicit-rows-only","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"rows\":[{\"passed\":true}]}",true);
+                reportCase("cases-integer-checks","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":95,\"cases\":[{\"passed\":true}]}",true);
+                reportCase("rows-false-with-valid-counter","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75,\"rows\":[{\"passed\":false}]}",false);
+                reportCase("rows-empty-with-counter","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75,\"rows\":[]}",false);
+                reportCase("rows-object-not-array","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"rows\":{\"native\":{\"passed\":true}}}",false);
+                reportCase("rows-missing-passed","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75,\"rows\":[{}]}",false);
+                reportCase("rows-passed-integer","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75,\"rows\":[{\"passed\":1}]}",false);
+                reportCase("rows-checks-negative","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":-1,\"rows\":[{\"passed\":true}]}",false);
+                reportCase("rows-checks-fraction","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":0.5,\"rows\":[{\"passed\":true}]}",false);
+                reportCase("rows-checks-string","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":\"75\",\"rows\":[{\"passed\":true}]}",false);
+                reportCase("rows-checks-huge","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":184467440737095516160,\"rows\":[{\"passed\":true}]}",false);
+                reportCase("both-collections","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"checks\":[{\"passed\":true}]}",true);
+                reportCase("minus-zero-integer","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":-0,\"checks\":[{\"passed\":true,\"failed\":0}]}",true);
+                reportCase("covered-original-member","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"covered_originals\":[\"tools/tests/other.py\",\"tools/tests/receipt_fixture_original.py\"]}",true);
+                reportCase("native-host","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"host\":\""+host+"\"}",true);
+                reportCase("unicode-metadata","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"note\":\"caf\\u00e9 \\ud83d\\ude00\"}",true);
+                reportCase("missing-schema","{\"passed\":true,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("foreign-schema","{\"schema\":\"foreign.tests\",\"passed\":true,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("unknown-without-passed","{\"schema\":\"unknown\",\"checks\":[{\"passed\":true}]}",false);
+                reportCase("receipt-circular-proof","{\"schema\":\"nc.native-tools.equivalence-receipt.v43\",\"passed\":true,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("gate-circular-proof","{\"schema\":\"nc.native-tools.batch-check.v43\",\"passed\":true,\"checks\":[{\"passed\":true}]}",false);
+                reportCase("missing-passed","{\"schema\":\"nc.tests.v43\",\"cases\":[{\"passed\":true}]}",false);
+                reportCase("passed-false","{\"schema\":\"nc.tests.v43\",\"passed\":false,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("passed-integer","{\"schema\":\"nc.tests.v43\",\"passed\":1,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("passed-string","{\"schema\":\"nc.tests.v43\",\"passed\":\"true\",\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failures-positive","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":1,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failed-positive","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failed\":1,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-fraction","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":0.5,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-floating-zero","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":0.0,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-underflow","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":1e-400,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-large-integer","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failures\":184467440737095516160,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-bool","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failed\":false,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-null","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failed\":null,\"cases\":[{\"passed\":true}]}",false);
+                reportCase("failure-string","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"failed\":\"0\",\"cases\":[{\"passed\":true}]}",false);
+                reportCase("no-collections","{\"schema\":\"nc.tests.v43\",\"passed\":true}",false);
+                reportCase("empty-cases","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[]}",false);
+                reportCase("empty-checks","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":{}}",false);
+                reportCase("empty-other-collection","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"checks\":[]}",false);
+                reportCase("numeric-checks-not-evidence","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":75}",false);
+                reportCase("bare-check-bool","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"checks\":{\"native\":true}}",false);
+                reportCase("row-false","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true},{\"passed\":false}]}",false);
+                reportCase("row-missing-passed","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{}]}",false);
+                reportCase("row-passed-string","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":\"true\"}]}",false);
+                reportCase("row-passed-integer","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":1}]}",false);
+                reportCase("row-not-object","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[true]}",false);
+                reportCase("row-failures-positive","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true,\"failures\":1}]}",false);
+                reportCase("covered-wrong-original","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"covered_originals\":[\"tools/tests/other.py\"]}",false);
+                reportCase("covered-empty","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"covered_originals\":[]}",false);
+                reportCase("covered-wrong-type","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"covered_originals\":\"tools/tests/receipt_fixture_original.py\"}",false);
+                reportCase("covered-invalid-member","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"covered_originals\":[1,\"tools/tests/receipt_fixture_original.py\"]}",false);
+                reportCase("report-wrong-host","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"host\":\"other\"}",false);
+                reportCase("report-host-wrong-type","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"host\":1}",false);
+                reportCase("malformed-json","{\"passed\":",false);
+                reportCase("json-array-root","[]",false);
+                reportCase("embedded-nul-escape","{\"schema\":\"nc.tests.v43\",\"passed\":true,\"cases\":[{\"passed\":true}],\"note\":\"\\u0000\"}",false);
+                write(proofPath,GOOD);
+                fieldCase("receipt-original-mismatch","original",jsonNewString("tools/tests/other.py"));
+                fieldCase("receipt-original-type","original",jsonNewInt(1));
+                fieldCase("receipt-host-mismatch","host",jsonNewString(host == "windows" ? "linux" : "windows"));
+                fieldCase("receipt-host-type","host",jsonNewBool(true));
+                fieldCase("receipt-schema-mismatch","schema",jsonNewString("nc.tests.v43"));
+                fieldCase("receipt-qualified-false","qualified",jsonNewBool(false));
+                fieldCase("receipt-qualified-string","qualified",jsonNewString("true"));
+                fieldCase("receipt-qualified-number","qualified",jsonNewInt(1));
+                fieldCase("receipt-candidate-type","candidate",jsonNewArray());
+                fieldCase("receipt-proof-list-type","proof_reports",jsonNewObject());
+                fieldCase("receipt-proof-list-empty","proof_reports",jsonNewArray());
+                missingFieldCase("receipt-schema-missing","schema");
+                missingFieldCase("receipt-original-missing","original");
+                missingFieldCase("receipt-host-missing","host");
+                missingFieldCase("receipt-qualified-missing","qualified");
+                missingFieldCase("receipt-candidate-missing","candidate");
+                missingFieldCase("receipt-proofs-missing","proof_reports");
+                missingEntryCase("candidate-path-missing","path",false);
+                missingEntryCase("candidate-hash-missing","sha256",false);
+                missingEntryCase("proof-path-missing-field","path",true);
+                missingEntryCase("proof-hash-missing-field","sha256",true);
+                badProofs >> int <- jsonNewArray(); cert_json.certJson.push(badProofs,jsonNewBool(true));
+                fieldCase("proof-entry-not-object","proof_reports",badProofs);
+                badProofs <- jsonNewArray(); cert_json.certJson.push(badProofs,jsonNewObject());
+                fieldCase("proof-entry-empty-object","proof_reports",badProofs);
+                candidateFieldCase("candidate-path-mismatch","path",jsonNewString(work+"/other.bin"));
+                candidateFieldCase("candidate-path-type","path",jsonNewInt(1));
+                candidateFieldCase("candidate-sha-mismatch","sha256",jsonNewString("0000000000000000000000000000000000000000000000000000000000000000"));
+                candidateFieldCase("candidate-sha-type","sha256",jsonNewBool(true));
+                proofFieldCase("proof-hash-wrong","sha256",jsonNewString("0000000000000000000000000000000000000000000000000000000000000000"));
+                proofFieldCase("proof-hash-nonhex","sha256",jsonNewString("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+                proofFieldCase("proof-hash-type","sha256",jsonNewInt(1));
+                proofFieldCase("proof-path-type","path",jsonNewBool(true));
+                proofFieldCase("proof-path-traversal","path",jsonNewString("../outside.json"));
+                proofFieldCase("proof-path-absolute","path",jsonNewString("/outside.json"));
+                proofFieldCase("proof-path-windows-absolute","path",jsonNewString("C:/outside.json"));
+                proofFieldCase("proof-path-missing","path",jsonNewString(work+"/missing.json"));
+                model >> int <- receipt();
+                record("save-good-api-probes",cert_json.certJson.save(root+"/"+receiptPath,model)); jsonRelease(model);
+                record("api-host-unsupported",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,"macos",receiptPath,candidatePath,candidateSHA,root));
+                record("api-original-traversal",!retirement43_receipts.retirement43Receipts.check("../bad.py",host,receiptPath,candidatePath,candidateSHA,root));
+                record("api-original-not-python",!retirement43_receipts.retirement43Receipts.check("tools/tests/original.n",host,receiptPath,candidatePath,candidateSHA,root));
+                record("api-receipt-traversal",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,"../receipt.json",candidatePath,candidateSHA,root));
+                record("api-candidate-traversal",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,"../candidate.bin",candidateSHA,root));
+                record("api-hash-uppercase",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,"BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",root));
+                record("api-empty-root",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,""));
+                record("api-receipt-missing",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,work+"/absent-receipt.json",candidatePath,candidateSHA,root));
+                write(receiptPath,"{\"passed\":");
+                record("receipt-malformed-json",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,root));
+                write(receiptPath,"[]");
+                record("receipt-array-root",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,root));
+                write(receiptPath,"null");
+                record("receipt-null-root",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,root));
+                write(candidatePath,"tampered"); invoke("candidate-bytes-tampered",receipt(),false); write(candidatePath,"abc");
+                model <- receipt(); record("save-proof-tamper",cert_json.certJson.save(root+"/"+receiptPath,model)); jsonRelease(model);
+                write(proofPath,GOOD+"\n");
+                record("proof-bytes-tampered",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,receiptPath,candidatePath,candidateSHA,root));
+                write(proofPath,GOOD);
+                proofSize >> int <- strByteLen(GOOD); bytes >> p<byte> <- cast(alloc(proofSize+3));
+                cp(bytes,cast<byte>(GOOD),proofSize); wr(off(bytes,proofSize),0); wr(off(bytes,proofSize+1),123); wr(off(bytes,proofSize+2),125);
+                record("write-raw-nul-proof",fsWriteFrom(root+"/"+proofPath,bytes,proofSize+3,false) == proofSize+3); free(bytes);
+                invoke("raw-nul-trailing-bytes",receipt(),false);
+                write(proofPath,GOOD);
+                model <- receipt(); proofs >> int <- jsonObjectGet(model,"proof_reports");
+                write(work+"/second.json",GOOD); cert_json.certJson.push(proofs,proofEntry(work+"/second.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("two-native-reports",model,true);
+                model <- receipt(); proofs <- jsonObjectGet(model,"proof_reports");
+                write(work+"/second.json","{\"schema\":\"nc.tests.v43\",\"passed\":false,\"cases\":[{\"passed\":true}]}");
+                cert_json.certJson.push(proofs,proofEntry(work+"/second.json")); cert_json.certJson.put(model,"proof_reports",proofs);
+                invoke("one-good-one-failed-report",model,false);
+                record("legacy-false-green-ledger-rejected",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,"bootstrap/existing43-gate-false-green.json",candidatePath,candidateSHA,root));
+                record("snapshot-false-green-ledger-rejected",!retirement43_receipts.retirement43Receipts.check(ORIGINAL,host,"bootstrap/existing43-gate-snapshot-false-green.json",candidatePath,candidateSHA,root));
+                model <- receipt(); proofs <- jsonNewArray(); cert_json.certJson.push(proofs,proofEntry("docs/evidence/native-tools43/incomplete-gate-windows.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("failed-audit-proof-rejected",model,false);
+                model <- receipt(); proofs <- jsonNewArray(); cert_json.certJson.push(proofs,proofEntry("target/tmp/existing43/gate-review/"+host+"-snapshot-false-green.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("passed-gate-circular-proof-rejected",model,false);
+                realPath >> str <- argsAt(arguments,5); realSHA >> str <- sha256.nccSha256.file(root+"/"+realPath);
+                savedPath >> str <- candidatePath; savedSHA >> str <- candidateSHA; candidatePath <- realPath; candidateSHA <- realSHA;
+                invoke("real-linked-nC-candidate",receipt(),true);
+                model <- receipt(); proofs <- jsonNewArray();
+                cert_json.certJson.push(proofs,proofEntry("target/tmp/existing43/"+host+"/consumer-postseal/release/report.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("retained-native-release-report-format",model,true);
+                model <- receipt(); proofs <- jsonNewArray();
+                cert_json.certJson.push(proofs,proofEntry("target/tmp/existing43/"+host+"/consumer-postseal/retirement/report.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("retained-native-retirement-rows-format",model,true);
+                model <- receipt(); proofs <- jsonNewArray();
+                cert_json.certJson.push(proofs,proofEntry("target/tmp/existing43/"+host+"/consumer-postseal/ncup/report.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("retained-native-ncup-report-format",model,true);
+                model <- receipt(); proofs <- jsonNewArray();
+                cert_json.certJson.push(proofs,proofEntry("docs/evidence/existing-retirement-v43.json"));
+                cert_json.certJson.put(model,"proof_reports",proofs); invoke("raw-dossier-is-not-proof",model,false);
+                model <- receipt(); cert_json.certJson.put(model,"dossier",proofEntry("docs/evidence/existing-retirement-v43.json"));
+                invoke("optional-dossier-does-not-replace-native-proof",model,true);
+                model <- receipt(); cert_json.certJson.put(model,"dossier",proofEntry("docs/evidence/existing-retirement-v43.json"));
+                cert_json.certJson.put(model,"proof_reports",jsonNewArray()); invoke("optional-dossier-alone-rejected",model,false);
+                candidatePath <- savedPath; candidateSHA <- savedSHA; strRelease(realSHA);
+                report >> int <- jsonNewObject(); cert_json.certJson.put(report,"schema",jsonNewString("nc.existing-retirement.receipts-tests.v43"));
+                checkCount >> int <- jsonArrayLen(results);
+                cert_json.certJson.put(report,"host",jsonNewString(host)); cert_json.certJson.put(report,"implementation_language",jsonNewString("nC"));
+                cert_json.certJson.put(report,"passed",jsonNewBool(failures == 0)); cert_json.certJson.put(report,"failures",jsonNewInt(failures));
+                cert_json.certJson.put(report,"cases",results); cert_json.certJson.put(report,"originals_deleted",jsonNewBool(false));
+                saved >> bool <- cert_json.certJson.save(root+"/"+argsAt(arguments,4),report);
+                println("receipt checks="+renderInt(checkCount)+" failures="+renderInt(failures));
+                jsonRelease(report); argsRelease(arguments); return failures == 0 && saved && checkCount > 0 ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

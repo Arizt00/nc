@@ -1,0 +1,30 @@
+filesystemCopyBytesRelease :: runtime {
+    const:
+        SOURCE >> str <- ".ncc-filesystem-copy-source.bin";
+        DESTINATION >> str <- ".ncc-filesystem-copy-destination.bin";
+
+    fn:
+        run() -> bool {
+            delete_file(SOURCE);
+            delete_file(DESTINATION);
+
+            data >> p<byte> <- from(adr(b"bytes"));
+            written >> int <- fsWriteFrom(SOURCE, data, 5, false);
+            copied >> int <- fsCopy(SOURCE, DESTINATION);
+            bytes >> Result<array<byte>, FsError> <- readBytes(DESTINATION);
+            released >> bool <- fsBytesRelease(bytes);
+            destinationBytes >> int <- fsSize(DESTINATION);
+
+            sourceRemoved >> bool <- delete_file(SOURCE);
+            destinationRemoved >> bool <- delete_file(DESTINATION);
+            return written == 5 && copied == 5 && released &&
+                destinationBytes == 5 && sourceRemoved && destinationRemoved;
+        }
+
+    ref main ->> run;
+
+    fa:
+        delete_file(SOURCE);
+        delete_file(DESTINATION);
+        return true;
+}

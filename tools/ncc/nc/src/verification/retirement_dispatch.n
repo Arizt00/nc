@@ -1,0 +1,53 @@
+use <data:json>;
+use <io:output, std>;
+use <process:args, env, command>;
+use <project:tool_cli, release_io>;
+
+retirementDispatch {
+    fn:
+        public:
+            family(command >> str) -> str {
+                if (command == "package-public-beta" || command == "prepare-public-beta-layout" ||
+                    command == "release-cicd-compat" || command == "release-installer-matrix" ||
+                    command == "release-manifest-format" || command == "release-supply-chain" || command == "release-updates") return "ncc-release-v43";
+                if (strStartsWith(command,"ide43-") || command == "route-jetbrains") return "ncc-ide-v43";
+                if (command == "generate-compiler-closure" || command == "generate-machine-closure" ||
+                    command == "generate-primitive-real-closure" || command == "generate-runtime-closure") return "ncc-closures-v43";
+                if (command == "build_nc_manual" || command == "build_public_pdf_library") return "ncc-documents-v43";
+                if (command == "exact-head-evidence" || command == "portable-hypervisor-iommu" ||
+                    command == "primitive-release-evidence" || command == "certify-final-pipeline" || command == "certify-raw-optimizer") return "ncc-certification-v43";
+                if (command == "blockmaster") return "ncc-mobile-v43";
+                if (command == "blockmaster-protocol") return "ncc-mobile-protocol-v43";
+                if (command == "build-mobile-tools") return "ncc-mobile-build-v43";
+                return "";
+            }
+            execute(arguments >> addr, command >> str) -> int {
+                selected >> str <- family(command);
+                if (selected == "") return 2;
+                root >> str <- release_io.releaseIo.directory(tool_cli.toolCli.absolute(argsAt(arguments,0)));
+                path >> str <- root+"/"+selected+(envHas("WINDIR") ? ".exe" : "");
+                if (release_io.releaseIo.fileType(path) != 1) {
+                    println("ncc-tools: native family executable missing: "+path); return 1;
+                }
+                words >> int <- jsonNewArray();
+                tool_cli.toolCli.append(words,path);
+                if (command != "blockmaster" && command != "blockmaster-protocol" && command != "build-mobile-tools")
+                    tool_cli.toolCli.append(words,command == "certify-raw-optimizer" ? "certify-final-pipeline" : command);
+                index >> int <- 2;
+                while (index < argsCount(arguments)) {
+                    tool_cli.toolCli.append(words,argsAt(arguments,index)); index += 1;
+                }
+                line >> str <- tool_cli.toolCli.arrayLine(words);
+                windows >> bool <- envHas("WINDIR");
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,
+                    windows ? stdOut() : null,windows ? stdErr() : null,0);
+                strRelease(line); jsonRelease(words);
+                if (child == null) return 1;
+                if (!commandStarted(child)) { commandRelease(child); return 1; }
+                waited >> int <- commandWait(child,28800000);
+                if (waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- waited == 0 ? commandExitCode(child) : 1;
+                commandRelease(child); return code;
+            }
+    fa: return true;
+}

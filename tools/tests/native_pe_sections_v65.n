@@ -1,0 +1,78 @@
+use <io:output>;
+use <process:args>;
+
+nativePeSections65 {
+    fn:
+        read16(data >> p<byte>, at >> int) -> int {
+            return rd(off(data,at)) | (rd(off(data,at+1)) << 8);
+        }
+        read32(data >> p<byte>, at >> int) -> int {
+            return read16(data,at) | (read16(data,at+2) << 16);
+        }
+        align(value >> int, boundary >> int) -> int {
+            return (value+boundary-1) & (0-boundary);
+        }
+        valid(data >> p<byte>, bytes >> int) -> bool {
+            if (bytes < 256 || read16(data,0) != 0x5A4D) return false;
+            pe >> int <- read32(data,0x3C);
+            if (pe < 64 || pe > bytes-264 || read32(data,pe) != 0x4550) return false;
+            count >> int <- read16(data,pe+6);
+            optional >> int <- pe+24;
+            if (read16(data,pe+4) != 0x8664 || read16(data,pe+20) != 240 ||
+                read16(data,optional) != 0x20B || count <= 0 || count > 96) return false;
+            sectionAlign >> int <- read32(data,optional+32);
+            fileAlign >> int <- read32(data,optional+36);
+            if (sectionAlign != 4096 || fileAlign != 512) return false;
+            headers >> int <- read32(data,optional+60);
+            table >> int <- optional+240;
+            if (table+count*40 > headers || headers > bytes || headers % fileAlign != 0) return false;
+            nextRva >> int <- align(headers,sectionAlign);
+            nextRaw >> int <- headers;
+            entry >> int <- read32(data,optional+16);
+            executableEntry >> bool <- false;
+            index >> int <- 0;
+            while (index < count) {
+                section >> int <- table+index*40;
+                virtualBytes >> int <- read32(data,section+8);
+                rva >> int <- read32(data,section+12);
+                rawBytes >> int <- read32(data,section+16);
+                rawAt >> int <- read32(data,section+20);
+                flags >> int <- read32(data,section+36);
+                if (rva != nextRva || rva % sectionAlign != 0 || virtualBytes <= 0 ||
+                    rawBytes < 0 || rawBytes % fileAlign != 0 || rawAt % fileAlign != 0 ||
+                    rawAt < nextRaw || rawAt > bytes-rawBytes) return false;
+                span >> int <- virtualBytes > rawBytes ? virtualBytes : rawBytes;
+                nextRva <- align(rva+span,sectionAlign);
+                nextRaw <- rawAt+rawBytes;
+                if (entry >= rva && entry < rva+virtualBytes && (flags & 0x20000000) != 0)
+                    executableEntry <- true;
+                index += 1;
+            }
+            return executableEntry && read32(data,optional+56) == nextRva;
+        }
+        run() -> int {
+            args >> addr <- argsOpen();
+            if (argsCount(args) != 2) { argsRelease(args); return 64; }
+            path >> str <- argsAt(args,1);
+            bytes >> int <- fsSize(path);
+            if (bytes < 256 || bytes > 16777216) { argsRelease(args); return 65; }
+            data >> p<byte> <- cast(alloc(bytes));
+            if (data == null) { argsRelease(args); return 66; }
+            code >> int <- 0;
+            if (fsReadInto(path,data,bytes) != bytes || !valid(data,bytes)) code <- 1;
+            if (code == 0) {
+                pe >> int <- read32(data,0x3C);
+                table >> int <- pe+24+240;
+                saved >> int <- read32(data,table+12);
+                wr(off(data,table+13),rd(off(data,table+13))+16);
+                if (valid(data,bytes)) code <- 2;
+                wr(off(data,table+13),(saved >> 8) & 255);
+                if (!valid(data,bytes)) code <- 3;
+            }
+            free(data); argsRelease(args);
+            if (code == 0) println("pe-sections-ok");
+            return code;
+        }
+    ref main ->> run;
+    fa: return true;
+}

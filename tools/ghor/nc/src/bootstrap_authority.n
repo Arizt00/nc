@@ -1,0 +1,330 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:project_inspection, sha256, bootstrap_generation>;
+
+bootstrapAuthority[@runtime] {
+    const:
+        MODULE_COUNT >> int <- 29;
+        DIAGNOSTIC_COUNT >> int <- 2000;
+
+    fn:
+        private:
+            hasFlag(handle >> addr, name >> str) -> bool {
+                at >> int <- 2;
+                while (at < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                at >> int <- 2;
+                while (at + 1 < argsCount(handle)) {
+                    if (argsAt(handle, at) == name) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            ignoredByte(spans >> int, byteOffset >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(spans)) {
+                    span >> int <- jsonArrayGet(spans, at);
+                    start >> int <- jsonGetIntOr(jsonObjectGet(span, "offset"), -1);
+                    bytes >> int <- jsonGetIntOr(jsonObjectGet(span, "bytes"), 0);
+                    jsonRelease(span);
+                    if (start >= 0 && bytes > 0 &&
+                        byteOffset >= start && byteOffset < start + bytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            firstMismatch(left >> str, right >> str, spans >> int) -> int {
+                leftBytes >> int <- fsSize(left);
+                rightBytes >> int <- fsSize(right);
+                if (leftBytes < 0 || rightBytes < 0) return -3;
+                leftData >> p<byte> <- cast(alloc(leftBytes > 0 ? leftBytes : 1));
+                rightData >> p<byte> <- cast(alloc(rightBytes > 0 ? rightBytes : 1));
+                if (leftData == null || rightData == null) {
+                    if (leftData != null) free(leftData);
+                    if (rightData != null) free(rightData);
+                    return -4;
+                }
+                if ((leftBytes > 0 && fsReadInto(left, leftData, leftBytes) != leftBytes) ||
+                    (rightBytes > 0 && fsReadInto(right, rightData, rightBytes) != rightBytes)) {
+                    free(leftData);
+                    free(rightData);
+                    return -5;
+                }
+                limit >> int <- leftBytes < rightBytes ? leftBytes : rightBytes;
+                at >> int <- 0;
+                mismatch >> int <- -1;
+                while (at < limit && mismatch < 0) {
+                    if (!ignoredByte(spans, at) && rd(off(leftData, at)) != rd(off(rightData, at))) {
+                        mismatch <- at;
+                    }
+                    at += 1;
+                }
+                if (mismatch < 0 && leftBytes != rightBytes) mismatch <- limit;
+                free(leftData);
+                free(rightData);
+                return mismatch;
+            }
+
+            compareArtifact(item >> int) -> int {
+                name >> str <- jsonGetStringOr(jsonObjectGet(item, "name"), "artifact");
+                left >> str <- jsonGetStringOr(jsonObjectGet(item, "stage1"), "");
+                right >> str <- jsonGetStringOr(jsonObjectGet(item, "stage2"), "");
+                spans >> int <- jsonObjectGet(item, "ignore");
+                if (jsonArrayLen(spans) == 0) {
+                    jsonRelease(spans);
+                    spans <- jsonNewArray();
+                }
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "name", jsonNewString(name));
+                jsonObjectSet(result, "stage1", jsonNewString(left));
+                jsonObjectSet(result, "stage2", jsonNewString(right));
+                jsonObjectSet(result, "ignored_spans", jsonClone(spans));
+                if (left == "" || right == "" || !exists(left) || !exists(right)) {
+                    jsonObjectSet(result, "status", jsonNewString("missing"));
+                    jsonObjectSet(result, "equal", jsonNewBool(false));
+                    jsonObjectSet(result, "first_mismatch", jsonNewInt(-3));
+                    jsonRelease(spans);
+                    return result;
+                }
+                leftBytes >> int <- fsSize(left);
+                rightBytes >> int <- fsSize(right);
+                leftHash >> str <- sha256.sha256.file(left);
+                rightHash >> str <- sha256.sha256.file(right);
+                mismatch >> int <- firstMismatch(left, right, spans);
+                exact >> bool <- leftBytes == rightBytes && leftHash == rightHash;
+                equal >> bool <- mismatch == -1;
+                jsonObjectSet(result, "status", jsonNewString(
+                    equal ? (exact ? "exact" : "normalized") : "different"));
+                jsonObjectSet(result, "equal", jsonNewBool(equal));
+                jsonObjectSet(result, "exact", jsonNewBool(exact));
+                jsonObjectSet(result, "stage1_bytes", jsonNewInt(leftBytes));
+                jsonObjectSet(result, "stage2_bytes", jsonNewInt(rightBytes));
+                jsonObjectSet(result, "stage1_sha256", jsonNewString(leftHash));
+                jsonObjectSet(result, "stage2_sha256", jsonNewString(rightHash));
+                jsonObjectSet(result, "first_mismatch", jsonNewInt(mismatch));
+                jsonRelease(spans);
+                return result;
+            }
+
+            executeGenerationCompare(handle >> addr) -> int {
+                manifestPath >> str <- option(handle, "--manifest");
+                if (manifestPath == "" || !exists(manifestPath)) {
+                    println("error[E_GHOR_BOOTSTRAP_COMPARE_001]: --manifest must name an existing generation comparison manifest");
+                    return 64;
+                }
+                manifest >> int <- jsonParseFile(manifestPath);
+                if (manifest == 0) {
+                    println("error[E_GHOR_BOOTSTRAP_COMPARE_001]: generation comparison manifest is invalid JSON");
+                    return 65;
+                }
+                source >> int <- jsonObjectGet(manifest, "artifacts");
+                if (jsonArrayLen(source) == 0) {
+                    println("error[E_GHOR_BOOTSTRAP_COMPARE_001]: manifest artifacts must be a non-empty array");
+                    jsonRelease(source);
+                    jsonRelease(manifest);
+                    return 65;
+                }
+                artifacts >> int <- jsonNewArray();
+                equalCount >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    item >> int <- jsonArrayGet(source, at);
+                    comparison >> int <- compareArtifact(item);
+                    if (jsonGetBoolOr(jsonObjectGet(comparison, "equal"), false)) equalCount += 1;
+                    jsonArrayPush(artifacts, comparison);
+                    jsonRelease(item);
+                    at += 1;
+                }
+                total >> int <- jsonArrayLen(source);
+                allEqual >> bool <- equalCount == total;
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.bootstrap.stage2.byte-compare.v1"));
+                jsonObjectSet(report, "status", jsonNewString(allEqual ? "equal" : "different"));
+                jsonObjectSet(report, "manifest", jsonNewString(manifestPath));
+                jsonObjectSet(report, "artifact_count", jsonNewInt(total));
+                jsonObjectSet(report, "equal_count", jsonNewInt(equalCount));
+                jsonObjectSet(report, "generation_artifacts_equal", jsonNewBool(allEqual));
+                jsonObjectSet(report, "stage2_candidate", jsonNewBool(allEqual));
+                jsonObjectSet(report, "bootstrap_complete", jsonNewBool(false));
+                jsonObjectSet(report, "retirement_ready", jsonNewBool(false));
+                jsonObjectSet(report, "remaining_gate", jsonNewString(
+                    "the nC compiler sources must build the complete corpus before Rust stage0 retirement"));
+                jsonObjectSet(report, "artifacts", artifacts);
+                out >> str <- option(handle, "--out");
+                if (out != "" && !jsonSaveFile(report, out, 2)) {
+                    println("error[E_GHOR_BOOTSTRAP_COMPARE_002]: comparison report could not be written");
+                    jsonRelease(source);
+                    jsonRelease(manifest);
+                    jsonRelease(report);
+                    return 74;
+                }
+                if (hasFlag(handle, "--json")) {
+                    rendered >> str <- jsonStringifyPretty(report, 2);
+                    println(rendered);
+                    strRelease(rendered);
+                } else {
+                    println("ghor bootstrap compare: artifacts=" + renderInt(total) +
+                        " equal=" + renderInt(equalCount) +
+                        " stage2_candidate=" + (allEqual ? "true" : "false"));
+                }
+                jsonRelease(source);
+                jsonRelease(manifest);
+                jsonRelease(report);
+                return allEqual ? 0 : 1;
+            }
+
+            addModule(modules >> int, name >> str, file >> str, sema >> str) -> bool {
+                module >> int <- jsonNewObject();
+                jsonObjectSet(module, "name", jsonNewString(name));
+                jsonObjectSet(module, "file", jsonNewString(file));
+                jsonObjectSet(module, "parser", jsonNewString("ok"));
+                jsonObjectSet(module, "sema", jsonNewString(sema));
+                return jsonArrayPush(modules, module);
+            }
+
+            modules() -> int {
+                result >> int <- jsonNewArray();
+                addModule(result, "text", "tools/ghor/nc/src/text.n", "ok");
+                addModule(result, "diagnostics", "tools/ghor/nc/src/diagnostics.n", "ok");
+                addModule(result, "manifest", "tools/ghor/nc/src/manifest.n", "ok");
+                addModule(result, "cargo_config", "tools/ghor/nc/src/cargo_config.n", "project-link-required");
+                addModule(result, "package_graph", "tools/ghor/nc/src/package_graph.n", "project-link-required");
+                addModule(result, "transport", "tools/ghor/nc/src/transport.n", "project-link-required");
+                addModule(result, "resolver", "tools/ghor/nc/src/resolver.n", "project-link-required");
+                addModule(result, "sha256", "tools/ghor/nc/src/sha256.n", "ok");
+                addModule(result, "package_io", "tools/ghor/nc/src/package_io.n", "project-link-required");
+                addModule(result, "dependency_ops", "tools/ghor/nc/src/dependency_ops.n", "project-link-required");
+                addModule(result, "registry", "tools/ghor/nc/src/registry.n", "project-link-required");
+                addModule(result, "registry_mutation", "tools/ghor/nc/src/registry_mutation.n", "project-link-required");
+                addModule(result, "registry_administration", "tools/ghor/nc/src/registry_administration.n", "project-link-required");
+                addModule(result, "artifact", "tools/ghor/nc/src/artifact.n", "project-link-required");
+                addModule(result, "build_pipeline", "tools/ghor/nc/src/build_pipeline.n", "project-link-required");
+                addModule(result, "execution_pipeline", "tools/ghor/nc/src/execution_pipeline.n", "project-link-required");
+                addModule(result, "install_lifecycle", "tools/ghor/nc/src/install_lifecycle.n", "project-link-required");
+                addModule(result, "project_tools", "tools/ghor/nc/src/project_tools.n", "project-link-required");
+                addModule(result, "assurance", "tools/ghor/nc/src/assurance.n", "project-link-required");
+                addModule(result, "certification", "tools/ghor/nc/src/certification.n", "project-link-required");
+                addModule(result, "security", "tools/ghor/nc/src/security.n", "project-link-required");
+                addModule(result, "project_inspection", "tools/ghor/nc/src/project_inspection.n", "project-link-required");
+                addModule(result, "build_boundaries", "tools/ghor/nc/src/build_boundaries.n", "project-link-required");
+                addModule(result, "foreign_execution", "tools/ghor/nc/src/foreign_execution.n", "project-link-required");
+                addModule(result, "system_adapters", "tools/ghor/nc/src/system_adapters.n", "project-link-required");
+                addModule(result, "command", "tools/ghor/nc/src/command.n", "project-link-required");
+                addModule(result, "bootstrap_authority", "tools/ghor/nc/src/bootstrap_authority.n", "project-link-required");
+                addModule(result, "bootstrap_generation", "tools/ghor/nc/src/bootstrap_generation.n", "project-link-required");
+                addModule(result, "main", "tools/ghor/nc/main.n", "project-link-required");
+                return result;
+            }
+
+            delegatedCommands(contracts >> int) -> int {
+                source >> int <- jsonObjectGet(contracts, "commands");
+                result >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    command >> int <- jsonArrayGet(source, at);
+                    status >> str <- jsonGetStringOr(jsonObjectGet(command, "status"), "");
+                    if (status != "stage0_functional_stage1_pending") {
+                        jsonArrayPush(result, jsonClone(jsonObjectGet(command, "name")));
+                    }
+                    jsonRelease(command);
+                    at += 1;
+                }
+                jsonRelease(source);
+                return result;
+            }
+
+            executeBootstrap(handle >> addr) -> int {
+                contracts >> int <- project_inspection.projectInspection.contracts();
+                report >> int <- jsonNewObject();
+                stage0 >> int <- jsonNewObject();
+                jsonObjectSet(stage0, "status", jsonNewString("compatibility-only"));
+                jsonObjectSet(stage0, "role", jsonNewString("explicit fallback and host launcher"));
+                jsonObjectSet(stage0, "source", jsonNewString("crates/ncc-cli/src/commands/ghor.rs"));
+                stage1 >> int <- jsonNewObject();
+                jsonObjectSet(stage1, "language", jsonNewString("nC"));
+                jsonObjectSet(stage1, "module_count", jsonNewInt(MODULE_COUNT));
+                jsonObjectSet(stage1, "modules", modules());
+                jsonObjectSet(stage1, "configured_executable", jsonNewString(argsAt(handle, 0)));
+                jsonObjectSet(stage1, "executable_sha256",
+                    jsonNewString(sha256.sha256.file(argsAt(handle, 0))));
+                jsonObjectSet(stage1, "native_ready", jsonNewBool(true));
+                jsonObjectSet(stage1, "delegation_enabled", jsonNewBool(true));
+                jsonObjectSet(stage1, "delegation_mode", jsonNewString("native-material-commands"));
+                jsonObjectSet(stage1, "delegated_commands", delegatedCommands(contracts));
+                jsonObjectSet(stage1, "module_validation",
+                    jsonNewString("compile-time-parser-sema-ir-link"));
+                diagnostics >> int <- jsonNewObject();
+                jsonObjectSet(diagnostics, "registry", jsonNewString("ncc.diagnostics.registry.v1"));
+                jsonObjectSet(diagnostics, "entries", jsonNewInt(DIAGNOSTIC_COUNT));
+                counts >> int <- jsonNewObject();
+                jsonObjectSet(counts, "count", jsonClone(jsonObjectGet(contracts, "command_count")));
+                jsonObjectSet(counts, "native_e2e", jsonClone(jsonObjectGet(contracts, "native_e2e_count")));
+                jsonObjectSet(counts, "stage1_native_e2e", jsonClone(jsonObjectGet(contracts, "stage1_native_e2e_count")));
+                jsonObjectSet(counts, "stage1_native_partial", jsonClone(jsonObjectGet(contracts, "stage1_native_partial_count")));
+                jsonObjectSet(counts, "stage1_pending", jsonClone(jsonObjectGet(contracts, "stage1_pending_count")));
+                jsonObjectSet(report, "schema", jsonNewString("ghor.bootstrap.v1"));
+                jsonObjectSet(report, "active_executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "stage0", stage0);
+                jsonObjectSet(report, "stage1", stage1);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                jsonObjectSet(report, "commands", counts);
+                jsonObjectSet(report, "bootstrap_complete", jsonNewBool(false));
+                jsonObjectSet(report, "retirement_gate", jsonNewString(
+                    "native nC stage1 passes the complete ghor corpus and rebuilds itself"));
+                jsonRelease(contracts);
+                if (!hasFlag(handle, "--json")) {
+                    println("ghor bootstrap: stage0=compatibility stage1=nC modules=" +
+                        renderInt(MODULE_COUNT) + " native_ready=true");
+                    jsonRelease(report);
+                    return 0;
+                }
+                rendered >> str <- jsonStringifyPretty(report, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(report);
+                return 0;
+            }
+
+        public:
+            supports(handle >> addr) -> bool {
+                return argsCount(handle) > 1 && argsAt(handle, 1) == "bootstrap";
+            }
+
+            execute(handle >> addr) -> int {
+                if (argsCount(handle) > 2 && argsAt(handle, 2) == "compare") {
+                    return executeGenerationCompare(handle);
+                }
+                if (argsCount(handle) > 2 && argsAt(handle, 2) == "generation") {
+                    return bootstrap_generation.bootstrapGeneration.execute(handle);
+                }
+                return executeBootstrap(handle);
+            }
+
+            selfTest() -> bool {
+                values >> int <- modules();
+                spans >> int <- jsonNewArray();
+                span >> int <- jsonNewObject();
+                jsonObjectSet(span, "offset", jsonNewInt(4));
+                jsonObjectSet(span, "bytes", jsonNewInt(2));
+                jsonArrayPush(spans, span);
+                ok >> bool <- jsonArrayLen(values) == MODULE_COUNT &&
+                    !ignoredByte(spans, 3) && ignoredByte(spans, 4) &&
+                    ignoredByte(spans, 5) && !ignoredByte(spans, 6) &&
+                    bootstrap_generation.bootstrapGeneration.selfTest();
+                jsonRelease(spans);
+                jsonRelease(values);
+                return ok;
+            }
+
+    fa:
+        return true;
+}

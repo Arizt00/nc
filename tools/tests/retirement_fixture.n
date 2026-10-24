@@ -1,0 +1,68 @@
+use <io:output>;
+use <data:json>;
+use <process:args>;
+
+retirement_fixture {
+    fn:
+        run() -> int {
+            args >> addr <- argsOpen();
+            if (argsCount(args) < 2) { argsRelease(args); return 2; }
+            mode >> str <- argsAt(args,1);
+            if (mode == "sleep") { sleepMs(10000); argsRelease(args); return 0; }
+            if (mode == "large") {
+                index >> int <- 0;
+                while (index < 20000) { println("0123456789abcdef"); index += 1; }
+                argsRelease(args); return 0;
+            }
+            if (mode == "run") mode <- "mct";
+            if (mode == "build") { println("FIXTURE ONLY: no compiler build performed"); argsRelease(args); return 0; }
+            if (mode == "phase10-toolchain-model") { println("{\"channels\":[\"stable\",\"beta\",\"nightly\"]}"); argsRelease(args); return 0; }
+            if (mode == "ncup-init" || mode == "ncup" || mode == "release-train") {
+                println("FIXTURE ONLY: help available"); argsRelease(args); return 0;
+            }
+            if (mode == "which") {
+                selection >> str <- "test";
+                index >> int <- 2;
+                while (index+1 < argsCount(args)) {
+                    if (argsAt(args,index) == "--toolchain") selection <- argsAt(args,index+1);
+                    index += 1;
+                }
+                if (selection == "failure") { println("FIXTURE ONLY: resolver failed"); argsRelease(args); return 7; }
+                if (selection == "malformed") { println("not JSON"); argsRelease(args); return 0; }
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload,"path",jsonNewString(argsAt(args,0)));
+                jsonObjectSet(payload,"toolchain_id",jsonNewString(selection));
+                jsonObjectSet(payload,"source",jsonNewString("native-test-fixture"));
+                text >> str <- jsonStringify(payload);
+                println(text); strRelease(text); jsonRelease(payload); argsRelease(args); return 0;
+            }
+            if (mode == "mct") {
+                status >> str <- "mct_llvm_toolchain_matrix_passed";
+                code >> int <- 0;
+                index >> int <- 2;
+                while (index+1 < argsCount(args)) {
+                    if (argsAt(args,index) == "--opt-level") {
+                        chosen >> str <- argsAt(args,index+1);
+                        if (chosen == "missing") { status <- "mct_llvm_toolchain_matrix_missing_tools"; code <- 1; }
+                        if (chosen == "failed") { status <- "mct_llvm_toolchain_matrix_failed"; code <- 1; }
+                        if (chosen == "bad-json") { println("not JSON"); argsRelease(args); return 7; }
+                        if (chosen == "false-success") code <- 7;
+                    }
+                    index += 1;
+                }
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload,"schema",jsonNewString("nc.test.fixture.mct-smoke.v1"));
+                jsonObjectSet(payload,"status",jsonNewString(status));
+                jsonObjectSet(payload,"summary",jsonParse("{\"rows\":1,\"passed\":1,\"failed\":0,\"missing_toolchain\":0}"));
+                jsonObjectSet(payload,"rows",jsonParse("[{\"profile\":\"fixture\",\"target_triple\":\"fixture\",\"object_format\":\"none\",\"status\":\"fixture\",\"missing_tools\":[]}]"));
+                jsonObjectSet(payload,"tool_versions",jsonParse("{\"fixture\":\"not a real compiler\"}"));
+                text >> str <- jsonStringify(payload);
+                println(text); strRelease(text); jsonRelease(payload); argsRelease(args); return code;
+            }
+            argsRelease(args);
+            return 2;
+        }
+    ref main ->> run;
+    fa:
+        return true;
+}

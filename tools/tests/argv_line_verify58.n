@@ -1,0 +1,54 @@
+use <io:output, render>;
+use <process:args, command>;
+use <text:parse>;
+
+argvLineVerify58 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 4) { argsRelease(arguments); return 64; }
+        commandFile >> str <- argsAt(arguments,1); expected >> str <- argsAt(arguments,2);
+        status >> int <- parseInt(argsAt(arguments,3));
+        lineBytes >> int <- fsSize(commandFile); count >> int <- fsSize(expected);
+        if (lineBytes < 1 || lineBytes > 1048576 || count < 0 || count > 1048576) { argsRelease(arguments); return 65; }
+        line >> p<byte> <- cast<byte>(alloc(lineBytes+1));
+        wanted >> p<byte> <- cast<byte>(alloc(count+1)); actual >> p<byte> <- cast<byte>(alloc(count+1));
+        if (line == null || wanted == null || actual == null) { free(line); free(wanted); free(actual); argsRelease(arguments); return 71; }
+        if (fsReadInto(commandFile,line,lineBytes) != lineBytes || fsReadInto(expected,wanted,count) != count) {
+            free(line); free(wanted); free(actual); argsRelease(arguments); return 74;
+        }
+        wr(off(line,lineBytes),0);
+        pipe >> addr <- commandPipeOpen(false,true);
+        if (pipe == null || commandPipeError(pipe) != 0) {
+            if (pipe != null) commandPipeRelease(pipe);
+            free(line); free(wanted); free(actual); argsRelease(arguments); return 71;
+        }
+        commandText >> str <- cast(line);
+        child >> addr <- commandOpen(commandText,".",null,commandPipeWriteHandle(pipe),null,0);
+        commandPipeCloseWrite(pipe);
+        started >> bool <- child != null && commandStarted(child);
+        bytes >> int <- 0; received >> int <- 0;
+        // Drain before waiting: a long argv echo may exceed the OS pipe capacity.
+        if (started) {
+            received <- commandPipeRead(pipe,adr(actual),count+1);
+            while (received > 0 && bytes+received <= count+1) {
+                bytes += received; if (bytes == count+1) break;
+                received <- commandPipeRead(pipe,adr(off(actual,bytes)),count+1-bytes);
+            }
+        }
+        commandPipeCloseRead(pipe);
+        waited >> int <- started ? commandWait(child,30000) : -1;
+        if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+        exitCode >> int <- child != null ? commandExitCode(child) : -1;
+        valid >> bool <- started && waited == 0 && exitCode == status && bytes == count && (received == 0 || received == -109);
+        at >> int <- 0;
+        while (valid && at < count) { valid <- rd(off(actual,at)) == rd(off(wanted,at)); at += 1; }
+        print("{\"passed\":"); print(valid ? "true" : "false");
+        print(",\"exit_code\":"); print(renderInt(exitCode));
+        print(",\"bytes\":"); print(renderInt(bytes)); println("}");
+        if (child != null) commandRelease(child);
+        commandPipeRelease(pipe); free(line); free(wanted); free(actual); argsRelease(arguments);
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

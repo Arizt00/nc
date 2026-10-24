@@ -1,0 +1,107 @@
+primitive[@] target x86_64:
+    type material_target = "x86_64-unknown-none";
+    type material_environment = "freestanding";
+    type material_protocol = "UART";
+
+    capability hardware_uart_material:
+        allow port.read;
+        allow port.write;
+        allow signal.sample;
+        deny host.console.write;
+        deny host.console.read;
+
+    bus port_io_legacy:
+        kind port_io;
+        width 8;
+        endian little;
+        volatile true;
+        timing stable after 1 cycle;
+
+    port uart.com1.data:
+        bus port_io_legacy;
+        addr ioaddr(0x03F8);
+        width 8;
+        access rw;
+
+    port uart.com1.status:
+        bus port_io_legacy;
+        addr ioaddr(0x03FD);
+        width 8;
+        access r;
+        read side_effect none;
+
+    bitfield com1_lsr byte:
+        bit 5 tx_ready;
+
+    signal uart.com1.txReady:
+        source uart.com1.status;
+        field com1_lsr.tx_ready;
+        high means ready;
+        sample volatile;
+        stable after 1 cycle;
+
+    window com1_port_window:
+        base ioaddr(0x03F8);
+        size bytes(8);
+        access rw;
+        owner uart.com1;
+        requires signature com1_identity;
+
+    signature com1_identity:
+        window com1_port_window;
+        width 8;
+        value 0xF8;
+
+    operation uart.com1.emit(value: byte):
+        capability hardware_uart_material;
+        reads uart.com1.status;
+        writes uart.com1.data;
+        requires uart.com1.txReady == high;
+        timing await uart.com1.txReady == high timeout 100000 cycles else fault UartTimeout;
+        write uart.com1.data <- value;
+        barrier io;
+        settle 1 cycle;
+
+    operation kernelEntry():
+        capability hardware_uart_material;
+        writes uart.com1.data;
+        write uart.com1.data <- 0x6E;
+        write uart.com1.data <- 0x43;
+        write uart.com1.data <- 0x20;
+        write uart.com1.data <- 0x70;
+        write uart.com1.data <- 0x72;
+        write uart.com1.data <- 0x69;
+        write uart.com1.data <- 0x6D;
+        write uart.com1.data <- 0x69;
+        write uart.com1.data <- 0x74;
+        write uart.com1.data <- 0x69;
+        write uart.com1.data <- 0x76;
+        write uart.com1.data <- 0x65;
+        write uart.com1.data <- 0x20;
+        write uart.com1.data <- 0x61;
+        write uart.com1.data <- 0x6C;
+        write uart.com1.data <- 0x69;
+        write uart.com1.data <- 0x76;
+        write uart.com1.data <- 0x65;
+        barrier io;
+        haltLoop;
+
+    anchor boot0:
+        at physaddr(0x0000_7C00);
+        size bytes(512);
+        align 16;
+
+    entry kernelEntry:
+        anchor boot0;
+        offset 0;
+        mode real16;
+        requires com1_identity;
+
+    bridge:
+        root.policy.bind;
+        root.policy.guard;
+        root.memory.resolve;
+        machine.machineCore;
+
+    seal:
+        primitiveClosed;

@@ -1,0 +1,441 @@
+use <io:output, render, input>;
+
+stress_runtime_industrial_pack :: runtime {
+    stc:
+        sensores >> array<int, 16>;
+        ring >> array<int, 8>;
+        resultados >> array<int, 8>;
+        eventos >> array<int, 16>;
+        espejo >> array<int, 4>;
+
+        i >> int;
+        ringIndex >> int;
+        opcion >> int;
+
+        valor >> int;
+        suma >> int;
+        sumaPares >> int;
+        sumaImpares >> int;
+        maximo >> int;
+        minimo >> int;
+        mediaX100 >> int;
+        checksum >> int;
+
+        listValue >> int;
+        regionValue >> int;
+
+        ok >> bool;
+        esPar >> bool;
+        ejecutando >> bool;
+        procesado >> bool;
+        guardado >> bool;
+
+    fn:
+        boot() -> bool {
+            sensores >> array<int, 16> <- [
+                12, 7, 33, 4,
+                98, 21, 40, 17,
+                5, 64, 18, 27,
+                3, 88, 45, 10
+            ];
+
+            ring <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            resultados <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            eventos >> array<int, 16> <- [
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0
+            ];
+
+            espejo <- [0, 0, 0, 0];
+
+            i <- 0;
+            ringIndex <- 0;
+            opcion <- 0;
+
+            valor <- 0;
+            suma <- 0;
+            sumaPares <- 0;
+            sumaImpares <- 0;
+            checksum <- 0;
+
+            maximo <- sensores[0];
+            minimo <- sensores[0];
+            mediaX100 <- 0;
+
+            listValue <- 0;
+            regionValue <- 0;
+
+            ok <- true;
+            esPar <- false;
+            ejecutando <- true;
+            procesado <- false;
+            guardado <- false;
+
+            return true;
+        }
+
+        limpiarTrabajo() -> bool {
+            ring <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            resultados <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            eventos >> array<int, 16> <- [
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0,
+                0, 0, 0, 0
+            ];
+
+            espejo <- [0, 0, 0, 0];
+
+            i <- 0;
+            ringIndex <- 0;
+
+            suma <- 0;
+            sumaPares <- 0;
+            sumaImpares <- 0;
+            checksum <- 0;
+
+            maximo <- sensores[0];
+            minimo <- sensores[0];
+            mediaX100 <- 0;
+
+            listValue <- 0;
+            regionValue <- 0;
+
+            procesado <- false;
+            guardado <- false;
+
+            return true;
+        }
+
+        cargarSensoresManual() -> bool {
+            i <- 0;
+
+            println("");
+            println("Introduce 16 valores enteros para sensores:");
+
+            while (i < 16) {
+                print("Sensor " + renderInt(i) + ": ");
+
+                valor <- readInt();
+                valor !> int : dev(runtime.InputParseError);
+
+                sensores[i] <- valor;
+
+                i <- i + 1;
+            }
+
+            limpiarTrabajo();
+
+            println("Sensores cargados correctamente.");
+
+            return true;
+        }
+
+        imprimirSensores() -> bool {
+            i <- 0;
+
+            println("");
+            println("===== SENSORES ACTUALES =====");
+
+            while (i < 16) {
+                print("sensores[");
+                print(i);
+                print("] = ");
+                println(sensores[i]);
+
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        procesarSensores() -> bool {
+            i <- 0;
+            suma <- 0;
+            sumaPares <- 0;
+            sumaImpares <- 0;
+            checksum <- 0;
+
+            maximo <- sensores[0];
+            minimo <- sensores[0];
+            ringIndex <- 0;
+
+            while (i < 16) {
+                valor <- sensores[i];
+
+                if (valor > maximo) {
+                    maximo <- valor;
+                }
+
+                if (valor < minimo) {
+                    minimo <- valor;
+                }
+
+                suma <- suma + valor;
+                checksum <- checksum + (valor * (i + 1));
+
+                esPar <- (valor % 2) == 0;
+
+                if (esPar) {
+                    sumaPares <- sumaPares + valor;
+                } else {
+                    sumaImpares <- sumaImpares + valor;
+                }
+
+                ring[ringIndex] <- valor;
+                eventos[i] <- valor;
+
+                ringIndex <- ringIndex + 1;
+
+                if (ringIndex >= 8) {
+                    ringIndex <- 0;
+                }
+
+                i <- i + 1;
+            }
+
+            mediaX100 <- (suma * 100) / 16;
+            procesado <- true;
+            guardado <- false;
+
+            println("Procesamiento completado.");
+
+            return true;
+        }
+
+        guardarResultados() -> bool {
+            if (!procesado) {
+                println("Primero debes procesar los sensores.");
+                return false;
+            }
+
+            resultados[0] <- maximo;
+            resultados[1] <- minimo;
+            resultados[2] <- mediaX100;
+            resultados[3] <- suma;
+            resultados[4] <- sumaPares;
+            resultados[5] <- sumaImpares;
+            resultados[6] <- checksum;
+            resultados[7] <- ringIndex;
+
+            espejo[0] <- resultados[0];
+            espejo[1] <- resultados[1];
+            espejo[2] <- resultados[2];
+            espejo[3] <- resultados[6];
+
+            regionValue <- espejo[3];
+            guardado <- true;
+
+            println("Resultados guardados en memoria logica.");
+
+            return true;
+        }
+
+        modificarEvento() -> bool {
+            if (!procesado) {
+                println("Primero debes procesar los sensores.");
+                return false;
+            }
+
+            listValue <- eventos[3];
+            eventos[3] <- listValue + 100;
+            listValue <- eventos[3];
+
+            println("Evento[3] modificado.");
+            println("Nuevo valor: " + renderInt(listValue));
+
+            return true;
+        }
+
+        imprimirResultados() -> bool {
+            if (!guardado) {
+                println("Primero debes guardar los resultados.");
+                return false;
+            }
+
+            println("");
+            println("===== RESULTADOS GUARDADOS =====");
+            println("Maximo: " + renderInt(resultados[0]));
+            println("Minimo: " + renderInt(resultados[1]));
+            println("Media x100: " + renderInt(resultados[2]));
+            println("Suma total: " + renderInt(resultados[3]));
+            println("Suma pares: " + renderInt(resultados[4]));
+            println("Suma impares: " + renderInt(resultados[5]));
+            println("Checksum: " + renderInt(resultados[6]));
+            println("Ring index final: " + renderInt(resultados[7]));
+            println("Evento[3]: " + renderInt(eventos[3]));
+            println("Espejo checksum: " + renderInt(espejo[3]));
+
+            return true;
+        }
+
+        imprimirRing() -> bool {
+            i <- 0;
+
+            println("");
+            println("===== RING BUFFER =====");
+
+            while (i < 8) {
+                print("ring[");
+                print(i);
+                print("] = ");
+                println(ring[i]);
+
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        imprimirSiteLogico() -> bool {
+            if (!guardado) {
+                println("Primero debes guardar los resultados.");
+                return false;
+            }
+
+            println("");
+            println("===== SITE LOGICO =====");
+            println("Dato: checksum");
+            println("Contenedor: stress_runtime_industrial_pack[@runtime]");
+            println("Array origen: resultados");
+            println("Indice: 6");
+            println("Valor: " + renderInt(resultados[6]));
+
+            println("");
+            println("Mirror:");
+            println("Array espejo: espejo");
+            println("Indice: 3");
+            println("Valor: " + renderInt(espejo[3]));
+
+            return true;
+        }
+
+        validar() -> bool {
+            if (!guardado) {
+                println("Primero debes guardar los resultados.");
+                return false;
+            }
+
+            if (resultados[0] < resultados[1]) {
+                return false;
+            }
+
+            if (resultados[3] <= 0) {
+                return false;
+            }
+
+            if (resultados[6] <= 0) {
+                return false;
+            }
+
+            return true;
+        }
+
+        imprimirMenu() -> bool {
+            println("");
+            println("===== MENU RUNTIME INDUSTRIAL =====");
+            println("1. Cargar sensores manualmente");
+            println("2. Ver sensores actuales");
+            println("3. Procesar sensores");
+            println("4. Guardar resultados");
+            println("5. Modificar evento[3]");
+            println("6. Imprimir resultados");
+            println("7. Imprimir ring buffer");
+            println("8. Imprimir site logico del checksum");
+            println("9. Validar");
+            println("10. Salir");
+            print("> ");
+
+            return true;
+        }
+
+        ejecutarOpcion() -> bool {
+            if (opcion == 1) {
+                cargarSensoresManual();
+                return true;
+            }
+
+            if (opcion == 2) {
+                imprimirSensores();
+                return true;
+            }
+
+            if (opcion == 3) {
+                procesarSensores();
+                return true;
+            }
+
+            if (opcion == 4) {
+                guardarResultados();
+                return true;
+            }
+
+            if (opcion == 5) {
+                modificarEvento();
+                return true;
+            }
+
+            if (opcion == 6) {
+                imprimirResultados();
+                return true;
+            }
+
+            if (opcion == 7) {
+                imprimirRing();
+                return true;
+            }
+
+            if (opcion == 8) {
+                imprimirSiteLogico();
+                return true;
+            }
+
+            if (opcion == 9) {
+                ok <- validar();
+
+                if (ok) {
+                    println("Validacion OK.");
+                } else {
+                    println("Validacion fallida.");
+                }
+
+                return true;
+            }
+
+            if (opcion == 10) {
+                ejecutando <- false;
+                println("Saliendo...");
+                return true;
+            }
+
+            println("Opcion no valida.");
+            return false;
+        }
+
+        run() -> bool {
+            boot();
+
+            while (ejecutando) {
+                imprimirMenu();
+
+                opcion <- readInt();
+                opcion !> int : dev(runtime.InputParseError);
+
+                ejecutarOpcion();
+            }
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

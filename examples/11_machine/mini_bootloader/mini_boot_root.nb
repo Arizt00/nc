@@ -1,0 +1,61 @@
+mini_boot_root :: root {
+    root:
+        identity: mini_boot_root;
+        version: 1;
+        authority: open;
+        binary: optional;
+        evidence: optional;
+        lowering: sovereign;
+
+    target:
+        triple: x86_64-unknown-none;
+        entry: _start;
+        stack: 0x90000;
+
+    const:
+        INIT_MAGIC >> dword : 0x4E434931;
+        STACK_BYTES >> qword : 0x10000;
+
+    site:
+        resetEntry:
+            kind: code_anchor;
+            size: 16;
+            align: 16;
+            permissions: read | execute;
+        startupStack:
+            kind: memory_anchor;
+            size: 0x10000;
+            align: 16;
+            permissions: read | write;
+        targetInit:
+            kind: data_anchor;
+            size: 4096;
+            align: 16;
+            permissions: read;
+
+    bind:
+        symbol _start -> root.site resetEntry;
+        symbol boot_stack -> root.site startupStack;
+        symbol target_init -> root.site targetInit;
+
+    bridge:
+        mini_boot_root -> mini_boot_entry;
+        mini_boot_entry -> mini_boot_kernel;
+
+    routine:
+        materializeInit() -> bool {
+            return true;
+        }
+
+    verify:
+        materializeInit();
+
+    report:
+        status "mini_boot_root::materialized";
+        emit resetEntry;
+        emit startupStack;
+        emit targetInit;
+
+    seal:
+        require source_hash;
+}

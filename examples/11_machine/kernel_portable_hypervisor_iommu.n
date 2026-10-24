@@ -1,0 +1,35 @@
+kernelPortableHypervisorIommu :: kernel {
+    fn:
+        arm(snapshot >> addr) -> bool {
+            hcr <- el2_read_hcr();
+            result <- el2_hvc(0);
+
+            return el2_write_hcr(hcr) && el2_write_vtcr(2147483728) &&
+                el2_write_vttbr(1048576) && el2_tlbi_all() &&
+                el2_exit_snapshot(snapshot) && result >= 0;
+        }
+
+        riscv(snapshot >> addr, guest >> addr) -> bool {
+            hstatus <- riscv_h_read_hstatus();
+            value <- riscv_h_hlv(guest);
+
+            return riscv_h_write_hstatus(hstatus) &&
+                riscv_h_write_hgatp(1048576) &&
+                riscv_h_hfence_gvma(0, 0) && riscv_h_hfence_vvma(0, 0) &&
+                riscv_h_hsv(guest, value) && riscv_h_exit_snapshot(snapshot);
+        }
+
+        iommu() -> bool {
+            table      at 0x100000;
+            queue      at 0x101000;
+            descriptor at 0x102000;
+            iova       at 0x2000;
+
+            return iommu_map_entry(table, 0, 4099) &&
+                iommu_invalidate(queue, 1) &&
+                dma_descriptor_write(descriptor, iova, table, 4096, 3) &&
+                dma_fence() && iommu_unmap_entry(table, 0);
+        }
+
+    ref main ->> iommu;
+}

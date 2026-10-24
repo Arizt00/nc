@@ -1,0 +1,35 @@
+use <project:args_host>;
+
+argsProvider {
+    const:
+        DESCRIPTOR_BYTES >> int <- 32;
+    fn:
+        public:
+            provider_args_argsOpen() -> addr {
+                data >> p<byte> <- cast<byte>(calloc(1,DESCRIPTOR_BYTES));
+                if (data == null) return null;
+                status >> int <- args_host.argsHost.capture(data);
+                wr<u64>(off(data,24),status);
+                return adr(data);
+            }
+            provider_args_argsCount(handle >> addr) -> int {
+                return handle == null ? 0 : rd<u64>(from<byte>(handle));
+            }
+            provider_args_argsAt(handle >> addr, index >> int) -> str {
+                vector >> p<addr> <- from<addr>(rd<addr>(off(from<byte>(handle),8)));
+                return cast<str>(rd(off(vector,index)));
+            }
+            provider_args_argsData(handle >> addr) -> addr { return rd<addr>(off(from<byte>(handle),8)); }
+            provider_args_argsBytes(handle >> addr) -> int { return rd<u64>(off(from<byte>(handle),16)); }
+            provider_args_argsError(handle >> addr) -> int { return handle == null ? 12 : rd<u64>(off(from<byte>(handle),24)); }
+            provider_args_argsRelease(handle >> addr) -> bool {
+                if (handle == null) return true;
+                data >> p<byte> <- from<byte>(handle);
+                count >> u64 <- rd<u64>(data);
+                vector >> p<addr> <- from<addr>(rd<addr>(off(data,8)));
+                at >> u64 <- 0;
+                while (at < count) { free(from<byte>(rd(off(vector,at)))); at += 1; }
+                free(vector); free(data); return true;
+            }
+    fa: return true;
+}

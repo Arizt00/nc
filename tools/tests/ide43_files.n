@@ -1,0 +1,95 @@
+use <data:json>;
+use <io:render>;
+use <project:release_io, cert_json, sha256>;
+
+ide43Files {
+    fn:
+        private:
+            collect(root >> str, relative >> str, result >> int) -> void {
+                path >> str <- root+"/"+relative; kind >> int <- release_io.releaseIo.fileType(path);
+                if (kind == 2) {
+                    names >> int <- release_io.releaseIo.names(path); index >> int <- 0;
+                    while (index < jsonArrayLen(names)) {
+                        item >> int <- jsonArrayGet(names,index);
+                        collect(root,relative+"/"+jsonStringView(item,""),result);
+                        jsonRelease(item); index += 1;
+                    }
+                    jsonRelease(names);
+                }
+                if (kind == 1) {
+                    row >> int <- jsonNewObject();
+                    cert_json.certJson.put(row,"sha256",jsonNewString(sha256.nccSha256.file(path)));
+                    cert_json.certJson.put(row,"bytes",jsonNewInt(fsSize(path)));
+                    if (strEndsWith(relative,".json")) cert_json.certJson.put(row,"json",jsonParseFile(path));
+                    cert_json.certJson.put(result,relative,row);
+                }
+            }
+            differences(a >> int, b >> int, path >> str, rows >> int) -> void {
+                if (jsonEquals(a,b)) return;
+                if (jsonKind(a) == 6 && jsonKind(b) == 6) {
+                    keys >> int <- jsonNewObject(); index >> int <- 0;
+                    while (index < jsonObjectLen(a)) {
+                        key >> str <- jsonObjectKeyAt(a,index); cert_json.certJson.put(keys,key,jsonNewBool(true)); free(cast<byte>(key)); index += 1;
+                    }
+                    index <- 0;
+                    while (index < jsonObjectLen(b)) {
+                        key >> str <- jsonObjectKeyAt(b,index); cert_json.certJson.put(keys,key,jsonNewBool(true)); free(cast<byte>(key)); index += 1;
+                    }
+                    index <- 0;
+                    while (index < jsonObjectLen(keys)) {
+                        key >> str <- jsonObjectKeyAt(keys,index); x >> int <- jsonObjectGet(a,key); y >> int <- jsonObjectGet(b,key);
+                        differences(x,y,path+"/"+key,rows); jsonRelease(x); jsonRelease(y); free(cast<byte>(key)); index += 1;
+                    }
+                    jsonRelease(keys); return;
+                }
+                if (jsonKind(a) == 5 && jsonKind(b) == 5 && jsonArrayLen(a) == jsonArrayLen(b)) {
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(a)) {
+                        x >> int <- jsonArrayGet(a,index); y >> int <- jsonArrayGet(b,index);
+                        differences(x,y,path+"/"+renderInt(index),rows); jsonRelease(x); jsonRelease(y); index += 1;
+                    }
+                    return;
+                }
+                row >> int <- jsonNewObject();
+                cert_json.certJson.put(row,"path",jsonNewString(path));
+                cert_json.certJson.put(row,"oracle",jsonClone(a)); cert_json.certJson.put(row,"native",jsonClone(b));
+                category >> str <- "unexplained";
+                if (strEndsWith(path,"/generated_at")) category <- "clock";
+                if (strContains(path,"/commands/") && strEndsWith(path,"/cmd")) category <- "native-command-substitution";
+                if (strContains(path,"/commands/") && (strEndsWith(path,"/stdout") || strEndsWith(path,"/stderr"))) category <- "command-stream";
+                cert_json.certJson.put(row,"category",jsonNewString(category)); cert_json.certJson.push(rows,row);
+            }
+        public:
+            snapshot(root >> str) -> int {
+                result >> int <- jsonNewObject(); collect(root,"docs/status",result); collect(root,"var/releases",result); return result;
+            }
+            diff(a >> int, b >> int) -> int {
+                rows >> int <- jsonNewArray(); differences(a,b,"",rows); return rows;
+            }
+            compare(a >> int, b >> int) -> int {
+                result >> int <- jsonNewObject(); files >> int <- jsonNewArray(); passed >> bool <- jsonObjectLen(a) == jsonObjectLen(b); index >> int <- 0;
+                while (index < jsonObjectLen(a)) {
+                    key >> str <- jsonObjectKeyAt(a,index); x >> int <- jsonObjectGet(a,key); y >> int <- jsonObjectGet(b,key);
+                    xj >> int <- jsonObjectGet(x,"json"); yj >> int <- jsonObjectGet(y,"json");
+                    present >> bool <- jsonObjectHas(b,key); raw >> bool <- jsonEquals(x,y); equal >> bool <- raw;
+                    changes >> int <- jsonNewArray();
+                    if (present && jsonKind(xj) == 6 && jsonKind(yj) == 6) {
+                        jsonRelease(changes); changes <- diff(xj,yj); equal <- true; at >> int <- 0;
+                        while (at < jsonArrayLen(changes)) {
+                            item >> int <- jsonArrayGet(changes,at);
+                            category >> str <- release_io.releaseIo.field(item,"category");
+                            equal <- (category == "clock" || category == "native-command-substitution") && equal; jsonRelease(item); at += 1;
+                        }
+                    }
+                    row >> int <- jsonNewObject(); cert_json.certJson.put(row,"path",jsonNewString(key));
+                    cert_json.certJson.put(row,"present_both",jsonNewBool(present)); cert_json.certJson.put(row,"byte_identical",jsonNewBool(raw));
+                    cert_json.certJson.put(row,"semantic_equal",jsonNewBool(equal)); cert_json.certJson.put(row,"differences",changes);
+                    cert_json.certJson.put(row,"oracle_sha256",jsonObjectGet(x,"sha256")); cert_json.certJson.put(row,"native_sha256",jsonObjectGet(y,"sha256"));
+                    cert_json.certJson.push(files,row); passed <- present && equal && passed;
+                    free(cast<byte>(key)); jsonRelease(x); jsonRelease(y); jsonRelease(xj); jsonRelease(yj); index += 1;
+                }
+                cert_json.certJson.put(result,"passed",jsonNewBool(passed)); cert_json.certJson.put(result,"files",files);
+                cert_json.certJson.put(result,"oracle_inventory",jsonClone(a)); cert_json.certJson.put(result,"native_inventory",jsonClone(b)); return result;
+            }
+    fa: return true;
+}

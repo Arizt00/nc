@@ -1,0 +1,254 @@
+use <io:output, render, input>;
+
+calculadoraAvanzadaMega5000 {
+    OperacionInfo :: type {
+            id >> int;
+            coste >> int;
+            segura >> bool;
+        constructure:
+            static(id >> int, coste >> int, segura >> bool) -> OperacionInfo;
+    }
+
+    EstadoCalculadora :: type {
+            operaciones >> int;
+            ultimoResultado >> int;
+            memoria >> int;
+        constructure:
+            static(operaciones >> int, ultimoResultado >> int, memoria >> int) -> EstadoCalculadora;
+    }
+
+    stc:
+        numeroA >> int;
+        numeroB >> int;
+        opcion >> int;
+        resultado >> int;
+        memoria >> int;
+        operacionesRealizadas >> int;
+        sumas >> int;
+        restas >> int;
+        multiplicaciones >> int;
+        divisiones >> int;
+        errores >> int;
+        continuar >> bool;
+        operacionValida >> bool;
+        ultimoMensaje >> str;
+
+    fn:
+        iniciarEstado() -> bool {
+            numeroA <- 0;
+            numeroB <- 0;
+            opcion <- 0;
+            resultado <- 0;
+            memoria <- 0;
+            operacionesRealizadas <- 0;
+            sumas <- 0;
+            restas <- 0;
+            multiplicaciones <- 0;
+            divisiones <- 0;
+            errores <- 0;
+            continuar <- true;
+            operacionValida <- false;
+            ultimoMensaje <- "arranque";
+            return true;
+        }
+
+        leerNumeros() -> bool {
+            println(colorBold("Introduce el primer numero:", "cyan"));
+            numeroA <- readInt();
+            numeroA !> int : dev(runtime.InputParseError);
+            println(colorBold("Introduce el segundo numero:", "cyan"));
+            numeroB <- readInt();
+            numeroB !> int : dev(runtime.InputParseError);
+            return true;
+        }
+
+        mostrarMenu() -> bool {
+            println("");
+            println(colorBold("===== CALCULADORA AVANZADA MEGA nC =====", "cyan"));
+            println(color("1. Sumar", "green"));
+            println(color("2. Restar", "green"));
+            println(color("3. Multiplicar", "green"));
+            println(color("4. Dividir", "green"));
+            println(color("5. Modulo", "yellow"));
+            println(color("6. Potencia entera", "yellow"));
+            println(color("7. Comparar numeros", "yellow"));
+            println(color("8. Salir", "gray"));
+            println(color("9. Cambiar numeros", "blue"));
+            println(color("10. Guardar resultado en memoria", "blue"));
+            println(color("11. Mostrar memoria", "blue"));
+            println(color("12. Mostrar estadisticas", "magenta"));
+            println(color("13. Manual rapido", "magenta"));
+            println(color("14. Manual academico completo", "magenta"));
+            print("> ");
+            opcion <- readInt();
+            opcion !> int : dev(runtime.InputParseError);
+            return true;
+        }
+
+        validarOpcion() -> bool {
+            if (opcion >= 1 && opcion <= 14) { return true; }
+            errores <- errores + 1;
+            ultimoMensaje <- "opcion.invalida";
+            println(colorBold("Opcion no valida.", "red"));
+            return false;
+        }
+
+        registrarOperacion(nombre >> str) -> bool {
+            operacionesRealizadas <- operacionesRealizadas + 1;
+            ultimoMensaje <- nombre;
+            println(color("Resultado: " + renderInt(resultado), "green"));
+            return true;
+        }
+
+        sumar() -> bool {
+            resultado <- numeroA + numeroB;
+            sumas <- sumas + 1;
+            return registrarOperacion("suma");
+        }
+
+        restar() -> bool {
+            resultado <- numeroA - numeroB;
+            restas <- restas + 1;
+            return registrarOperacion("resta");
+        }
+
+        multiplicar() -> bool {
+            resultado <- numeroA * numeroB;
+            multiplicaciones <- multiplicaciones + 1;
+            return registrarOperacion("multiplicacion");
+        }
+
+        dividir() -> bool {
+            if (numeroB == 0) {
+                errores <- errores + 1;
+                println(colorBold("No se puede dividir entre cero.", "red"));
+                return false;
+            }
+            resultado <- numeroA / numeroB;
+            divisiones <- divisiones + 1;
+            return registrarOperacion("division");
+        }
+
+        modulo() -> bool {
+            if (numeroB == 0) {
+                errores <- errores + 1;
+                println(colorBold("No se puede calcular modulo entre cero.", "red"));
+                return false;
+            }
+            resultado <- numeroA % numeroB;
+            return registrarOperacion("modulo");
+        }
+
+        potencia() -> bool {
+            if (numeroB < 0) {
+                errores <- errores + 1;
+                println(colorBold("Exponente negativo no soportado en esta version entera.", "red"));
+                return false;
+            }
+            resultado <- 1;
+            p <- 0;
+            while (p < numeroB) {
+                resultado <- resultado * numeroA;
+                p <- p + 1;
+            }
+            return registrarOperacion("potencia");
+        }
+
+        comparar() -> bool {
+            if (numeroA > numeroB) { resultado <- numeroA; println(color("A es mayor que B", "yellow")); return registrarOperacion("comparacion"); }
+            if (numeroA < numeroB) { resultado <- numeroB; println(color("B es mayor que A", "yellow")); return registrarOperacion("comparacion"); }
+            resultado <- numeroA;
+            println(color("Los dos numeros son iguales", "yellow"));
+            return registrarOperacion("comparacion");
+        }
+
+        guardarMemoria() -> bool {
+            memoria <- resultado;
+            println(color("Memoria actualizada: " + renderInt(memoria), "blue"));
+            return true;
+        }
+
+        mostrarMemoria() -> bool {
+            println(color("Memoria: " + renderInt(memoria), "blue"));
+            return true;
+        }
+
+        estadisticas() -> bool {
+            println(colorBold("===== ESTADISTICAS =====", "magenta"));
+            println(color("Operaciones: " + renderInt(operacionesRealizadas), "magenta"));
+            println(color("Sumas: " + renderInt(sumas), "green"));
+            println(color("Restas: " + renderInt(restas), "green"));
+            println(color("Multiplicaciones: " + renderInt(multiplicaciones), "green"));
+            println(color("Divisiones: " + renderInt(divisiones), "green"));
+            println(color("Errores: " + renderInt(errores), "red"));
+            println(color("Ultimo mensaje: " + ultimoMensaje, "gray"));
+            return true;
+        }
+
+        manualRapido() -> bool {
+            println(colorBold("Manual rapido", "magenta"));
+            println("Lee dos enteros, muestra menu y repite hasta salir.");
+            println("La division es entera; 7 / 2 produce 3.");
+            println("El modulo devuelve el resto de la division entera.");
+            println("La potencia usa multiplicacion repetida y exponente no negativo.");
+            return true;
+        }
+
+        manualAcademicoCompleto() -> bool {
+            println(colorBold("Manual academico completo", "magenta"));
+            println("Suma y resta operan directamente sobre dos enteros.");
+            println("Multiplicacion combina sumas repetidas de forma optimizada.");
+            println("Division entera descarta la parte fraccionaria.");
+            println("Modulo devuelve el resto y exige divisor distinto de cero.");
+            println("Potencia admite exponentes enteros no negativos.");
+            println("Memoria conserva el ultimo resultado seleccionado.");
+            println("Estadisticas contabiliza operaciones y errores.");
+            return true;
+        }
+
+        ejecutarOperacion() -> bool {
+            operacionValida <- validarOpcion();
+            if (!operacionValida) { return false; }
+            if (opcion == 1) { return sumar(); }
+            if (opcion == 2) { return restar(); }
+            if (opcion == 3) { return multiplicar(); }
+            if (opcion == 4) { return dividir(); }
+            if (opcion == 5) { return modulo(); }
+            if (opcion == 6) { return potencia(); }
+            if (opcion == 7) { return comparar(); }
+            if (opcion == 8) { continuar <- false; return true; }
+            if (opcion == 9) { return leerNumeros(); }
+            if (opcion == 10) { return guardarMemoria(); }
+            if (opcion == 11) { return mostrarMemoria(); }
+            if (opcion == 12) { return estadisticas(); }
+            if (opcion == 13) { return manualRapido(); }
+            if (opcion == 14) { return manualAcademicoCompleto(); }
+            return false;
+        }
+
+        mostrarResumenFinal() -> bool {
+            println("");
+            println(colorBold("===== RESUMEN FINAL =====", "cyan"));
+            estadisticas();
+            println(color("Ultimo resultado: " + renderInt(resultado), "cyan"));
+            println(color("Programa finalizado.", "gray"));
+            return true;
+        }
+
+        ejecutar() -> bool {
+            iniciarEstado();
+            leerNumeros();
+            while (continuar) {
+                mostrarMenu();
+                ejecutarOperacion();
+            }
+            mostrarResumenFinal();
+            return true;
+        }
+
+
+    ref main ->> ejecutar;
+    fa:
+        return true;
+
+}

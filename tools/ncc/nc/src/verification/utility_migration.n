@@ -1,0 +1,419 @@
+use <io:output, render>;
+use <data:json>;
+use <project:utility_json>;
+use <process:env>;
+use <project:release_io, tool_cli, sha256, utility_source, release43_host>;
+
+utilityMigration {
+    const:
+        SCHEMA >> str <- "ncc.migration.low_level_extensions.v1";
+        STRICT >> str <- "{\"examples/root_at\":\".nb\",\"examples/machine_at\":\".nm\",\"examples/primitive_at\":\".ncp\"}";
+        FAMILIES >> str <- "{\"root-basal\":\".nb\",\"machine-low-level\":\".nm\",\"primitive-low-level\":\".ncp\"}";
+        AMBIGUOUS >> str <- "{\"examples/primitive_at/primitive_at_anchor_inline_clause_ok.n\":{\"primitive_output\":\"examples/primitive_at/primitive_at_anchor_inline_clause_ok.ncp\",\"machine_output\":\"examples/primitive_at/primitive_at_anchor_inline_clause_ok.machine.nm\"},\"examples/primitive_at/primitive_at_boot_serial_short_header_ok.n\":{\"primitive_output\":\"examples/primitive_at/primitive_at_boot_serial_short_header_ok.ncp\",\"machine_output\":\"examples/primitive_at/primitive_at_boot_serial_short_header_ok.machine.nm\"},\"examples/user_suite_v1_0_1/04_primitive_modes.norm.n\":{\"primitive_output\":\"examples/user_suite_v1_0_1/04_primitive_modes.norm.ncp\",\"machine_output\":\"examples/user_suite_v1_0_1/04_primitive_modes.norm.machine.nm\"}}";
+        MAX_FILE >> int <- 134217728;
+    local:
+        failure >> str <- "";
+    fn:
+        private:
+            fail(message >> str) -> void { if (failure == "") failure <- message; }
+            ext(family >> int) -> str {
+                if (family == 1) return ".nb";
+                if (family == 2) return ".nm";
+                return ".ncp";
+            }
+            name(family >> int) -> str {
+                if (family == 1) return "root-basal";
+                if (family == 2) return "machine-low-level";
+                return "primitive-low-level";
+            }
+            singleton(family >> int) -> bool { return family == 1 || family == 2 || family == 4; }
+            sibling(source >> str, family >> int) -> str {
+                // pathlib treats the dotfile '.n' as a basename without a suffix.
+                if (source == ".n" || source == ".N" || strEndsWith(source,"/.n") || strEndsWith(source,"/.N") ||
+                    strEndsWith(source,"\\.n") || strEndsWith(source,"\\.N")) return source+ext(family);
+                return strSubstring(source,0,strByteLen(source)-2)+ext(family);
+            }
+            nativePath(path >> str) -> str {
+                result >> str <- strSubstring(path,0,strByteLen(path));
+                if (envHas("WINDIR")) {
+                    data >> p<byte> <- cast(result);
+                    at >> int <- 0;
+                    while (at < strByteLen(result)) {
+                        if (rd(off(data,at)) == 47) wr(off(data,at),92);
+                        at += 1;
+                    }
+                }
+                return result;
+            }
+            resolved(path >> str) -> str {
+                value >> str <- release43_host.release43Host.absolute(path);
+                if (value == "") value <- release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(path));
+                if (envHas("WINDIR")) value <- utility_source.utilitySource.lowerPython(value);
+                return value;
+            }
+            // Owned counted bytes, including NUL. Avoid borrowed aggregate-return storage.
+            payloadSize(payload >> p<byte>) -> int { return rd<int>(payload); }
+            payloadBytes(payload >> p<byte>) -> p<byte> { return off(payload,sizeOf(int)); }
+            payloadNew(size >> int) -> p<byte> {
+                result >> p<byte> <- cast(alloc(sizeOf(int)+size+1));
+                if (result == null) { fail("allocation failed"); return null; }
+                wr<int>(result,size); wr(off(payloadBytes(result),size),0); return result;
+            }
+            read(path >> str, text >> bool) -> p<byte> {
+                size >> int <- release43_host.release43Host.size(path);
+                if (release43_host.release43Host.kind(path) != 1 || size < 0 || size > MAX_FILE) {
+                    fail("cannot read regular file: "+path); return null;
+                }
+                payload >> p<byte> <- payloadNew(size);
+                if (payload == null) return null;
+                data >> p<byte> <- payloadBytes(payload);
+                if (release43_host.release43Host.read(path,data,size) != size) {
+                    free(payload); fail("short read: "+path); return null;
+                }
+                wr(off(data,size),0);
+                if (text) {
+                    if (!utility_source.utilitySource.validUtf8(data,size)) {
+                        free(payload); fail("invalid UTF-8: "+path); return null;
+                    }
+                    size <- utility_source.utilitySource.normalize(data,size);
+                }
+                wr<int>(payload,size); return payload;
+            }
+            same(a >> p<byte>, b >> p<byte>) -> bool {
+                if (payloadSize(a) != payloadSize(b)) return false;
+                at >> int <- 0;
+                while (at < payloadSize(a)) {
+                    if (rd(off(payloadBytes(a),at)) != rd(off(payloadBytes(b),at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+            sync(root >> str, source >> str, target >> str, family >> int, payload >> p<byte>, apply >> bool) -> int {
+                path >> str <- root+"/"+target;
+                action >> str <- "create";
+                if (release43_host.release43Host.kind(path) != 0) {
+                    existing >> p<byte> <- read(path,false);
+                    if (failure != "") return 0;
+                    action <- same(payload,existing) ? "unchanged" : "update";
+                    free(existing);
+                }
+                if (apply && action != "unchanged") {
+                    if (release43_host.release43Host.writeRaw(path,payloadBytes(payload),payloadSize(payload),false) != payloadSize(payload)) {
+                        fail("cannot write sibling: "+path); return 0;
+                    }
+                }
+                digest >> str <- sha256.nccSha256.bytes(payloadBytes(payload),payloadSize(payload));
+                if (strByteLen(digest) != 64) { fail("SHA-256 failed: "+source); return 0; }
+                row >> int <- jsonNewObject();
+                utility_json.utilityJson.put(row,"source",jsonNewString(source)); utility_json.utilityJson.put(row,"target",jsonNewString(target));
+                utility_json.utilityJson.put(row,"target_extension",jsonNewString(ext(family)));
+                utility_json.utilityJson.put(row,"action",jsonNewString(action)); utility_json.utilityJson.put(row,"sha256",jsonNewString(digest));
+                utility_json.utilityJson.put(row,"family",jsonNewString(name(family))); strRelease(digest);
+                return row;
+            }
+            counts(keys >> str) -> int {
+                names >> int <- jsonParse(keys);
+                result >> int <- jsonNewObject(); at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayBorrow(names,at);
+                    utility_json.utilityJson.put(result,jsonStringView(item,""),jsonNewInt(0)); jsonRelease(item); at += 1;
+                }
+                jsonRelease(names); return result;
+            }
+            bump(totals >> int, key >> str) -> void {
+                utility_json.utilityJson.put(totals,key,jsonNewInt(release_io.releaseIo.number(totals,key,0)+1));
+            }
+            record(actions >> int, totals >> int, row >> int) -> void {
+                if (failure != "") { jsonRelease(row); return; }
+                action >> str <- utility_json.utilityJson.field(row,"action");
+                if (action == "create") bump(totals,"created");
+                else if (action == "update") bump(totals,"updated");
+                else bump(totals,"unchanged");
+                utility_json.utilityJson.push(actions,row);
+            }
+            model(wave >> str, apply >> bool, targets >> int, totals >> int, actions >> int) -> int {
+                report >> int <- jsonNewObject();
+                utility_json.utilityJson.put(report,"schema",jsonNewString(SCHEMA)); utility_json.utilityJson.put(report,"version",jsonNewString("2.0.0"));
+                utility_json.utilityJson.put(report,"mode",jsonNewString(apply ? "apply" : "check"));
+                utility_json.utilityJson.put(report,"wave",jsonNewString(wave)); utility_json.utilityJson.put(report,"targets",targets);
+                utility_json.utilityJson.put(report,"totals",totals); utility_json.utilityJson.put(report,"actions",actions); return report;
+            }
+            scan(root >> str, relative >> str, recursive >> bool, depth >> int, files >> int) -> void {
+                if (depth > 128) { fail("directory depth exceeds 128: "+relative); return; }
+                path >> str <- root+"/"+relative;
+                if (release43_host.release43Host.kind(path) == 0) return;
+                entries >> int <- release43_host.release43Host.names(path);
+                if (jsonKind(entries) != 5) { fail("cannot list directory: "+path); return; }
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries) && failure == "") {
+                    item >> int <- jsonArrayBorrow(entries,at);
+                    leaf >> str <- jsonStringView(item,"");
+                    next >> str <- relative+"/"+leaf;
+                    kind >> int <- release43_host.release43Host.kind(root+"/"+next);
+                    suffix >> str <- envHas("WINDIR") ? utility_source.utilitySource.lowerPython(leaf) : strSubstring(leaf,0,strByteLen(leaf));
+                    if (strEndsWith(suffix,".n")) utility_json.utilityJson.push(files,jsonNewString(next));
+                    if (recursive && kind == 2) {
+                        canonical >> str <- resolved(root+"/"+next);
+                        lexical >> str <- release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(root+"/"+next));
+                        if (envHas("WINDIR")) lexical <- utility_source.utilitySource.lowerPython(lexical);
+                        // POSIX rglob skips directory symlinks; Windows junctions are traversed.
+                        if (envHas("WINDIR") || canonical == lexical) scan(root,next,true,depth+1,files);
+                        strRelease(canonical); strRelease(lexical);
+                    }
+                    strRelease(suffix); strRelease(next); jsonRelease(item); at += 1;
+                }
+                jsonRelease(entries);
+            }
+            pathCompare(left >> str, right >> str) -> int {
+                // pathlib orders tuples of path components, not joined path strings.
+                a >> str <- envHas("WINDIR") ? utility_source.utilitySource.lowerPython(left) : strSubstring(left,0,strByteLen(left));
+                b >> str <- envHas("WINDIR") ? utility_source.utilitySource.lowerPython(right) : strSubstring(right,0,strByteLen(right));
+                pa >> p<byte> <- cast(a); pb >> p<byte> <- cast(b);
+                at >> int <- 0; result >> int <- 0;
+                while (at < strByteLen(a) && at < strByteLen(b)) {
+                    x >> int <- rd(off(pa,at)) & 255; y >> int <- rd(off(pb,at)) & 255;
+                    if (x == 47) x <- 0;
+                    if (y == 47) y <- 0;
+                    if (x != y) { result <- x-y; break; }
+                    at += 1;
+                }
+                if (result == 0) result <- strByteLen(a)-strByteLen(b);
+                strRelease(a); strRelease(b); return result;
+            }
+            files(root >> str, relative >> str, recursive >> bool) -> int {
+                unordered >> int <- jsonNewArray(); scan(root,relative,recursive,0,unordered);
+                result >> int <- jsonNewArray(); at >> int <- 0;
+                while (at < jsonArrayLen(unordered)) {
+                    item >> int <- jsonArrayBorrow(unordered,at); position >> int <- 0;
+                    while (position < jsonArrayLen(result)) {
+                        other >> int <- jsonArrayBorrow(result,position);
+                        order >> int <- pathCompare(jsonStringView(other,""),jsonStringView(item,"")); jsonRelease(other);
+                        if (order > 0) break;
+                        position += 1;
+                    }
+                    jsonArrayInsert(result,position,item); jsonRelease(item); at += 1;
+                }
+                jsonRelease(unordered); return result;
+            }
+            wave1(root >> str, apply >> bool) -> int {
+                targets >> int <- jsonParse(STRICT); ambiguous >> int <- jsonParse(AMBIGUOUS);
+                summary >> int <- jsonNewObject(); actions >> int <- jsonNewArray();
+                totals >> int <- counts("[\"scanned\",\"created\",\"updated\",\"unchanged\",\"skipped_ambiguous\"]");
+                index >> int <- 0;
+                while (index < jsonObjectLen(targets) && failure == "") {
+                    directory >> str <- jsonObjectKeyAt(targets,index);
+                    group >> int <- counts("[\"scanned\",\"created\",\"updated\",\"unchanged\",\"skipped_ambiguous\",\"missing_source_dir\"]");
+                    if (release43_host.release43Host.kind(root+"/"+directory) == 0) {
+                        // The Python oracle raises KeyError during aggregation here. Fail closed too.
+                        jsonRelease(group); fail("wave1 missing_source_dir: "+directory); free(cast<byte>(directory)); break;
+                    }
+                    sources >> int <- files(root,directory,false); at >> int <- 0;
+                    family >> int <- index == 0 ? 1 : (index == 1 ? 2 : 4);
+                    while (at < jsonArrayLen(sources) && failure == "") {
+                        entry >> int <- jsonArrayBorrow(sources,at); source >> str <- nativePath(jsonStringView(entry,""));
+                        bump(group,"scanned");
+                        if (jsonObjectHas(ambiguous,source)) bump(group,"skipped_ambiguous");
+                        else {
+                            payload >> p<byte> <- read(root+"/"+source,false);
+                            if (failure == "") {
+                                target >> str <- sibling(source,family);
+                                record(actions,group,sync(root,source,target,family,payload,apply)); strRelease(target);
+                            }
+                            if (payload != null) free(payload);
+                        }
+                        strRelease(source); jsonRelease(entry); at += 1;
+                    }
+                    at <- 0;
+                    while (at < jsonObjectLen(totals)) {
+                        key >> str <- jsonObjectKeyAt(totals,at);
+                        utility_json.utilityJson.put(totals,key,jsonNewInt(release_io.releaseIo.number(totals,key,0)+release_io.releaseIo.number(group,key,0)));
+                        free(cast<byte>(key)); at += 1;
+                    }
+                    utility_json.utilityJson.put(summary,directory,group); free(cast<byte>(directory)); jsonRelease(sources); index += 1;
+                }
+                jsonRelease(ambiguous);
+                report >> int <- model("wave1",apply,targets,totals,actions);
+                utility_json.utilityJson.put(report,"summary",summary); return report;
+            }
+            excluded(source >> str, directories >> int) -> bool {
+                index >> int <- 0;
+                while (index < jsonArrayLen(directories)) {
+                    item >> int <- jsonArrayGet(directories,index); directory >> str <- jsonStringView(item,"");
+                    found >> bool <- source == directory || strStartsWith(source,directory+"/");
+                    jsonRelease(item); if (found) return true; index += 1;
+                }
+                return false;
+            }
+            sweep(root >> str, apply >> bool, strict >> bool) -> int {
+                totals >> int <- strict ? counts("[\"scanned\",\"legacy_low_level\",\"created\",\"updated\",\"unchanged\",\"missing_official\",\"official_drift\",\"resolved_ambiguous\",\"unresolved_ambiguous\",\"skipped_non_low_level\"]") :
+                    counts("[\"scanned\",\"eligible\",\"created\",\"updated\",\"unchanged\",\"skipped_non_low_level\",\"skipped_ambiguous\"]");
+                actions >> int <- jsonNewArray(); sources >> int <- files(root,"examples",true);
+                directories >> int <- jsonNewArray();
+                utility_json.utilityJson.push(directories,jsonNewString(resolved(root+"/examples/root_at")));
+                utility_json.utilityJson.push(directories,jsonNewString(resolved(root+"/examples/machine_at")));
+                utility_json.utilityJson.push(directories,jsonNewString(resolved(root+"/examples/primitive_at")));
+                ambiguous >> int <- jsonParse(AMBIGUOUS); at >> int <- 0;
+                while (at < jsonArrayLen(sources) && failure == "") {
+                    entry >> int <- jsonArrayBorrow(sources,at); relative >> str <- jsonStringView(entry,""); at += 1;
+                    if (!strict) {
+                        canonical >> str <- resolved(root+"/"+relative); skip >> bool <- excluded(canonical,directories);
+                        strRelease(canonical); if (skip) { jsonRelease(entry); continue; }
+                    }
+                    source >> str <- nativePath(relative); bump(totals,"scanned");
+                    text >> p<byte> <- read(root+"/"+source,true);
+                    if (failure != "") { strRelease(source); jsonRelease(entry); break; }
+                    family >> int <- utility_source.utilitySource.family(payloadBytes(text),payloadSize(text)); free(text);
+                    if (!singleton(family)) {
+                        if (family == 0) bump(totals,"skipped_non_low_level");
+                        else if (!strict) bump(totals,"skipped_ambiguous");
+                        else {
+                            outputs >> int <- jsonObjectBorrow(ambiguous,source);
+                            p >> str <- utility_json.utilityJson.field(outputs,"primitive_output");
+                            m >> str <- utility_json.utilityJson.field(outputs,"machine_output");
+                            if (jsonKind(outputs) == 6 && release43_host.release43Host.kind(root+"/"+p) != 0 && release43_host.release43Host.kind(root+"/"+m) != 0) {
+                                bump(totals,"resolved_ambiguous"); row >> int <- jsonNewObject();
+                                utility_json.utilityJson.put(row,"source",jsonNewString(source)); utility_json.utilityJson.put(row,"target",jsonNewString(p+" + "+m));
+                                utility_json.utilityJson.put(row,"action",jsonNewString("resolved-by-wave3")); utility_json.utilityJson.put(row,"sha256",jsonNewString(""));
+                                utility_json.utilityJson.put(row,"family",jsonNewString("ambiguous-low-level-family"));
+                                utility_json.utilityJson.put(row,"target_extension",jsonNewString(".ncp+.nm")); utility_json.utilityJson.push(actions,row);
+                            } else bump(totals,"unresolved_ambiguous");
+                            jsonRelease(outputs);
+                        }
+                    } else {
+                        bump(totals,strict ? "legacy_low_level" : "eligible");
+                        payload >> p<byte> <- read(root+"/"+source,false);
+                        if (failure == "") {
+                            target >> str <- sibling(source,family);
+                            row >> int <- sync(root,source,target,family,payload,apply);
+                            if (strict && failure == "") {
+                                action >> str <- utility_json.utilityJson.field(row,"action");
+                                if (action == "create") bump(totals,"missing_official");
+                                if (action == "update") bump(totals,"official_drift"); 
+                            }
+                            record(actions,totals,row); strRelease(target); free(payload);
+                        }
+                    }
+                    strRelease(source); jsonRelease(entry);
+                }
+                jsonRelease(sources); jsonRelease(directories); targets >> int <- jsonParse(FAMILIES);
+                if (strict) {
+                    utility_json.utilityJson.put(totals,"strict_ready",jsonNewBool(release_io.releaseIo.number(totals,"missing_official",0) == 0 &&
+                        release_io.releaseIo.number(totals,"official_drift",0) == 0 && release_io.releaseIo.number(totals,"unresolved_ambiguous",0) == 0));
+                    wrapper >> int <- jsonNewObject(); utility_json.utilityJson.put(wrapper,"legacy_extension",jsonNewString(".n"));
+                    utility_json.utilityJson.put(wrapper,"official_map",targets); utility_json.utilityJson.put(wrapper,"ambiguous_map",ambiguous); targets <- wrapper;
+                } else jsonRelease(ambiguous);
+                return model(strict ? "wave4" : "wave2",apply,targets,totals,actions);
+            }
+            partNumber(part >> int, index >> int) -> int {
+                value >> int <- jsonArrayBorrow(part,index); result >> int <- jsonGetIntOr(value,0); jsonRelease(value); return result;
+            }
+            joinParts(source >> p<byte>, parts >> int, family >> int) -> p<byte> {
+                payload >> p<byte> <- payloadNew(payloadSize(source)*2+2);
+                if (payload == null) return null;
+                output >> p<byte> <- payloadBytes(payload);
+                size >> int <- 0; at >> int <- 0;
+                while (at < jsonArrayLen(parts)) {
+                    part >> int <- jsonArrayBorrow(parts,at);
+                    if (partNumber(part,2) == family) {
+                        first >> int <- partNumber(part,0); count >> int <- partNumber(part,1);
+                        if (size > 0) { wr(off(output,size),10); size += 1; }
+                        cp(off(output,size),off(payloadBytes(source),first),count); size += count;
+                        wr(off(output,size),10); size += 1;
+                    }
+                    jsonRelease(part); at += 1;
+                }
+                wr(off(output,size),0); wr<int>(payload,size); return payload;
+            }
+            wave3(root >> str, apply >> bool) -> int {
+                targets >> int <- jsonParse(AMBIGUOUS); actions >> int <- jsonNewArray();
+                totals >> int <- counts("[\"scanned\",\"resolved\",\"created\",\"updated\",\"unchanged\",\"missing_source\",\"unresolved\"]");
+                at >> int <- 0;
+                while (at < jsonObjectLen(targets) && failure == "") {
+                    source >> str <- jsonObjectKeyAt(targets,at); at += 1; bump(totals,"scanned");
+                    if (release43_host.release43Host.kind(root+"/"+source) == 0) { bump(totals,"missing_source"); free(cast<byte>(source)); continue; }
+                    payload >> p<byte> <- read(root+"/"+source,true);
+                    if (failure != "") { free(cast<byte>(source)); break; }
+                    parts >> int <- utility_source.utilitySource.parts(payloadBytes(payload),payloadSize(payload));
+                    primitive >> p<byte> <- joinParts(payload,parts,4); machine >> p<byte> <- joinParts(payload,parts,2);
+                    if (failure == "" && payloadSize(primitive) > 0 && payloadSize(machine) > 0) {
+                        outputs >> int <- jsonObjectBorrow(targets,source);
+                        p >> str <- utility_json.utilityJson.field(outputs,"primitive_output"); m >> str <- utility_json.utilityJson.field(outputs,"machine_output");
+                        record(actions,totals,sync(root,source,p,4,primitive,apply));
+                        if (failure == "") record(actions,totals,sync(root,source,m,2,machine,apply));
+                        bump(totals,"resolved"); jsonRelease(outputs);
+                    } else bump(totals,"unresolved");
+                    if (primitive != null) free(primitive);
+                    if (machine != null) free(machine);
+                    jsonRelease(parts); free(payload); free(cast<byte>(source));
+                }
+                return model("wave3",apply,targets,totals,actions);
+            }
+        public:
+            error() -> str { return failure; }
+            migrate(root >> str, wave >> str, apply >> bool) -> int {
+                failure <- "";
+                if (wave == "wave1") return wave1(root,apply);
+                if (wave == "wave2") return sweep(root,apply,false);
+                if (wave == "wave3") return wave3(root,apply);
+                if (wave == "wave4") return sweep(root,apply,true);
+                if (wave != "all") { fail("invalid wave: "+wave); return 0; }
+                waves >> int <- jsonNewObject();
+                utility_json.utilityJson.put(waves,"wave1",wave1(root,apply));
+                if (failure == "") utility_json.utilityJson.put(waves,"wave2",sweep(root,apply,false));
+                if (failure == "") utility_json.utilityJson.put(waves,"wave3",wave3(root,apply));
+                if (failure == "") utility_json.utilityJson.put(waves,"wave4",sweep(root,apply,true));
+                report >> int <- jsonNewObject(); utility_json.utilityJson.put(report,"schema",jsonNewString(SCHEMA));
+                utility_json.utilityJson.put(report,"version",jsonNewString("2.0.0")); utility_json.utilityJson.put(report,"mode",jsonNewString(apply ? "apply" : "check"));
+                utility_json.utilityJson.put(report,"wave",jsonNewString("all")); utility_json.utilityJson.put(report,"waves",waves); return report;
+            }
+            execute(arguments >> addr) -> int {
+                if (release_io.releaseIo.help(arguments)) {
+                    println("migrate-low-level --root DIR --wave wave1|wave2|wave3|wave4|all [--apply] [--report FILE] [--json] [--require-strict-ready]"); return 0;
+                }
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--wave|--report|","|--apply|--json|--require-strict-ready|");
+                if (jsonKind(options) != 6) { println("ERROR: invalid migration arguments"); return 2; }
+                wave >> str <- tool_cli.toolCli.value(options,"--wave","wave1");
+                if (wave != "wave1" && wave != "wave2" && wave != "wave3" && wave != "wave4" && wave != "all") {
+                    println("ERROR: invalid --wave"); jsonRelease(options); return 2;
+                }
+                root >> str <- resolved(tool_cli.toolCli.value(options,"--root","."));
+                requireReady >> bool <- tool_cli.toolCli.hasFlag(options,"--require-strict-ready");
+                if (requireReady && wave != "wave4" && wave != "all") { println("ERROR: --require-strict-ready needs wave4 or all"); jsonRelease(options); strRelease(root); return 2; }
+                report >> int <- migrate(root,wave,tool_cli.toolCli.hasFlag(options,"--apply"));
+                if (failure != "") { println("ERROR: "+failure); jsonRelease(report); jsonRelease(options); strRelease(root); return 1; }
+                destination >> str <- tool_cli.toolCli.value(options,"--report","");
+                if (destination != "") {
+                    if (!strStartsWith(destination,"/") && !strStartsWith(destination,"\\") && !strContains(destination,":")) destination <- root+"/"+destination;
+                    if (!utility_json.utilityJson.save(destination,report)) {
+                        println("ERROR: cannot write report: "+destination); jsonRelease(report); jsonRelease(options); strRelease(root); return 1;
+                    }
+                }
+                if (tool_cli.toolCli.hasFlag(options,"--json")) {
+                    content >> str <- utility_json.utilityJson.stringify(report); println(content); strRelease(content);
+                } else {
+                    mode >> str <- tool_cli.toolCli.hasFlag(options,"--apply") ? "apply" : "check";
+                    output >> str <- "OK: migration "+wave+" mode="+mode;
+                    if (wave != "all") {
+                        totals >> int <- jsonObjectBorrow(report,"totals");
+                        output <- output+" scanned="+renderInt(release_io.releaseIo.number(totals,"scanned",0))+" created="+
+                            renderInt(release_io.releaseIo.number(totals,"created",0))+" updated="+renderInt(release_io.releaseIo.number(totals,"updated",0))+
+                            " unchanged="+renderInt(release_io.releaseIo.number(totals,"unchanged",0)); jsonRelease(totals);
+                    }
+                    println(output); strRelease(output);
+                }
+                ready >> bool <- true;
+                if (requireReady) {
+                    closure >> int <- report;
+                    waves >> int <- 0;
+                    if (wave == "all") { waves <- jsonObjectBorrow(report,"waves"); closure <- jsonObjectBorrow(waves,"wave4"); }
+                    totals >> int <- jsonObjectBorrow(closure,"totals");
+                    value >> int <- jsonObjectBorrow(totals,"strict_ready");
+                    ready <- jsonKind(value) == 2 && jsonGetBool(value);
+                    jsonRelease(value); jsonRelease(totals);
+                    if (wave == "all") { jsonRelease(closure); jsonRelease(waves); }
+                    if (!ready) println("ERROR: wave4 strict_ready=false");
+                }
+                jsonRelease(report); jsonRelease(options); strRelease(root); return ready ? 0 : 1;
+            }
+    fa: return true;
+}

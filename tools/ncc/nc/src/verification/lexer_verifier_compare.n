@@ -1,0 +1,81 @@
+use <data:json>;
+use <io:output, render>;
+use <project:lexer_verifier_stream, lexer_verifier_bytes, lexer_verifier_contract>;
+
+lexerVerifierCompare {
+    fn:
+        private:
+            span(data >> p<byte>, size >> int, row >> int, positions >> p<int>, last >> bool) -> bool {
+                start >> int <- lexer_verifier_contract.lexerVerifierContract.number(row,"start");
+                end >> int <- lexer_verifier_contract.lexerVerifierContract.number(row,"end");
+                cursor >> int <- rd(positions); line >> int <- rd(off(positions,1)); column >> int <- rd(off(positions,2));
+                if(start < rd(off(positions,3)) || end < start || end > size) return false;
+                while(cursor < start) {
+                    width >> int <- lexer_verifier_bytes.lexerVerifierBytes.width(data,size,cursor);
+                    if(width == 0 || cursor+width > start) return false;
+                    if(rd(off(data,cursor)) == 10) { line += 1; column <- 1; } else column += 1;
+                    cursor += width;
+                }
+                if(lexer_verifier_contract.lexerVerifierContract.number(row,"line") != line || lexer_verifier_contract.lexerVerifierContract.number(row,"column") != column) return false;
+                if(end < size && (rd(off(data,end)) & 192) == 128) return false;
+                name >> str <- lexer_verifier_bytes.lexerVerifierBytes.text(row,"kind");
+                payload >> int <- jsonObjectBorrow(row,"payload");
+                ok >> bool <- jsonKind(payload) == 5;
+                if(name == "Eof") ok <- ok && last && start == size && end == size && jsonArrayLen(payload) == 0;
+                else if(last) ok <- false;
+                else if(name == "Identifier" || name == "Number") {
+                    ok <- ok && jsonArrayLen(payload) == end-start;
+                    index >> int <- 0;
+                    while(index < end-start && ok) {
+                        value >> int <- jsonArrayBorrow(payload,index);
+                        ok <- lexer_verifier_contract.lexerVerifierContract.integer(value) == (rd(off(data,start+index)) & 255);
+                        jsonRelease(value); index += 1;
+                    }
+                } else if(name == "String" || name == "Char") {
+                    quote >> int <- name == "String" ? 34 : 39;
+                    ok <- ok && end-start >= (name == "String" ? 2 : 3) && rd(off(data,start)) == quote && rd(off(data,end-1)) == quote;
+                } else ok <- ok && end > start && jsonArrayLen(payload) == 0;
+                jsonRelease(payload);
+                wr(positions,cursor); wr(off(positions,1),line); wr(off(positions,2),column); wr(off(positions,3),end);
+                return ok;
+            }
+        public:
+            documents(oracle >> str, candidate >> str, data >> p<byte>, size >> int, kinds >> int) -> int {
+                left >> p<byte> <- lexer_verifier_stream.lexerVerifierStream.open(oracle);
+                right >> p<byte> <- lexer_verifier_stream.lexerVerifierStream.open(candidate);
+                header >> int <- lexer_verifier_stream.lexerVerifierStream.header(right);
+                count >> int <- lexer_verifier_contract.lexerVerifierContract.number(header,"count");
+                ok >> bool <- lexer_verifier_stream.lexerVerifierStream.good(left) && lexer_verifier_stream.lexerVerifierStream.good(right) && count > 0 &&
+                    count == lexer_verifier_contract.lexerVerifierContract.number(lexer_verifier_stream.lexerVerifierStream.header(left),"count");
+                positions >> p<int> <- cast(calloc(4,sizeOf(int)));
+                if(positions == null) ok <- false;
+                else { wr(off(positions,1),1); wr(off(positions,2),1); }
+                index >> int <- 0;
+                while(index < count && ok) {
+                    raw >> int <- lexer_verifier_stream.lexerVerifierStream.next(left,true);
+                    actual >> int <- lexer_verifier_stream.lexerVerifierStream.next(right,false);
+                    expected >> int <- lexer_verifier_bytes.lexerVerifierBytes.canonical(raw);
+                    a >> int <- jsonObjectBorrow(expected,"payload"); b >> int <- jsonObjectBorrow(actual,"payload");
+                    ok <- jsonKind(expected) == 6 && jsonKind(actual) == 6 &&
+                        lexer_verifier_bytes.lexerVerifierBytes.text(expected,"kind") == lexer_verifier_bytes.lexerVerifierBytes.text(actual,"kind") &&
+                        lexer_verifier_contract.lexerVerifierContract.number(expected,"line") == lexer_verifier_contract.lexerVerifierContract.number(actual,"line") &&
+                        lexer_verifier_contract.lexerVerifierContract.number(expected,"column") == lexer_verifier_contract.lexerVerifierContract.number(actual,"column") &&
+                        jsonEquals(a,b) && span(data,size,actual,positions,index+1 == count);
+                    if(ok) {
+                        name >> str <- lexer_verifier_bytes.lexerVerifierBytes.text(actual,"kind");
+                        seen >> int <- jsonNewBool(true); jsonObjectSet(kinds,name,seen); jsonRelease(seen);
+                    } else println("token or span mismatch at "+renderInt(index));
+                    jsonRelease(a); jsonRelease(b); jsonRelease(raw); jsonRelease(actual); jsonRelease(expected); index += 1;
+                }
+                if(ok) {
+                    a >> int <- lexer_verifier_stream.lexerVerifierStream.next(left,true);
+                    b >> int <- lexer_verifier_stream.lexerVerifierStream.next(right,false);
+                    ok <- a == 0 && b == 0 && lexer_verifier_stream.lexerVerifierStream.complete(left) && lexer_verifier_stream.lexerVerifierStream.complete(right);
+                    jsonRelease(a); jsonRelease(b);
+                }
+                result >> int <- ok ? jsonClone(header) : 0;
+                free(positions); lexer_verifier_stream.lexerVerifierStream.close(left); lexer_verifier_stream.lexerVerifierStream.close(right);
+                return result;
+            }
+    fa: return true;
+}

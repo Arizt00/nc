@@ -1,0 +1,42 @@
+use <io:output>;
+use <project:binary64>;
+
+nativeBinary6477 {
+    check(text >> str, expected >> u64) -> bool {
+        return binary64.nccBinary64.parse(cast<byte>(text),strByteLen(text),false) == expected;
+    }
+    roundtrip(bits >> u64) -> bool {
+        text >> str <- binary64.nccBinary64.format(bits);
+        if (text == null) return false;
+        valid >> bool <- binary64.nccBinary64.parse(cast<byte>(text),strByteLen(text),false) == bits;
+        free(cast<byte>(text)); return valid;
+    }
+    run() -> int {
+        if (binary64.nccBinary64.operate(0x3FF8000000000000,0x4004000000000000,35) != 0x4010000000000000) return 20;
+        if (binary64.nccBinary64.operate(0x3FF0000000000000,0x4008000000000000,41) != 0x3FD5555555555555) return 21;
+        if (binary64.nccBinary64.fromUnsigned(0xFFFFFFFFFFFFFFFF) != 0x43F0000000000000) return 22;
+        if (binary64.nccBinary64.widen(binary64.nccBinary64.narrow(0x3FF8000000000000)) != 0x3FF8000000000000) return 23;
+        if (!check("0",0) || !check("-0",0x8000000000000000)) return 1;
+        if (!check("0.1",0x3FB999999999999A) || !check("1.5",0x3FF8000000000000)) return 2;
+        if (!check("9007199254740993",0x4340000000000000)) return 3;
+        if (!check("1.00000000000000011102230246251565404236316680908203125",0x3FF0000000000000)) return 4;
+        if (!check("1.000000000000000111022302462515654042363166809082031251",0x3FF0000000000001)) return 5;
+        if (!check("2.2250738585072014e-308",0x0010000000000000)) return 6;
+        if (!check("4.9406564584124654e-324",1) || !check("2.4703282292062327e-324",0)) return 7;
+        if (!check("2.4703282292062328e-324",1)) return 8;
+        if (!check("1.7976931348623157e308",0x7FEFFFFFFFFFFFFF)) return 9;
+        if (!check("1.7976931348623159e308",0x7FF0000000000000)) return 10;
+        if (!check("-1e-9999999999999999",0x8000000000000000)) return 11;
+        if (!roundtrip(1) || !roundtrip(0x0010000000000000) || !roundtrip(0x7FEFFFFFFFFFFFFF)) return 12;
+        if (!roundtrip(0x8000000000000000) || !roundtrip(0x3FB999999999999A)) return 13;
+        bits >> u64 <- 0x123456789ABCDEF0; at >> int <- 0;
+        while (at < 2048) {
+            bits <- bits ^ (bits << 13); bits <- bits ^ (bits >> 7); bits <- bits ^ (bits << 17);
+            if (binary64.nccBinary64.finite(bits) && !roundtrip(bits)) return 14;
+            at += 1;
+        }
+        println("native-binary64-conversion-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

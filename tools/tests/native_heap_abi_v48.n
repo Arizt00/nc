@@ -1,0 +1,53 @@
+nativeHeapAbiV48 {
+    fn:
+        identity(value >> u64) -> u64 { return value; }
+        fill(block >> p<byte>, bytes >> u64) -> bool {
+            index >> u64 <- 0;
+            while (index < bytes) { wr(off(block,index),index & 255); index += 1; }
+            return true;
+        }
+        check(block >> p<byte>, bytes >> u64) -> bool {
+            index >> u64 <- 0;
+            while (index < bytes) {
+                if (rd(off(block,index)) != (index & 255)) return false;
+                index += 1;
+            }
+            return true;
+        }
+        run() -> int {
+            if (!free(null)) return 1;
+            if (alloc(identity(0x8000000000000000)) != null) return 2;
+            if (calloc(identity(0x100000000),identity(0x100000000)) != null) return 3;
+            empty >> p<byte> <- calloc(identity(0xFFFFFFFFFFFFFFFF),0);
+            if (empty == null || !free(empty)) return 4;
+            block >> p<byte> <- realloc(null,512);
+            address >> u64 <- adr(block);
+            if (block == null || (address & 15) != 0) return 5;
+            fill(block,512);
+            failed >> p<byte> <- realloc(block,identity(0xFFFFFFFFFFFFFFFF));
+            if (failed != null || !check(block,512)) { free(block); return 6; }
+            grown >> p<byte> <- realloc(block,4096);
+            if (grown == null) { free(block); return 7; }
+            if (!check(grown,512)) { free(grown); return 8; }
+            small >> p<byte> <- realloc(grown,32);
+            if (small == null) { free(grown); return 9; }
+            if (!check(small,32)) { free(small); return 10; }
+            if (realloc(small,0) != null) return 11;
+            iteration >> int <- 0;
+            while (iteration < 2000) {
+                cells >> p<u64> <- cast<u64>(calloc(16,8));
+                if (cells == null) return 12;
+                index >> int <- 0;
+                while (index < 16) {
+                    if (rd(off(cells,index)) != 0) { free(cells); return 13; }
+                    wr(off(cells,index),0x100000000+index); index += 1;
+                }
+                if (rd(off(cells,15)) != 0x10000000F || !free(cells)) return 14;
+                iteration += 1;
+            }
+            return 71;
+        }
+    ref main ->> run;
+    fa:
+        return true;
+}

@@ -1,0 +1,29 @@
+use <io:output>;
+use <process:args>;
+use <data:json>;
+use <project:parser_ast, type_shapes>;
+
+recordShapes78 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 3 && argsCount(arguments) != 4) return 64;
+        target >> int <- argsCount(arguments) == 4 ? parseInt(argsAt(arguments,3)) : 2;
+        material >> p<byte> <- parser_ast.nccParserAst.openMaterial(argsAt(arguments,1));
+        if (!parser_ast.nccParserAst.materialReady(material)) return 65;
+        shapes >> int <- jsonNewArray(); at >> int <- 0;
+        while (at < parser_ast.nccParserAst.materialNodeCount(material)) {
+            kind >> int <- parser_ast.nccParserAst.materialNodeKind(material,at);
+            if (kind == 11 || kind == 13 || kind == 15) {
+                shape >> int <- type_shapes.nccTypeShapes.signature(material,at,target);
+                if (shape == 0) return 1;
+                jsonArrayPush(shapes,shape); jsonRelease(shape);
+            }
+            at += 1;
+        }
+        valid >> bool <- jsonSaveFile(shapes,argsAt(arguments,2),2);
+        jsonRelease(shapes); parser_ast.nccParserAst.closeMaterial(material); argsRelease(arguments);
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

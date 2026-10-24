@@ -1,0 +1,111 @@
+use <io:output, render, input, random>;
+
+adivinaNumeroListaEnlazada :: runtime {
+    Nodo :: type {
+        valor >> int;
+        siguiente >> p<byte>;
+    }
+
+    const:
+        maximos >> int <- 8;
+
+    stc:
+        cabeza        >> p<byte> <- null;
+        cola          >> p<byte> <- null;
+        numeroSecreto >> int     <- 0;
+        intento       >> int     <- 0;
+        realizados    >> int     <- 0;
+
+    fn:
+        valorPtr(nodo >> p<byte>) -> p<int> {
+            return pCast<int>(
+                off(nodo, offsetOf<Nodo>(valor))
+            );
+        }
+
+        siguientePtr(nodo >> p<byte>) -> p<p<byte>> {
+            return pCast<p<byte>>(
+                off(nodo, offsetOf<Nodo>(siguiente))
+            );
+        }
+
+        crearNodo(valor >> int) -> p<byte> {
+            nuevo !> p<byte> : alloc(sizeOf(Nodo));
+            wr(valorPtr(nuevo), valor);
+            wr(siguientePtr(nuevo), null);
+            return nuevo;
+        }
+
+        agregarIntento(valor >> int) -> bool {
+            nuevo >> p<byte> <- crearNodo(valor);
+
+            if (cabeza == null) {
+                cabeza <- nuevo;
+                cola <- nuevo;
+            } else {
+                wr(siguientePtr(cola), nuevo);
+                cola <- nuevo;
+            }
+
+            return true;
+        }
+
+        mostrarIntentos() -> void {
+            actual >> p<byte> <- cabeza;
+            print("Intentos realizados: ");
+
+            while (actual != null) {
+                print(renderInt(rd(valorPtr(actual))) + " ");
+                actual <- rd(siguientePtr(actual));
+            }
+
+            println("");
+        }
+
+        liberarIntentos() -> void {
+            actual >> p<byte> <- cabeza;
+
+            while (actual != null) {
+                siguiente <-
+                    rd(siguientePtr(actual));
+                free(actual);
+                actual <- siguiente;
+            }
+
+            cabeza <- null;
+            cola <- null;
+        }
+
+        jugar() -> bool {
+            numeroSecreto <- randomRange(1, 70);
+
+            while (
+                realizados < maximos
+                && intento != numeroSecreto
+            ) {
+                print("Adivina el numero (entre 1 y 70): ");
+                intento <- readInt();
+                realizados++;
+                agregarIntento(intento);
+                mostrarIntentos();
+            }
+
+            if (intento == numeroSecreto) {
+                println("Felicidades. Has adivinado el numero secreto.");
+            } else {
+                println(
+                    "No lo has adivinado. El numero era: "
+                    + renderInt(numeroSecreto)
+                );
+            }
+
+            liberarIntentos();
+            return true;
+        }
+
+    ref main ->> jugar;
+
+    fa:
+        return true;
+
+}

@@ -1,0 +1,76 @@
+use <io:output>;
+use <data:json>;
+
+jsonCursor72 {
+    add(array >> int, value >> int) -> bool {
+        item >> int <- jsonNewInt(value);
+        valid >> bool <- jsonArrayPush(array,item);
+        jsonRelease(item);
+        return valid;
+    }
+    get(array >> int, index >> int) -> int {
+        item >> int <- jsonArrayBorrow(array,index);
+        value >> int <- jsonGetIntOr(item,-999);
+        jsonRelease(item);
+        return value;
+    }
+    put(object >> int, key >> str, value >> int) -> bool {
+        item >> int <- jsonNewInt(value);
+        valid >> bool <- jsonObjectSet(object,key,item);
+        jsonRelease(item);
+        return valid;
+    }
+    key(object >> int, index >> int, expected >> str) -> bool {
+        value >> str <- jsonObjectKeyAt(object,index);
+        valid >> bool <- value == expected;
+        strRelease(value);
+        return valid;
+    }
+    run() -> int {
+        array >> int <- jsonNewArray();
+        at >> int <- 0;
+        while (at < 4096) { if (!add(array,at)) return 1; at += 1; }
+        checksum >> int <- 0;
+        round >> int <- 0;
+        while (round < 10) {
+            at <- 0;
+            while (at < 4096) { checksum += get(array,at); at += 1; }
+            round += 1;
+        }
+        if (checksum != 83865600 || get(array,2000) != 2000) return 2;
+        removed >> int <- jsonArrayRemove(array,10);
+        if (jsonGetIntOr(removed,-1) != 10) return 3;
+        jsonRelease(removed);
+        item >> int <- jsonNewInt(77);
+        if (!jsonArrayInsert(array,4095,item)) return 4;
+        jsonRelease(item);
+        if (jsonArrayLen(array) != 4096 || get(array,2000) != 2001 || get(array,4095) != 77) return 5;
+        if (get(array,0) != 0 || get(array,2000) != 2001) return 6;
+        removed <- jsonArrayRemove(array,2000); jsonRelease(removed);
+        item <- jsonNewInt(99);
+        if (!jsonArrayInsert(array,0,item)) return 7;
+        jsonRelease(item);
+        if (get(array,0) != 99 || get(array,2000) != 2000) return 8;
+        removed <- jsonArrayRemove(array,0); jsonRelease(removed);
+        copy >> int <- jsonClone(array);
+        if (!jsonEquals(array,copy) || get(copy,4094) != 77 || get(array,0) != 0) return 9;
+        jsonRelease(copy); jsonRelease(array);
+        round <- 0;
+        while (round < 32) {
+            object >> int <- jsonNewObject();
+            if (!put(object,"a",1) || !put(object,"b",2) || !put(object,"c",3) || !key(object,2,"c")) return 10;
+            removed <- jsonObjectRemove(object,"b"); jsonRelease(removed);
+            if (!put(object,"d",4) || !key(object,2,"d")) return 11;
+            if (!put(object,"d",5) || !key(object,2,"d")) return 12;
+            jsonRelease(object);
+            array <- jsonNewArray();
+            if (!add(array,42) || get(array,0) != 42 || get(array,-1) != -999 || get(array,1) != -999) return 13;
+            jsonRelease(array);
+            round += 1;
+        }
+        println("json-cursor-ok");
+        return 252;
+    }
+    ref main ->> run;
+    fa: return true;
+}

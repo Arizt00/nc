@@ -1,0 +1,85 @@
+use <project:command_host>;
+
+commandProvider :: runtime {
+    fn:
+        private:
+            field(handle >> addr, position >> int) -> p<byte> { return off(from<byte>(handle),position); }
+            pipeClose(handle >> addr, position >> int) -> bool {
+                if (handle == null) return false;
+                slot >> p<byte> <- field(handle,position);
+                native >> addr <- rd<addr>(slot);
+                if (native == null) return true;
+                status >> int <- command_host.commandHost.closeHandle(native);
+                if (status == 0) { wr<addr>(slot,null); wr<int>(field(handle,16),0); return true; }
+                wr<int>(field(handle,16),status); return false;
+            }
+            transfer(handle >> addr, buffer >> addr, bytes >> int, writing >> bool) -> int {
+                if (handle == null) return -22;
+                if (bytes < 0 || (bytes > 0 && buffer == null)) { wr<int>(field(handle,16),22); return -22; }
+                if (bytes == 0) { wr<int>(field(handle,16),0); return 0; }
+                native >> addr <- rd<addr>(field(handle,writing ? 8 : 0));
+                status >> int <- command_host.commandHost.transfer(native,buffer,bytes,writing);
+                wr<int>(field(handle,16),status < 0 ? -status : 0);
+                return status;
+            }
+        public:
+            provider_std_stdIn() -> addr { return command_host.commandHost.standard(0); }
+            provider_std_stdOut() -> addr { return command_host.commandHost.standard(1); }
+            provider_std_stdErr() -> addr { return command_host.commandHost.standard(2); }
+            provider_command_commandOpen(line >> str, cwd >> str, input >> addr, output >> addr, error >> addr, flags >> int) -> addr {
+                data >> p<byte> <- cast<byte>(calloc(1,48));
+                if (data == null) return null;
+                wr<int>(off(data,40),-1);
+                wr<int>(off(data,36),flags);
+                status >> int <- command_host.commandHost.open(data,line,cwd,input,output,error,flags);
+                wr<int>(off(data,32),status);
+                return adr(data);
+            }
+            provider_command_commandStarted(handle >> addr) -> bool { return handle != null && rd<addr>(field(handle,0)) != null; }
+            provider_command_commandWait(handle >> addr, timeout >> int) -> int {
+                if (!provider_command_commandStarted(handle)) return -22;
+                if (rd<int>(field(handle,44)) != 0) return 0;
+                status >> int <- command_host.commandHost.wait(from<byte>(handle),timeout);
+                wr<int>(field(handle,32),status < 0 ? -status : 0); return status;
+            }
+            provider_command_commandExitCode(handle >> addr) -> int {
+                if (!provider_command_commandStarted(handle)) return -1;
+                command_host.commandHost.wait(from<byte>(handle),0);
+                return rd<int>(field(handle,44)) != 0 ? rd<int>(field(handle,40)) : 259;
+            }
+            provider_command_commandTerminate(handle >> addr, code >> int) -> bool {
+                if (!provider_command_commandStarted(handle)) return false;
+                status >> int <- command_host.commandHost.terminate(rd<addr>(field(handle,0)),code);
+                wr<int>(field(handle,32),status); return status == 0;
+            }
+            provider_command_commandProcessHandle(handle >> addr) -> addr { return handle == null ? null : rd<addr>(field(handle,0)); }
+            provider_command_commandThreadHandle(handle >> addr) -> addr { return handle == null ? null : rd<addr>(field(handle,8)); }
+            provider_command_commandId(handle >> addr) -> int { return handle == null ? 0 : rd<int>(field(handle,16)); }
+            provider_command_commandThreadId(handle >> addr) -> int { return handle == null ? 0 : rd<int>(field(handle,24)); }
+            provider_command_commandError(handle >> addr) -> int { return handle == null ? 22 : rd<int>(field(handle,32)); }
+            provider_command_commandRelease(handle >> addr) -> bool {
+                if (handle == null) return true;
+                valid >> bool <- command_host.commandHost.release(from<byte>(handle));
+                free(from<byte>(handle)); return valid;
+            }
+            provider_command_commandPipeOpen(inheritRead >> bool, inheritWrite >> bool) -> addr {
+                data >> p<byte> <- cast<byte>(calloc(1,24));
+                if (data == null) return null;
+                wr<int>(off(data,16),command_host.commandHost.pipeOpen(data,inheritRead,inheritWrite));
+                return adr(data);
+            }
+            provider_command_commandPipeReadHandle(handle >> addr) -> addr { return handle == null ? null : rd<addr>(field(handle,0)); }
+            provider_command_commandPipeWriteHandle(handle >> addr) -> addr { return handle == null ? null : rd<addr>(field(handle,8)); }
+            provider_command_commandPipeRead(handle >> addr, buffer >> addr, bytes >> int) -> int { return transfer(handle,buffer,bytes,false); }
+            provider_command_commandPipeWrite(handle >> addr, buffer >> addr, bytes >> int) -> int { return transfer(handle,buffer,bytes,true); }
+            provider_command_commandPipeCloseRead(handle >> addr) -> bool { return pipeClose(handle,0); }
+            provider_command_commandPipeCloseWrite(handle >> addr) -> bool { return pipeClose(handle,8); }
+            provider_command_commandPipeError(handle >> addr) -> int { return handle == null ? 22 : rd<int>(field(handle,16)); }
+            provider_command_commandPipeRelease(handle >> addr) -> bool {
+                if (handle == null) return true;
+                readOk >> bool <- pipeClose(handle,0);
+                writeOk >> bool <- pipeClose(handle,8);
+                free(from<byte>(handle)); return readOk && writeOk;
+            }
+    fa: return true;
+}

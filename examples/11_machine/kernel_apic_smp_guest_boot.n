@@ -1,0 +1,36 @@
+kernelApicSmpGuestBoot :: kernel {
+    fn:
+        configureXapic() -> bool {
+            lapic  at 0xFEE00000;
+            ioapic at 0xFEC00000;
+            hpet   at 0xFED00000;
+
+            guard load32(lapic + 0x30) >= 0 else return false;
+
+            *32(lapic + 0xF0, 0x1FF);
+            *32(lapic + 0x320, 0x61);
+            *32(lapic + 0x3E0, 0x0B);
+
+            route <- load32(ioapic + 0x10);
+            *32(ioapic + 0x10, route);
+
+            counter <- load64(hpet + 0xF0);
+            *64(hpet + 0xF0, counter);
+
+            sendIpi(lapic, 1, 0x4042);
+            *32(lapic + 0xB0, 0);
+
+            return true;
+        }
+
+        configureX2apic() -> bool {
+            guard msrRead(0x803) >= 0 else return false;
+
+            msrWrite(0x80F, 0x1FF);
+            tscDeadline(tscRead() + 1_000_000);
+
+            return true;
+        }
+
+    ref main ->> configureXapic;
+}

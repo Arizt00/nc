@@ -1,0 +1,36 @@
+use <data:json>;
+use <io:output>;
+use <process:env>;
+use <project:dist_session, dist_telemetry, dist_external_ops, tool_cli>;
+
+distCli {
+    fn:
+        public:
+            execute(arguments >> addr, mode >> str) -> int {
+                if (mode != "telemetry" && mode != "external-ops") { println("distribution: unsupported mode"); return 2; }
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--candidate|--bash|--release-verify|--work|--report|","|--help|-h|");
+                if (options == 0) { println("distribution: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools dist-telemetry|dist-external-ops [--root REPO] [--candidate EXISTING_NCC] [--bash EXE] [--release-verify EXE] [--work NEW_DIRECTORY] [--report JSON]");
+                    println("Uses a prebuilt NCC; distribution scripts remain external processes. Private work and reports are retained.");
+                    jsonRelease(options); return 0;
+                }
+                if (!dist_session.distSession.open(options)) { println("distribution: cannot reserve new work directory"); jsonRelease(options); return 2; }
+                had >> bool <- envHas("NCUP_HOME");
+                old >> str <- dist_session.distSession.environment("NCUP_HOME");
+                envSet("NCUP_HOME",dist_session.distSession.homePath());
+                extra >> int <- jsonNewObject();
+                schema >> str <- "nc.phase10.telemetry.report.v1";
+                if (mode == "telemetry") dist_telemetry.distTelemetry.inspect();
+                else {
+                    jsonRelease(extra); extra <- dist_external_ops.distExternalOps.inspect();
+                    schema <- "nc.phase10.external.ops.report.v1";
+                }
+                if (had) envSet("NCUP_HOME",old); else envRemove("NCUP_HOME");
+                if (old != "") free(cast<byte>(old));
+                destination >> str <- tool_cli.toolCli.value(options,"--report",dist_session.distSession.workPath()+"/report.json");
+                code >> int <- dist_session.distSession.finish(schema,destination,extra);
+                jsonRelease(options); return code;
+            }
+    fa: return true;
+}

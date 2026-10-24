@@ -1,0 +1,150 @@
+use <project:lexer, parser_ast, ast_arena>;
+
+nccParserTests {
+    const:
+        CHILDREN >> int <- 10000;
+
+    fn:
+        private:
+            arenaContract() -> bool {
+                arena >> p<byte> <- ast_arena.nccAstArena.open(CHILDREN + 2);
+                guard arena != null else return false;
+                root >> int <- ast_arena.nccAstArena.append(arena, 1, -1, 1, 1, 0, 0, 0);
+                at >> int <- 0;
+                while (at < CHILDREN) {
+                    ast_arena.nccAstArena.append(arena, 26, root, 1, 1, 0, 0, at);
+                    at += 1;
+                }
+                ok >> bool <- ast_arena.nccAstArena.layoutValid() &&
+                    ast_arena.nccAstArena.validate(arena) &&
+                    ast_arena.nccAstArena.count(arena) == CHILDREN + 1;
+                ok <- ast_arena.nccAstArena.detach(arena, 1) && ok;
+                ok <- ast_arena.nccAstArena.attach(arena, 2, 1) && ok;
+                ok <- ast_arena.nccAstArena.validate(arena) && ok;
+                ok <- !ast_arena.nccAstArena.attach(arena, 2, 2) && ok;
+                ast_arena.nccAstArena.detach(arena, 2);
+                ok <- !ast_arena.nccAstArena.attach(arena, 1, 2) && ok;
+                ok <- ast_arena.nccAstArena.validate(arena) && ok;
+                // Deliberate raw corruption still has to be caught by the validator.
+                corrupted >> p<byte> <- ast_arena.nccAstArena.node(arena, 2);
+                wr<int>(off(corrupted, 4), 1);
+                ok <- !ast_arena.nccAstArena.validate(arena) && ok;
+                ast_arena.nccAstArena.close(arena);
+                return ok;
+            }
+
+            bufferContract() -> bool {
+                text >> str <- "sample { fn: value() -> str { return (\"A\\0\\x42\"); } fa: return true; }";
+                data >> p<byte> <- cast<byte>(text);
+                bytes >> int <- 0;
+                while (rd<byte>(off(data, bytes)) != 0) { bytes += 1; }
+                session >> p<byte> <- parser_ast.nccParserAst.openBuffer(data, bytes);
+                guard session != null else return false;
+                ok >> bool <- parser_ast.nccParserAst.materialReady(session) &&
+                    parser_ast.nccParserAst.materialTreeValid(session);
+                found >> int <- 0;
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialTokenCount(session)) {
+                    if (parser_ast.nccParserAst.materialTokenKind(session, at) == 3) {
+                        payload >> p<byte> <- parser_ast.nccParserAst.materialTokenPayload(session, at);
+                        ok <- parser_ast.nccParserAst.materialTokenBytes(session, at) == 3 && ok;
+                        ok <- rd<byte>(payload) == 65 && rd<byte>(off(payload, 1)) == 0 &&
+                            rd<byte>(off(payload, 2)) == 66 && ok;
+                        found += 1;
+                    }
+                    at += 1;
+                }
+                parser_ast.nccParserAst.closeMaterial(session);
+                return ok && found == 1;
+            }
+
+            sourceSpans() -> bool {
+                text >> str <- "  \"a\\n\" + 7";
+                state >> p<byte> <- lexer.nccLexer.openBuffer(cast<byte>(text), 11);
+                guard state != null else return false;
+                buffer >> p<byte> <- cast<byte>(alloc(5));
+                guard buffer != null else { lexer.nccLexer.close(state); return false; }
+                ok >> bool <- lexer.nccLexer.valid(state) &&
+                    lexer.nccLexer.tokenAtByte(state, 1) == -1 &&
+                    lexer.nccLexer.tokenAtByte(state, 2) == 0 &&
+                    lexer.nccLexer.tokenAtByte(state, 6) == 0 &&
+                    lexer.nccLexer.tokenAtByte(state, 7) == -1 &&
+                    lexer.nccLexer.copyLexeme(state, 0, buffer, 4) == -1 &&
+                    lexer.nccLexer.copyLexeme(state, 0, buffer, 5) == 5 &&
+                    rd<byte>(buffer) == 34 && rd<byte>(off(buffer, 2)) == 92;
+                free(buffer);
+                lexer.nccLexer.close(state);
+                return ok;
+            }
+
+            genericShape(text >> str, expected >> int) -> bool {
+                data >> p<byte> <- cast<byte>(text);
+                bytes >> int <- 0;
+                while (rd<byte>(off(data, bytes)) != 0) { bytes += 1; }
+                session >> p<byte> <- parser_ast.nccParserAst.openBuffer(data, bytes);
+                guard session != null else return false;
+                ok >> bool <- parser_ast.nccParserAst.materialReady(session) &&
+                    parser_ast.nccParserAst.materialTreeValid(session);
+                if (expected < 0) ok <- !parser_ast.nccParserAst.materialReady(session);
+                found >> int <- 0;
+                at >> int <- 0;
+                while (at < parser_ast.nccParserAst.materialNodeCount(session)) {
+                    if (parser_ast.nccParserAst.materialNodeKind(session, at) == 74) found += 1;
+                    at += 1;
+                }
+                parser_ast.nccParserAst.closeMaterial(session);
+                return ok && (expected < 0 || found == expected);
+            }
+
+            genericComparisonContract() -> bool {
+                return genericShape("sample { run(digit >> int, base >> u64, value >> u64) -> bool { return digit < 0 || digit >= base || value > (17-digit)/base; } fa: return true; }", 0) &&
+                    genericShape("sample { run(x >> int, y >> int, z >> int) -> bool { return x < y && y > (z); } fa: return true; }", 0) &&
+                    genericShape("sample { run(data >> p<byte>) -> int { return rd<int>(data) + sizeOf<array<int,4>>() + sizeOf<p<p<byte>>>(); } fa: return true; }", 3) &&
+                    genericShape("sample { run(data >> p<byte>) -> int { return sizeOf<fn(int)->str>(); } fa: return true; }", 1) &&
+                    genericShape("sample { run() -> int { return f<int,int,int,int,int,int,int,int,int,int,int,int,int,int,int,int,int,int,int,int>(); } fa: return true; }", 1) &&
+                    genericShape("sample { run() -> int { return f<>(); } fa: return true; }", -1) &&
+                    genericShape("sample { run() -> int { return f<int,>(); } fa: return true; }", -1);
+            }
+
+        public:
+            moduleContract() -> bool {
+                text >> str <- "module trait.bind; package fn { version: \"A\\0B\"; profile: raw; module local.str; }";
+                data >> p<byte> <- cast<byte>(text);
+                bytes >> int <- 0;
+                while (rd<byte>(off(data, bytes)) != 0) { bytes += 1; }
+                session >> p<byte> <- parser_ast.nccParserAst.openBuffer(data, bytes);
+                guard session != null else return false;
+                ok >> bool <- parser_ast.nccParserAst.materialReady(session) &&
+                    parser_ast.nccParserAst.materialTreeValid(session);
+                modules >> int <- 0;
+                packages >> int <- 0;
+                index >> int <- 0;
+                while (index < parser_ast.nccParserAst.materialNodeCount(session)) {
+                    tag >> int <- parser_ast.nccParserAst.materialNodeKind(session, index);
+                    if (tag == 81) modules += 1;
+                    if (tag == 82) packages += 1;
+                    if (tag == 75 || tag == 80) ok <- false;
+                    if (tag == 84) {
+                        origin >> int <- parser_ast.nccParserAst.materialNodeOrigin(session, index);
+                        payload >> p<byte> <- parser_ast.nccParserAst.materialTokenPayload(session, origin);
+                        ok <- parser_ast.nccParserAst.materialTokenBytes(session, origin) == 3 && ok;
+                        ok <- rd<byte>(payload) == 65 && rd<byte>(off(payload, 1)) == 0 &&
+                            rd<byte>(off(payload, 2)) == 66 && ok;
+                    }
+                    index += 1;
+                }
+                parser_ast.nccParserAst.closeMaterial(session);
+                return ok && modules == 2 && packages == 1 &&
+                    lexer.nccLexer.pathSegmentKind(56) && !lexer.nccLexer.identifierKind(56) &&
+                    !lexer.nccLexer.pathSegmentKind(3);
+            }
+
+            selfTest() -> bool {
+                return arenaContract() && bufferContract() && sourceSpans() && moduleContract() && genericComparisonContract() &&
+                    !parser_ast.nccParserAst.materialReady(null) &&
+                    parser_ast.nccParserAst.materialNodeCount(null) == 0 &&
+                    parser_ast.nccParserAst.closeMaterial(null);
+            }
+    fa:
+        return true;
+}

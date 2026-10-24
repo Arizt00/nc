@@ -1,0 +1,42 @@
+use <data:json>;
+use <project:release_io, contract_checks>;
+
+documentationCheck {
+    fn:
+        public:
+            inspect(root >> str, helpReady >> bool) -> int {
+                checks >> int <- jsonNewObject();
+                documents >> int <- jsonParse("[\"INSTALL.md\",\"TOOLCHAINS.md\",\"IDE_JETBRAINS.md\",\"IDE_VSCODE.md\",\"SECURITY_SUPPLY_CHAIN.md\",\"CI_SETUP.md\"]");
+                paths >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_documentation_spec.md\",\"docs/spec/release/v2_0_0_phase10_documentation_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_documentation_contract.json\",\"docs/status/STATUS_PHASE10_punto18_documentation_v2_0_0.md\",\"tools/ncc/nc/src/verification/documentation_check.n\",\"tools/release/qa_phase10_p18_v2_0_0.sh\"]");
+                contract_checks.contractChecks.record(checks,"artifacts_present",contract_checks.contractChecks.files(root,paths,true) && contract_checks.contractChecks.files(root,documents,true));
+                jsonRelease(paths);
+                contract >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_phase10_documentation_contract.json");
+                gate >> str <- "release_phase10_documentation_gate_tests";
+                mandatory >> int <- jsonObjectGet(contract,"mandatory_docs");
+                contract_checks.contractChecks.record(checks,"contract_consistent",contract_checks.contractChecks.contract(contract,"nc.phase10.documentation.contract.v1",gate) && contract_checks.contractChecks.setSame(mandatory,documents));
+                jsonRelease(mandatory); jsonRelease(contract);
+                rules >> int <- jsonParse("[[\"ncup-init\",\"ncup doctor\",\"ncc run hello.n\"],[\"stable\",\"beta\",\"nightly\",\"minimal\",\"default\",\"complete\"],[\"nclsp\",\"nc-sys-lsp\",\"ncup which ncc\"],[\"nide\",\"nclsp\",\"nc-sys-lsp\",\"nC: Run\",\"nC: Check\",\"nC: Format\"],[\"SHA-256\",\"firmados\",\"clave root\",\"enterprise\"],[\".github/actions/setup-nc/action.yml\",\".gitlab-ci.ncup.yml\",\"tools/ci/setup_ncup_ci_v2_0_0.sh\",\"offline\"]]");
+                names >> int <- jsonParse("[\"install_doc_ready\",\"toolchains_doc_ready\",\"jetbrains_doc_ready\",\"vscode_doc_ready\",\"supply_chain_doc_ready\",\"ci_setup_doc_ready\"]");
+                index >> int <- 0;
+                while (index < 6) {
+                    doc >> int <- jsonArrayGet(documents,index);
+                    rule >> int <- jsonArrayGet(rules,index);
+                    name >> int <- jsonArrayGet(names,index);
+                    content >> str <- release_io.releaseIo.text(root+"/"+jsonGetString(doc));
+                    contract_checks.contractChecks.record(checks,jsonGetString(name),contract_checks.contractChecks.phrases(content,rule));
+                    jsonRelease(doc); jsonRelease(rule); jsonRelease(name);
+                    index += 1;
+                }
+                jsonRelease(documents); jsonRelease(rules); jsonRelease(names);
+                train >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_release_train_contract.json");
+                installer >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_phase10_installer_product_contract.json");
+                artifact >> str <- "docs/spec/release/v2_0_0_phase10_documentation_spec.md";
+                contract_checks.contractChecks.record(checks,"release_train_integrated",contract_checks.contractChecks.integrated(train,gate,artifact,true));
+                contract_checks.contractChecks.record(checks,"installer_contract_integrated",contract_checks.contractChecks.integrated(installer,gate,artifact,true));
+                contract_checks.contractChecks.record(checks,"cli_help_accessible",helpReady);
+                jsonRelease(train); jsonRelease(installer);
+                return checks;
+            }
+    fa:
+        return true;
+}

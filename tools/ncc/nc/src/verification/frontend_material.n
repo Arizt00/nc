@@ -1,0 +1,239 @@
+use <data:json>;
+use <project:release_io, contract_checks>;
+
+frontendMaterial {
+    fn:
+        public:
+            integer(value >> int) -> int {
+                guard jsonKind(value) == 3 else return -2147483647;
+                encoded >> str <- jsonStringify(value);
+                valid >> bool <- !strContains(encoded,".") && !strContains(encoded,"e") && !strContains(encoded,"E");
+                free(cast<byte>(encoded));
+                return valid ? jsonGetIntOr(value,-2147483647) : -2147483647;
+            }
+            number(model >> int, key >> str) -> int {
+                value >> int <- jsonObjectGet(model,key);
+                result >> int <- integer(value);
+                jsonRelease(value);
+                return result;
+            }
+            fieldAt(values >> int, index >> int, key >> str) -> int {
+                if (index < 0 || index >= jsonArrayLen(values)) return -2147483647;
+                item >> int <- jsonArrayGet(values,index);
+                result >> int <- number(item,key);
+                jsonRelease(item);
+                return result;
+            }
+            kindAt(nodes >> int, index >> int) -> str {
+                item >> int <- jsonArrayGet(nodes,index);
+                value >> str <- release_io.releaseIo.field(item,"kind");
+                jsonRelease(item);
+                return value;
+            }
+            countKind(nodes >> int, kind >> str) -> int {
+                total >> int <- 0;
+                index >> int <- 0;
+                while (index < jsonArrayLen(nodes)) {
+                    name >> str <- kindAt(nodes,index);
+                    if (name == kind) total += 1;
+                    strRelease(name);
+                    index += 1;
+                }
+                return total;
+            }
+            firstKind(nodes >> int, kind >> str) -> int {
+                index >> int <- 0;
+                while (index < jsonArrayLen(nodes)) {
+                    name >> str <- kindAt(nodes,index);
+                    found >> bool <- name == kind;
+                    strRelease(name);
+                    if (found) return index;
+                    index += 1;
+                }
+                return -1;
+            }
+            children(nodes >> int, parent >> int) -> int {
+                result >> int <- jsonNewArray();
+                next >> int <- fieldAt(nodes,parent,"first_child");
+                steps >> int <- 0;
+                while (next >= 0 && next < jsonArrayLen(nodes) && steps < jsonArrayLen(nodes)) {
+                    jsonArrayPush(result,jsonNewInt(next));
+                    next <- fieldAt(nodes,next,"next_sibling");
+                    steps += 1;
+                }
+                if (next != -1) { jsonRelease(result); return 0; }
+                return result;
+            }
+            indexAt(values >> int, index >> int) -> int {
+                item >> int <- jsonArrayGet(values,index);
+                result >> int <- integer(item);
+                jsonRelease(item);
+                return result;
+            }
+            bytesText(values >> int) -> str {
+                length >> int <- jsonArrayLen(values);
+                buffer >> p<byte> <- cast(alloc(length+1));
+                guard buffer != null else return "";
+                index >> int <- 0;
+                while (index < length) {
+                    value >> int <- indexAt(values,index);
+                    if (value < 0 || value > 255) { free(buffer); return ""; }
+                    wr(off(buffer,index),value);
+                    index += 1;
+                }
+                wr(off(buffer,length),0);
+                return cast(buffer);
+            }
+            validate(doc >> int, sourceBytes >> int) -> bool {
+                guard release_io.releaseIo.field(doc,"schema") == "nc.parser.ast-material.v1" else return false;
+                nodes >> int <- jsonObjectGet(doc,"nodes");
+                tokens >> int <- jsonObjectGet(doc,"tokens");
+                total >> int <- jsonArrayLen(nodes);
+                tokenCount >> int <- jsonArrayLen(tokens);
+                if (jsonKind(nodes) != 5 || jsonKind(tokens) != 5 || total < 1 || tokenCount < 1 || sourceBytes < 0) {
+                    jsonRelease(nodes); jsonRelease(tokens); return false;
+                }
+                seen >> p<int> <- cast(calloc(total,sizeOf(int)));
+                parents >> p<int> <- cast(alloc(total*sizeOf(int)));
+                if (seen == null || parents == null) {
+                    free(seen); free(parents); jsonRelease(nodes); jsonRelease(tokens); return false;
+                }
+                ok >> bool <- true;
+                index >> int <- 0;
+                while (index < total && ok) {
+                    node >> int <- jsonArrayGet(nodes,index);
+                    first >> int <- number(node,"first_token");
+                    last >> int <- number(node,"end_token");
+                    origin >> int <- number(node,"origin_token");
+                    start >> int <- number(node,"start");
+                    end >> int <- number(node,"end");
+                    parent >> int <- number(node,"parent");
+                    wr(off(parents,index),parent);
+                    ok <- first >= 0 && last >= first && last < tokenCount && origin >= 0 && origin < tokenCount &&
+                        start >= 0 && end >= start && end <= sourceBytes && parent >= -1 && parent < total;
+                    if (ok) ok <- start == fieldAt(tokens,first,"start") && end == fieldAt(tokens,last,"end");
+                    child >> int <- number(node,"first_child");
+                    while (child >= 0 && ok) {
+                        if (child >= total) { ok <- false; break; }
+                        if (rd(off(seen,child)) != 0 || fieldAt(nodes,child,"parent") != index) { ok <- false; break; }
+                        wr(off(seen,child),1);
+                        child <- fieldAt(nodes,child,"next_sibling");
+                    }
+                    if (child < -1) ok <- false;
+                    jsonRelease(node);
+                    index += 1;
+                }
+                index <- 0;
+                while (index < total && ok) {
+                    ok <- rd(off(seen,index)) == (rd(off(parents,index)) >= 0 ? 1 : 0);
+                    index += 1;
+                }
+                index <- 0;
+                while (index < total) { wr(off(seen,index),0); index += 1; }
+                // Three-colour parent traversal is linear even for deeply nested trees.
+                index <- 0;
+                while (index < total && ok) {
+                    cursor >> int <- index;
+                    while (cursor >= 0) {
+                        state >> int <- rd(off(seen,cursor));
+                        if (state == 1) { ok <- false; break; }
+                        if (state == 2) break;
+                        wr(off(seen,cursor),1);
+                        cursor <- rd(off(parents,cursor));
+                    }
+                    cursor <- index;
+                    while (cursor >= 0 && ok) {
+                        if (rd(off(seen,cursor)) != 1) break;
+                        wr(off(seen,cursor),2);
+                        cursor <- rd(off(parents,cursor));
+                    }
+                    index += 1;
+                }
+                index <- 0;
+                while (index < tokenCount && ok) {
+                    token >> int <- jsonArrayGet(tokens,index);
+                    start >> int <- number(token,"start");
+                    end >> int <- number(token,"end");
+                    ok <- start >= 0 && end >= start && end <= sourceBytes;
+                    payload >> int <- jsonObjectGet(token,"payload");
+                    if (jsonKind(payload) != 5) ok <- false;
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(payload) && ok) {
+                        value >> int <- indexAt(payload,at);
+                        ok <- value >= 0 && value <= 255;
+                        at += 1;
+                    }
+                    jsonRelease(payload); jsonRelease(token); index += 1;
+                }
+                free(seen); free(parents); jsonRelease(nodes); jsonRelease(tokens);
+                return ok;
+            }
+            expression(doc >> int, index >> int) -> int {
+                nodes >> int <- jsonObjectGet(doc,"nodes");
+                tokens >> int <- jsonObjectGet(doc,"tokens");
+                node >> int <- jsonArrayGet(nodes,index);
+                kind >> str <- release_io.releaseIo.field(node,"kind");
+                result >> int <- jsonNewArray();
+                if (kind == "ExprLiteral") {
+                    token >> int <- jsonArrayGet(tokens,number(node,"origin_token"));
+                    code >> int <- number(token,"kind");
+                    payload >> int <- jsonObjectGet(token,"payload");
+                    if (code == 2) {
+                        text >> str <- bytesText(payload);
+                        jsonArrayPush(result,jsonNewString("Number")); jsonArrayPush(result,jsonNewString(text));
+                        strRelease(text);
+                    } else if (code == 3) {
+                        // Keep decoded bytes, including embedded NUL, rather than a C-string projection.
+                        jsonArrayPush(result,jsonNewString("StringBytes")); jsonArrayPush(result,jsonClone(payload));
+                    } else if (code == 4) {
+                        jsonArrayPush(result,jsonNewString("Char")); jsonArrayPush(result,jsonNewInt(indexAt(payload,0)));
+                    } else {
+                        jsonArrayPush(result,jsonNewString("Bool")); jsonArrayPush(result,jsonNewBool(code == 76));
+                    }
+                    jsonRelease(payload); jsonRelease(token);
+                } else if (kind == "ExprBinary" || kind == "ExprUnary" || kind == "ExprTernary") {
+                    if (kind == "ExprTernary") jsonArrayPush(result,jsonNewString("Ternary"));
+                    else jsonArrayPush(result,jsonNewInt(number(node,"operator")));
+                    list >> int <- children(nodes,index);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(list)) {
+                        jsonArrayPush(result,expression(doc,indexAt(list,at))); at += 1;
+                    }
+                    jsonRelease(list);
+                } else { jsonRelease(result); result <- 0; }
+                strRelease(kind); jsonRelease(node); jsonRelease(nodes); jsonRelease(tokens);
+                return result;
+            }
+            firstReturn(model >> int) -> int {
+                kind >> int <- jsonKind(model);
+                if (kind == 6 && jsonObjectHas(model,"Return")) return jsonObjectGet(model,"Return");
+                count >> int <- kind == 6 ? jsonObjectLen(model) : (kind == 5 ? jsonArrayLen(model) : 0);
+                index >> int <- 0;
+                while (index < count) {
+                    child >> int <- kind == 6 ? jsonObjectGet(model,jsonObjectKeyAt(model,index)) : jsonArrayGet(model,index);
+                    found >> int <- firstReturn(child);
+                    jsonRelease(child);
+                    if (found != 0) return found;
+                    index += 1;
+                }
+                return 0;
+            }
+            rustExpression(model >> int) -> int {
+                result >> int <- jsonNewArray();
+                if (jsonObjectHas(model,"Binary")) {
+                    binary >> int <- jsonObjectGet(model,"Binary");
+                    op >> str <- release_io.releaseIo.field(binary,"op");
+                    jsonArrayPush(result,jsonNewInt(op == "Plus" ? 35 : (op == "Star" ? 18 : -1)));
+                    left >> int <- jsonObjectGet(binary,"left");
+                    right >> int <- jsonObjectGet(binary,"right");
+                    jsonArrayPush(result,rustExpression(left)); jsonArrayPush(result,rustExpression(right));
+                    jsonRelease(left); jsonRelease(right); jsonRelease(binary); strRelease(op);
+                    return result;
+                }
+                if (jsonObjectHas(model,"Number")) {
+                    jsonArrayPush(result,jsonNewString("Number")); jsonArrayPush(result,jsonObjectGet(model,"Number"));
+                } else { jsonRelease(result); return 0; }
+                return result;
+            }
+    fa: return true;
+}

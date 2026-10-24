@@ -1,0 +1,63 @@
+/* Hosted raw heap. Each allocation carries only its requested byte count.
+ * There is no ownership, provenance, lifetime table or double-free barrier.
+ */
+heapProvider :: runtime {
+    const:
+        HEADER_BYTES >> u64 <- 16;
+        MAX_BYTES >> u64 <- 0x7FFFFFFFFFFFFFEF;
+    fn:
+        public:
+            byteCopy(destination >> p<byte>, source >> p<byte>, bytes >> u64) -> p<byte> {
+                index >> u64 <- 0;
+                while (index < bytes) {
+                    volatileWrite<byte>(off(destination,index),volatileRead<byte>(off(source,index)));
+                    index += 1;
+                }
+                return destination;
+            }
+            byteFill(destination >> p<byte>, value >> int, bytes >> u64) -> p<byte> {
+                index >> u64 <- 0;
+                while (index < bytes) { volatileWrite<byte>(off(destination,index),value); index += 1; }
+                return destination;
+            }
+        public:
+            provider_heap_alloc(bytes >> u64) -> p<byte> {
+                if ((bytes >> 63) != 0) return null;
+                guard bytes <= MAX_BYTES else return null;
+                total >> u64 <- bytes+HEADER_BYTES;
+                block >> p<byte> <- vmReserve(null,total,0);
+                guard block != null else return null;
+                if (!vmCommit(block,total,vmReadWriteProtection())) { vmRelease(block,total); return null; }
+                wr<u64>(block,bytes);
+                wr<u64>(off(block,8),total);
+                return off(block,HEADER_BYTES);
+            }
+            provider_heap_calloc(count >> u64, bytes >> u64) -> p<byte> {
+                if (count == 0 || bytes == 0) return provider_heap_alloc(0);
+                if ((count >> 63) != 0 || (bytes >> 63) != 0) return null;
+                if (bytes != 0 && count > MAX_BYTES/bytes) return null;
+                total >> u64 <- count*bytes;
+                block >> p<byte> <- provider_heap_alloc(total);
+                guard block != null else return null;
+                byteFill(block,0,total);
+                return block;
+            }
+            provider_heap_free(pointer >> p<byte>) -> bool {
+                if (pointer == null) return true;
+                block >> p<byte> <- off(pointer,-16);
+                return vmRelease(block,rd<u64>(off(block,8)));
+            }
+            provider_heap_realloc(pointer >> p<byte>, bytes >> u64) -> p<byte> {
+                if (pointer == null) return provider_heap_alloc(bytes);
+                if (bytes == 0) { provider_heap_free(pointer); return null; }
+                oldBytes >> u64 <- rd<u64>(off(pointer,-16));
+                replacement >> p<byte> <- provider_heap_alloc(bytes);
+                guard replacement != null else return null;
+                copied >> u64 <- oldBytes < bytes ? oldBytes : bytes;
+                byteCopy(replacement,pointer,copied);
+                provider_heap_free(pointer);
+                return replacement;
+            }
+    fa:
+        return true;
+}

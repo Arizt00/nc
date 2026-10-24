@@ -1,0 +1,139 @@
+use <data:json>;
+use <process:args>;
+use <io:output, errorOutput>;
+use <project:release43_common, release43_public, release43_updates, release43_manifest, release43_supply, release43_ci, release43_installer, release43_distribution, tool_cli, release_io>;
+
+release43Cli {
+    stc: decimalTable >> addr <- 0; decimalCount >> int <- 0;
+    fn:
+        private:
+            // argparse's negative-number token rule uses Unicode 15.0 Nd, shared by both oracle hosts.
+            decimal(code >> int) -> bool {
+                if (code < 128) return code >= 48 && code <= 57;
+                if (cast<byte>(decimalTable) == null) {
+                    rows >> int <- jsonParse("[[48,57],[1632,1641],[1776,1785],[1984,1993],[2406,2415],[2534,2543],[2662,2671],[2790,2799],[2918,2927],[3046,3055],[3174,3183],[3302,3311],[3430,3439],[3558,3567],[3664,3673],[3792,3801],[3872,3881],[4160,4169],[4240,4249],[6112,6121],[6160,6169],[6470,6479],[6608,6617],[6784,6793],[6800,6809],[6992,7001],[7088,7097],[7232,7241],[7248,7257],[42528,42537],[43216,43225],[43264,43273],[43472,43481],[43504,43513],[43600,43609],[44016,44025],[65296,65305],[66720,66729],[68912,68921],[69734,69743],[69872,69881],[69942,69951],[70096,70105],[70384,70393],[70736,70745],[70864,70873],[71248,71257],[71360,71369],[71472,71481],[71904,71913],[72016,72025],[72784,72793],[73040,73049],[73120,73129],[73552,73561],[92768,92777],[92864,92873],[93008,93017],[120782,120831],[123200,123209],[123632,123641],[124144,124153],[125264,125273],[130032,130041]]"); decimalCount <- jsonArrayLen(rows);
+                    data >> p<byte> <- cast(alloc(decimalCount*8)); if (data == null) { jsonRelease(rows); return false; }
+                    index >> int <- 0;
+                    while (index < decimalCount) {
+                        row >> int <- jsonArrayGet(rows,index); lo >> int <- jsonArrayGet(row,0); hi >> int <- jsonArrayGet(row,1);
+                        wr<int>(off<byte>(data,index*8),jsonGetIntOr(lo,0)); wr<int>(off<byte>(data,index*8+4),jsonGetIntOr(hi,0));
+                        jsonRelease(lo); jsonRelease(hi); jsonRelease(row); index += 1;
+                    }
+                    jsonRelease(rows); decimalTable <- adr(data);
+                }
+                data >> p<byte> <- cast(decimalTable); low >> int <- 0; high >> int <- decimalCount-1;
+                while (low <= high) {
+                    middle >> int <- (low+high)/2; first >> int <- rd<int>(off<byte>(data,middle*8)); last >> int <- rd<int>(off<byte>(data,middle*8+4));
+                    if (code < first) high <- middle-1; else if (code > last) low <- middle+1; else return true;
+                }
+                return false;
+            }
+            scalar(bytes >> p<byte>, size >> int, at >> int, next >> p<int>) -> int {
+                first >> int <- rd<byte>(off<byte>(bytes,at)) & 255; width >> int <- first < 128 ? 1 : (first >= 194 && first <= 223 ? 2 : (first >= 224 && first <= 239 ? 3 : (first >= 240 && first <= 244 ? 4 : 0)));
+                if (width == 0 || at+width > size) return -1;
+                value >> int <- first & (width == 1 ? 127 : (width == 2 ? 31 : (width == 3 ? 15 : 7))); index >> int <- 1;
+                while (index < width) { code >> int <- rd<byte>(off<byte>(bytes,at+index)) & 255; if (code < 128 || code > 191) return -1; value <- value*64+(code & 63); index += 1; }
+                if ((width == 2 && value < 128) || (width == 3 && value < 2048) || (width == 4 && value < 65536) || (value >= 55296 && value <= 57343) || value > 1114111) return -1;
+                wr<int>(next,at+width); return value;
+            }
+            publicOptions(args >> addr, package >> bool) -> int {
+                names >> int <- jsonParse(package ? "[\"--source\",\"--out\",\"--stem\",\"--root\",\"--help\",\"-h\"]" : "[\"--manifest\",\"--dist\",\"--root\",\"--keep\",\"--help\",\"-h\"]");
+                options >> int <- jsonNewObject(); index >> int <- 2; valid >> bool <- true;
+                while (index < argsCount(args) && valid) {
+                    word >> str <- argsAt(args,index); equal >> int <- strIndexOf(word,"="); key >> str <- equal >= 0 ? strSubstring(word,0,equal) : word;
+                    canonical >> str <- ""; matches >> int <- 0; at >> int <- 0;
+                    while (at < jsonArrayLen(names)) {
+                        name >> str <- release43_common.release43Common.stringAt(names,at);
+                        if (key == name) { canonical <- name; matches <- 1; break; }
+                        if (strStartsWith(key,"--") && strByteLen(key) > 2 && strStartsWith(name,key)) { canonical <- name; matches += 1; }
+                        at += 1;
+                    }
+                    if (matches != 1) { valid <- false; break; }
+                    flag >> bool <- canonical == "--keep" || canonical == "--help" || canonical == "-h";
+                    if (flag) {
+                        if (equal >= 0) { valid <- false; break; }
+                        release43_common.release43Common.put(options,canonical,jsonNewBool(true)); index += 1;
+                        if (canonical == "--help" || canonical == "-h") break;
+                        continue;
+                    }
+                    value >> str <- "";
+                    if (equal >= 0) { value <- strSubstring(word,equal+1,strByteLen(word)-equal-1); index += 1; }
+                    else {
+                        if (index+1 >= argsCount(args)) { valid <- false; break; }
+                        value <- argsAt(args,index+1);
+                        if (strStartsWith(value,"-") && value != "-") {
+                            if (!negativeNumber(value)) { valid <- false; break; }
+                        }
+                        index += 2;
+                    }
+                    release43_common.release43Common.put(options,canonical,jsonNewString(value));
+                }
+                release43_common.release43Common.release(names);
+                if (!valid) { release43_common.release43Common.release(options); return 0; }
+                return options;
+            }
+        public:
+            negativeNumber(value >> str) -> bool {
+                bytes >> p<byte> <- cast(value); size >> int <- strByteLen(value); if (size < 2 || rd<byte>(bytes) != 45) return false;
+                if (rd<byte>(off<byte>(bytes,size-1)) == 10) size -= 1;
+                at >> int <- 1; digits >> int <- 0; fraction >> bool <- false; after >> int <- 0;
+                while (at < size) {
+                    if (rd<byte>(off<byte>(bytes,at)) == 46) { if (fraction) return false; fraction <- true; at += 1; continue; }
+                    next >> int <- at; code >> int <- scalar(bytes,size,at,&next); if (!decimal(code)) return false;
+                    at <- next; digits += 1; if (fraction) after += 1;
+                }
+                return digits > 0 && (!fraction || after > 0);
+            }
+            execute(args >> addr, command >> str) -> int {
+                package >> bool <- command == "package-public-beta";
+                layout >> bool <- command == "prepare-public-beta-layout";
+                ci >> bool <- command == "release-cicd-compat";
+                installer >> bool <- command == "release-installer-matrix";
+                manifest >> bool <- command == "release-manifest-format";
+                supply >> bool <- command == "release-supply-chain";
+                updates >> bool <- command == "release-updates";
+                if (!package && !layout && !ci && !installer && !manifest && !supply && !updates) { eprintln("unknown release43 command: "+command); return 2; }
+                values >> str <- package ? "|--root|--source|--out|--stem|" : (layout ? "|--root|--manifest|--dist|" : "|--root|--candidate|--cargo|--work|--report|--distribution|");
+                options >> int <- package || layout ? publicOptions(args,package) : tool_cli.toolCli.parse(args,values,"|--help|-h|");
+                if (options == 0) { eprintln("release43: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    if (package) println("package-public-beta [--source SOURCE] [--out OUT] [--stem STEM]");
+                    else if (layout) println("prepare-public-beta-layout [--manifest MANIFEST] [--dist DIST] [--keep]");
+                    else println(command+" [--root REPO] [--candidate NCC | --cargo CARGO] [--work NEW_DIRECTORY] [--report JSON] [--distribution DIST]");
+                    release43_common.release43Common.release(options); return 0;
+                }
+                release43_common.release43Common.reset();
+                if (package || layout) {
+                    result >> int <- package ? release43_public.release43Public.package(options) : release43_public.release43Public.layout(options);
+                    release43_common.release43Common.release(options); return result;
+                }
+                if (jsonObjectHas(options,"--candidate") && jsonObjectHas(options,"--cargo")) { release43_common.release43Common.release(options); return 2; }
+                if (!release43_common.release43Common.initialize(options)) { eprintln(release43_common.release43Common.message()); release43_common.release43Common.release(options); return 2; }
+                root >> str <- release43_common.release43Common.rootPath(); work >> str <- release43_common.release43Common.workPath();
+                out >> str <- work+"/dist"; provided >> bool <- jsonObjectHas(options,"--distribution");
+                if (provided) {
+                    original >> str <- release43_common.release43Common.absolute(tool_cli.toolCli.value(options,"--distribution",""));
+                    if (!release43_common.release43Common.copyTree(original,out)) { eprintln(release43_common.release43Common.message()); release43_common.release43Common.release(options); return 1; }
+                }
+                schema >> str <- "nc.phase10.updates.report.v1"; report >> str <- "F10_P9_updates_report.json"; label >> str <- "updates"; extraName >> str <- ""; extraValue >> str <- "";
+                if (updates) release43_updates.release43Updates.inspect();
+                else if (ci) {
+                    schema <- "nc.phase10.cicd.compat.report.v1"; report <- "F10_P14_cicd_compat_report.json"; label <- "cicd compatibility"; release43_ci.release43Ci.inspect();
+                } else if (installer) {
+                    schema <- "nc.phase10.installer.matrix.report.v1"; report <- "F10_P16_installer_matrix_report.json"; label <- "installer matrix"; release43_installer.release43Installer.inspect(out,provided);
+                } else if (supply) {
+                    schema <- "nc.phase10.supply.chain.security.report.v1"; report <- "F10_P7_supply_chain_security_report.json"; label <- "supply chain security"; extraName <- "work_root"; extraValue <- work; release43_supply.release43Supply.inspect(out,provided);
+                } else if (manifest) {
+                    schema <- "nc.phase10.manifest.format.report.v1"; report <- "F10_P8_manifest_format_report.json"; label <- "manifest format"; extraName <- "out_dir"; extraValue <- out;
+                    built >> bool <- provided;
+                    if (!provided) built <- release43_distribution.release43Distribution.build(out,"phase10-p8-signing-key-v1");
+                    if (!built) release43_common.release43Common.fail("phase10 p8 build failed");
+                    else release43_manifest.release43Manifest.inspect(out,built);
+                }
+                path >> str <- tool_cli.toolCli.value(options,"--report",root+"/docs/status/"+report);
+                result >> int <- release43_common.release43Common.finish(schema,path,extraName,extraValue,label,installer);
+                if (supply) release43_common.release43Common.remove(work,release_io.releaseIo.directory(work));
+                release43_common.release43Common.release(options); return result;
+            }
+    fa: return true;
+}

@@ -1,0 +1,35 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command>;
+
+nativeCompilerExit79 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 4) return 64;
+        compiler >> str <- argsAt(arguments,1); source >> str <- argsAt(arguments,2);
+        if (strContains(compiler,"\"") || strContains(source,"\"")) return 64;
+        rows >> int <- jsonNewArray(); valid >> bool <- true; at >> int <- 0;
+        while (at < 256 && valid) {
+            line >> str <- "\""+compiler+"\""+(at % 2 == 0 ? " self-test" : " compiler sema-types \""+source+"\" --json");
+            child >> addr <- commandOpen(line,".",stdIn(),stdOut(),stdErr(),0);
+            started >> bool <- child != null && commandStarted(child);
+            wait >> int <- started ? commandWait(child,3000) : -1;
+            if (started && wait != 0) { commandTerminate(child,15); commandWait(child,3000); }
+            code >> int <- child == null ? -1 : commandExitCode(child);
+            valid <- started && wait == 0 && code == 0;
+            row >> int <- jsonNewObject();
+            jsonObjectSet(row,"index",jsonNewInt(at)); jsonObjectSet(row,"started",jsonNewBool(started));
+            jsonObjectSet(row,"wait",jsonNewInt(wait)); jsonObjectSet(row,"exit",jsonNewInt(code));
+            jsonArrayPush(rows,row); jsonRelease(row);
+            if (child != null) commandRelease(child);
+            strRelease(line); at += 1;
+        }
+        report >> int <- jsonNewObject(); jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"deadline_ms",jsonNewInt(3000)); jsonObjectSet(report,"commands",rows);
+        valid <- jsonSaveFile(report,argsAt(arguments,3),2) && valid;
+        jsonRelease(rows); jsonRelease(report); argsRelease(arguments);
+        println(valid ? "native-compiler-exit-ok" : "native-compiler-exit-failed"); return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

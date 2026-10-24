@@ -1,0 +1,74 @@
+/* Material registry lookup. Storage is supplied explicitly by the caller. */
+
+diagnosticRegistry {
+    const:
+        REGISTRY_ABI >> u16 <- 1;
+
+    type:
+        DiagnosticRegistryEntry {
+            public:
+                code >> p<byte>;
+                codeBytes >> int;
+                phase >> p<byte>;
+                phaseBytes >> int;
+                summary >> p<byte>;
+                summaryBytes >> int;
+                help >> p<byte>;
+                helpBytes >> int;
+        }
+
+    fn:
+        private:
+            bytesEqual(
+                left >> p<byte>,
+                right >> p<byte>,
+                count >> int
+            ) -> bool {
+                index >> int <- 0;
+                while (index < count) {
+                    if (rd<byte>(off(left, index)) != rd<byte>(off(right, index))) {
+                        return false;
+                    }
+                    index += 1;
+                }
+                return true;
+            }
+
+        public:
+            diagnosticRegistryFind(
+                entries >> p<DiagnosticRegistryEntry>,
+                count >> int,
+                code >> p<byte>,
+                codeBytes >> int
+            ) -> p<DiagnosticRegistryEntry> {
+                index >> int <- 0;
+                while (index < count) {
+                    candidate >> p<DiagnosticRegistryEntry> <- off(entries, index);
+                    value >> DiagnosticRegistryEntry <- rd(candidate);
+                    if (value.codeBytes == codeBytes &&
+                        bytesEqual(value.code, code, codeBytes)) {
+                        return candidate;
+                    }
+                    index += 1;
+                }
+                return null;
+            }
+
+            diagnosticRegistryKnown(
+                entries >> p<DiagnosticRegistryEntry>,
+                count >> int,
+                code >> p<byte>,
+                codeBytes >> int
+            ) -> bool {
+                return diagnosticRegistryFind(entries, count, code, codeBytes) != null;
+            }
+
+            selfTest() -> bool {
+                return REGISTRY_ABI == 1;
+            }
+
+    ref main ->> selfTest;
+
+    fa:
+        return true;
+}

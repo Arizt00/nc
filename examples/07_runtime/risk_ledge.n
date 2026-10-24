@@ -1,0 +1,260 @@
+use <collections:list>;
+use <io:output, render>;
+use <memory:heap, region>;
+
+riskLedge {
+    RiskLedgerRecord :: type {
+            id >> int;
+            score >> int;
+            marker >> int;
+    }
+
+    stc:
+        ids >> array<int, 8>;
+        scores >> array<int, 8>;
+        flags >> array<int, 8>;
+        audit >> array<int, 8>;
+        auditRegion >> memRegion<int>;
+        events >> list<int>;
+
+        i >> int;
+        total >> int;
+        maxScore >> int;
+        riskScore >> int;
+        checksum >> int;
+        ok >> bool;
+
+    const:
+        USER_COUNT >> int <- 8;
+        BASE_RISK >> int <- 10;
+        MULTIPLIER >> int <- 3;
+        MAX_ALLOWED_SCORE >> int <- (BASE_RISK + MULTIPLIER) * USER_COUNT;
+        ledgerInfo >> TypeInfo<RiskLedgerRecord> <- typeInfo<RiskLedgerRecord>();
+        TYPE_NAME >> str <- typeName(ledgerInfo);
+        PUBLIC_API_COUNT >> int <- apiSurfaceCount();
+    comptime unsafe:
+        buildAudit {
+            allow filesystem.write;
+            allow reflection.mutate;
+            allow dynamic.eval;
+            allow sideEffects;
+
+            filesystem.write(
+                "target/tmp/high_level/riskLedge_build_audit.txt",
+                "compile-time audit generated for riskLedge"
+            );
+
+            reflection.mutate("riskLedge", "phase16_unified_high_runtime_compiler_showcase");
+            dynamic.eval("40 + 2");
+        }
+
+    macro:
+        unsafe generateCompileReport(name: string) {
+            allow comptime.filesystem.write;
+            allow comptime.sideEffects.report;
+            effect filesystem.write("target/tmp/high_level/macro_phase16_report.txt");
+            generate report riskLedgerMacroReport;
+        }
+        expand generateCompileReport("riskLedge");
+
+    risk:
+        allow partialMatch;
+        allow noRollback;
+        allow rawSite;
+        allow effectErasure;
+        allow noLimit;
+        allow unboundedLoop;
+        accept partialMatch "riskScoreSubset";
+        accept noRollback "auditRegionCommit";
+        accept rawSite "auditRegion";
+        accept effectErasure "expertBoundary";
+        accept unboundedLoop "userCountBounded";
+        report riskLedgerAuthority;
+
+    fn:
+        baseScore(index >> int) -> int {
+            if (index == 0) { return 10; }
+            if (index == 1) { return 20; }
+            if (index == 2) { return 30; }
+            if (index == 3) { return 40; }
+            if (index == 4) { return 50; }
+            if (index == 5) { return 60; }
+            if (index == 6) { return 70; }
+            if (index == 7) { return 80; }
+            return 0;
+        }
+
+        boot() -> bool {
+            ids <- [100, 101, 102, 103, 104, 105, 106, 107];
+            scores <- [0, 0, 0, 0, 0, 0, 0, 0];
+            flags <- [0, 0, 0, 0, 0, 0, 0, 0];
+            audit <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            auditRegion <- regionCreate<int>(8);
+            events <- [0, 0, 0, 0, 0, 0, 0, 0];
+
+            i <- 0;
+            total <- 0;
+            maxScore <- 0;
+            riskScore <- 0;
+            checksum <- 0;
+            ok <- true;
+
+            return true;
+        }
+
+        auditHash(id >> int, score >> int, marker >> int) -> int {
+            return (id * 31) + (score * 7) + marker;
+        }
+
+        loadScores() -> bool {
+            i <- 0;
+
+            while (i < 8) {
+                scores[i] <- baseScore(i);
+
+                if (i == 2) {
+                    flags[i] <- 1;
+                }
+
+                if (i == 5) {
+                    flags[i] <- 1;
+                }
+
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        processLedger() -> bool {
+            i <- 0;
+            total <- 0;
+            maxScore <- 0;
+            checksum <- 0;
+            riskScore <- 0;
+
+            while (i < 8) {
+                total <- total + scores[i];
+
+                if (scores[i] > maxScore) {
+                    maxScore <- scores[i];
+                }
+
+                if (flags[i] == 1) {
+                    riskScore <- riskScore + scores[i];
+                }
+
+                audit[i] <- auditHash(ids[i], scores[i], flags[i]);
+                regionWrite(auditRegion, i, audit[i]);
+
+                checksum <- checksum + audit[i];
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        inspectMetadata() -> bool {
+            println("===== HIGH LEVEL METADATA =====");
+            print("TypeInfo: ");
+            println("RiskLedgerRecord");
+            println("Public API count: " + renderInt(1));
+            println("Max allowed score const: " + renderInt(104));
+            return true;
+        }
+
+        printResults() -> bool {
+            println("");
+            println("===== RISK LEDGER RESULT =====");
+            println("Total: " + renderInt(total));
+            println("Max score: " + renderInt(maxScore));
+            println("Risk score: " + renderInt(riskScore));
+            println("Checksum: " + renderInt(checksum));
+            return true;
+        }
+
+        printAuditRegion() -> bool {
+            println("");
+            println("===== AUDIT REGION =====");
+
+            i <- 0;
+
+            while (i < 8) {
+                print("audit[");
+                print(i);
+                print("] = ");
+                println(regionRead(auditRegion, i));
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        riskyExpertOperation() -> bool {
+            println("expert policy accepted: partialMatch/noRollback/rawSite/effectErasure/noLimit");
+
+            if (riskScore == 0) {
+                println("Risk: none");
+            } else {
+                if (riskScore == 80) {
+                    println("Risk: expected flagged score");
+                } else {
+                    println("Risk: reviewed by policy");
+                }
+            }
+
+            return true;
+        }
+
+        validate() -> bool {
+            if (total <= 0) {
+                return false;
+            }
+
+            if (maxScore <= 0) {
+                return false;
+            }
+
+            if (checksum <= 0) {
+                return false;
+            }
+
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+
+            inspectMetadata();
+
+            loadScores();
+            processLedger();
+
+            printResults();
+            printAuditRegion();
+
+            riskyExpertOperation();
+
+            ok <- validate();
+
+            if (ok) {
+                println("");
+                println("Validation OK.");
+            } else {
+                println("");
+                println("Validation failed.");
+            }
+
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fn:
+        shutdown() -> bool {
+            regionInvalidate(auditRegion);
+            return true;
+        }
+
+}

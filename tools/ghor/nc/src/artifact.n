@@ -1,0 +1,1229 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args>;
+use <project:text, manifest, sha256>;
+
+artifact[@runtime] {
+    const:
+        NAME_BYTES >> int <- 100;
+        PREFIX_BYTES >> int <- 155;
+        TAR_BLOCK >> int <- 512;
+        DEFLATE_BLOCK >> int <- 65535;
+        PATH_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            contains(value >> str, fragment >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(fragment);
+                sourceBytes >> int <- length(source);
+                wantedBytes >> int <- length(wanted);
+                if (wantedBytes == 0) return true;
+                at >> int <- 0;
+                while (at + wantedBytes <= sourceBytes) {
+                    scan >> int <- 0;
+                    while (scan < wantedBytes &&
+                        rd(off(source, at + scan)) == rd(off(wanted, scan))) { scan += 1; }
+                    if (scan == wantedBytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            ends(value >> str, suffix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(suffix);
+                sourceBytes >> int <- length(source);
+                wantedBytes >> int <- length(wanted);
+                if (wantedBytes > sourceBytes) return false;
+                at >> int <- 0;
+                while (at < wantedBytes) {
+                    if (rd(off(source, sourceBytes - wantedBytes + at)) != rd(off(wanted, at))) {
+                        return false;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            less(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast(left);
+                b >> p<byte> <- cast(right);
+                at >> int <- 0;
+                while (rd(off(a, at)) != 0 && rd(off(b, at)) != 0) {
+                    av >> int <- rd(off(a, at)) & 255;
+                    bv >> int <- rd(off(b, at)) & 255;
+                    if (av < bv) return true;
+                    if (av > bv) return false;
+                    at += 1;
+                }
+                return rd(off(a, at)) == 0 && rd(off(b, at)) != 0;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copied >> int <- 0;
+                while (copied < at) {
+                    wr(off(output, copied), rd(off(source, copied)));
+                    copied += 1;
+                }
+                if (copied == 0) { wr(output, 46); copied <- 1; }
+                wr(off(output, copied), 0);
+                return cast(output);
+            }
+
+            baseName(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return cast(off(source, at + 1));
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            addDiagnostic(entries >> int, severity >> str, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString(severity));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(entries, item);
+            }
+
+            hasErrors(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(entries, at), "severity"), "") ==
+                        "error") return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                result >> Result<bool, FsError> <- createDir(path);
+                return isOk(result) && exists(path);
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            wildcard(pattern >> str, value >> str) -> bool {
+                p >> p<byte> <- cast(pattern);
+                v >> p<byte> <- cast(value);
+                pi >> int <- 0;
+                vi >> int <- 0;
+                star >> int <- -1;
+                retry >> int <- -1;
+                while (rd(off(v, vi)) != 0) {
+                    pc >> byte <- rd(off(p, pi));
+                    vc >> byte <- rd(off(v, vi));
+                    if (separator(pc) && separator(vc)) { pi += 1; vi += 1; }
+                    else if (pc == 63 || pc == vc) { pi += 1; vi += 1; }
+                    else if (pc == 42) { star <- pi; retry <- vi; pi += 1; }
+                    else if (star >= 0) { pi <- star + 1; retry += 1; vi <- retry; }
+                    else return false;
+                }
+                while (rd(off(p, pi)) == 42) { pi += 1; }
+                return rd(off(p, pi)) == 0;
+            }
+
+            patternMatches(patterns >> int, value >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(patterns)) {
+                    if (wildcard(jsonGetStringOr(jsonArrayGet(patterns, at), ""), value)) {
+                        return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+
+            insertSorted(files >> int, value >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    current >> str <- jsonGetStringOr(jsonArrayGet(files, at), "");
+                    if (current == value) return true;
+                    if (less(value, current)) return jsonArrayInsert(files, at, jsonNewString(value));
+                    at += 1;
+                }
+                return jsonArrayPush(files, jsonNewString(value));
+            }
+
+            nestedPackage(path >> str) -> bool {
+                return exists(join(path, "ghor.toml")) || exists(join(path, "nc.toml")) ||
+                    exists(join(path, "Cargo.toml"));
+            }
+
+            hiddenPath(relative >> str) -> bool {
+                source >> p<byte> <- cast(relative);
+                at >> int <- 0;
+                partStart >> bool <- true;
+                while (rd(off(source, at)) != 0) {
+                    current >> byte <- rd(off(source, at));
+                    if (partStart && current == 46) return true;
+                    partStart <- separator(current);
+                    at += 1;
+                }
+                return false;
+            }
+
+            collectFiles(
+                root >> str,
+                relative >> str,
+                include >> int,
+                exclude >> int,
+                files >> int,
+                diagnostics >> int
+            ) -> bool {
+                current >> str <- relative == "" ? root : join(root, relative);
+                names >> p<byte> <- cast(alloc(PATH_BYTES));
+                guard names != null else return false;
+                listed >> int <- listDirInto(current, names, PATH_BYTES);
+                if (listed < 0) { free(names); return false; }
+                if (listed >= PATH_BYTES) {
+                    free(names);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_001",
+                        "directory listing exceeds the native package buffer");
+                    return false;
+                }
+                wr(off(names, listed), 0);
+                startAt >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    currentByte >> byte <- rd(off(names, at));
+                    if (currentByte == 10 || currentByte == 13 || currentByte == 0) {
+                        wr(off(names, at), 0);
+                        if (at > startAt) {
+                            name >> str <- cast(off(names, startAt));
+                            childRelative >> str <- relative == "" ? name : relative + "/" + name;
+                            child >> str <- join(root, childRelative);
+                            topLevelExcluded >> bool <- relative == "" &&
+                                (name == "target" || name == ".git");
+                            if (!topLevelExcluded && isDirectory(child)) {
+                                if (!nestedPackage(child)) {
+                                    guard collectFiles(root, childRelative, include, exclude,
+                                        files, diagnostics) else { free(names); return false; }
+                                }
+                            }
+                            else if (!topLevelExcluded && exists(child)) {
+                                selected >> bool <- jsonArrayLen(include) == 0 ?
+                                    !hiddenPath(childRelative) : patternMatches(include, childRelative);
+                                if (selected && jsonArrayLen(include) == 0 &&
+                                    patternMatches(exclude, childRelative)) selected <- false;
+                                if (selected) insertSorted(files, childRelative);
+                            }
+                        }
+                        while (at < listed && (rd(off(names, at + 1)) == 10 ||
+                            rd(off(names, at + 1)) == 13)) { at += 1; }
+                        startAt <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return true;
+            }
+
+            writeTextFile(path >> str, value >> str) -> bool {
+                bytes >> int <- length(cast(value));
+                return fsWriteFrom(path, cast(value), bytes, false) == bytes;
+            }
+
+            zero(data >> p<byte>, count >> int) -> void {
+                at >> int <- 0;
+                while (at < count) { wr(off(data, at), 0); at += 1; }
+            }
+
+            copyBytes(destination >> p<byte>, source >> p<byte>, count >> int) -> void {
+                at >> int <- 0;
+                while (at < count) {
+                    wr(off(destination, at), rd(off(source, at)));
+                    at += 1;
+                }
+            }
+
+            writeRange(
+                destination >> p<byte>,
+                destinationAt >> int,
+                source >> p<byte>,
+                sourceAt >> int,
+                count >> int
+            ) -> void {
+                at >> int <- 0;
+                while (at < count) {
+                    wr(off(destination, destinationAt + at), rd(off(source, sourceAt + at)));
+                    at += 1;
+                }
+            }
+
+            writeOctal(destination >> p<byte>, fieldAt >> int, width >> int, value >> int) -> void {
+                at >> int <- 0;
+                while (at < width) { wr(off(destination, fieldAt + at), 0); at += 1; }
+                at <- width - 2;
+                while (at >= 0) {
+                    wr(off(destination, fieldAt + at), 48 + (value & 7));
+                    value <- value >>> 3;
+                    at -= 1;
+                }
+            }
+
+            crcUpdate(seed >> int, data >> p<byte>, count >> int) -> int {
+                crc >> int <- seed;
+                at >> int <- 0;
+                while (at < count) {
+                    crc <- (crc ^ (rd(off(data, at)) & 255)) & 4294967295;
+                    bit >> int <- 0;
+                    while (bit < 8) {
+                        if ((crc & 1) != 0) crc <- ((crc >>> 1) ^ 3988292384) & 4294967295;
+                        else crc <- (crc >>> 1) & 4294967295;
+                        bit += 1;
+                    }
+                    at += 1;
+                }
+                return crc;
+            }
+
+            bytePart(value >> int, shift >> int) -> int {
+                shifted >> int <- value >>> shift;
+                return shifted & 255;
+            }
+
+            writeU32LE(destination >> p<byte>, value >> int) -> void {
+                wr(off(destination, 0), bytePart(value, 0));
+                wr(off(destination, 1), bytePart(value, 8));
+                wr(off(destination, 2), bytePart(value, 16));
+                wr(off(destination, 3), bytePart(value, 24));
+            }
+
+            readU32LE(source >> p<byte>) -> int {
+                return (rd(off(source, 0)) & 255) + ((rd(off(source, 1)) & 255) * 256) +
+                    ((rd(off(source, 2)) & 255) * 65536) +
+                    ((rd(off(source, 3)) & 255) * 16777216);
+            }
+
+            beginGzip(archive >> str, state >> p<int>) -> bool {
+                header >> p<byte> <- cast(alloc(10));
+                guard header != null else return false;
+                zero(header, 10);
+                wr(off(header, 0), 31); wr(off(header, 1), 139); wr(off(header, 2), 8);
+                wr(off(header, 9), 255);
+                written >> int <- fsWriteFrom(archive, header, 10, false);
+                free(header);
+                wr(off(state, 0), 4294967295);
+                wr(off(state, 1), 0);
+                return written == 10;
+            }
+
+            emitStored(archive >> str, data >> p<byte>, count >> int, state >> p<int>) -> bool {
+                block >> p<byte> <- cast(alloc(count + 5));
+                guard block != null else return false;
+                wr(off(block, 0), 0);
+                wr(off(block, 1), bytePart(count, 0));
+                wr(off(block, 2), bytePart(count, 8));
+                inverse >> int <- 65535 ^ count;
+                wr(off(block, 3), bytePart(inverse, 0));
+                wr(off(block, 4), bytePart(inverse, 8));
+                if (count > 0) copyBytes(off(block, 5), data, count);
+                ok >> bool <- fsWriteFrom(archive, block, count + 5, true) == count + 5;
+                free(block);
+                if (ok) {
+                    wr(off(state, 0), crcUpdate(rd(off(state, 0)), data, count));
+                    wr(off(state, 1), (rd(off(state, 1)) + count) & 4294967295);
+                }
+                return ok;
+            }
+
+            emitData(archive >> str, data >> p<byte>, count >> int, state >> p<int>) -> bool {
+                at >> int <- 0;
+                while (at < count) {
+                    remaining >> int <- count - at;
+                    chunk >> int <- remaining > DEFLATE_BLOCK ? DEFLATE_BLOCK : remaining;
+                    guard emitStored(archive, off(data, at), chunk, state) else return false;
+                    at += chunk;
+                }
+                return true;
+            }
+
+            finishGzip(archive >> str, state >> p<int>) -> bool {
+                footer >> p<byte> <- cast(alloc(13));
+                guard footer != null else return false;
+                wr(off(footer, 0), 1); wr(off(footer, 1), 0); wr(off(footer, 2), 0);
+                wr(off(footer, 3), 255); wr(off(footer, 4), 255);
+                writeU32LE(off(footer, 5), rd(off(state, 0)) ^ 4294967295);
+                writeU32LE(off(footer, 9), rd(off(state, 1)));
+                written >> int <- fsWriteFrom(archive, footer, 13, true);
+                free(footer);
+                return written == 13;
+            }
+
+            tarHeader(path >> str, byteCount >> int, header >> p<byte>) -> bool {
+                zero(header, TAR_BLOCK);
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                if (width <= NAME_BYTES) writeRange(header, 0, source, 0, width);
+                else {
+                    split >> int <- width - 1;
+                    while (split >= 0 && !separator(rd(off(source, split)))) { split -= 1; }
+                    while (split >= 0 && (split > PREFIX_BYTES || width - split - 1 > NAME_BYTES)) {
+                        split -= 1;
+                        while (split >= 0 && !separator(rd(off(source, split)))) { split -= 1; }
+                    }
+                    guard split > 0 && split <= PREFIX_BYTES && width - split - 1 <= NAME_BYTES
+                        else return false;
+                    writeRange(header, 345, source, 0, split);
+                    writeRange(header, 0, source, split + 1, width - split - 1);
+                }
+                writeOctal(header, 100, 8, 420);
+                writeOctal(header, 108, 8, 0);
+                writeOctal(header, 116, 8, 0);
+                writeOctal(header, 124, 12, byteCount);
+                writeOctal(header, 136, 12, 0);
+                at >> int <- 0;
+                while (at < 8) { wr(off(header, 148 + at), 32); at += 1; }
+                wr(off(header, 156), 48);
+                writeRange(header, 257, cast("ustar"), 0, 5);
+                wr(off(header, 262), 0);
+                wr(off(header, 263), 48); wr(off(header, 264), 48);
+                writeRange(header, 265, cast("ghor"), 0, 4);
+                writeRange(header, 297, cast("ghor"), 0, 4);
+                checksum >> int <- 0;
+                at <- 0;
+                while (at < TAR_BLOCK) { checksum += rd(off(header, at)) & 255; at += 1; }
+                at <- 5;
+                while (at >= 0) {
+                    wr(off(header, 148 + at), 48 + (checksum & 7));
+                    checksum <- checksum >>> 3;
+                    at -= 1;
+                }
+                wr(off(header, 154), 0); wr(off(header, 155), 32);
+                return true;
+            }
+
+            addArchiveFile(
+                archive >> str,
+                member >> str,
+                sourcePath >> str,
+                state >> p<int>,
+                diagnostics >> int
+            ) -> bool {
+                byteCount >> int <- fsSize(sourcePath);
+                if (byteCount < 0) {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_001",
+                        "package input is unreadable: " + sourcePath);
+                    return false;
+                }
+                header >> p<byte> <- cast(alloc(TAR_BLOCK));
+                guard header != null else {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_MEMORY_001",
+                        "could not allocate USTAR header for " + member);
+                    return false;
+                }
+                if (!tarHeader(member, byteCount, header)) {
+                    free(header);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_PATH_001",
+                        "USTAR member path exceeds name/prefix limits: " + member);
+                    return false;
+                }
+                ok >> bool <- emitData(archive, header, TAR_BLOCK, state);
+                guard ok else {
+                    free(header);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_WRITE_001",
+                        "could not append USTAR header for " + member);
+                    return false;
+                }
+                storageBytes >> int <- byteCount == 0 ? 1 : byteCount;
+                data >> p<byte> <- cast(alloc(storageBytes));
+                guard data != null else {
+                    free(header);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_MEMORY_001",
+                        "could not allocate source buffer for " + member);
+                    return false;
+                }
+                if (byteCount > 0 && fsReadInto(sourcePath, data, byteCount) != byteCount) {
+                    free(data); free(header);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_READ_001",
+                        "could not read complete package member " + member);
+                    return false;
+                }
+                ok <- emitData(archive, data, byteCount, state);
+                free(data);
+                guard ok else {
+                    free(header);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_WRITE_001",
+                        "could not append package member data for " + member);
+                    return false;
+                }
+                padding >> int <- (TAR_BLOCK - (byteCount % TAR_BLOCK)) % TAR_BLOCK;
+                if (padding > 0) {
+                    zero(header, padding);
+                    ok <- emitData(archive, header, padding, state);
+                }
+                free(header);
+                if (!ok) addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_WRITE_001",
+                    "could not append USTAR padding for " + member);
+                return ok;
+            }
+
+            buildArchive(
+                archive >> str,
+                packageRoot >> str,
+                files >> int,
+                sources >> int,
+                diagnostics >> int
+            ) -> bool {
+                state >> p<int> <- cast(alloc(2 * sizeOf(int)));
+                guard state != null else {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_MEMORY_001",
+                        "could not allocate archive state");
+                    return false;
+                }
+                guard beginGzip(archive, state) else {
+                    free(state);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_WRITE_001",
+                        "could not write canonical GZIP header");
+                    return false;
+                }
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    relative >> str <- jsonGetStringOr(jsonArrayGet(files, at), "");
+                    source >> str <- jsonGetStringOr(jsonObjectGet(sources, relative), "");
+                    if (source == "" || !addArchiveFile(archive,
+                        packageRoot + "/" + relative, source, state, diagnostics)) {
+                        if (source == "") addDiagnostic(diagnostics, "error",
+                            "E_GHOR_PACKAGE_SOURCE_001",
+                            "package member has no material source: " + relative);
+                        free(state);
+                        return false;
+                    }
+                    at += 1;
+                }
+                tailMark >> addr <- stackMark();
+                zeros >> p<byte> <- stackAlloc(TAR_BLOCK * 2, 16);
+                guard zeros != null else {
+                    free(state);
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_MEMORY_001",
+                        "could not allocate USTAR terminator");
+                    return false;
+                }
+                zero(zeros, TAR_BLOCK * 2);
+                ok >> bool <- emitData(archive, zeros, TAR_BLOCK * 2, state) &&
+                    finishGzip(archive, state);
+                stackRestore(tailMark); free(state);
+                if (!ok) addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_WRITE_001",
+                    "could not finalize USTAR/GZIP archive");
+                return ok;
+            }
+
+            parseOctal(source >> p<byte>, fieldAt >> int, width >> int) -> int {
+                value >> int <- 0;
+                at >> int <- 0;
+                while (at < width) {
+                    current >> int <- rd(off(source, fieldAt + at)) & 255;
+                    if (current >= 48 && current <= 55) value <- value * 8 + current - 48;
+                    else if (current != 0 && current != 32) return -1;
+                    at += 1;
+                }
+                return value;
+            }
+
+            zeroBlock(source >> p<byte>) -> bool {
+                at >> int <- 0;
+                while (at < TAR_BLOCK) {
+                    if (rd(off(source, at)) != 0) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            tarPath(source >> p<byte>) -> str {
+                output >> p<byte> <- cast(alloc(258));
+                guard output != null else return "";
+                zero(output, 258);
+                prefix >> int <- 0;
+                while (prefix < PREFIX_BYTES && rd(off(source, 345 + prefix)) != 0) {
+                    wr(off(output, prefix), rd(off(source, 345 + prefix)));
+                    prefix += 1;
+                }
+                if (prefix > 0) { wr(off(output, prefix), 47); prefix += 1; }
+                nameAt >> int <- 0;
+                while (nameAt < NAME_BYTES && rd(off(source, nameAt)) != 0) {
+                    wr(off(output, prefix + nameAt), rd(off(source, nameAt)));
+                    nameAt += 1;
+                }
+                wr(off(output, prefix + nameAt), 0);
+                return cast(output);
+            }
+
+            verifyArchive(archive >> str, packageRoot >> str, files >> int) -> int {
+                report >> int <- jsonNewObject();
+                bytes >> int <- fsSize(archive);
+                if (bytes < 23) {
+                    jsonObjectSet(report, "status", jsonNewString("invalid"));
+                    jsonObjectSet(report, "reason", jsonNewString("gzip stream is truncated"));
+                    return report;
+                }
+                compressed >> p<byte> <- cast(alloc(bytes));
+                guard compressed != null else return report;
+                if (fsReadInto(archive, compressed, bytes) != bytes ||
+                    (rd(compressed) & 255) != 31 || (rd(off(compressed, 1)) & 255) != 139 ||
+                    (rd(off(compressed, 2)) & 255) != 8) {
+                    free(compressed);
+                    jsonObjectSet(report, "status", jsonNewString("invalid"));
+                    jsonObjectSet(report, "reason", jsonNewString("invalid gzip header"));
+                    return report;
+                }
+                expectedSize >> int <- readU32LE(off(compressed, bytes - 4));
+                tar >> p<byte> <- cast(alloc(expectedSize == 0 ? 1 : expectedSize));
+                guard tar != null else { free(compressed); return report; }
+                inputAt >> int <- 10;
+                outputAt >> int <- 0;
+                finalBlock >> bool <- false;
+                valid >> bool <- true;
+                while (!finalBlock && valid) {
+                    if (inputAt + 5 > bytes - 8) { valid <- false; continue; }
+                    flags >> int <- rd(off(compressed, inputAt)) & 255;
+                    finalBlock <- (flags & 1) != 0;
+                    if (((flags >>> 1) & 3) != 0) { valid <- false; continue; }
+                    count >> int <- (rd(off(compressed, inputAt + 1)) & 255) +
+                        ((rd(off(compressed, inputAt + 2)) & 255) * 256);
+                    inverse >> int <- (rd(off(compressed, inputAt + 3)) & 255) +
+                        ((rd(off(compressed, inputAt + 4)) & 255) * 256);
+                    if ((count ^ inverse) != 65535 || inputAt + 5 + count > bytes - 8 ||
+                        outputAt + count > expectedSize) { valid <- false; continue; }
+                    copyBytes(off(tar, outputAt), off(compressed, inputAt + 5), count);
+                    outputAt += count;
+                    inputAt += 5 + count;
+                }
+                expectedCrc >> int <- readU32LE(off(compressed, bytes - 8));
+                actualCrc >> int <- crcUpdate(4294967295, tar, outputAt) ^ 4294967295;
+                if (!valid || outputAt != expectedSize || actualCrc != expectedCrc) valid <- false;
+                memberAt >> int <- 0;
+                members >> int <- 0;
+                sourceMembers >> int <- 0;
+                manifestSeen >> bool <- false;
+                rootPrefix >> str <- packageRoot + "/";
+                while (valid && memberAt + TAR_BLOCK <= outputAt) {
+                    header >> p<byte> <- off(tar, memberAt);
+                    if (zeroBlock(header)) break;
+                    storedChecksum >> int <- parseOctal(header, 148, 8);
+                    checksum >> int <- 0;
+                    at >> int <- 0;
+                    while (at < TAR_BLOCK) {
+                        checksum += at >= 148 && at < 156 ? 32 : rd(off(header, at)) & 255;
+                        at += 1;
+                    }
+                    if (storedChecksum != checksum) { valid <- false; continue; }
+                    member >> str <- tarPath(header);
+                    if (!starts(member, rootPrefix)) valid <- false;
+                    if (member == rootPrefix + "ghor.toml") manifestSeen <- true;
+                    if (ends(member, ".n")) sourceMembers += 1;
+                    memberBytes >> int <- parseOctal(header, 124, 12);
+                    if (memberBytes < 0) valid <- false;
+                    memberAt += TAR_BLOCK +
+                        ((memberBytes + TAR_BLOCK - 1) / TAR_BLOCK) * TAR_BLOCK;
+                    members += 1;
+                    free(cast(member));
+                }
+                valid <- valid && manifestSeen && members == jsonArrayLen(files);
+                jsonObjectSet(report, "status", jsonNewString(valid ? "verified" : "invalid"));
+                jsonObjectSet(report, "archive_structure", jsonNewString(
+                    valid ? "gzip-stored-deflate-ustar" : "rejected"));
+                jsonObjectSet(report, "crc32", jsonNewInt(actualCrc));
+                jsonObjectSet(report, "members", jsonNewInt(members));
+                jsonObjectSet(report, "source_members", jsonNewInt(sourceMembers));
+                jsonObjectSet(report, "source_checks", jsonNewInt(0));
+                jsonObjectSet(report, "verification_scope",
+                    jsonNewString("archive-structure"));
+                jsonObjectSet(report, "package_root", jsonNewString(packageRoot));
+                free(tar); free(compressed);
+                return report;
+            }
+
+            unsafeArchivePath(relative >> str) -> bool {
+                if (relative == "" || starts(relative, "/") || starts(relative, "\\") ||
+                    relative == ".." || starts(relative, "../") || starts(relative, "..\\")) {
+                    return true;
+                }
+                return contains(relative, "/../") || contains(relative, "\\..\\") ||
+                    contains(relative, "\\") || contains(relative, ":");
+            }
+
+            extractStoredArchive(
+                archive >> str,
+                packageRoot >> str,
+                destination >> str,
+                diagnostics >> int
+            ) -> bool {
+                bytes >> int <- fsSize(archive);
+                if (bytes < 23) return addDiagnostic(diagnostics, "error",
+                    "E_GHOR_PACKAGE_VERIFY_001", "gzip stream is truncated") && false;
+                compressed >> p<byte> <- cast(alloc(bytes));
+                guard compressed != null else return false;
+                if (fsReadInto(archive, compressed, bytes) != bytes ||
+                    (rd(compressed) & 255) != 31 || (rd(off(compressed, 1)) & 255) != 139 ||
+                    (rd(off(compressed, 2)) & 255) != 8 || (rd(off(compressed, 3)) & 255) != 0) {
+                    free(compressed);
+                    return addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_VERIFY_001",
+                        "archive is not a canonical native ghor gzip stream") && false;
+                }
+                expectedSize >> int <- readU32LE(off(compressed, bytes - 4));
+                if (expectedSize < TAR_BLOCK || expectedSize > 1073741824) {
+                    free(compressed);
+                    return addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_VERIFY_001",
+                        "archive expanded size is outside the supported material range") && false;
+                }
+                tar >> p<byte> <- cast(alloc(expectedSize));
+                guard tar != null else { free(compressed); return false; }
+                inputAt >> int <- 10;
+                outputAt >> int <- 0;
+                finalBlock >> bool <- false;
+                valid >> bool <- true;
+                while (!finalBlock && valid) {
+                    if (inputAt + 5 > bytes - 8) { valid <- false; continue; }
+                    flags >> int <- rd(off(compressed, inputAt)) & 255;
+                    finalBlock <- (flags & 1) != 0;
+                    if (((flags >>> 1) & 3) != 0) { valid <- false; continue; }
+                    count >> int <- (rd(off(compressed, inputAt + 1)) & 255) +
+                        ((rd(off(compressed, inputAt + 2)) & 255) * 256);
+                    inverse >> int <- (rd(off(compressed, inputAt + 3)) & 255) +
+                        ((rd(off(compressed, inputAt + 4)) & 255) * 256);
+                    if ((count ^ inverse) != 65535 || inputAt + 5 + count > bytes - 8 ||
+                        outputAt + count > expectedSize) { valid <- false; continue; }
+                    copyBytes(off(tar, outputAt), off(compressed, inputAt + 5), count);
+                    outputAt += count;
+                    inputAt += 5 + count;
+                }
+                expectedCrc >> int <- readU32LE(off(compressed, bytes - 8));
+                actualCrc >> int <- crcUpdate(4294967295, tar, outputAt) ^ 4294967295;
+                if (!valid || outputAt != expectedSize || actualCrc != expectedCrc) valid <- false;
+                if (!ensureDirectory(destination)) valid <- false;
+                rootPrefix >> str <- packageRoot + "/";
+                seen >> int <- jsonNewObject();
+                memberAt >> int <- 0;
+                members >> int <- 0;
+                manifestSeen >> bool <- false;
+                terminatorSeen >> bool <- false;
+                while (valid && memberAt + TAR_BLOCK <= outputAt) {
+                    header >> p<byte> <- off(tar, memberAt);
+                    if (zeroBlock(header)) {
+                        terminatorSeen <- memberAt + TAR_BLOCK * 2 <= outputAt &&
+                            zeroBlock(off(header, TAR_BLOCK));
+                        break;
+                    }
+                    storedChecksum >> int <- parseOctal(header, 148, 8);
+                    checksum >> int <- 0;
+                    at >> int <- 0;
+                    while (at < TAR_BLOCK) {
+                        checksum += at >= 148 && at < 156 ? 32 : rd(off(header, at)) & 255;
+                        at += 1;
+                    }
+                    if (storedChecksum != checksum) { valid <- false; continue; }
+                    member >> str <- tarPath(header);
+                    memberBytes >> int <- parseOctal(header, 124, 12);
+                    paddedBytes >> int <- memberBytes < 0 ? -1 :
+                        ((memberBytes + TAR_BLOCK - 1) / TAR_BLOCK) * TAR_BLOCK;
+                    typeFlag >> int <- rd(off(header, 156)) & 255;
+                    if (!starts(member, rootPrefix) || memberBytes < 0 ||
+                        memberAt + TAR_BLOCK + paddedBytes > outputAt ||
+                        rd(off(header, 257)) != 117 || rd(off(header, 258)) != 115 ||
+                        rd(off(header, 259)) != 116 || rd(off(header, 260)) != 97 ||
+                        rd(off(header, 261)) != 114 ||
+                        (typeFlag != 0 && typeFlag != 48)) {
+                        free(cast(member)); valid <- false; continue;
+                    }
+                    relative >> str <- strSubstring(member, strByteLen(rootPrefix),
+                        strByteLen(member) - strByteLen(rootPrefix));
+                    if (unsafeArchivePath(relative) || jsonObjectHas(seen, relative)) {
+                        strRelease(relative); free(cast(member)); valid <- false; continue;
+                    }
+                    jsonObjectSet(seen, relative, jsonNewBool(true));
+                    target >> str <- join(destination, relative);
+                    if (!ensureDirectory(directory(target)) ||
+                        fsWriteFrom(target, off(header, TAR_BLOCK), memberBytes, false) != memberBytes) {
+                        valid <- false;
+                    }
+                    if (relative == "ghor.toml") manifestSeen <- true;
+                    strRelease(relative); free(cast(member));
+                    memberAt += TAR_BLOCK + paddedBytes;
+                    members += 1;
+                }
+                valid <- valid && finalBlock && terminatorSeen && manifestSeen && members > 0;
+                jsonRelease(seen); free(tar); free(compressed);
+                if (!valid) addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_VERIFY_001",
+                    "native package extraction rejected corrupt or unsafe archive material");
+                return valid;
+            }
+
+            readText(path >> str) -> str {
+                byteCount >> int <- fsSize(path);
+                guard byteCount >= 0 else return "";
+                data >> p<byte> <- cast(alloc(byteCount + 1));
+                guard data != null else return "";
+                if (byteCount > 0 && fsReadInto(path, data, byteCount) != byteCount) {
+                    free(data); return "";
+                }
+                wr(off(data, byteCount), 0);
+                return cast(data);
+            }
+
+            cloneOrNull(value >> int) -> int {
+                return value == 0 ? jsonNewNull() : jsonClone(value);
+            }
+
+            dependencyMetadata(output >> int, entries >> int) -> void {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    source >> int <- jsonArrayGet(entries, at);
+                    dependency >> int <- jsonNewObject();
+                    jsonObjectSet(dependency, "name", jsonClone(jsonObjectGet(source, "name")));
+                    jsonObjectSet(dependency, "version_req", jsonClone(jsonObjectGet(source, "req")));
+                    jsonObjectSet(dependency, "features", jsonClone(jsonObjectGet(source, "features")));
+                    jsonObjectSet(dependency, "optional", jsonClone(jsonObjectGet(source, "optional")));
+                    jsonObjectSet(dependency, "default_features",
+                        jsonClone(jsonObjectGet(source, "default_features")));
+                    jsonObjectSet(dependency, "target", cloneOrNull(jsonObjectGet(source, "target")));
+                    jsonObjectSet(dependency, "kind", cloneOrNull(jsonObjectGet(source, "kind")));
+                    jsonObjectSet(dependency, "registry",
+                        cloneOrNull(jsonObjectGet(source, "registry")));
+                    jsonObjectSet(dependency, "explicit_name_in_toml",
+                        cloneOrNull(jsonObjectGet(source, "package")));
+                    jsonArrayPush(output, dependency);
+                    at += 1;
+                }
+            }
+
+            metadata(model >> int, root >> str) -> int {
+                package >> int <- jsonObjectGet(model, "package");
+                value >> int <- jsonNewObject();
+                jsonObjectSet(value, "name", jsonClone(jsonObjectGet(package, "name")));
+                jsonObjectSet(value, "vers", jsonClone(jsonObjectGet(package, "version")));
+                dependencies >> int <- jsonNewArray();
+                dependencyMetadata(dependencies, jsonObjectGet(model, "dependencies"));
+                dependencyMetadata(dependencies, jsonObjectGet(model, "build_dependencies"));
+                dependencyMetadata(dependencies, jsonObjectGet(model, "dev_dependencies"));
+                dependencyMetadata(dependencies, jsonObjectGet(model, "target_dependencies"));
+                jsonObjectSet(value, "deps", dependencies);
+                jsonObjectSet(value, "features", jsonClone(jsonObjectGet(model, "features")));
+                keys >> array<str, 10> <- ["authors", "description", "documentation", "homepage",
+                    "keywords", "categories", "license", "license-file", "repository", "links"];
+                at >> int <- 0;
+                while (at < 10) {
+                    key >> str <- keys[at];
+                    target >> str <- key == "license-file" ? "license_file" : key;
+                    item >> int <- jsonObjectGet(package, key);
+                    jsonObjectSet(value, target, item == 0 ? jsonNewNull() : jsonClone(item));
+                    at += 1;
+                }
+                readme >> str <- jsonGetStringOr(jsonObjectGet(package, "readme"), "");
+                if (readme == "" && exists(join(root, "README.md"))) readme <- "README.md";
+                jsonObjectSet(value, "readme", readme == "" ? jsonNewNull() : jsonNewString(readme));
+                jsonObjectSet(value, "readme_file", readme == "" ? jsonNewNull() :
+                    jsonNewString(readText(join(root, readme))));
+                jsonObjectSet(value, "badges", jsonNewObject());
+                jsonObjectSet(value, "rust_version",
+                    cloneOrNull(jsonObjectGet(
+                        jsonObjectGet(model, "toolchain"), "rust_version")));
+                jsonObjectSet(value, "ghor_native_dependencies",
+                    cloneOrNull(jsonObjectGet(model, "native_dependencies")));
+                return value;
+            }
+
+            hashJson(value >> int) -> str {
+                rendered >> str <- jsonStringifyPretty(value, 0);
+                result >> str <- sha256.sha256.bytes(cast(rendered), length(cast(rendered)));
+                strRelease(rendered);
+                return result;
+            }
+
+            preflight(
+                model >> int,
+                root >> str,
+                files >> int,
+                publishing >> bool,
+                diagnostics >> int
+            ) -> bool {
+                package >> int <- jsonObjectGet(model, "package");
+                if (publishing &&
+                    jsonGetBoolOr(jsonObjectGet(package, "publish"), true) == false) {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PUBLISH_RESTRICTED_001",
+                        "package.publish forbids publishing");
+                }
+                dependencies >> array<str, 3> <- ["dependencies", "build_dependencies",
+                    "target_dependencies"];
+                group >> int <- 0;
+                while (group < 3) {
+                    entries >> int <- jsonObjectGet(model, dependencies[group]);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(entries)) {
+                        entry >> int <- jsonArrayGet(entries, at);
+                        if (jsonObjectHas(entry, "path") && !jsonObjectHas(entry, "version")) {
+                            addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_PATH_DEP_001",
+                                "path dependency requires an explicit version before package");
+                        }
+                        at += 1;
+                    }
+                    group += 1;
+                }
+                readme >> str <- jsonGetStringOr(jsonObjectGet(package, "readme"), "");
+                if (readme != "" && readme != "true" && readme != "false" &&
+                    !exists(join(root, readme))) {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_METADATA_001",
+                        "package.readme points to a missing file: " + readme);
+                }
+                license >> str <- jsonGetStringOr(jsonObjectGet(package, "license-file"), "");
+                if (license != "" && !exists(join(root, license))) {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_METADATA_001",
+                        "package.license-file points to a missing file: " + license);
+                }
+                if (jsonArrayLen(files) == 0) addDiagnostic(diagnostics, "error",
+                    "E_GHOR_PACKAGE_001", "package rules selected no source files");
+                return !hasErrors(diagnostics);
+            }
+
+            prepareSources(
+                root >> str,
+                manifestPath >> str,
+                temporary >> str,
+                files >> int,
+                sources >> int,
+                excludeLock >> bool
+            ) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(files)) {
+                    relative >> str <- jsonGetStringOr(jsonArrayGet(files, at), "");
+                    jsonObjectSet(sources, relative, jsonNewString(join(root, relative)));
+                    at += 1;
+                }
+                rawManifest >> str <- join(temporary, "ghor.toml.orig");
+                normalizedManifest >> str <- join(temporary, "ghor.toml");
+                guard fsCopy(manifestPath, rawManifest) == fsSize(manifestPath) &&
+                    fsCopy(manifestPath, normalizedManifest) == fsSize(manifestPath) else return false;
+                insertSorted(files, "ghor.toml.orig");
+                insertSorted(files, "ghor.toml");
+                jsonObjectSet(sources, "ghor.toml.orig", jsonNewString(rawManifest));
+                jsonObjectSet(sources, "ghor.toml", jsonNewString(normalizedManifest));
+                if (!excludeLock) {
+                    lock >> str <- join(temporary, "ghor.lock");
+                    lockMeta >> str <- join(temporary, "ghor.lock.meta.json");
+                    sourceLock >> str <- join(root, "ghor.lock");
+                    sourceMeta >> str <- join(root, "ghor.lock.meta.json");
+                    if (exists(sourceLock)) fsCopy(sourceLock, lock);
+                    else writeTextFile(lock, "version = 1\n");
+                    if (exists(sourceMeta)) fsCopy(sourceMeta, lockMeta);
+                    else writeTextFile(lockMeta,
+                        "{\"schema\":\"ghor.lock.metadata.v1\",\"executor\":\"nc-stage1\"}\n");
+                    insertSorted(files, "ghor.lock");
+                    insertSorted(files, "ghor.lock.meta.json");
+                    jsonObjectSet(sources, "ghor.lock", jsonNewString(lock));
+                    jsonObjectSet(sources, "ghor.lock.meta.json", jsonNewString(lockMeta));
+                }
+                vcs >> str <- join(temporary, ".cargo_vcs_info.json");
+                guard writeTextFile(vcs,
+                    "{\"git\":{\"sha1\":null,\"dirty\":false},\"path_in_vcs\":\"\"}\n")
+                    else return false;
+                insertSorted(files, ".cargo_vcs_info.json");
+                jsonObjectSet(sources, ".cargo_vcs_info.json", jsonNewString(vcs));
+                return true;
+            }
+
+            cleanupTemporary(path >> str, excludeLock >> bool) -> void {
+                delete_file(join(path, "ghor.toml.orig"));
+                delete_file(join(path, "ghor.toml"));
+                if (!excludeLock) {
+                    delete_file(join(path, "ghor.lock"));
+                    delete_file(join(path, "ghor.lock.meta.json"));
+                }
+                delete_file(join(path, ".cargo_vcs_info.json"));
+                removed >> Result<bool, FsError> <- removeDir(path);
+            }
+
+            filesFor(model >> int, root >> str, manifestPath >> str, diagnostics >> int) -> int {
+                package >> int <- jsonObjectGet(model, "package");
+                include >> int <- jsonObjectGet(package, "include");
+                exclude >> int <- jsonObjectGet(package, "exclude");
+                if (include == 0) include <- jsonNewArray();
+                if (exclude == 0) exclude <- jsonNewArray();
+                files >> int <- jsonNewArray();
+                collectFiles(root, "", include, exclude, files, diagnostics);
+                manifestName >> str <- baseName(manifestPath);
+                if (exists(manifestPath)) insertSorted(files, manifestName);
+                return files;
+            }
+
+            printModel(model >> int) -> int {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                diagnostics >> int <- jsonObjectGet(model, "diagnostics");
+                failed >> bool <- hasErrors(diagnostics);
+                jsonRelease(model);
+                return failed ? 2 : 0;
+            }
+
+        public:
+            preflightReport(handle >> addr, model >> int) -> int {
+                diagnostics >> int <- jsonNewArray();
+                manifestPath >> str <- manifest.manifest.select(handle);
+                root >> str <- directory(manifestPath);
+                files >> int <- filesFor(model, root, manifestPath, diagnostics);
+                valid >> bool <- preflight(model, root, files, false, diagnostics);
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.package.preflight.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(valid ? "ok" : "error"));
+                jsonObjectSet(report, "mode", jsonNewString("bounded_preflight"));
+                jsonObjectSet(report, "archive_written", jsonNewBool(false));
+                jsonObjectSet(report, "files", files);
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                return report;
+            }
+
+            extract(
+                archive >> str,
+                packageRoot >> str,
+                destination >> str,
+                diagnostics >> int
+            ) -> bool {
+                return extractStoredArchive(archive, packageRoot, destination, diagnostics);
+            }
+
+            fingerprint(value >> int, count >> int) -> int {
+                hash >> int <- 2166136261;
+                at >> int <- 0;
+                while (at < count) {
+                    hash <- hash ^ (value + at);
+                    hash <- hash * 16777619;
+                    at += 1;
+                }
+                return hash;
+            }
+
+            materialize(handle >> addr, model >> int, diagnostics >> int) -> int {
+                manifestPath >> str <- manifest.manifest.select(handle);
+                package >> int <- jsonObjectGet(model, "package");
+                name >> str <- jsonGetStringOr(jsonObjectGet(package, "name"), "");
+                version >> str <- jsonGetStringOr(jsonObjectGet(package, "version"), "");
+                if (name == "" || version == "") {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_001",
+                        "package requires package.name and package.version");
+                    return 0;
+                }
+                root >> str <- directory(manifestPath);
+                packageRoot >> str <- name + "-" + version;
+                selected >> str <- argsCount(handle) > 1 ? argsAt(handle, 1) : "package";
+                output >> str <- option(handle, "--out");
+                if (output == "") output <- selected == "publish" ?
+                    join(join(root, "target/ghor/registry-publish"), packageRoot) :
+                    join(root, "target/package");
+                guard ensureDirectory(output) else {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_001",
+                        "package output directory could not be created");
+                    return 0;
+                }
+                files >> int <- filesFor(model, root, manifestPath, diagnostics);
+                guard preflight(model, root, files, selected == "publish", diagnostics)
+                    else return 0;
+                temporary >> str <- join(output, "." + packageRoot + ".nc-stage1");
+                ensureDirectory(temporary);
+                sources >> int <- jsonNewObject();
+                excludeLock >> bool <- hasFlag(handle, "--exclude-lockfile");
+                guard prepareSources(root, manifestPath, temporary, files, sources, excludeLock)
+                    else return 0;
+                archiveName >> str <- packageRoot + ".crate";
+                archive >> str <- join(output, archiveName);
+                guard buildArchive(archive, packageRoot, files, sources, diagnostics) else {
+                    cleanupTemporary(temporary, excludeLock);
+                    return 0;
+                }
+                cleanupTemporary(temporary, excludeLock);
+                verification >> int <- hasFlag(handle, "--no-verify") ? jsonNewObject() :
+                    verifyArchive(archive, packageRoot, files);
+                if (hasFlag(handle, "--no-verify")) {
+                    jsonObjectSet(verification, "status", jsonNewString("skipped"));
+                    jsonObjectSet(verification, "reason", jsonNewString("--no-verify"));
+                }
+                if (jsonGetStringOr(jsonObjectGet(verification, "status"), "") == "invalid") {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_PACKAGE_VERIFY_001",
+                        "native package archive verification failed");
+                    return 0;
+                }
+                checksum >> str <- sha256.sha256.file(archive);
+                manifestHash >> str <- sha256.sha256.file(manifestPath);
+                publishMetadata >> int <- metadata(model, root);
+                ffi >> int <- jsonNewObject();
+                jsonObjectSet(ffi, "schema", jsonNewString("ghor.ffi_manifest.v1"));
+                jsonObjectSet(ffi, "native_dependencies",
+                    jsonClone(jsonObjectGet(model, "native_dependencies")));
+                ffiHash >> str <- hashJson(ffi);
+                packageManifest >> int <- jsonNewObject();
+                jsonObjectSet(packageManifest, "schema", jsonNewString("ghor.package.v2"));
+                jsonObjectSet(packageManifest, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(packageManifest, "name", jsonNewString(name));
+                jsonObjectSet(packageManifest, "version", jsonNewString(version));
+                jsonObjectSet(packageManifest, "archive", jsonNewString(archive));
+                jsonObjectSet(packageManifest, "archive_name", jsonNewString(archiveName));
+                jsonObjectSet(packageManifest, "package_root", jsonNewString(packageRoot));
+                jsonObjectSet(packageManifest, "checksum", jsonNewString(checksum));
+                jsonObjectSet(packageManifest, "manifest_hash", jsonNewString(manifestHash));
+                jsonObjectSet(packageManifest, "format",
+                    jsonNewString("cargo-compatible .crate tar.gz"));
+                jsonObjectSet(packageManifest, "files", jsonClone(files));
+                jsonObjectSet(packageManifest, "metadata", jsonClone(publishMetadata));
+                jsonObjectSet(packageManifest, "ffi_link_manifest", ffi);
+                jsonObjectSet(packageManifest, "diagnostics", jsonClone(diagnostics));
+                jsonObjectSet(packageManifest, "verification", jsonClone(verification));
+                packageManifestPath >> str <- join(output, "manifest.json");
+                guard jsonSaveFile(packageManifest, packageManifestPath, 2) else return 0;
+                packageManifestHash >> str <- sha256.sha256.file(packageManifestPath);
+                writeTextFile(join(output, "checksum.sha256"), checksum + "  " + archiveName + "\n");
+                receipt >> int <- jsonNewObject();
+                jsonObjectSet(receipt, "schema", jsonNewString("ghor.material-package.v1"));
+                jsonObjectSet(receipt, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(receipt, "status", jsonNewString("packaged"));
+                jsonObjectSet(receipt, "archive", jsonNewString(archive));
+                jsonObjectSet(receipt, "archive_name", jsonNewString(archiveName));
+                jsonObjectSet(receipt, "package_root", jsonNewString(packageRoot));
+                jsonObjectSet(receipt, "checksum", jsonNewString(checksum));
+                jsonObjectSet(receipt, "manifest_hash", jsonNewString(manifestHash));
+                jsonObjectSet(receipt, "package_manifest", jsonNewString(packageManifestPath));
+                jsonObjectSet(receipt, "package_manifest_hash", jsonNewString(packageManifestHash));
+                jsonObjectSet(receipt, "ffi_link_manifest_hash", jsonNewString(ffiHash));
+                jsonObjectSet(receipt, "files", jsonClone(files));
+                jsonObjectSet(receipt, "metadata", publishMetadata);
+                jsonObjectSet(receipt, "verification", verification);
+                jsonObjectSet(receipt, "diagnostics", jsonClone(diagnostics));
+                jsonSaveFile(receipt, join(output, "material.json"), 2);
+                jsonRelease(packageManifest);
+                jsonRelease(files); jsonRelease(sources);
+                return receipt;
+            }
+
+            supports(handle >> addr) -> bool {
+                return argsCount(handle) > 1 && argsAt(handle, 1) == "package";
+            }
+
+            execute(handle >> addr) -> int {
+                diagnostics >> int <- jsonNewArray();
+                manifestPath >> str <- manifest.manifest.select(handle);
+                guard manifestPath != "" && exists(manifestPath) else {
+                    addDiagnostic(diagnostics, "error", "E_GHOR_MANIFEST_001",
+                        "package requires a readable manifest");
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.package.v2"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                model >> int <- manifest.manifest.load(manifestPath);
+                guard model != 0 else return 2;
+                root >> str <- directory(manifestPath);
+                files >> int <- filesFor(model, root, manifestPath, diagnostics);
+                if (hasFlag(handle, "--list") || hasFlag(handle, "-l")) {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.package.list.v1"));
+                    jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(report, "status", jsonNewString(
+                        preflight(model, root, files, false, diagnostics) ? "listed" : "error"));
+                    jsonObjectSet(report, "files", files);
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    jsonRelease(model);
+                    return printModel(report);
+                }
+                jsonRelease(files);
+                receipt >> int <- materialize(handle, model, diagnostics);
+                jsonRelease(model);
+                if (receipt == 0) {
+                    report >> int <- jsonNewObject();
+                    jsonObjectSet(report, "schema", jsonNewString("ghor.package.v2"));
+                    jsonObjectSet(report, "status", jsonNewString("error"));
+                    jsonObjectSet(report, "diagnostics", diagnostics);
+                    return printModel(report);
+                }
+                return printModel(receipt);
+            }
+
+            selfTest() -> bool {
+                return fingerprint(103, 4) != 0 &&
+                    wildcard("src/**", "src/main.n") && less("a", "b");
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,146 @@
+use foreign { c };
+use <data:json>;
+use <io:render>;
+use <fs:dir>;
+use <collections:result>;
+use <project:release_io, tool_cli>;
+
+release43Host {
+    foreign:
+        c symbol "lstat" { abi: C; header: "sys/stat.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "stat" { abi: C; header: "sys/stat.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "realpath" { abi: C; header: "stdlib.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> addr; }
+        c symbol "chmod" { abi: C; header: "sys/stat.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u32) -> i32; }
+        c symbol "utimensat" { abi: C; header: "sys/stat.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr,addr,i32) -> i32; }
+        c symbol "readlink" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u64) -> i64; }
+        c symbol "fopen" { abi: C; header: "stdio.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> addr; }
+        c symbol "fseeko" { abi: C; header: "stdio.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,i64,i32) -> i32; }
+        c symbol "fread" { abi: C; header: "stdio.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,u64,u64,addr) -> u64; }
+        c symbol "fclose" { abi: C; header: "stdio.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "listxattr" { abi: C; header: "sys/xattr.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,u64) -> i64; }
+        c symbol "getxattr" { abi: C; header: "sys/xattr.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,addr,u64) -> i64; }
+        c symbol "setxattr" { abi: C; header: "sys/xattr.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr,addr,u64,i32) -> i32; }
+        c symbol "__errno_location" { abi: C; header: "errno.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: readsMemory; signature: fn() -> addr; }
+        c symbol "linkat" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(i32,addr,i32,addr,i32) -> i32; }
+        c symbol "symlink" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,addr) -> i32; }
+        c symbol "opendir" { abi: C; header: "dirent.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> addr; }
+        c symbol "readdir" { abi: C; header: "dirent.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> addr; }
+        c symbol "closedir" { abi: C; header: "dirent.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr) -> i32; }
+        c symbol "truncate" { abi: C; header: "unistd.h"; library: "c"; linkage: dynamic; layout: stable; ownership: borrowed; sideEffects: writesMemory; signature: fn(addr,i64) -> i32; }
+    fn:
+        private:
+            ignoredXattrError() -> bool {
+                value >> int <- rd<i32>(cast<i32>(__errno_location())); return value == 95 || value == 61 || value == 22 || value == 1;
+            }
+            copyXattrs(source >> str, target >> str) -> bool {
+                from >> p<byte> <- cast(source); to >> p<byte> <- cast(target); amount >> i64 <- listxattr(adr(from),null,0);
+                if (amount < 0) return ignoredXattrError(); if (amount == 0) return true;
+                names >> p<byte> <- cast(alloc(amount)); if (names == null) return false;
+                if (listxattr(adr(from),adr(names),amount) != amount) { free(names); return ignoredXattrError(); }
+                position >> int <- 0; good >> bool <- true;
+                while (position < amount && good) {
+                    name >> p<byte> <- off(names,position); size >> i64 <- getxattr(adr(from),adr(name),null,0);
+                    if (size < 0) good <- ignoredXattrError();
+                    else {
+                        data >> p<byte> <- cast(alloc(size+1)); if (data == null) { good <- false; break; }
+                        got >> i64 <- getxattr(adr(from),adr(name),adr(data),size);
+                        if (got < 0) good <- ignoredXattrError();
+                        else if (setxattr(adr(to),adr(name),adr(data),got,0) != 0) good <- ignoredXattrError();
+                        free(data);
+                    }
+                    while (position < amount && rd(off(names,position)) != 0) { position += 1; } position += 1;
+                }
+                free(names); return good;
+            }
+        public:
+            lastError() -> int { return 0; }
+            roundTrip(text >> str) -> str { return strSubstring(text,0,strByteLen(text)); }
+            kind(path >> str) -> int {
+                if (!link(path)) return release_io.releaseIo.fileType(path);
+                target >> str <- tool_cli.toolCli.absolute(path); data >> p<byte> <- cast(alloc(32768)); if (data == null) return 0;
+                count >> int <- officialPathInto(target,data,32767); if (count < 0) { free(data); return 0; } wr(off(data,count),0);
+                resolved >> str <- cast(data); result >> int <- release_io.releaseIo.fileType(resolved); free(data); return result;
+            }
+            link(path >> str) -> bool {
+                data >> p<byte> <- cast(alloc(144)); if (data == null) return false;
+                text >> p<byte> <- cast(path); status >> i32 <- lstat(adr(text),adr(data));
+                mode >> u32 <- rd<u32>(cast<u32>(off(data,24))); free(data); return status == 0 && (mode & 61440) == 40960;
+            }
+            size(path >> str) -> int { value >> i64 <- size64(path); return value > 2147483647 ? -1 : value; }
+            mode(path >> str) -> int {
+                data >> p<byte> <- cast(alloc(144)); if (data == null) return 0; text >> p<byte> <- cast(path); status >> i32 <- lstat(adr(text),adr(data));
+                value >> int <- rd<u32>(cast<u32>(off(data,24))) & 4095; free(data); return status == 0 ? value : 0;
+            }
+            size64(path >> str) -> i64 {
+                data >> p<byte> <- cast(alloc(144)); if (data == null) return -1; text >> p<byte> <- cast(path);
+                status >> i32 <- stat(adr(text),adr(data)); amount >> i64 <- rd<i64>(cast<i64>(off(data,48))); free(data); return status == 0 ? amount : -1;
+            }
+            identity(path >> str) -> str {
+                data >> p<byte> <- cast(alloc(144)); if (data == null) return ""; text >> p<byte> <- cast(path);
+                status >> i32 <- stat(adr(text),adr(data)); result >> str <- "";
+                if (status == 0 && rd<u64>(cast<u64>(off(data,16))) > 1) result <- renderInt(rd<u32>(cast<u32>(data)))+":"+renderInt(rd<u32>(cast<u32>(off(data,4))))+":"+renderInt(rd<u32>(cast<u32>(off(data,8))))+":"+renderInt(rd<u32>(cast<u32>(off(data,12))));
+                free(data); return result;
+            }
+            createHardLink(source >> str, target >> str) -> bool { a >> p<byte> <- cast(source); b >> p<byte> <- cast(target); return linkat(-100,adr(a),-100,adr(b),0) == 0; }
+            createSymlink(target >> str, path >> str, directory >> bool) -> bool { a >> p<byte> <- cast(target); b >> p<byte> <- cast(path); return symlink(adr(a),adr(b)) == 0; }
+            readRange(path >> str, data >> p<byte>, count >> int, position >> i64) -> int {
+                text >> p<byte> <- cast(path); mode >> p<byte> <- cast("rb"); handle >> addr <- fopen(adr(text),adr(mode)); if (handle == null) return -1;
+                if (fseeko(handle,position,0) != 0) { fclose(handle); return -1; }
+                amount >> u64 <- fread(adr(data),1,count,handle); fclose(handle); return amount;
+            }
+            resize(path >> str, size >> i64) -> bool { text >> p<byte> <- cast(path); return truncate(adr(text),size) == 0; }
+            read(path >> str, data >> p<byte>, count >> int) -> int { return fsReadInto(path,data,count); }
+            writeRaw(path >> str, data >> p<byte>, count >> int, append >> bool) -> int { return fsWriteFrom(path,data,count,append); }
+            mkdir(path >> str) -> bool { result >> Result<bool, FsError> <- createDir(path); return isOk(result); }
+            deleteFile(path >> str) -> bool { return delete_file(path); }
+            rmdir(path >> str) -> bool { result >> Result<bool, FsError> <- removeDir(path); return isOk(result); }
+            rename(source >> str, target >> str) -> bool { return rename_file(source,target); }
+            copy(source >> str, target >> str) -> bool {
+                if (fsCopy(source,target) < 0) return false;
+                // Linux x86_64 stat ABI, fixed by this family's host target.
+                data >> p<byte> <- cast(alloc(144)); if (data == null) return false; text >> p<byte> <- cast(source);
+                status >> i32 <- stat(adr(text),adr(data)); if (status != 0) { free(data); return false; }
+                path >> p<byte> <- cast(target); mode >> u32 <- rd<u32>(cast<u32>(off(data,24))) & 4095;
+                status <- utimensat(-100,adr(path),adr(off(data,72)),0); free(data); if (status != 0) return false;
+                if (!copyXattrs(source,target)) return false; return chmod(adr(path),mode) == 0;
+            }
+            names(path >> str) -> int {
+                text >> p<byte> <- cast(path); handle >> addr <- opendir(adr(text)); if (handle == null) return 0;
+                rows >> int <- jsonNewArray(); error >> p<i32> <- cast(__errno_location()); wr<i32>(error,0);
+                entry >> addr <- readdir(handle);
+                while (entry != null) {
+                    name >> str <- cast(off<byte>(cast<byte>(entry),19));
+                    if (name != "." && name != "..") jsonArrayPush(rows,jsonNewString(name));
+                    wr<i32>(error,0); entry <- readdir(handle);
+                }
+                code >> i32 <- rd<i32>(error); closedir(handle); if (code != 0) { jsonRelease(rows); return 0; } return rows;
+            }
+            absolute(path >> str) -> str {
+                input >> str <- strStartsWith(path,"/") ? path : tool_cli.toolCli.absolute(".")+"/"+path;
+                result >> str <- ""; position >> int <- 0; start >> int <- 0;
+                while (position <= strByteLen(input)) {
+                    if (position == strByteLen(input) || rd<byte>(off<byte>(cast<byte>(input),position)) == 47) {
+                        part >> str <- strSubstring(input,start,position-start); start <- position+1;
+                        bytes >> p<byte> <- cast(part); dots >> int <- strByteLen(part);
+                        parentPart >> bool <- false; currentPart >> bool <- false;
+                        if (dots == 1) currentPart <- rd(bytes) == 46;
+                        if (dots == 2) parentPart <- rd(bytes) == 46 && rd(off(bytes,1)) == 46;
+                        if (parentPart) { result <- release_io.releaseIo.directory(result); if (result == "." || result == "/") result <- ""; }
+                        else if (dots > 0 && !currentPart) {
+                            result <- result+"/"+part; data >> p<byte> <- cast(alloc(32768)); if (data == null) return "";
+                            rawBytes >> p<byte> <- cast(result); resolved >> addr <- realpath(adr(rawBytes),adr(data));
+                            if (resolved != null) { canonical >> str <- cast(data); result <- strSubstring(canonical,0,strByteLen(canonical)); }
+                            free(data);
+                        }
+                        strRelease(part);
+                    }
+                    position += 1;
+                }
+                return result == "" ? "/" : result;
+            }
+            linkTarget(path >> str) -> str {
+                data >> p<byte> <- cast(alloc(32768)); if (data == null) return ""; text >> p<byte> <- cast(path);
+                size >> i64 <- readlink(adr(text),adr(data),32767); if (size < 0) { free(data); return ""; } wr(off(data,size),0); return cast(data);
+            }
+    fa: return true;
+}

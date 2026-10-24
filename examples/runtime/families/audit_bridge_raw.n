@@ -1,0 +1,45 @@
+use <audit:bridge>;
+use <io:output>;
+use <memory:stack>;
+
+rawAuditBridge :: runtime {
+    const:
+        COMPILER_BRIDGE >> int <- 2002;
+
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            storage >> p<byte> <- stackAlloc(bridgeStride() * 2, 8);
+            table >> addr <- adr(storage);
+
+            written >> bool <- bridgeWrite(
+                table,
+                0,
+                COMPILER_BRIDGE,
+                table,
+                3,
+                7
+            );
+            found >> int <- bridgeFind(table, 1, COMPILER_BRIDGE);
+            active >> bool <- bridgeActive(table, 1, COMPILER_BRIDGE);
+            required >> int <- bridgeRequire(table, 1, COMPILER_BRIDGE);
+            target >> addr <- bridgeTarget(table, required);
+            mode >> int <- bridgeMode(table, required);
+            authority >> int <- bridgeAuthority(table, required);
+            erased >> bool <- bridgeErase(table, required);
+            absent >> bool <- bridgeFind(table, 1, COMPILER_BRIDGE) == -1;
+            ok >> bool <- written && found == 0 && active && required == 0 &&
+                target == table && mode == 3 && authority == 7 && erased && absent;
+
+            print("manual nC audit bridge backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            stackRestore(mark);
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

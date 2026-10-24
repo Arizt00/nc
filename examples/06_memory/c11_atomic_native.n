@@ -1,0 +1,42 @@
+use <core.sync:atomic>;
+
+c11AtomicNative {
+    stc:
+        counter >> atomic<int>;
+        old >> int;
+        observed >> int;
+        compared >> int;
+        volatileValue >> int;
+
+    fn:
+        run() -> bool {
+            atomicStoreOrder(counter, 7, "release");
+            old >> int <- atomicFetchAdd(counter, 2, "acq_rel");
+            observed >> int <- atomicLoadOrder(counter, "acquire");
+            compared >> int <- atomicCompareExchangeStrong(
+                counter,
+                9,
+                11,
+                "acq_rel",
+                "acquire"
+            );
+            atomicThreadFence("seq_cst");
+            atomicCompilerFence("acq_rel");
+            atomicWait(counter, 10, "acquire");
+            atomicNotifyOne(counter);
+            atomicNotifyAll(counter);
+            volatileStore(counter, 13);
+            volatileValue >> int <- volatileLoad(counter);
+
+            return old == 7
+                && observed == 9
+                && compared == 9
+                && volatileValue == 13;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

@@ -1,0 +1,226 @@
+use <io:output>;
+
+temporalTower {
+
+    stc:
+        maxMinutes    >> int <- 10;
+        minuteFactor  >> int <- 2;
+        overflowGuard >> int <- 2147483647;
+        nodeSize >> int <- 8;              // 4 bytes value + 4 bytes cumulative
+
+    fn:
+        computeWindow(p >> int) -> int {
+            minutes >> int <- maxMinutes - (minuteFactor * p);
+
+            if (minutes <= 0) {
+                dev(irregular);
+            }
+
+            return minutes;
+        }
+
+        powSafe(base >> int, exp >> int) -> int {
+            if (exp < 0) {
+                dev(irregular);
+            }
+
+            result >> int <- 1;
+            i >> int <- 0;
+
+            while (i < exp) {
+                if (base != 0) {
+                    if (result > (overflowGuard / base)) {
+                        dev(MemoryOverflow);
+                    }
+                }
+
+                result >> int <- result * base;
+                i >> int <- i + 1;
+            }
+
+            return result;
+        }
+
+        computeHugeTarget(n >> int) -> int {
+            if (n <= 1) {
+                dev(irregular);
+            }
+
+            innerPow >> int <- powSafe(n, n);     // n^n
+            core >> int <- innerPow - 2;
+
+            if (core <= 0) {
+                dev(irregular);
+            }
+
+            raised >> int <- powSafe(core, n);    // (n^n - 2)^n
+
+            if (raised > (overflowGuard / n)) {
+                dev(MemoryOverflow);
+            }
+
+            product >> int <- n * raised;
+
+            if (product <= 0) {
+                dev(MemoryOverflow);
+            }
+
+            target >> int <- product - 1;
+
+            return target;
+        }
+
+        allocTraceBuffer(count >> int) -> p<byte> {
+            ptr >> p<byte>;
+            bytes >> int <- count * nodeSize;
+
+            if (count <= 0) {
+                dev(irregular);
+            }
+
+            ptr <- cast(alloc(bytes));
+
+            if (ptr == null) {
+                dev(MemoryOverflow);
+            }
+
+            return ptr;
+        }
+
+        writeTrace(ptr >> p<byte>, index >> int, value >> int, cumulative >> int) -> void {
+            baseOffset >> int <- index * nodeSize;
+            valuePointer >> p<int> <- cast(off(ptr, baseOffset));
+            cumulativePointer >> p<int> <- cast(off(ptr, baseOffset + 4));
+            wr(valuePointer, value);
+            wr(cumulativePointer, cumulative);
+
+            return;
+        }
+
+        readTraceValue(ptr >> p<byte>, index >> int) -> int {
+            baseOffset >> int <- index * nodeSize;
+            valuePointer >> p<int> <- cast(off(ptr, baseOffset));
+            return rd(valuePointer);
+        }
+
+        readTraceCumulative(ptr >> p<byte>, index >> int) -> int {
+            baseOffset >> int <- index * nodeSize;
+            cumulativePointer >> p<int> <- cast(off(ptr, baseOffset + 4));
+            return rd(cumulativePointer);
+        }
+
+        freeTraceBuffer(ptr >> p<byte>) -> void {
+            free(ptr);
+            return;
+        }
+
+        validateHeapTemporal(n >> int, p >> int) -> int {
+            window >> int <- computeWindow(p);
+            target >> int <- computeHugeTarget(n);
+
+            tracePtr >> p<byte> <- allocTraceBuffer(window);
+
+            current >> int <- n;
+            total >> int <- 0;
+            minute >> int <- 0;
+
+            while (minute < window) {
+
+                if (current > overflowGuard) {
+                    freeTraceBuffer(tracePtr);
+                    dev(MemoryOverflow);
+                }
+
+                if ((total + current) < total) {
+                    freeTraceBuffer(tracePtr);
+                    dev(MemoryOverflow);
+                }
+
+                total >> int <- total + current;
+
+                writeTrace(tracePtr, minute, current, total);
+
+                if (current >= target) {
+                    freeTraceBuffer(tracePtr);
+                    return n;
+                }
+
+                if (current > (overflowGuard / n)) {
+                    freeTraceBuffer(tracePtr);
+                    dev(MemoryOverflow);
+                }
+
+                current >> int <- current * n;
+                minute >> int <- minute + 1;
+            }
+
+            finalTotal >> int <- total;
+            freeTraceBuffer(tracePtr);
+            return finalTotal;
+        }
+
+        inspectHeapTemporal(n >> int, p >> int) -> void {
+            window >> int <- computeWindow(p);
+            tracePtr >> p<byte> <- allocTraceBuffer(window);
+
+            current >> int <- n;
+            total >> int <- 0;
+            minute >> int <- 0;
+
+            while (minute < window) {
+
+                if ((total + current) < total) {
+                    freeTraceBuffer(tracePtr);
+                    dev(MemoryOverflow);
+                }
+
+                total >> int <- total + current;
+                writeTrace(tracePtr, minute, current, total);
+
+                print("minute=");
+                println(minute);
+                print("value=");
+                println(readTraceValue(tracePtr, minute));
+                print("cumulative=");
+                println(readTraceCumulative(tracePtr, minute));
+
+                if (current > (overflowGuard / n)) {
+                    freeTraceBuffer(tracePtr);
+                    dev(MemoryOverflow);
+                }
+
+                current >> int <- current * n;
+                minute >> int <- minute + 1;
+            }
+
+            freeTraceBuffer(tracePtr);
+            return;
+        }
+
+    to main {
+    n >> int <- 3;
+    p >> int <- 2;
+
+    window >> int <- computeWindow(p);
+    target >> int <- computeHugeTarget(n);
+    result >> int <- validateHeapTemporal(n, p);
+
+    print("n=");
+    println(n);
+    print("p=");
+    println(p);
+    print("window=");
+    println(window);
+    print("target=");
+    println(target);
+    print("result=");
+    println(result);
+
+    inspectHeapTemporal(n, p);
+    }
+
+    fn:
+        shutdown() -> bool {
+        }
+
+}

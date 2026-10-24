@@ -1,0 +1,35 @@
+manualHeapVirtualMemoryWindows {
+    fn:
+        run() -> bool {
+            page >> int <- vmPageSize();
+            heap >> p<byte> <- alignedAlloc(128, 64);
+            guard page > 0 && heap != null else return false;
+
+            wr(heap, 73);
+            resized >> p<byte> <- alignedRealloc(heap, 128, 256, 64);
+            guard resized != null && rd(resized) == 73 else return false;
+            guard alignedFree(resized) else return false;
+
+            reservation >> p<byte> <- vmReserve(null, page * 3, 0);
+            guard reservation != null else return false;
+            middle >> p<byte> <- off(reservation, page);
+            guard vmGuard(reservation, page, 4) else return false;
+            guard vmCommit(middle, page, 4) else return false;
+            guard vmGuard(off(middle, page), page, 4) else return false;
+            wr(middle, 41);
+            guard rd(middle) == 41 else return false;
+            guard vmProtect(middle, page, 2) else return false;
+            guard vmProtect(middle, page, 4) else return false;
+            guard vmDecommit(middle, page) else return false;
+            guard vmCommit(middle, page, 4) else return false;
+            guard rd(middle) == 0 else return false;
+            guard vmExecutable(middle, page) else return false;
+            return vmRelease(reservation, page * 3);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

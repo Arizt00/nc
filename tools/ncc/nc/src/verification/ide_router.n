@@ -1,0 +1,157 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args, env>;
+use <project:release_io, tool_cli>;
+
+ideRouter {
+    fn:
+        private:
+            header(content >> str) -> str {
+                source >> p<byte> <- cast(content); size >> int <- strByteLen(content);
+                data >> p<byte> <- cast(alloc(32769)); if (data == null) return "";
+                at >> int <- 0; used >> int <- 0; characters >> int <- 0;
+                while (at < size && characters < 8192) {
+                    code >> int <- rd(off(source,at)) & 255;
+                    width >> int <- code < 128 ? 1 : (code >= 194 && code <= 223 ? 2 : (code >= 224 && code <= 239 ? 3 : (code >= 240 && code <= 244 ? 4 : 0)));
+                    valid >> bool <- width > 0 && width <= size-at; scalar >> int <- code & (width == 2 ? 31 : (width == 3 ? 15 : 7));
+                    index >> int <- 1;
+                    while (valid && index < width) {
+                        tail >> int <- rd(off(source,at+index)) & 255;
+                        if (tail < 128 || tail > 191) valid <- false;
+                        scalar <- scalar*64+(tail & 63); index += 1;
+                    }
+                    if ((width == 3 && scalar < 2048) || (width == 4 && scalar < 65536) || scalar > 1114111 || (width > 1 && scalar >= 55296 && scalar <= 57343)) valid <- false;
+                    if (valid) { cp(off(data,used),off(source,at),width); used += width; characters += 1; at += width; }
+                    else at += 1;
+                }
+                wr(off(data,used),0); return cast(data);
+            }
+            displayCommand(words >> int) -> str {
+                line >> str <- ""; index >> int <- 0;
+                while (index < jsonArrayLen(words)) {
+                    item >> int <- jsonArrayGet(words,index);
+                    if (index > 0) line <- line+" "; line <- line+jsonStringView(item,"");
+                    jsonRelease(item); index += 1;
+                }
+                return line;
+            }
+        public:
+            lowLevel(path >> str, content >> str) -> bool {
+                lower >> str <- strToLower(path);
+                if (strEndsWith(lower,".nb") || strEndsWith(lower,".nm") || strEndsWith(lower,".nbb") || strEndsWith(lower,".ncp")) return true;
+                head >> str <- header(content);
+                result >> bool <- strContains(head,"primitive"+"[@]") || strContains(head,"[@"+"machine]") || strContains(head,"[@]");
+                if (head != "") free(cast<byte>(head)); return result;
+            }
+            profile(raw >> str, ghidra >> bool) -> str {
+                value >> str <- strToLower(strTrim(raw));
+                if (value == "novice" || value == "standard" || value == "expert") return value;
+                return ghidra ? "expert" : "standard";
+            }
+            route(file >> str, content >> str, which >> int, selected >> str, ghidra >> bool) -> int {
+                binary >> str <- release_io.releaseIo.field(which,"path");
+                if (binary == "") return 0;
+                absolute >> str <- tool_cli.toolCli.absolute(binary);
+                if (absolute == "") return 0;
+                directory >> str <- release_io.releaseIo.directory(absolute);
+                low >> bool <- lowLevel(file,content);
+                chosen >> str <- profile(selected,ghidra);
+                command >> int <- jsonNewArray();
+                backend >> str <- "nide";
+                if (low) {
+                    backend <- "nc-sys-lsp";
+                    tool_cli.toolCli.append(command,"nc-sys-lsp");
+                    tool_cli.toolCli.append(command,"analyze");
+                    tool_cli.toolCli.append(command,file);
+                    tool_cli.toolCli.append(command,"--profile");
+                    tool_cli.toolCli.append(command,chosen);
+                    tool_cli.toolCli.append(command,"--migration-stage");
+                    tool_cli.toolCli.append(command,ghidra ? "strict" : "error-by-profile");
+                    tool_cli.toolCli.append(command,"--json");
+                } else if (ghidra) {
+                    backend <- "nclsp";
+                    suffix >> str <- envHas("WINDIR") ? ".exe" : "";
+                    tool_cli.toolCli.append(command,directory+"/nclsp"+suffix);
+                    tool_cli.toolCli.append(command,"validate");
+                    tool_cli.toolCli.append(command,file);
+                    tool_cli.toolCli.append(command,"--ide");
+                    tool_cli.toolCli.append(command,"ghidra");
+                    tool_cli.toolCli.append(command,"--profile");
+                    tool_cli.toolCli.append(command,chosen);
+                    tool_cli.toolCli.append(command,"--migration-stage");
+                    tool_cli.toolCli.append(command,"strict");
+                    tool_cli.toolCli.append(command,"--json");
+                } else {
+                    tool_cli.toolCli.append(command,absolute);
+                    tool_cli.toolCli.append(command,"nide");
+                    tool_cli.toolCli.append(command,"diagnostics");
+                    tool_cli.toolCli.append(command,file);
+                }
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result,"schema",jsonNewString(ghidra ? "nc.ghidra.lsp.route.v1" : "nc.vscode.lsp.route.v1"));
+                jsonObjectSet(result,"version",jsonNewString(ghidra ? "2.0.0" : "1.0.0.21v"));
+                jsonObjectSet(result,"state",jsonNewString("frozen"));
+                jsonObjectSet(result,"file",jsonNewString(file));
+                jsonObjectSet(result,"profile",jsonNewString(chosen));
+                jsonObjectSet(result,"low_level",jsonNewBool(low));
+                jsonObjectSet(result,"backend",jsonNewString(backend));
+                jsonObjectSet(result,"toolchain_id",jsonObjectGet(which,"toolchain_id"));
+                jsonObjectSet(result,"toolchain_source",jsonObjectGet(which,"source"));
+                jsonObjectSet(result,"ncc_path",jsonNewString(absolute));
+                jsonObjectSet(result,"bin_dir",jsonNewString(directory));
+                jsonObjectSet(result,"command",command);
+                if (ghidra) jsonObjectSet(result,"lane",jsonNewString(low ? "ghidra-low-level" : "ghidra-high-level-fallback"));
+                else {
+                    jsonObjectSet(result,"transport",jsonNewString(low ? "lsp-direct" : "broker-nide"));
+                    jsonObjectSet(result,"semantic_authority",jsonNewString("ncc"));
+                    jsonObjectSet(result,"professional_ide_parity",jsonParse("[\"c\",\"cpp\",\"rust\",\"java\"]"));
+                }
+                return result;
+            }
+            execute(arguments >> addr, ghidra >> bool) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--file|--ncup|--profile|--toolchain|","|--json|--help|-h|");
+                if (options == 0) { println("router: invalid options"); return 2; }
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools route-vscode|route-ghidra --file FILE [--ncup EXE] [--profile PROFILE] [--toolchain ID] [--json]");
+                    jsonRelease(options); return 0;
+                }
+                file >> str <- tool_cli.toolCli.value(options,"--file","");
+                if (file == "") { println("router: --file is required"); jsonRelease(options); return 2; }
+                if (release_io.releaseIo.fileType(file) != 1) { println("router: missing file: "+file); jsonRelease(options); return 1; }
+                query >> int <- jsonNewArray();
+                tool_cli.toolCli.append(query,tool_cli.toolCli.value(options,"--ncup","ncup"));
+                tool_cli.toolCli.append(query,"which");
+                tool_cli.toolCli.append(query,"ncc");
+                tool_cli.toolCli.append(query,"--json");
+                chain >> str <- strTrim(tool_cli.toolCli.value(options,"--toolchain",""));
+                if (chain != "") { tool_cli.toolCli.append(query,"--toolchain"); tool_cli.toolCli.append(query,chain); }
+                invocation >> int <- tool_cli.toolCli.execute(query,"",30000);
+                jsonRelease(query);
+                if (!tool_cli.toolCli.hasFlag(invocation,"ok")) {
+                    println("router: ncup which failed: "+release_io.releaseIo.field(invocation,"stderr"));
+                    jsonRelease(invocation); jsonRelease(options); return 1;
+                }
+                which >> int <- jsonParse(release_io.releaseIo.field(invocation,"stdout"));
+                jsonRelease(invocation);
+                selected >> str <- tool_cli.toolCli.value(options,"--profile",ghidra ? "expert" : "standard");
+                payload >> int <- route(file,release_io.releaseIo.text(file),which,selected,ghidra);
+                jsonRelease(which);
+                if (payload == 0) { println("router: invalid ncup resolution"); jsonRelease(options); return 1; }
+                if (tool_cli.toolCli.hasFlag(options,"--json")) {
+                    text >> str <- jsonStringifyPretty(payload,2);
+                    println(text); strRelease(text);
+                } else {
+                    println("backend="+release_io.releaseIo.field(payload,"backend"));
+                    key >> str <- ghidra ? "lane" : "transport";
+                    println(key+"="+release_io.releaseIo.field(payload,key));
+                    println("ncc="+release_io.releaseIo.field(payload,"ncc_path"));
+                    command >> int <- jsonObjectGet(payload,"command");
+                    println("cmd="+displayCommand(command));
+                    jsonRelease(command);
+                }
+                jsonRelease(payload); jsonRelease(options);
+                return 0;
+            }
+    fa:
+        return true;
+}

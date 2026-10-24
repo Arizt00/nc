@@ -1,0 +1,1314 @@
+use <io:output>;
+use <process:args, env>;
+use <text:parse>;
+use <project:lexer, parser_outline, parser_ast, sema, generic_abi, pattern_async_resource, ir, mct, mct_debug, mct_platform_debug, mct_native_unwind, mct_symbol_bundle, mct_llvm, mct_pdb, mct_object, mct_link, mct_image, project, content_cache, root_lineage, target_init, machine_authority, material_domain_authority, executable_activation, nide_authority, low_level_completion, sha256, runtime_signatures, diagnostics>;
+use <project:lexer_report, lexer_tests, ast_report, type_contract_report, type_contract_sema, parser_tests, constant_probe>;
+use <project:release_layout, release_notes, machine_ci_verify, release_tests>;
+
+nccDriver {
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast<byte>(left);
+                b >> p<byte> <- cast<byte>(right);
+                at >> int <- 0;
+                while (rd<byte>(off(a, at)) != 0 && rd<byte>(off(b, at)) != 0) {
+                    if (rd<byte>(off(a, at)) != rd<byte>(off(b, at))) return false;
+                    at += 1;
+                }
+                return rd<byte>(off(a, at)) == rd<byte>(off(b, at));
+            }
+
+            recordSelfTest(name >> str, passed >> bool) -> bool {
+                if (!passed)
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: self-test failed: " + name);
+                return passed;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                buffer >> p<byte> <- cast<byte>(alloc(required));
+                guard buffer != null else return "";
+                written >> int <- envGet(name, adr(buffer), required);
+                if (written < 0) { free(buffer); return ""; }
+                return cast(buffer);
+            }
+
+            hostTarget() -> str {
+                configured >> str <- envText("NC_NCC_HOST_TARGET");
+                if (configured != "") return configured;
+                arch >> str <- envText("PROCESSOR_ARCHITECTURE");
+                if (arch == "") arch <- envText("HOSTTYPE");
+                normalized >> str <- arch;
+                if (arch == "AMD64" || arch == "amd64" || arch == "x64")
+                    normalized <- "x86_64";
+                else if (arch == "arm64") normalized <- "aarch64";
+                if (normalized == "") normalized <- "x86_64";
+                if (envText("OS") == "Windows_NT")
+                    return normalized + "-pc-windows-msvc";
+                platform >> str <- envText("OSTYPE");
+                if (strContains(platform, "darwin"))
+                    return normalized + "-apple-darwin";
+                return normalized + "-unknown-linux-gnu";
+            }
+
+            hasFlag(arguments >> addr, wanted >> str) -> bool {
+                at >> int <- 1;
+                while (at < argsCount(arguments)) {
+                    if (same(argsAt(arguments, at), wanted)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            optionValue(arguments >> addr, wanted >> str, fallback >> str) -> str {
+                at >> int <- 1;
+                while (at + 1 < argsCount(arguments)) {
+                    if (same(argsAt(arguments, at), wanted)) return argsAt(arguments, at + 1);
+                    at += 1;
+                }
+                return fallback;
+            }
+
+            tokenCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler tokens requires a source path");
+                    return 64;
+                }
+                if (hasFlag(arguments, "--material")) {
+                    return lexer_report.nccLexerReport.scanFile(argsAt(arguments, pathAt));
+                }
+                return lexer.nccLexer.scanFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            outlineCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler outline requires a source path");
+                    return 64;
+                }
+                return parser_outline.nccParserOutline.parseFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            astHeadCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-head requires a source path");
+                    return 64;
+                }
+                if (hasFlag(arguments, "--material")) {
+                    return ast_report.nccAstReport.parseFile(argsAt(arguments, pathAt));
+                }
+                return parser_ast.nccParserAst.parseFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            astHeadCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-head-check requires path, nodes, imports, containers and sections");
+                    return 64;
+                }
+                return parser_ast.nccParserAst.checkFile(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            astDeclarationCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-decl-check requires path, nodes, declarations, parameters and entries");
+                    return 64;
+                }
+                return parser_ast.nccParserAst.checkDeclarations(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            astMaterialCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 7 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-material-check requires path, nodes, types and expressions");
+                    return 64;
+                }
+                return parser_ast.nccParserAst.checkMaterial(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6))
+                );
+            }
+
+            astStatementCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 7 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-statement-check requires path, nodes, statements and expressions");
+                    return 64;
+                }
+                return parser_ast.nccParserAst.checkStatements(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6))
+                );
+            }
+
+            astAdvancedCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ast-advanced-check requires path, nodes, advanced, expressions and statements");
+                    return 64;
+                }
+                return parser_ast.nccParserAst.checkAdvanced(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            semaCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler sema requires a source path");
+                    return 64;
+                }
+                return sema.nccSema.analyzeFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            semaCoreCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler sema-core-check requires path, scopes, symbols, resolved names and calls");
+                    return 64;
+                }
+                return sema.nccSema.checkCore(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            semaImportsCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler sema-imports requires a source path");
+                    return 64;
+                }
+                return sema.nccSema.analyzeImports(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            semaImportsCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler sema-imports-check requires path, groups, items, runtime calls and modal checks");
+                    return 64;
+                }
+                return sema.nccSema.checkImports(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            semaAuthorityCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler sema-authority-check requires path, capabilities, policies, contexts, fingerprint and containers");
+                    return 64;
+                }
+                return sema.nccSema.checkAuthority(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8))
+                );
+            }
+
+            runtimeSignatureCheckCommand(arguments >> addr, direct >> bool) -> int {
+                first >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) >= first + 3 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: runtime-signatures-check requires families, signatures and fingerprint");
+                    return 64;
+                }
+                return runtime_signatures.nccRuntimeSignatures.check(
+                    parseInt(argsAt(arguments, first)),
+                    parseInt(argsAt(arguments, first + 1)),
+                    parseInt(argsAt(arguments, first + 2))
+                );
+            }
+
+            genericAbiCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: sema-generic-abi requires a source path");
+                    return 64;
+                }
+                return generic_abi.nccGenericAbi.analyzeFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            patternAsyncResourceCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: sema-pattern-async-resource requires a source path");
+                    return 64;
+                }
+                return pattern_async_resource.nccPatternAsyncResource.analyzeFile(
+                    argsAt(arguments, pathAt),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            irCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-ir requires a source path");
+                    return 64;
+                }
+                return ir.nccIr.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            irCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 10 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler ir-check requires path, target, target-id, pointer-bits, object, abi and seed-bytes");
+                    return 64;
+                }
+                return ir.nccIr.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    parseInt(argsAt(arguments, 9))
+                );
+            }
+
+            mctCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-mct requires a source path");
+                    return 64;
+                }
+                return mct.nccMct.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    optionValue(arguments, "--opt-level", "O0"),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            mctCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 14 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler mct-check requires path, target, family, pointer-bits, object, abi, nodes, instructions, relocations, text-bytes and fingerprint");
+                    return 64;
+                }
+                return mct.nccMct.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    parseInt(argsAt(arguments, 9)), parseInt(argsAt(arguments, 10)),
+                    parseInt(argsAt(arguments, 11)), parseInt(argsAt(arguments, 12)),
+                    parseInt(argsAt(arguments, 13))
+                );
+            }
+
+            mctLinkReadinessCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: mct-link-readiness requires a source path");
+                    return 64;
+                }
+                return mct.nccMct.linkReadiness(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    hasFlag(arguments, "--json")
+                );
+            }
+
+            mctLinkReadinessCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler mct-link-readiness-check requires path, target, intrinsic, runtime, project and unresolved counts");
+                    return 64;
+                }
+                return mct.nccMct.checkLinkReadiness(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    argsCount(arguments) > 9 ? parseInt(argsAt(arguments, 9)) : -1
+                );
+            }
+
+            objectCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-object requires a source path");
+                    return 64;
+                }
+                return mct_object.nccMctObject.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            objectCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler object-check requires path, target, format, bytes, relocations and hash");
+                    return 64;
+                }
+                return mct_object.nccMctObject.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8))
+                );
+            }
+
+            symbolBundleCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-symbol-bundle requires a source path");
+                    return 64;
+                }
+                return mct_symbol_bundle.nccMctSymbolBundle.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            symbolBundleCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 8 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler symbol-bundle-check requires path, target, records, bytes and hash");
+                    return 64;
+                }
+                return mct_symbol_bundle.nccMctSymbolBundle.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7))
+                );
+            }
+
+            debugUnwindCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-debug-unwind requires a source path");
+                    return 64;
+                }
+                return mct_debug.nccMctDebug.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            debugUnwindCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler debug-unwind-check requires path, target, lines, functions, bytes and hash");
+                    return 64;
+                }
+                return mct_debug.nccMctDebug.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8))
+                );
+            }
+
+            platformDebugCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-platform-debug requires a source path");
+                    return 64;
+                }
+                return mct_platform_debug.nccMctPlatformDebug.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            platformDebugCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 6 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler platform-debug-check requires path, target and bundle hash");
+                    return 64;
+                }
+                return mct_platform_debug.nccMctPlatformDebug.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5))
+                );
+            }
+
+            nativeUnwindCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-native-unwind requires a source path");
+                    return 64;
+                }
+                return mct_native_unwind.nccMctNativeUnwind.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            nativeUnwindCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 6 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler native-unwind-check requires path, target and bundle hash");
+                    return 64;
+                }
+                return mct_native_unwind.nccMctNativeUnwind.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5))
+                );
+            }
+
+            llvmOptimizationCommand(arguments >> addr) -> int {
+                return mct_llvm.nccMctLlvm.emitPlan(
+                    optionValue(arguments, "--opt-level", "O0"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            llvmOptimizationCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 7 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler llvm-optimization-check requires level, passes, bytes and hash");
+                    return 64;
+                }
+                return mct_llvm.nccMctLlvm.check(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6))
+                );
+            }
+
+            llvmTransformCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-llvm-transform requires a source path");
+                    return 64;
+                }
+                return mct_llvm.nccMctLlvm.emitTransform(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--opt-level", "O2"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            llvmTransformCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 21 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler llvm-transform-check requires path, target, level, eliminated, branches, dead CFG, SSA, dead writes, dead functions, call edges, loop collapses, zero-trip loops, strength reductions, induction variables, loop invariants, derived inductions, inlined calls, optional GVN reuses and hash");
+                    return 64;
+                }
+                return mct_llvm.nccMctLlvm.checkTransform(
+                    argsAt(arguments, 3), argsAt(arguments, 4), argsAt(arguments, 5),
+                    parseInt(argsAt(arguments, 6)), parseInt(argsAt(arguments, 7)),
+                    parseInt(argsAt(arguments, 8)), parseInt(argsAt(arguments, 9)),
+                    parseInt(argsAt(arguments, 10)), parseInt(argsAt(arguments, 11)),
+                    parseInt(argsAt(arguments, 12)), parseInt(argsAt(arguments, 13)),
+                    parseInt(argsAt(arguments, 14)), parseInt(argsAt(arguments, 15)),
+                    parseInt(argsAt(arguments, 16)), parseInt(argsAt(arguments, 17)),
+                    parseInt(argsAt(arguments, 18)), parseInt(argsAt(arguments, 19)),
+                    argsCount(arguments) > 21 ? parseInt(argsAt(arguments, 20)) : -1,
+                    parseInt(argsAt(arguments, argsCount(arguments) > 21 ? 21 : 20))
+                );
+            }
+
+            pdbCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-pdb requires a source path");
+                    return 64;
+                }
+                return mct_pdb.nccMctPdb.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-pc-windows-msvc"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            pdbCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 6 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler pdb-check requires path, signature and hash");
+                    return 64;
+                }
+                return mct_pdb.nccMctPdb.checkFile(
+                    argsAt(arguments, 3), parseInt(argsAt(arguments, 4)),
+                    parseInt(argsAt(arguments, 5))
+                );
+            }
+
+            projectCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 4 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: project requires objects, sync, graph, resolve or link and a root path");
+                    return 64;
+                }
+                action >> str <- argsAt(arguments, 2);
+                root >> str <- argsAt(arguments, 3);
+                mainName >> str <- optionValue(arguments, "--main", "main.n");
+                target >> str <- optionValue(arguments, "--target", hostTarget());
+                json >> bool <- hasFlag(arguments, "--json");
+                quiet >> bool <- hasFlag(arguments, "--quiet");
+                project.nccProject.configureCache(
+                    !hasFlag(arguments, "--no-incremental"),
+                    optionValue(arguments, "--content-cache-dir", "")
+                );
+                if (same(action, "objects"))
+                    return project.nccProject.objects(root,mainName,target,json,quiet);
+                if (same(action, "sync"))
+                    return project.nccProject.sync(root, mainName, target, json, quiet);
+                if (same(action, "graph"))
+                    return project.nccProject.graph(root, mainName, target, json, quiet);
+                if (same(action, "resolve"))
+                    return project.nccProject.resolve(root, mainName, target, json, quiet);
+                if (same(action, "link"))
+                    return project.nccProject.link(root, mainName, target,
+                        optionValue(arguments, "--out", ""), json, quiet);
+                println("error[E_BOOTSTRAP_STAGE0_REQUIRED_001]: project action requires the remaining final executable linker stage");
+                return 69;
+            }
+
+            projectCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler project-check requires root, main, target, units, edges and symbols");
+                    return 64;
+                }
+                return project.nccProject.check(
+                    argsAt(arguments, 3), argsAt(arguments, 4), argsAt(arguments, 5),
+                    parseInt(argsAt(arguments, 6)), parseInt(argsAt(arguments, 7)),
+                    parseInt(argsAt(arguments, 8)),
+                    argsCount(arguments) > 9 ? parseInt(argsAt(arguments, 9)) : 0,
+                    argsCount(arguments) > 10 ? parseInt(argsAt(arguments, 10)) : -1,
+                    argsCount(arguments) > 11 ? parseInt(argsAt(arguments, 11)) : -1,
+                    argsCount(arguments) > 12 ? parseInt(argsAt(arguments, 12)) : -1,
+                    argsCount(arguments) > 13 ? parseInt(argsAt(arguments, 13)) : -1,
+                    argsCount(arguments) > 14 ? parseInt(argsAt(arguments, 14)) : -1,
+                    argsCount(arguments) > 15 ? parseInt(argsAt(arguments, 15)) : -1,
+                    argsCount(arguments) > 16 ? parseInt(argsAt(arguments, 16)) : -1,
+                    argsCount(arguments) > 17 ? parseInt(argsAt(arguments, 17)) : -1,
+                    argsCount(arguments) > 18 ? parseInt(argsAt(arguments, 18)) : -1
+                );
+            }
+
+            projectMctReadinessCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 10 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler project-mct-readiness-check requires root, main, target, intrinsic, runtime, project and unresolved counts");
+                    return 64;
+                }
+                return project.nccProject.checkMctReadiness(
+                    argsAt(arguments, 3), argsAt(arguments, 4), argsAt(arguments, 5),
+                    parseInt(argsAt(arguments, 6)), parseInt(argsAt(arguments, 7)),
+                    parseInt(argsAt(arguments, 8)), parseInt(argsAt(arguments, 9)),
+                    argsCount(arguments) > 10 ? parseInt(argsAt(arguments, 10)) : -1
+                );
+            }
+
+            relocationCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 9 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler relocation-check requires target, kind, symbol, place, addend, expected-low and optional expected-high");
+                    return 64;
+                }
+                return mct_link.nccMctLink.check(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    argsCount(arguments) > 9 ? parseInt(argsAt(arguments, 9)) : 0
+                );
+            }
+
+            finalLinkPlanCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: final-link-plan requires a source path");
+                    return 64;
+                }
+                return mct_link.nccMctLink.linkPlan(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-unknown-linux-gnu"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            finalLinkPlanCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 12 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler final-link-plan-check requires path, target, providers, relocations, applied, project, unresolved, ready and hash");
+                    return 64;
+                }
+                return mct_link.nccMctLink.checkPlan(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    parseInt(argsAt(arguments, 9)), parseInt(argsAt(arguments, 10)) != 0,
+                    parseInt(argsAt(arguments, 11))
+                );
+            }
+
+            imageCommand(arguments >> addr, direct >> bool) -> int {
+                pathAt >> int <- direct ? 2 : 3;
+                guard argsCount(arguments) > pathAt else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: emit-executable requires a source path");
+                    return 64;
+                }
+                return mct_image.nccMctImage.emitFile(
+                    argsAt(arguments, pathAt),
+                    optionValue(arguments, "--target", "x86_64-pc-windows-msvc"),
+                    optionValue(arguments, "--out", ""),
+                    hasFlag(arguments, "--json"),
+                    hasFlag(arguments, "--quiet")
+                );
+            }
+
+            imageCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 10 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler final-image-check requires path, target, format, bytes, entry, providers and hash");
+                    return 64;
+                }
+                return mct_image.nccMctImage.checkFile(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    parseInt(argsAt(arguments, 9))
+                );
+            }
+
+            mctTargetCheckCommand(arguments >> addr) -> int {
+                guard argsCount(arguments) >= 11 else {
+                    println("error[E_NCC_BOOTSTRAP_CLI_001]: compiler mct-target-check requires path, target, targets, local, external, control, unresolved and fingerprint");
+                    return 64;
+                }
+                return mct.nccMct.checkTargets(
+                    argsAt(arguments, 3), argsAt(arguments, 4),
+                    parseInt(argsAt(arguments, 5)), parseInt(argsAt(arguments, 6)),
+                    parseInt(argsAt(arguments, 7)), parseInt(argsAt(arguments, 8)),
+                    parseInt(argsAt(arguments, 9)), parseInt(argsAt(arguments, 10))
+                );
+            }
+
+        public:
+            selfTest() -> bool {
+                ok >> bool <- true;
+                ok <- recordSelfTest("diagnostics", diagnostics.nccDiagnostics.selfTest()) && ok;
+                ok <- recordSelfTest("lexer", lexer.nccLexer.selfTest()) && ok;
+                ok <- recordSelfTest("lexer-material", lexer_tests.nccLexerTests.selfTest()) && ok;
+                ok <- recordSelfTest("parser-material", parser_tests.nccParserTests.selfTest()) && ok;
+                ok <- recordSelfTest("runtime-signatures", runtime_signatures.nccRuntimeSignatures.selfTest()) && ok;
+                ok <- recordSelfTest("generic-abi", generic_abi.nccGenericAbi.selfTest()) && ok;
+                ok <- recordSelfTest("pattern-async-resource", pattern_async_resource.nccPatternAsyncResource.selfTest()) && ok;
+                ok <- recordSelfTest("ir", ir.nccIr.selfTest()) && ok;
+                ok <- recordSelfTest("mct", mct.nccMct.selfTest()) && ok;
+                ok <- recordSelfTest("mct-debug", mct_debug.nccMctDebug.selfTest()) && ok;
+                ok <- recordSelfTest("mct-platform-debug", mct_platform_debug.nccMctPlatformDebug.selfTest()) && ok;
+                ok <- recordSelfTest("mct-native-unwind", mct_native_unwind.nccMctNativeUnwind.selfTest()) && ok;
+                ok <- recordSelfTest("mct-symbol-bundle", mct_symbol_bundle.nccMctSymbolBundle.selfTest()) && ok;
+                ok <- recordSelfTest("mct-llvm", mct_llvm.nccMctLlvm.selfTest()) && ok;
+                ok <- recordSelfTest("mct-pdb", mct_pdb.nccMctPdb.selfTest()) && ok;
+                ok <- recordSelfTest("mct-object", mct_object.nccMctObject.selfTest()) && ok;
+                ok <- recordSelfTest("mct-link", mct_link.nccMctLink.selfTest()) && ok;
+                ok <- recordSelfTest("mct-image", mct_image.nccMctImage.selfTest()) && ok;
+                ok <- recordSelfTest("root-lineage", root_lineage.nccRootLineage.selfTest()) && ok;
+                ok <- recordSelfTest("target-init", target_init.nccTargetInit.selfTest()) && ok;
+                ok <- recordSelfTest("machine-authority", machine_authority.nccMachineAuthority.selfTest()) && ok;
+                ok <- recordSelfTest("material-domain", material_domain_authority.nccTargetDomainAuthority.selfTest()) && ok;
+                ok <- recordSelfTest("executable-activation", executable_activation.nccExecutableActivation.selfTest()) && ok;
+                ok <- recordSelfTest("nide", nide_authority.nccNideAuthority.selfTest()) && ok;
+                ok <- recordSelfTest("low-level", low_level_completion.nccLowLevelCompletion.selfTest()) && ok;
+                ok <- recordSelfTest("sha256", sha256.nccSha256.selfTest()) && ok;
+                ok <- recordSelfTest("project", project.nccProject.selfTest()) && ok;
+                return ok;
+            }
+
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                guard arguments != null && argsError(arguments) == 0 else return 70;
+                if (argsCount(arguments) <= 1) {
+                    ok >> bool <- selfTest();
+                    argsRelease(arguments);
+                    return ok ? 0 : 1;
+                }
+
+                command >> str <- argsAt(arguments, 1);
+                if (same(command, "release-layout")) {
+                    code >> int <- release_layout.releaseLayout.execute(arguments);
+                    argsRelease(arguments); return code;
+                }
+                if (same(command, "release-notes")) {
+                    code >> int <- release_notes.releaseNotes.execute(arguments);
+                    argsRelease(arguments); return code;
+                }
+                if (same(command, "verify-machine-ci")) {
+                    code >> int <- machine_ci_verify.machineCiVerify.execute(arguments);
+                    argsRelease(arguments); return code;
+                }
+                if (same(command, "release-self-test")) {
+                    code >> int <- release_tests.releaseTests.execute(arguments);
+                    argsRelease(arguments); return code;
+                }
+                if (same(command, "verify-constant")) {
+                    code >> int <- constant_probe.nccConstantProbe.execute(arguments);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "--version") || same(command, "-V") || same(command, "version")) {
+                    println("ncc 2.0.0.2 (nC Toolchain; Stage2 candidate)");
+                    argsRelease(arguments);
+                    return 0;
+                }
+                if (same(command, "self-test")) {
+                    code >> int <- selfTest() ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "lexer-self-test")) {
+                    code >> int <- recordSelfTest("lexer-material",
+                        lexer.nccLexer.selfTest() && lexer_tests.nccLexerTests.selfTest()) ? 0 : 1;
+                    if (code == 0 && argsCount(arguments) > 2) {
+                        code <- recordSelfTest("lexer-sized-file",
+                            lexer_tests.nccLexerTests.sizedFile(argsAt(arguments, 2))) ? 0 : 1;
+                    }
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "content-cache-check")) {
+                    root >> str <- argsCount(arguments) > 2 ? argsAt(arguments, 2) : ".";
+                    content_cache.nccContentCache.configure(true,
+                        optionValue(arguments, "--content-cache-dir", ""));
+                    code >> int <- content_cache.nccContentCache.ioCheck(root);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "root-lineage-check")) {
+                    guard argsCount(arguments) >= 7 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: root-lineage-check requires source, root.nb, root.nbb, machine.nm and backend-object.nbo");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- root_lineage.nccRootLineage.inspect(
+                        argsAt(arguments, 2), argsAt(arguments, 3), argsAt(arguments, 4),
+                        argsAt(arguments, 5), argsAt(arguments, 6)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "target-init-check")) {
+                    guard argsCount(arguments) >= 5 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: target-init-check requires .init, target and entry");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- target_init.nccTargetInit.inspect(
+                        argsAt(arguments, 2), argsAt(arguments, 3), argsAt(arguments, 4)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "machine-authority-check")) {
+                    guard argsCount(arguments) >= 4 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: machine-authority-check requires architecture and instruction");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- machine_authority.nccMachineAuthority.supports(
+                        argsAt(arguments, 2), argsAt(arguments, 3)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "kernel-system-machine-check")) {
+                    guard argsCount(arguments) >= 6 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: kernel-system-machine-check requires architecture, domain, capability and expected instruction count");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- material_domain_authority.nccTargetDomainAuthority.inspect(
+                        argsAt(arguments, 2), argsAt(arguments, 3), argsAt(arguments, 4),
+                        parseInt(argsAt(arguments, 5))
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "nide-role-check")) {
+                    guard argsCount(arguments) >= 5 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: nide-role-check requires path, symbol and expected role");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- same(
+                        nide_authority.nccNideAuthority.role(
+                            argsAt(arguments, 2), argsAt(arguments, 3)
+                        ),
+                        argsAt(arguments, 4)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "nide-context-role-check")) {
+                    guard argsCount(arguments) >= 6 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: nide-context-role-check requires path, domain, symbol and expected role");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- same(
+                        nide_authority.nccNideAuthority.roleIn(
+                            argsAt(arguments, 2), argsAt(arguments, 3), argsAt(arguments, 4)
+                        ),
+                        argsAt(arguments, 5)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "low-level-manual-check") ||
+                    same(command, "low-level-completion-check")) {
+                    guard argsCount(arguments) >= 6 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: low-level-manual-check requires path, family, architecture and symbol");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- low_level_completion.nccLowLevelCompletion.inspect(
+                        argsAt(arguments, 2), argsAt(arguments, 3),
+                        argsAt(arguments, 4), argsAt(arguments, 5)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "low-level-lane-check")) {
+                    guard argsCount(arguments) >= 4 else {
+                        println("error[E_NCC_BOOTSTRAP_CLI_001]: low-level-lane-check requires path and expected lane");
+                        argsRelease(arguments);
+                        return 64;
+                    }
+                    code >> int <- same(
+                        low_level_completion.nccLowLevelCompletion.lane(argsAt(arguments, 2)),
+                        argsAt(arguments, 3)
+                    ) ? 0 : 1;
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "tokens")) {
+                    code >> int <- tokenCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "outline")) {
+                    code >> int <- outlineCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "ast-head")) {
+                    code >> int <- astHeadCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "sema-types")) {
+                    guard argsCount(arguments) >= 3 else { argsRelease(arguments); return 64; }
+                    code >> int <- type_contract_sema.nccTypeContractSema.analyzeFile(
+                        argsAt(arguments,2),hasFlag(arguments,"--json"),hasFlag(arguments,"--quiet"));
+                    argsRelease(arguments); return code;
+                }
+                if (same(command, "sema")) {
+                    code >> int <- semaCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "sema-imports")) {
+                    code >> int <- semaImportsCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "sema-authority")) {
+                    code >> int <- semaImportsCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "runtime-signatures")) {
+                    code >> int <- runtime_signatures.nccRuntimeSignatures.report();
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "runtime-signatures-check")) {
+                    code >> int <- runtimeSignatureCheckCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "sema-generic-abi")) {
+                    code >> int <- genericAbiCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "sema-pattern-async-resource")) {
+                    code >> int <- patternAsyncResourceCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-ir")) {
+                    code >> int <- irCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-mct")) {
+                    code >> int <- mctCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "mct-link-readiness")) {
+                    code >> int <- mctLinkReadinessCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-object")) {
+                    code >> int <- objectCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "final-link-plan")) {
+                    code >> int <- finalLinkPlanCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-executable")) {
+                    code >> int <- imageCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-symbol-bundle")) {
+                    code >> int <- symbolBundleCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-debug-unwind")) {
+                    code >> int <- debugUnwindCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-platform-debug")) {
+                    code >> int <- platformDebugCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-native-unwind")) {
+                    code >> int <- nativeUnwindCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-llvm-optimization")) {
+                    code >> int <- llvmOptimizationCommand(arguments);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-llvm-transform")) {
+                    code >> int <- llvmTransformCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "emit-pdb")) {
+                    code >> int <- pdbCommand(arguments, true);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "project")) {
+                    code >> int <- projectCommand(arguments);
+                    argsRelease(arguments);
+                    return code;
+                }
+                if (same(command, "compiler") && argsCount(arguments) > 2) {
+                    action >> str <- argsAt(arguments, 2);
+                    if (same(action, "tokens")) {
+                        code >> int <- tokenCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "outline")) {
+                        code >> int <- outlineCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ast-head")) {
+                        code >> int <- astHeadCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "type-contracts")) {
+                        if (argsCount(arguments) < 4) { argsRelease(arguments); return 64; }
+                        code >> int <- type_contract_report.nccTypeContractReport.parseFile(argsAt(arguments, 3));
+                        argsRelease(arguments); return code;
+                    }
+                    if (same(action, "ast-head-check")) {
+                        code >> int <- astHeadCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ast-decl-check")) {
+                        code >> int <- astDeclarationCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ast-material-check")) {
+                        code >> int <- astMaterialCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ast-statement-check")) {
+                        code >> int <- astStatementCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ast-advanced-check")) {
+                        code >> int <- astAdvancedCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-types")) {
+                        guard argsCount(arguments) >= 4 else { argsRelease(arguments); return 64; }
+                        code >> int <- type_contract_sema.nccTypeContractSema.analyzeFile(
+                            argsAt(arguments,3),hasFlag(arguments,"--json"),hasFlag(arguments,"--quiet"));
+                        argsRelease(arguments); return code;
+                    }
+                    if (same(action, "sema")) {
+                        code >> int <- semaCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-core-check")) {
+                        code >> int <- semaCoreCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-imports")) {
+                        code >> int <- semaImportsCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-imports-check")) {
+                        code >> int <- semaImportsCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-authority")) {
+                        code >> int <- semaImportsCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-authority-check")) {
+                        code >> int <- semaAuthorityCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "runtime-signatures")) {
+                        code >> int <- runtime_signatures.nccRuntimeSignatures.report();
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "runtime-signatures-check")) {
+                        code >> int <- runtimeSignatureCheckCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-generic-abi")) {
+                        code >> int <- genericAbiCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "sema-pattern-async-resource")) {
+                        code >> int <- patternAsyncResourceCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-ir")) {
+                        code >> int <- irCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "ir-check")) {
+                        code >> int <- irCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-mct")) {
+                        code >> int <- mctCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "mct-check")) {
+                        code >> int <- mctCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "mct-link-readiness")) {
+                        code >> int <- mctLinkReadinessCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "mct-link-readiness-check")) {
+                        code >> int <- mctLinkReadinessCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-object")) {
+                        code >> int <- objectCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "object-check")) {
+                        code >> int <- objectCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "final-link-plan")) {
+                        code >> int <- finalLinkPlanCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "final-link-plan-check")) {
+                        code >> int <- finalLinkPlanCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-executable")) {
+                        code >> int <- imageCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "final-image-check")) {
+                        code >> int <- imageCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-symbol-bundle")) {
+                        code >> int <- symbolBundleCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "symbol-bundle-check")) {
+                        code >> int <- symbolBundleCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-debug-unwind")) {
+                        code >> int <- debugUnwindCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "debug-unwind-check")) {
+                        code >> int <- debugUnwindCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-platform-debug")) {
+                        code >> int <- platformDebugCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "platform-debug-check")) {
+                        code >> int <- platformDebugCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-native-unwind")) {
+                        code >> int <- nativeUnwindCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "native-unwind-check")) {
+                        code >> int <- nativeUnwindCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-llvm-optimization")) {
+                        code >> int <- llvmOptimizationCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "llvm-optimization-check")) {
+                        code >> int <- llvmOptimizationCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-llvm-transform")) {
+                        code >> int <- llvmTransformCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "llvm-transform-check")) {
+                        code >> int <- llvmTransformCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "emit-pdb")) {
+                        code >> int <- pdbCommand(arguments, false);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "pdb-check")) {
+                        code >> int <- pdbCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "project-check")) {
+                        code >> int <- projectCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "project-mct-readiness-check")) {
+                        code >> int <- projectMctReadinessCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "relocation-check")) {
+                        code >> int <- relocationCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    if (same(action, "mct-target-check")) {
+                        code >> int <- mctTargetCheckCommand(arguments);
+                        argsRelease(arguments);
+                        return code;
+                    }
+                    code >> int <- diagnostics.nccDiagnostics.stage0Required(action);
+                    argsRelease(arguments);
+                    return code;
+                }
+
+                code >> int <- diagnostics.nccDiagnostics.stage0Required(command);
+                argsRelease(arguments);
+                return code;
+            }
+
+    fa:
+        return true;
+}

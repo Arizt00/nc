@@ -1,0 +1,69 @@
+use <data:json>;
+use <process:env>;
+use <project:ncup_session, release_io, contract_checks>;
+
+ncupFirstRun {
+    fn:
+        public:
+            inspect() -> void {
+                root >> str <- ncup_session.ncupSession.rootPath();
+                home >> str <- ncup_session.ncupSession.homePath();
+                files >> int <- jsonParse("[\"docs/spec/release/v2_0_0_phase10_first_run_spec.md\",\"docs/spec/release/v2_0_0_phase10_first_run_compatibility_spec.md\",\"docs/spec/release/v2_0_0_phase10_first_run_contract.json\",\"docs/status/STATUS_PHASE10_punto13_first_run_v2_0_0.md\",\"tools/ncc/nc/src/verification/ncup_first_run.n\",\"tools/release/qa_phase10_p13_v2_0_0.sh\"]");
+                ncup_session.ncupSession.record("artifacts_present",contract_checks.contractChecks.files(root,files,false));
+                jsonRelease(files);
+                modelRow >> int <- ncup_session.ncupSession.run("[\"phase10-toolchain-model\",\"--json\"]");
+                model >> int <- ncup_session.ncupSession.document(modelRow);
+                toolchains >> int <- jsonObjectGet(model,"toolchains");
+                target >> str <- "";
+                index >> int <- 0;
+                while (index < jsonArrayLen(toolchains) && target == "") {
+                    item >> int <- jsonArrayGet(toolchains,index);
+                    id >> str <- release_io.releaseIo.field(item,"id");
+                    if (strStartsWith(id,"stable-") && strByteLen(id) > 7) target <- strSubstring(id,7,strLen(id)-7);
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(toolchains); jsonRelease(model);
+                init >> int <- 0;
+                if (ncup_session.ncupSession.ok(modelRow) && target != "") {
+                    selected >> int <- jsonNewString(target);
+                    encoded >> str <- jsonStringify(selected);
+                    init <- ncup_session.ncupSession.run("[\"ncup\",\"init\",\"--home\",\"$home\",\"--profile\",\"default\",\"--channel\",\"stable\",\"--target\","+encoded+",\"--force\",\"--yes\",\"--json\"]");
+                    jsonRelease(selected); strRelease(encoded);
+                }
+                payload >> int <- ncup_session.ncupSession.document(init);
+                actualHome >> str <- release_io.releaseIo.forwardPath(release_io.releaseIo.field(payload,"home"));
+                ncup_session.ncupSession.record("ncup_init_json_ok",ncup_session.ncupSession.ok(init) && release_io.releaseIo.field(payload,"schema") == "ncup.init.first-run.v1" && release_io.releaseIo.field(payload,"status") == "ok" && actualHome == release_io.releaseIo.forwardPath(home));
+                first >> int <- jsonObjectGet(payload,"first_run");
+                ncup_session.ncupSession.record("first_run_block_present",jsonKind(first) == 6 && jsonObjectLen(first) > 0);
+                doctor >> int <- jsonObjectGet(first,"doctor");
+                ncup_session.ncupSession.record("doctor_auto_ok",release_io.releaseIo.field(doctor,"status") == "ok");
+                demo >> int <- jsonObjectGet(first,"demo");
+                demoPath >> str <- release_io.releaseIo.field(demo,"demo_file");
+                ncup_session.ncupSession.record("demo_auto_ok",release_io.releaseIo.field(demo,"status") == "ok" && release_io.releaseIo.field(demo,"command") == "ncc run hello.n");
+                ncup_session.ncupSession.record("demo_file_exists",release_io.releaseIo.fileType(demoPath) == 1);
+                guide >> int <- jsonObjectGet(first,"post_install_guide");
+                ncup_session.ncupSession.record("post_install_guide_present",jsonKind(guide) == 5 && jsonArrayLen(guide) >= 3);
+                jsonRelease(guide); jsonRelease(demo); jsonRelease(doctor); jsonRelease(first); jsonRelease(payload);
+                recheck >> int <- ncup_session.ncupSession.run("[\"ncup\",\"doctor\",\"--home\",\"$home\"]");
+                ncup_session.ncupSession.record("doctor_command_recheck_ok",ncup_session.ncupSession.ok(recheck) && strContains(release_io.releaseIo.field(recheck,"stdout"),"OK: ncup doctor"));
+                oldHome >> str <- ncup_session.ncupSession.environment("NCUP_HOME");
+                hadHome >> bool <- envHas("NCUP_HOME");
+                oldPath >> str <- ncup_session.ncupSession.environment("PATH");
+                hadPath >> bool <- envHas("PATH");
+                envSet("NCUP_HOME",home);
+                envSet("PATH",home+"/bin"+(envHas("WINDIR") ? ";" : ":")+oldPath);
+                words >> int <- jsonNewArray();
+                jsonArrayPush(words,jsonNewString("run")); jsonArrayPush(words,jsonNewString(demoPath));
+                cwd >> str <- release_io.releaseIo.directory(demoPath);
+                if (release_io.releaseIo.fileType(cwd) != 2) cwd <- root;
+                globalRun >> int <- ncup_session.ncupSession.invoke("ncc",words,cwd);
+                if (hadHome) envSet("NCUP_HOME",oldHome); else envRemove("NCUP_HOME");
+                if (hadPath) envSet("PATH",oldPath); else envRemove("PATH");
+                ncup_session.ncupSession.record("global_ncc_run_demo_ok",ncup_session.ncupSession.ok(globalRun));
+                contract >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_phase10_first_run_contract.json");
+                first <- jsonObjectGet(contract,"first_run");
+                ncup_session.ncupSession.record("contract_consistent",release_io.releaseIo.field(contract,"schema") == "nc.phase10.first-run.contract.v1" && contract_checks.contractChecks.boolean(first,"doctor_required",true) && release_io.releaseIo.member(contract,"required_gates","release_phase10_first_run_gate_tests"));
+                jsonRelease(first); jsonRelease(contract);
+            }
+    fa: return true;
+}

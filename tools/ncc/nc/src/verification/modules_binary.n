@@ -1,0 +1,144 @@
+use <data:json>;
+
+modulesBinary {
+    type:
+        Leb {
+            public:
+                value >> int;
+                next >> int;
+        }
+        Header {
+            public:
+                version >> int;
+                section >> int;
+                body >> int;
+                end >> int;
+                hashAt >> int;
+                hash >> int;
+                irHash >> int;
+        }
+    fn:
+        private:
+            leb(data >> p<byte>, at >> int, end >> int) -> Leb {
+                value >> int <- 0;
+                shift >> int <- 0;
+                while (shift < 35 && at < end) {
+                    code >> int <- rd(off(data,at)); at += 1;
+                    if (shift == 28 && (code & 240) != 0) return Leb(value: 0, next: -1);
+                    value <- value | ((code & 127) << shift);
+                    if ((code & 128) == 0) return Leb(value: value, next: at);
+                    shift += 7;
+                }
+                return Leb(value: 0, next: -1);
+            }
+            header(data >> p<byte>, count >> int) -> Header {
+                missing >> Header <- Header(version: 0, section: -1, body: -1, end: -1, hashAt: -1, hash: 0, irHash: 0);
+                if (count < 8 || data == null) return missing;
+                if (word(data,0) != 1836278016 || word(data,4) != 1) return missing;
+                at >> int <- 8;
+                found >> Header <- Header(version: 0, section: -1, body: -1, end: -1, hashAt: -1, hash: 0, irHash: 0);
+                while (at < count) {
+                    tag >> int <- rd(off(data,at));
+                    size >> Leb <- leb(data,at+1,count);
+                    if (size.next < 0 || size.value < 0 || size.value > count-size.next) return missing;
+                    end >> int <- size.next+size.value;
+                    if (tag == 0) {
+                        name >> Leb <- leb(data,size.next,end);
+                        if (name.next < 0 || name.value < 0 || name.value > end-name.next) return missing;
+                        if (name.value == 6) {
+                            expected >> p<byte> <- cast("nC.mct"); same >> bool <- true; index >> int <- 0;
+                            while (index < 6) { if (rd(off(data,name.next+index)) != rd(off(expected,index))) same <- false; index += 1; }
+                            if (same) {
+                                start >> int <- name.next+6;
+                                if (found.section >= 0 || start >= end) return missing;
+                                if (end-start >= 32 && word(data,start) == 1) {
+                                    found <- Header(version: 1, section: at, body: size.next, end: end,
+                                        hashAt: start+24, hash: word(data,start+24), irHash: 0);
+                                } else {
+                                    // v2 stores version, MCT fingerprint and IR fingerprint as ULEB32.
+                                    if (name.next != size.next+1) return missing;
+                                    if (size.next-at > 2 && rd(off(data,size.next-1)) == 0) return missing;
+                                    version >> Leb <- leb(data,start,end);
+                                    if (version.next != start+1 || version.value != 2) return missing;
+                                    hash >> Leb <- leb(data,version.next,end);
+                                    if (hash.next < 0) return missing;
+                                    ir >> Leb <- leb(data,hash.next,end);
+                                    if (ir.next != end) return missing;
+                                    if (hash.next-version.next > 1 && rd(off(data,hash.next-1)) == 0) return missing;
+                                    if (ir.next-hash.next > 1 && rd(off(data,ir.next-1)) == 0) return missing;
+                                    found <- Header(version: 2, section: at, body: size.next, end: end,
+                                        hashAt: version.next, hash: hash.value, irHash: ir.value);
+                                }
+                            }
+                        }
+                    }
+                    at <- end;
+                }
+                return found;
+            }
+        public:
+            word(data >> p<byte>, at >> int) -> int {
+                return (rd(off(data,at)) & 255) | ((rd(off(data,at+1)) & 255) << 8) |
+                    ((rd(off(data,at+2)) & 255) << 16) | ((rd(off(data,at+3)) & 255) << 24);
+            }
+            fingerprint(data >> p<byte>, count >> int) -> int {
+                parsed >> Header <- header(data,count);
+                return parsed.hashAt;
+            }
+            compareMaterial(first >> str, second >> str, firstHash >> int, secondHash >> int, firstIr >> int, secondIr >> int) -> int {
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result,"valid",jsonNewBool(false)); jsonObjectSet(result,"identical",jsonNewBool(false));
+                count >> int <- fsSize(first); other >> int <- fsSize(second);
+                if (count < 8 || other < 8 || count > 134217728 || other > 134217728) return result;
+                a >> p<byte> <- cast(alloc(count)); b >> p<byte> <- cast(alloc(other));
+                if (a == null || b == null) { free(a); free(b); return result; }
+                if (fsReadInto(first,a,count) != count || fsReadInto(second,b,other) != other) { free(a); free(b); return result; }
+                x >> Header <- header(a,count); y >> Header <- header(b,other);
+                if (x.version == 1 && y.version == 1) { free(a); free(b); jsonRelease(result); return compare(first,second,true,firstHash,secondHash); }
+                valid >> bool <- x.version == 2 && y.version == 2 && x.hash == firstHash && y.hash == secondHash &&
+                    x.irHash == firstIr && y.irHash == secondIr && x.section == y.section && count-x.end == other-y.end;
+                if (valid) {
+                    at >> int <- 0;
+                    while (at < x.section) { if (rd(off(a,at)) != rd(off(b,at))) valid <- false; at += 1; }
+                    at <- 0;
+                    while (at < count-x.end) { if (rd(off(a,x.end+at)) != rd(off(b,y.end+at))) valid <- false; at += 1; }
+                }
+                identical >> bool <- count == other;
+                at >> int <- 0;
+                while (at < count && identical) { if (rd(off(a,at)) != rd(off(b,at))) identical <- false; at += 1; }
+                jsonObjectSet(result,"valid",jsonNewBool(valid)); jsonObjectSet(result,"identical",jsonNewBool(identical));
+                jsonObjectSet(result,"mct_version",jsonNewInt(x.version));
+                jsonObjectSet(result,"mct_fingerprint",jsonNewInt(x.hash)); jsonObjectSet(result,"ir_fingerprint",jsonNewInt(x.irHash));
+                free(a); free(b); return result;
+            }
+            compare(first >> str, second >> str, wasm >> bool, firstHash >> int, secondHash >> int) -> int {
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result,"valid",jsonNewBool(false)); jsonObjectSet(result,"identical",jsonNewBool(false));
+                count >> int <- fsSize(first); other >> int <- fsSize(second);
+                if (count <= 0 || count != other || count > 134217728) return result;
+                a >> p<byte> <- cast(alloc(count)); b >> p<byte> <- cast(alloc(count));
+                if (a == null || b == null) { free(a); free(b); return result; }
+                valid >> bool <- fsReadInto(first,a,count) == count && fsReadInto(second,b,count) == count;
+                if (!valid) { free(a); free(b); return result; }
+                identical >> bool <- valid;
+                fingerprintAt >> int <- -1;
+                if (wasm && valid) {
+                    fingerprintAt <- fingerprint(a,count); previous >> int <- fingerprint(b,count);
+                    x >> Header <- header(a,count); y >> Header <- header(b,count);
+                    valid <- x.version == 1 && y.version == 1 && fingerprintAt >= 0 && fingerprintAt == previous;
+                    if (valid) valid <- word(a,fingerprintAt) == firstHash && word(b,previous) == secondHash;
+                }
+                at >> int <- 0;
+                while (at < count) {
+                    if (rd(off(a,at)) != rd(off(b,at))) {
+                        identical <- false;
+                        if (!wasm || fingerprintAt < 0 || at < fingerprintAt || at >= fingerprintAt+4) valid <- false;
+                    }
+                    at += 1;
+                }
+                jsonObjectSet(result,"valid",jsonNewBool(valid)); jsonObjectSet(result,"identical",jsonNewBool(identical));
+                jsonObjectSet(result,"fingerprint_offset",jsonNewInt(fingerprintAt));
+                free(a); free(b); return result;
+            }
+    fa: return true;
+}

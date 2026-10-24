@@ -1,0 +1,431 @@
+miniCalculatorWindowsX86_64[@machine] {
+    target:
+        arch: x86_64;
+        abi: win64;
+        object: coff;
+        endian: little;
+        pointerWidth: 64;
+        profile: userland;
+
+    extern:
+        GetStdHandle:
+            abi: win64;
+            symbol: "GetStdHandle";
+        ReadFile:
+            abi: win64;
+            symbol: "ReadFile";
+        WriteFile:
+            abi: win64;
+            symbol: "WriteFile";
+        ExitProcess:
+            abi: win64;
+            symbol: "ExitProcess";
+
+    symbol:
+        mainCRTStartup:
+            section: .text;
+            binding: global;
+            type: routine;
+        print_text:
+            section: .text;
+            binding: local;
+            type: routine;
+        read_input:
+            section: .text;
+            binding: local;
+            type: routine;
+        parse_int64:
+            section: .text;
+            binding: local;
+            type: routine;
+        parse_operator:
+            section: .text;
+            binding: local;
+            type: routine;
+        format_int64:
+            section: .text;
+            binding: local;
+            type: routine;
+
+    entry:
+        mainCRTStartup;
+
+    proc:
+        mainCRTStartup:
+        print_text:
+        read_input:
+        parse_int64:
+        parse_operator:
+        format_int64:
+
+    instr:
+        sub rsp, 40;
+
+        mov rcx, -11;
+        call GetStdHandle;
+        mov [rel stdout_handle], rax;
+        mov rcx, -10;
+        call GetStdHandle;
+        mov [rel stdin_handle], rax;
+
+        lea rcx, [rel banner];
+        mov rdx, 36;
+        call print_text;
+
+        lea rcx, [rel prompt_a];
+        mov rdx, 15;
+        call print_text;
+        lea rcx, [rel input_buffer];
+        call read_input;
+        lea rcx, [rel input_buffer];
+        call parse_int64;
+        cmp rdx, 1;
+        jne invalid_number;
+        mov [rel operand_a], rax;
+
+        lea rcx, [rel prompt_operator];
+        mov rdx, 24;
+        call print_text;
+        lea rcx, [rel input_buffer];
+        call read_input;
+        lea rcx, [rel input_buffer];
+        call parse_operator;
+        cmp rdx, 1;
+        jne invalid_operator;
+        mov [rel operator_value], rax;
+
+        lea rcx, [rel prompt_b];
+        mov rdx, 16;
+        call print_text;
+        lea rcx, [rel input_buffer];
+        call read_input;
+        lea rcx, [rel input_buffer];
+        call parse_int64;
+        cmp rdx, 1;
+        jne invalid_number;
+        mov [rel operand_b], rax;
+
+        mov rax, [rel operand_a];
+        mov rbx, [rel operand_b];
+        mov rcx, [rel operator_value];
+        cmp rcx, 43;
+        je calculate_add;
+        cmp rcx, 45;
+        je calculate_subtract;
+        cmp rcx, 42;
+        je calculate_multiply;
+        cmp rcx, 47;
+        je calculate_divide;
+        jmp invalid_operator;
+
+        label calculate_add;
+        add rax, rbx;
+        jo arithmetic_overflow;
+        jmp show_result;
+
+        label calculate_subtract;
+        sub rax, rbx;
+        jo arithmetic_overflow;
+        jmp show_result;
+
+        label calculate_multiply;
+        imul rax, rbx;
+        jo arithmetic_overflow;
+        jmp show_result;
+
+        label calculate_divide;
+        test rbx, rbx;
+        jz division_by_zero;
+        mov r8, 1;
+        shl r8, 63;
+        cmp rax, r8;
+        jne calculate_divide_execute;
+        cmp rbx, -1;
+        je arithmetic_overflow;
+        label calculate_divide_execute;
+        mov rdx, rax;
+        sar rdx, 63;
+        idiv rbx;
+
+        label show_result;
+        mov [rel result_value], rax;
+        lea rcx, [rel result_prefix];
+        mov rdx, 11;
+        call print_text;
+        mov rax, [rel result_value];
+        call format_int64;
+        call print_text;
+        xor rcx, rcx;
+        jmp exit_with_code;
+
+        label invalid_number;
+        lea rcx, [rel invalid_number_message];
+        mov rdx, 41;
+        call print_text;
+        mov rcx, 2;
+        jmp exit_with_code;
+
+        label invalid_operator;
+        lea rcx, [rel invalid_operator_message];
+        mov rdx, 28;
+        call print_text;
+        mov rcx, 3;
+        jmp exit_with_code;
+
+        label division_by_zero;
+        lea rcx, [rel division_by_zero_message];
+        mov rdx, 28;
+        call print_text;
+        mov rcx, 4;
+        jmp exit_with_code;
+
+        label arithmetic_overflow;
+        lea rcx, [rel overflow_message];
+        mov rdx, 40;
+        call print_text;
+        mov rcx, 5;
+
+        label exit_with_code;
+        mov [rel exit_code], rcx;
+        lea rcx, [rel exit_prompt];
+        mov rdx, 24;
+        call print_text;
+        lea rcx, [rel input_buffer];
+        call read_input;
+        mov rcx, [rel exit_code];
+        call ExitProcess;
+        add rsp, 40;
+        ret;
+
+        label print_text;
+        sub rsp, 40;
+        mov r8, rdx;
+        mov rdx, rcx;
+        mov rcx, [rel stdout_handle];
+        lea r9, [rel io_count];
+        mov qword ptr [rsp + 32], 0;
+        call WriteFile;
+        add rsp, 40;
+        ret;
+
+        label read_input;
+        push rbx;
+        push rsi;
+        sub rsp, 40;
+        mov rbx, rcx;
+        xor rsi, rsi;
+        label read_input_loop;
+        mov rcx, [rel stdin_handle];
+        mov rdx, rbx;
+        add rdx, rsi;
+        mov r8, 1;
+        lea r9, [rel io_count];
+        mov qword ptr [rsp + 32], 0;
+        call ReadFile;
+        test rax, rax;
+        jz read_input_done;
+        mov rax, [rel io_count];
+        cmp rax, 1;
+        jne read_input_done;
+        movzx rax, byte ptr [rbx + rsi];
+        inc rsi;
+        cmp rax, 10;
+        je read_input_done;
+        cmp rsi, 127;
+        jb read_input_loop;
+        label read_input_done;
+        mov byte ptr [rbx + rsi], 0;
+        mov rax, rsi;
+        add rsp, 40;
+        pop rsi;
+        pop rbx;
+        ret;
+
+        label parse_int64;
+        mov r10, rcx;
+        xor rax, rax;
+        xor r8, r8;
+        xor r9, r9;
+        label parse_int64_skip_leading;
+        movzx rcx, byte ptr [r10];
+        cmp rcx, 32;
+        je parse_int64_skip_one;
+        cmp rcx, 9;
+        je parse_int64_skip_one;
+        jmp parse_int64_sign;
+        label parse_int64_skip_one;
+        inc r10;
+        jmp parse_int64_skip_leading;
+        label parse_int64_sign;
+        cmp rcx, 45;
+        jne parse_int64_plus;
+        mov r8, 1;
+        inc r10;
+        jmp parse_int64_digits;
+        label parse_int64_plus;
+        cmp rcx, 43;
+        jne parse_int64_digits;
+        inc r10;
+        label parse_int64_digits;
+        movzx rcx, byte ptr [r10];
+        cmp rcx, 48;
+        jb parse_int64_digits_done;
+        cmp rcx, 57;
+        ja parse_int64_digits_done;
+        sub rcx, 48;
+        imul rax, rax, 10;
+        jo parse_int64_error;
+        sub rax, rcx;
+        jo parse_int64_error;
+        inc r9;
+        inc r10;
+        jmp parse_int64_digits;
+        label parse_int64_digits_done;
+        test r9, r9;
+        jz parse_int64_error;
+        label parse_int64_skip_trailing;
+        movzx rcx, byte ptr [r10];
+        cmp rcx, 32;
+        je parse_int64_skip_trailing_one;
+        cmp rcx, 9;
+        je parse_int64_skip_trailing_one;
+        cmp rcx, 13;
+        je parse_int64_skip_trailing_one;
+        cmp rcx, 10;
+        je parse_int64_skip_trailing_one;
+        test rcx, rcx;
+        jne parse_int64_error;
+        test r8, r8;
+        jnz parse_int64_success;
+        neg rax;
+        jo parse_int64_error;
+        label parse_int64_success;
+        mov rdx, 1;
+        ret;
+        label parse_int64_skip_trailing_one;
+        inc r10;
+        jmp parse_int64_skip_trailing;
+        label parse_int64_error;
+        xor rax, rax;
+        xor rdx, rdx;
+        ret;
+
+        label parse_operator;
+        mov r10, rcx;
+        label parse_operator_skip;
+        movzx rax, byte ptr [r10];
+        cmp rax, 32;
+        je parse_operator_skip_one;
+        cmp rax, 9;
+        je parse_operator_skip_one;
+        cmp rax, 43;
+        je parse_operator_success;
+        cmp rax, 45;
+        je parse_operator_success;
+        cmp rax, 42;
+        je parse_operator_success;
+        cmp rax, 47;
+        je parse_operator_success;
+        xor rax, rax;
+        xor rdx, rdx;
+        ret;
+        label parse_operator_skip_one;
+        inc r10;
+        jmp parse_operator_skip;
+        label parse_operator_success;
+        mov rdx, 1;
+        ret;
+
+        label format_int64;
+        lea r10, [rel output_buffer];
+        add r10, 63;
+        mov byte ptr [r10], 0;
+        dec r10;
+        mov byte ptr [r10], 10;
+        dec r10;
+        mov r8, rax;
+        xor r9, r9;
+        test r8, r8;
+        js format_int64_mark_negative;
+        neg r8;
+        jmp format_int64_digits;
+        label format_int64_mark_negative;
+        mov r9, 1;
+        label format_int64_digits;
+        mov rax, r8;
+        mov rdx, rax;
+        sar rdx, 63;
+        mov rcx, 10;
+        idiv rcx;
+        neg rdx;
+        add rdx, 48;
+        mov byte ptr [r10], dl;
+        dec r10;
+        mov r8, rax;
+        test r8, r8;
+        jne format_int64_digits;
+        test r9, r9;
+        jz format_int64_ready;
+        mov byte ptr [r10], 45;
+        dec r10;
+        label format_int64_ready;
+        inc r10;
+        mov rcx, r10;
+        lea rdx, [rel output_buffer];
+        add rdx, 63;
+        sub rdx, rcx;
+        ret;
+
+    data:
+        banner:
+            ascii "=== Mini calculadora nC Machine ===\n";
+        prompt_a:
+            ascii "Primer entero: ";
+        prompt_operator:
+            ascii "Operacion (+, -, *, /): ";
+        prompt_b:
+            ascii "Segundo entero: ";
+        result_prefix:
+            ascii "Resultado: ";
+        invalid_number_message:
+            ascii "Error: entero invalido o fuera de int64.\n";
+        invalid_operator_message:
+            ascii "Error: operacion no valida.\n";
+        division_by_zero_message:
+            ascii "Error: division entre cero.\n";
+        overflow_message:
+            ascii "Error: desbordamiento aritmetico int64.\n";
+        exit_prompt:
+            ascii "Pulsa Enter para salir.\n";
+
+    bss:
+        input_buffer:
+            resb 128;
+        output_buffer:
+            resb 64;
+        operand_a:
+            resq 1;
+        operand_b:
+            resq 1;
+        operator_value:
+            resq 1;
+        result_value:
+            resq 1;
+        stdin_handle:
+            resq 1;
+        stdout_handle:
+            resq 1;
+        io_count:
+            resq 1;
+        exit_code:
+            resq 1;
+
+    verify:
+        sections;
+        symbols;
+        encoding;
+
+    seal:
+        artifact: executable;
+        require: verified;
+}

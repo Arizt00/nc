@@ -1,0 +1,223 @@
+/*
+ * Ejercicio: NumeroComplejo.
+ *
+ * Objetivo:
+ * - Representar un numero complejo z <- a + bi.
+ * - Operar dos complejos: suma, resta, multiplicacion y division.
+ * - Comparar igualdad.
+ * - Calcular modulo.
+ * - Renderizar texto en formato "a + bi".
+ *
+ * Nota de diseno:
+ * En Java/C++ esto se escribiria como una clase con atributos real/imag y metodos.
+ * En nC, para no inventar sintaxis no cerrada, modelamos NumeroComplejo como un
+ * registro tipado y colocamos las operaciones en un contenedor runtime.
+ */
+use <io:output, render>;
+
+NumeroComplejo {
+    stc:
+        /*
+         * Parte real e imaginaria en ft64.
+         *
+         * Usar ft64 permite division real. Con int, (1 / 2) perderia precision,
+         * igual que en C/C++ si se usan enteros. Para complejos matematicos,
+         * el tipo natural aqui es punto flotante.
+         */
+        real >> ft64;
+        imaginario >> ft64;
+}
+
+numeroComplejoSistema :: runtime {
+    stc:
+        a >> NumeroComplejo;
+        b >> NumeroComplejo;
+        resultado >> NumeroComplejo;
+
+    fn:
+        construir(real >> ft64, imaginario >> ft64) -> NumeroComplejo {
+            /*
+             * Constructor funcional.
+             *
+             * En C++ seria NumeroComplejo(real, imaginario).
+             * En C se podria devolver un struct inicializado.
+             * En nC usamos un registro local y lo devolvemos ya tipado.
+             */
+            z >> NumeroComplejo <- z;
+            z.real <- real;
+            z.imaginario <- imaginario;
+            return z;
+        }
+
+        sumar(x >> NumeroComplejo, y >> NumeroComplejo) -> NumeroComplejo {
+            /*
+             * (a + bi) + (c + di) <- (a + c) + (b + d)i.
+             * Cada componente se opera por separado; no hay efecto lateral.
+             */
+            r >> NumeroComplejo <- r;
+            r.real <- x.real + y.real;
+            r.imaginario <- x.imaginario + y.imaginario;
+            return r;
+        }
+
+        restar(x >> NumeroComplejo, y >> NumeroComplejo) -> NumeroComplejo {
+            /*
+             * (a + bi) - (c + di) <- (a - c) + (b - d)i.
+             * La resta mantiene la misma estructura que la suma.
+             */
+            r >> NumeroComplejo <- r;
+            r.real <- x.real - y.real;
+            r.imaginario <- x.imaginario - y.imaginario;
+            return r;
+        }
+
+        multiplicar(x >> NumeroComplejo, y >> NumeroComplejo) -> NumeroComplejo {
+            /*
+             * (a + bi)(c + di) <- (ac - bd) + (ad + bc)i.
+             *
+             * La resta aparece porque i*i <- -1.
+             * Este es el punto donde conviene no tratar el complejo como dos
+             * numeros sueltos sin contrato: la formula pertenece al tipo.
+             */
+            r >> NumeroComplejo <- r;
+            r.real <- (x.real * y.real) - (x.imaginario * y.imaginario);
+            r.imaginario <- (x.real * y.imaginario) + (x.imaginario * y.real);
+            return r;
+        }
+
+        dividir(x >> NumeroComplejo, y >> NumeroComplejo) -> NumeroComplejo {
+            /*
+             * (a + bi) / (c + di)
+             * <- ((ac + bd) / (c*c + d*d)) + ((bc - ad) / (c*c + d*d))i.
+             *
+             * En C/C++ tambien hay que proteger division entre cero.
+             * Aqui devolvemos 0 + 0i si el divisor es 0 + 0i para mantener
+             * el ejemplo ejecutable; en una libreria real se devolveria Result.
+             */
+            r >> NumeroComplejo <- r;
+            den >> ft64 <- (y.real * y.real) + (y.imaginario * y.imaginario);
+
+            if (den == 0.0) {
+                r.real <- 0.0;
+                r.imaginario <- 0.0;
+                return r;
+            }
+
+            r.real <- ((x.real * y.real) + (x.imaginario * y.imaginario)) / den;
+            r.imaginario <- ((x.imaginario * y.real) - (x.real * y.imaginario)) / den;
+            return r;
+        }
+
+        iguales(x >> NumeroComplejo, y >> NumeroComplejo) -> bool {
+            /*
+             * Igualdad exacta: real igual e imaginario igual.
+             *
+             * Para ejercicios esta definicion es clara. En software numerico
+             * con ft64, C/C++ suelen usar una tolerancia epsilon para evitar
+             * errores de redondeo. Aqui mostramos la comparacion pedida.
+             */
+            return x.real == y.real && x.imaginario == y.imaginario;
+        }
+
+        raizAprox(valor >> ft64) -> ft64 {
+            /*
+             * Aproximacion de sqrt(valor) con Newton-Raphson.
+             *
+             * Idealmente usariamos sqrt de la libreria matematica, como en C
+             * con sqrt() de math.h o en C++ con std::sqrt(). En esta build, la
+             * firma runtime de sqrt aun no acepta bien la expresion ft generada,
+             * asi que usamos una aproximacion local y totalmente tipada.
+             *
+             * 8 iteraciones son suficientes para el objetivo didactico.
+             */
+            if (valor <= 0.0) {
+                return 0.0;
+            }
+
+            g >> ft64 <- valor + 0.5;
+
+            if (g < 1.0) {
+                g >> ft64 <- 1.0;
+            }
+
+            i >> int <- 0;
+
+            while (i < 8) {
+                g >> ft64 <- (g + (valor / g)) / 2.0;
+                i >> int <- i + 1;
+            }
+
+            return g;
+        }
+
+        modulo(x >> NumeroComplejo) -> ft64 {
+            /*
+             * |a + bi| <- sqrt(a*a + b*b).
+             * Usamos raizAprox para mantener el ejemplo autosuficiente y
+             * validable en esta version del compilador.
+             */
+            return raizAprox((x.real * x.real) + (x.imaginario * x.imaginario));
+        }
+
+        texto(x >> NumeroComplejo) -> str {
+            /*
+             * Render textual baseico: "a + bi" o "a - bi".
+             *
+             * renderFloat es explicito: nC no convierte ft64 a str de forma
+             * silenciosa. En C seria printf("%f"), en C++ seria operator<<.
+             */
+            if (x.imaginario < 0.0) {
+                return renderFloat(x.real, 3) + " - " + renderFloat(0.0 - x.imaginario, 3) + "i";
+            }
+
+            return renderFloat(x.real, 3) + " + " + renderFloat(x.imaginario, 3) + "i";
+        }
+
+        imprimirOperacion(nombre >> str, valor >> NumeroComplejo) -> bool {
+            /*
+             * Funcion pequena para no duplicar formato de salida.
+             * No calcula nada: solo presenta un resultado ya obtenido.
+             */
+            println(nombre + ": " + texto(valor));
+            return true;
+        }
+
+        run() -> bool {
+            /*
+             * Demo reproducible.
+             * a <- 3 + 4i tiene modulo 5, util para comprobar la formula.
+             * b <- 1 - 2i fuerza signos negativos y division no trivial.
+             */
+            a >> NumeroComplejo <- construir(3.0, 4.0);
+            b >> NumeroComplejo <- construir(1.0, -2.0);
+
+            println("===== NumeroComplejo =====");
+            println("a = " + texto(a));
+            println("b = " + texto(b));
+
+            resultado >> NumeroComplejo <- sumar(a, b);
+            imprimirOperacion("a + b", resultado);
+
+            resultado >> NumeroComplejo <- restar(a, b);
+            imprimirOperacion("a - b", resultado);
+
+            resultado >> NumeroComplejo <- multiplicar(a, b);
+            imprimirOperacion("a * b", resultado);
+
+            resultado >> NumeroComplejo <- dividir(a, b);
+            imprimirOperacion("a / b", resultado);
+
+            println("a == b: " + renderBool(iguales(a, b)));
+            println("a == a: " + renderBool(iguales(a, a)));
+            println("|a| = " + renderFloat(modulo(a), 3));
+            println("|b| = " + renderFloat(modulo(b), 3));
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

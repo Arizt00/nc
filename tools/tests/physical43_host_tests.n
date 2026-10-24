@@ -1,0 +1,54 @@
+use <data:json>;
+use <process:args>;
+use <io:output>;
+use <io:render>;
+use <project:physical43_common, physical43_json, release43_host, tool_cli>;
+
+physical43HostTests {
+    stc:
+        checks >> int <- 0;
+        passed >> bool <- true;
+    fn:
+        private:
+            check(name >> str, valid >> bool) -> void { physical43_common.physical43Common.put(checks,name,jsonNewBool(valid)); passed <- passed && valid; if (!valid) println("FAIL "+name+": "+physical43_common.physical43Common.diagnostic()); physical43_common.physical43Common.reset(); }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); options >> int <- tool_cli.toolCli.parse(arguments,"|--work|--large|","");
+                root >> str <- physical43_common.physical43Common.absolutePath(tool_cli.toolCli.value(options,"--work",""));
+                if (root == "") return 2; checks <- jsonNewObject();
+                unicode >> str <- "caf"+physical43_json.physical43Json.scalarText(233)+"-"+physical43_json.physical43Json.scalarText(25991)+physical43_json.physical43Json.scalarText(23383)+"-"+physical43_json.physical43Json.scalarText(128578);
+                lab >> str <- root+"/"+unicode; check("unicode-directory",physical43_common.physical43Common.directories(lab));
+                source >> str <- lab+"/"+unicode+".json"; target >> str <- lab+"/copy-"+unicode+".json";
+                check("unicode-text-write",physical43_common.physical43Common.write(source,"{\"schema\":\"fixture-only\",\"number\":-0.0}\n"));
+                check("unicode-text-read",physical43_common.physical43Common.readText(source,false) == "{\"schema\":\"fixture-only\",\"number\":-0.0}\n");
+                check("unicode-file-size",physical43_common.physical43Common.fileSize(source) == 40);
+                check("unicode-copy2",physical43_common.physical43Common.copy(source,target));
+                check("unicode-copy-content-hash",physical43_common.physical43Common.fileHash(source) == physical43_common.physical43Common.fileHash(target));
+                check("unicode-absolute",physical43_common.physical43Common.absolutePath(source) == physical43_common.physical43Common.nativePath(release43_host.release43Host.absolute(source)));
+                check("unicode-no-links",physical43_common.physical43Common.noLinks(lab));
+                names >> int <- physical43_common.physical43Common.names(lab); check("unicode-list",jsonArrayLen(names) == 2); jsonRelease(names);
+                model >> int <- physical43_common.physical43Common.read(source,false); check("unicode-json-read",jsonKind(model) == 6 && physical43_common.physical43Common.field(model,"schema") == "fixture-only"); jsonRelease(model);
+                check("unicode-atomic-replace",physical43_common.physical43Common.save(target,jsonParse("{\"valid\":true}")));
+                bytes >> p<byte> <- cast(alloc(1048577)); if (bytes == null) return 1; at >> int <- 0;
+                while (at < 1048577) { value >> int <- (at*37+11)%256; wr(off(bytes,at),value); at += 1; }
+                binary >> str <- lab+"/binary-"+unicode+".bin"; check("unicode-binary-chunk-boundary-write",release43_host.release43Host.writeRaw(binary,bytes,1048577,false) == 1048577); free(bytes);
+                check("unicode-binary-streaming-hash",physical43_common.physical43Common.fileHash(binary) == "dceb11fea27458999b9aa5d4fbea9519d01712ec5b930b228df516f0632b0fba");
+                check("missing-hash-rejected",physical43_common.physical43Common.fileHash(lab+"/missing.bin") == ""); check("directory-hash-rejected",physical43_common.physical43Common.fileHash(lab) == "");
+                excluded >> int <- jsonNewArray(); inventory >> int <- physical43_common.physical43Common.inventory(lab,excluded,true,true); check("unicode-inventory",jsonArrayLen(inventory) == 3); jsonRelease(inventory);
+                linkPath >> str <- lab+"/symlink"; available >> bool <- release43_host.release43Host.createSymlink(source,linkPath,false);
+                if (available) { check("symlink-evidence-rejected",!physical43_common.physical43Common.noLinks(lab)); check("symlink-cleanup",physical43_common.physical43Common.deleteFile(linkPath)); }
+                large >> str <- tool_cli.toolCli.value(options,"--large",""); largeRow >> int <- jsonNewNull();
+                if (large != "") {
+                    largeRoot >> str <- root+"/large-inventory"; check("large-directory",physical43_common.physical43Common.directories(largeRoot));
+                    linked >> str <- largeRoot+"/disk.img"; check("large-hardlink",release43_host.release43Host.createHardLink(large,linked));
+                    inventory <- physical43_common.physical43Common.orderedInventory(largeRoot,excluded,true,true,true); check("large-inventory-count",jsonArrayLen(inventory) == 1);
+                    largeRow <- jsonArrayGet(inventory,0); sizeNode >> int <- jsonObjectBorrow(largeRow,"bytes");
+                    check("large-inventory-64-bit-size",jsonGetNumberText(sizeNode) == "2147483713"); jsonRelease(sizeNode);
+                    check("large-inventory-streaming-hash",physical43_common.physical43Common.field(largeRow,"sha256") == "2cdbe453a30dbfa168aec891f08b1b2775407861e1d46152791e13b65d4ef8a3"); jsonRelease(inventory);
+                }
+                report >> int <- jsonNewObject(); physical43_common.physical43Common.put(report,"schema",jsonNewString("nc.physical43.host-tests.v1")); physical43_common.physical43Common.put(report,"scope",jsonNewString("Native Unicode filesystem and bounded binary inventory; labeled fixtures, no physical or CI evidence")); physical43_common.physical43Common.put(report,"checks",checks); physical43_common.physical43Common.put(report,"large_inventory",largeRow); physical43_common.physical43Common.put(report,"symlink_fixture_available",jsonNewBool(available)); physical43_common.physical43Common.put(report,"passed",jsonNewBool(passed));
+                saved >> bool <- physical43_common.physical43Common.save(root+"/tests.json",report); println("host tests passed="+renderBool(passed)); return passed && saved ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

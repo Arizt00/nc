@@ -1,0 +1,353 @@
+use <project:parser_ast>;
+
+nccBinaryLayout {
+    const:
+        CONTEXT_BYTES >> int <- 32;
+        RECORD_BYTES >> int <- 32;
+        LIMIT >> u64 <- 0x7FFFFFFFFFFFFFFF;
+
+    fn:
+        private:
+            material(c >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(c)); }
+            kind(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeKind(m,n); }
+            child(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeFirstChild(m,n); }
+            next(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeNextSibling(m,n); }
+            first(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeFirstToken(m,n); }
+            parent(m >> p<byte>, n >> int) -> int { return parser_ast.nccParserAst.materialNodeParent(m,n); }
+            flags(m >> p<byte>, n >> int) -> int {
+                kind >> int <- parser_ast.nccParserAst.materialNodeKind(m,n);
+                value >> int <- parser_ast.nccParserAst.materialNodeFlags(m,n);
+                return kind == 11 || kind == 13 ? value & 255 : value;
+            }
+            row(c >> p<byte>, n >> int) -> p<byte> {
+                return off(from<byte>(rd<addr>(off(c,8))),n*RECORD_BYTES);
+            }
+            word(m >> p<byte>, t >> int, value >> str) -> bool {
+                return t >= 0 && parser_ast.nccParserAst.materialTokenSame(m,t,value);
+            }
+            same(m >> p<byte>, a >> int, b >> int) -> bool {
+                guard a >= 0 && b >= 0 else return false;
+                bytes >> int <- parser_ast.nccParserAst.materialTokenBytes(m,a);
+                guard bytes == parser_ast.nccParserAst.materialTokenBytes(m,b) else return false;
+                left >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,a);
+                right >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,b);
+                at >> int <- 0;
+                while (at < bytes) { if (rd<byte>(off(left,at)) != rd<byte>(off(right,at))) return false; at += 1; }
+                return true;
+            }
+            fail(c >> p<byte>, n >> int) -> bool {
+                if (rd<int>(off(c,20)) < 0) wr<int>(off(c,20),n);
+                return false;
+            }
+            pointerBytes(c >> p<byte>) -> u64 {
+                target >> int <- rd<int>(off(c,16));
+                return target == 4 || target == 7 || target == 8 || target == 10 ? 4 : 8;
+            }
+            scalarAlign(c >> p<byte>, bytes >> int) -> int {
+                if (bytes == 0) return 1;
+                return rd<int>(off(c,16)) == 4 && bytes == 8 ? 4 : bytes;
+            }
+            scalar(c >> p<byte>, token >> int) -> int {
+                m >> p<byte> <- material(c);
+                if (word(m,token,"void") || word(m,token,"unit")) return 0;
+                if (word(m,token,"bool") || word(m,token,"char") || word(m,token,"byte") ||
+                    word(m,token,"u8") || word(m,token,"i8") || word(m,token,"sbyte") ||
+                    word(m,token,"uint8") || word(m,token,"int8")) return 1;
+                if (word(m,token,"word") || word(m,token,"u16") || word(m,token,"i16") ||
+                    word(m,token,"short") || word(m,token,"ushort") || word(m,token,"sword") ||
+                    word(m,token,"uint16") || word(m,token,"int16")) return 2;
+                if (word(m,token,"int") || word(m,token,"i32") || word(m,token,"u32") ||
+                    word(m,token,"uint") || word(m,token,"dword") || word(m,token,"sdword") ||
+                    word(m,token,"ft32") || word(m,token,"f32") || word(m,token,"float") ||
+                    word(m,token,"int32") || word(m,token,"uint32")) return 4;
+                if (word(m,token,"u64") || word(m,token,"i64") || word(m,token,"long") ||
+                    word(m,token,"ulong") || word(m,token,"qword") || word(m,token,"sqword") ||
+                    word(m,token,"ft64") || word(m,token,"f64") || word(m,token,"double") ||
+                    word(m,token,"ft") || word(m,token,"int64") || word(m,token,"uint64")) return 8;
+                if (word(m,token,"addr") || word(m,token,"str") || word(m,token,"text") ||
+                    word(m,token,"string") || word(m,token,"bytes") || word(m,token,"usize") ||
+                    word(m,token,"isize") || word(m,token,"uptr") || word(m,token,"iptr")) return pointerBytes(c);
+                return -1;
+            }
+            scope(m >> p<byte>, n >> int) -> int {
+                while (n >= 0) {
+                    k >> int <- kind(m,n);
+                    if (k == 1 || k == 3 || k == 15 || k == 34 || k == 13 || k == 11) return n;
+                    n <- parent(m,n);
+                }
+                return -1;
+            }
+            named(c >> p<byte>, useNode >> int, token >> int, constant >> bool) -> int {
+                m >> p<byte> <- material(c); owner >> int <- scope(m,useNode);
+                while (owner >= 0) {
+                    at >> int <- 0;
+                    while (at < parser_ast.nccParserAst.materialNodeCount(m)) {
+                        k >> int <- kind(m,at);
+                        if ((constant ? k == 10 || k == 12 : k == 11 || k == 13) &&
+                            scope(m,parent(m,at)) == owner && same(m,first(m,at),token)) return at;
+                        at += 1;
+                    }
+                    owner <- scope(m,parent(m,owner));
+                }
+                return -1;
+            }
+            number(c >> p<byte>, n >> int, token >> int, out >> p<u64>, depth >> int) -> bool {
+                guard token >= 0 && depth < 64 else return fail(c,n);
+                m >> p<byte> <- material(c);
+                data >> p<byte> <- parser_ast.nccParserAst.materialTokenData(m,token);
+                bytes >> int <- parser_ast.nccParserAst.materialTokenBytes(m,token);
+                guard bytes > 0 else return fail(c,n);
+                if (rd<byte>(data) < 48 || rd<byte>(data) > 57) {
+                    declaration >> int <- named(c,n,token,true);
+                    guard declaration >= 0 else return fail(c,n);
+                    value >> int <- child(m,declaration);
+                    while (value >= 0 && kind(m,value) != 25) { value <- next(m,value); }
+                    guard value >= 0 else return fail(c,n);
+                    return number(c,value,first(m,value),out,depth+1);
+                }
+                base >> u64 <- 10; at >> int <- 0;
+                if (bytes > 2 && rd<byte>(data) == 48) {
+                    marker >> int <- rd<byte>(off(data,1));
+                    if (marker == 120 || marker == 88) { base <- 16; at <- 2; }
+                    if (marker == 98 || marker == 66) { base <- 2; at <- 2; }
+                    if (marker == 111 || marker == 79) { base <- 8; at <- 2; }
+                }
+                value >> u64 <- 0; digits >> int <- 0;
+                while (at < bytes) {
+                    code >> int <- rd<byte>(off(data,at));
+                    if (code != 95) {
+                        digit >> int <- code >= 48 && code <= 57 ? code-48 :
+                            (code >= 65 && code <= 70 ? code-55 : (code >= 97 && code <= 102 ? code-87 : -1));
+                        if (digit < 0 || digit >= base || value > (LIMIT-digit)/base) return fail(c,n);
+                        value <- value*base+digit; digits += 1;
+                    }
+                    at += 1;
+                }
+                guard digits > 0 else return fail(c,n);
+                wr(out,value); return true;
+            }
+            rounded(c >> p<byte>, n >> int, value >> u64, alignment >> u64, out >> p<u64>) -> bool {
+                guard alignment > 0 && (alignment & (alignment-1)) == 0 &&
+                    value <= LIMIT-(alignment-1) else return fail(c,n);
+                wr(out,(value+alignment-1) & (0-alignment)); return true;
+            }
+            finish(c >> p<byte>, n >> int, bytes >> u64, alignment >> u64) -> bool {
+                r >> p<byte> <- row(c,n); wr<u64>(off(r,8),bytes); wr<u64>(off(r,16),alignment);
+                wr<int>(r,2); return true;
+            }
+            field(m >> p<byte>, declaration >> int, token >> int) -> int {
+                at >> int <- child(m,declaration);
+                while (at >= 0) { if (kind(m,at) == 14 && same(m,first(m,at),token)) return at; at <- next(m,at); }
+                return -1;
+            }
+            attribute(m >> p<byte>, declaration >> int, name >> str) -> int {
+                clause >> int <- child(m,declaration);
+                while (clause >= 0) {
+                    if (kind(m,clause) == 86 && flags(m,clause) == 1) {
+                        item >> int <- child(m,clause);
+                        while (item >= 0) { if (word(m,first(m,item),name)) return item; item <- next(m,item); }
+                    }
+                    clause <- next(m,clause);
+                }
+                return -1;
+            }
+            attributeValue(m >> p<byte>, item >> int) -> int {
+                style >> int <- flags(m,item);
+                return first(m,item)+(style >= 2 && style <= 4 ? 1 : 2);
+            }
+            aggregate(c >> p<byte>, n >> int, depth >> int) -> bool {
+                m >> p<byte> <- material(c);
+                guard flags(m,n) == 1 || flags(m,n) == 2 else return fail(c,n);
+                packed >> bool <- attribute(m,n,"packed") >= 0;
+                unionType >> bool <- flags(m,n) == 2;
+                bytes >> u64 <- 0; alignment >> u64 <- 1;
+                temp >> u64 <- 0;
+                explicitAlign >> int <- attribute(m,n,"align");
+                if (explicitAlign >= 0) {
+                    if (!number(c,explicitAlign,attributeValue(m,explicitAlign),&temp,0)) return false;
+                    guard temp > 0 && (temp & (temp-1)) == 0 else return fail(c,explicitAlign);
+                    alignment <- temp;
+                }
+                flexible >> int <- attribute(m,n,"flexible");
+                flexibleField >> int <- flexible >= 0 ? field(m,n,attributeValue(m,flexible)) : -1;
+                guard flexible < 0 || (!unionType && flexibleField >= 0) else return fail(c,n);
+                // Bitfield storage must be materialized once; unsupported contracts are never guessed.
+                if (attribute(m,n,"bitfield") >= 0) return fail(c,n);
+                at >> int <- child(m,n);
+                while (at >= 0) {
+                    if (kind(m,at) == 89) return fail(c,at);
+                    if (kind(m,at) == 14) {
+                        t >> int <- child(m,at);
+                        if (!layout(c,t,depth+1)) return false;
+                        fieldBytes >> u64 <- rd<u64>(off(row(c,t),8));
+                        natural >> u64 <- rd<u64>(off(row(c,t),16));
+                        if (at == flexibleField) {
+                            guard kind(m,t) == 21 && fieldBytes == 0 else return fail(c,at);
+                            scan >> int <- next(m,at);
+                            while (scan >= 0) { if (kind(m,scan) == 14) return fail(c,at); scan <- next(m,scan); }
+                        }
+                        effective >> u64 <- packed ? 1 : natural;
+                        if (effective > alignment) alignment <- effective;
+                        fieldOffset >> u64 <- 0;
+                        if (!unionType && !rounded(c,at,bytes,effective,&fieldOffset)) return false;
+                        wr<u64>(off(row(c,at),24),fieldOffset);
+                        finish(c,at,fieldBytes,effective);
+                        if (unionType) { if (fieldBytes > bytes) bytes <- fieldBytes; }
+                        else {
+                            guard fieldBytes <= LIMIT-fieldOffset else return fail(c,at);
+                            bytes <- fieldOffset+fieldBytes;
+                        }
+                    }
+                    at <- next(m,at);
+                }
+                if (!rounded(c,n,bytes,alignment,&temp)) return false;
+                bytes <- temp;
+                explicitSize >> int <- attribute(m,n,"size");
+                if (explicitSize >= 0) {
+                    if (!number(c,explicitSize,attributeValue(m,explicitSize),&temp,0)) return false;
+                    guard temp >= bytes && temp % alignment == 0 else return fail(c,explicitSize);
+                    bytes <- temp;
+                }
+                return finish(c,n,bytes,alignment);
+            }
+            layout(c >> p<byte>, n >> int, depth >> int) -> bool {
+                guard n >= 0 && depth < 128 else return fail(c,n);
+                r >> p<byte> <- row(c,n); state >> int <- rd<int>(r);
+                if (state == 2) return true;
+                if (state == 1 || state == -1) return fail(c,n);
+                wr<int>(r,1);
+                m >> p<byte> <- material(c); k >> int <- kind(m,n); token >> int <- first(m,n);
+                if (k == 20 || k == 23) return finish(c,n,pointerBytes(c),pointerBytes(c));
+                if (k == 11 || k == 13) return aggregate(c,n,depth+1);
+                if (k == 21) {
+                    element >> int <- child(m,n); dimension >> int <- next(m,element);
+                    if (!layout(c,element,depth+1)) return false;
+                    count >> u64 <- 0;
+                    if (dimension >= 0 && !number(c,dimension,first(m,dimension),&count,0)) return false;
+                    size >> u64 <- rd<u64>(off(row(c,element),8));
+                    guard size == 0 || count <= LIMIT/size else return fail(c,n);
+                    return finish(c,n,size*count,rd<u64>(off(row(c,element),16)));
+                }
+                if (k == 18 || k == 26 || k == 73) {
+                    width >> int <- scalar(c,token);
+                    if (width >= 0) return finish(c,n,width,scalarAlign(c,width));
+                    declaration >> int <- named(c,n,token,false);
+                    guard declaration >= 0 else return fail(c,n);
+                    if (!layout(c,declaration,depth+1)) return false;
+                    return finish(c,n,rd<u64>(off(row(c,declaration),8)),rd<u64>(off(row(c,declaration),16)));
+                }
+                return fail(c,n);
+            }
+
+        public:
+            nativeClass(c >> p<byte>, type >> int, base >> u64, depth >> int) -> int {
+                guard type >= 0 && depth < 128 && layout(c,type,0) else return -1;
+                m >> p<byte> <- material(c); k >> int <- kind(m,type); token >> int <- first(m,type);
+                if (k == 20 || k == 23) return base % pointerBytes(c) == 0 ? 0 : 32;
+                if (k == 18) {
+                    natural >> int <- scalar(c,token);
+                    if (natural > 0) {
+                        return base % scalarAlign(c,natural) == 0 ? 0 : 32;
+                    }
+                    type <- named(c,type,token,false); k <- kind(m,type);
+                }
+                if (k == 21) {
+                    element >> int <- child(m,type);
+                    result >> int <- nativeClass(c,element,base,depth+1);
+                    stride >> u64 <- rd<u64>(off(row(c,element),8));
+                    bytes >> u64 <- rd<u64>(off(row(c,type),8));
+                    if (result < 0 || stride == 0) return -1;
+                    return bytes > stride ? result | nativeClass(c,element,base+stride,depth+1) : result;
+                }
+                guard ((k == 11 || k == 13) && (flags(m,type) == 1 || flags(m,type) == 2)) else return -1;
+                selected >> int <- child(m,type); result >> int <- 0; count >> int <- 0;
+                while (selected >= 0) {
+                    if (kind(m,selected) == 14) {
+                        fieldClass >> int <- nativeClass(c,child(m,selected),base+rd<u64>(off(row(c,selected),24)),depth+1);
+                        if (fieldClass < 0) return -1;
+                        result <- result | fieldClass; count += 1;
+                    }
+                    selected <- next(m,selected);
+                }
+                return count > 0 ? result : -1;
+            }
+            nativeSignature(m >> p<byte>, type >> int) -> int {
+                return nativeSignatureFor(m,type,1);
+            }
+            nativeSignatureFor(m >> p<byte>, type >> int, target >> int) -> int {
+                c >> p<byte> <- open(m,target);
+                if (c == null) return -1;
+                if (!layout(c,type,0)) { close(c); return -1; }
+                classification >> int <- nativeClass(c,type,0,0);
+                bytes >> u64 <- rd<u64>(off(row(c,type),8));
+                alignment >> u64 <- rd<u64>(off(row(c,type),16));
+                if (classification < 0 || bytes == 0 || bytes > 16777215 || alignment == 0) { close(c); return -1; }
+                power >> int <- 0;
+                while ((1 << power) < alignment && power < 30) { power += 1; }
+                result >> int <- 1000000000+bytes*64+power+classification;
+                close(c); return result;
+            }
+            describe(c >> p<byte>, node >> int, out >> p<byte>) -> bool {
+                guard c != null && node >= 0 && out != null else return false;
+                m >> p<byte> <- material(c);
+                if (kind(m,node) == 14) {
+                    if (!layout(c,parent(m,node),0)) return false;
+                } else if (!layout(c,node,0)) return false;
+                r >> p<byte> <- row(c,node);
+                wr<u64>(out,rd<u64>(off(r,8)));
+                wr<u64>(off(out,8),rd<u64>(off(r,16)));
+                wr<u64>(off(out,16),rd<u64>(off(r,24)));
+                return true;
+            }
+            open(m >> p<byte>, target >> int) -> p<byte> {
+                count >> int <- parser_ast.nccParserAst.materialNodeCount(m);
+                guard count > 0 && count <= 67108863 && target >= 1 && target <= 10 else return null;
+                c >> p<byte> <- cast<byte>(calloc(1,CONTEXT_BYTES));
+                guard c != null else return null;
+                records >> p<byte> <- cast<byte>(calloc(count,RECORD_BYTES));
+                if (records == null) { free(c); return null; }
+                wr<addr>(c,adr(m)); wr<addr>(off(c,8),adr(records)); wr<int>(off(c,16),target);
+                wr<int>(off(c,20),-1); return c;
+            }
+            close(c >> p<byte>) -> void {
+                if (c != null) { free(from<byte>(rd<addr>(off(c,8)))); free(c); }
+            }
+            bindType(c >> p<byte>, node >> int, bytes >> u64, alignment >> u64) -> bool {
+                guard c != null && node >= 0 && node < parser_ast.nccParserAst.materialNodeCount(material(c)) &&
+                    (kind(material(c),node) == 18 || kind(material(c),node) == 30) && bytes <= LIMIT && alignment > 0 &&
+                    (alignment & (alignment-1)) == 0 else return false;
+                return finish(c,node,bytes,alignment);
+            }
+            query(c >> p<byte>, call >> int, id >> int, out >> p<byte>) -> bool {
+                guard c != null && id >= 24 && id <= 26 else return false;
+                m >> p<byte> <- material(c); callee >> int <- child(m,call);
+                generic >> bool <- kind(m,callee) == 74;
+                t >> int <- generic ? next(m,child(m,callee)) : next(m,callee);
+                guard t >= 0 else return fail(c,call);
+                guard !generic || next(m,t) < 0 else return fail(c,call);
+                if (!layout(c,t,0)) return false;
+                size >> u64 <- rd<u64>(off(row(c,t),8));
+                alignment >> u64 <- rd<u64>(off(row(c,t),16));
+                value >> u64 <- id == 24 ? size : alignment;
+                if (id == 26) {
+                    declaration >> int <- named(c,t,first(m,t),false);
+                    member >> int <- generic ? next(m,callee) : next(m,t);
+                    guard declaration >= 0 && member >= 0 else return fail(c,call);
+                    selected >> int <- field(m,declaration,first(m,member));
+                    guard selected >= 0 else return fail(c,member);
+                    value <- rd<u64>(off(row(c,selected),24));
+                }
+                if (pointerBytes(c) == 4 && value > 0xFFFFFFFF) return fail(c,call);
+                wr<u64>(out,value); wr<u64>(off(out,8),size); wr<u64>(off(out,16),alignment);
+                return true;
+            }
+            validQuery(m >> p<byte>, call >> int, id >> int) -> bool {
+                c >> p<byte> <- open(m,1); out >> p<byte> <- cast<byte>(alloc(24));
+                if (c == null || out == null) { close(c); free(out); return false; }
+                ok >> bool <- query(c,call,id,out);
+                free(out); close(c); return ok;
+            }
+
+    fa:
+        return true;
+}

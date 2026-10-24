@@ -1,0 +1,32 @@
+native_pointer_abi_v47 {
+    const:
+        SEED >> u64 <- 0x123456789ABCDEF0;
+
+    storage(arena >> p<byte>) -> p<byte> {
+        return from<byte>(rd<addr>(arena));
+    }
+
+    cell(arena >> p<byte>, index >> int) -> p<u64> {
+        return cast<u64>(off(storage(arena), index * 8));
+    }
+
+    writeCell(arena >> p<byte>, index >> int, value >> u64) -> void {
+        wr(cell(arena, index), value);
+    }
+
+    run() -> int {
+        value >> u64 <- 0;
+        descriptor >> addr <- adr(&value);
+        arena >> p<byte> <- cast<byte>(&descriptor);
+
+        writeCell(arena, 0, SEED);
+        actual >> u64 <- rd(cell(arena, 0));
+        sameAddress >> bool <- storage(arena) == cast<byte>(&value);
+
+        return actual == SEED && sameAddress ? 68 : 1;
+    }
+
+    ref main ->> run;
+    fa:
+        return true;
+}

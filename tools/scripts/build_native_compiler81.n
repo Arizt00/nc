@@ -1,0 +1,144 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command, env>;
+use <project:sha256, elf_entry, coff_entry>;
+
+buildNativeCompiler81 {
+    field(model >> int, key >> str) -> str {
+        item >> int <- jsonObjectBorrow(model,key);
+        text >> str <- jsonStringView(item,""); jsonRelease(item); return text;
+    }
+    quote(text >> str) -> str { return "\""+text+"\""; }
+    normalized(text >> str) -> str {
+        count >> int <- strByteLen(text);
+        out >> p<byte> <- alloc(count+1);
+        if (out == null) return null;
+        at >> int <- 0;
+        while (at < count) {
+            value >> byte <- rd(off(cast<byte>(text),at));
+            if (value == 34 || value == 10 || value == 13) { free(out); return null; }
+            wr(off(out,at),value == 92 ? 47 : value); at += 1;
+        }
+        wr(off(out,count),0); return cast<str>(out);
+    }
+    directory(path >> str) -> str {
+        at >> int <- strByteLen(path)-1;
+        while (at > 0 && rd(off(cast<byte>(path),at)) != 47) at -= 1;
+        return at > 0 ? strSubstring(path,0,at) : "";
+    }
+    ensure(path >> str) -> bool {
+        if (exists(path)) return true;
+        parent >> str <- directory(path);
+        valid >> bool <- parent != "" && ensure(parent) && isOk(createDir(path));
+        strRelease(parent); return valid;
+    }
+    copy(source >> str, destination >> str, expected >> str) -> bool {
+        count >> int <- fsSize(source);
+        if (count <= 0 || count == 2147483647) return false;
+        before >> str <- sha256.nccSha256.file(source);
+        valid >> bool <- expected == "" || before == expected;
+        data >> p<byte> <- valid ? alloc(count) : null;
+        valid <- valid && data != null && fsReadInto(source,data,count) == count && fsWriteFrom(destination,data,count,false) == count;
+        free(data);
+        after >> str <- valid ? sha256.nccSha256.file(destination) : "";
+        valid <- valid && before == after;
+        strRelease(before); if (after != "") strRelease(after); return valid;
+    }
+    invoke(line >> str) -> bool {
+        child >> addr <- commandOpen(line,".",stdIn(),stdOut(),stdErr(),0);
+        if (child == null) return false;
+        started >> bool <- commandStarted(child);
+        // Compiler work has no arbitrary wall-clock deadline; OS exit is mandatory.
+        waited >> int <- started ? commandWait(child,-1) : -1;
+        valid >> bool <- started && waited == 0 && commandExitCode(child) == 0;
+        if (!valid) { print("compiler child start/error="); print(commandError(child)); print(" exit="); println(commandExitCode(child)); }
+        commandRelease(child); return valid;
+    }
+    append(line >> str, word >> str) -> str {
+        next >> str <- line+quote(word)+"\n";
+        strRelease(line); return next;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 5) return 64;
+        repo >> str <- normalized(argsAt(arguments,1)); seed >> str <- normalized(argsAt(arguments,2));
+        project >> str <- normalized(argsAt(arguments,3)); provider >> str <- normalized(argsAt(arguments,4));
+        if (repo == null || seed == null || project == null || provider == null) return 64;
+        if (exists(project+"/.ncc")) return 78;
+        if (!ensure(project+"/src")) return 68;
+        model >> int <- jsonParseFile(repo+"/bootstrap/frontend-v81-build.json");
+        if (model == 0) return 65;
+        families >> int <- jsonObjectBorrow(model,"families"); family >> int <- jsonArrayBorrow(families,0);
+        sources >> int <- jsonObjectBorrow(family,"sources");
+        count >> int <- jsonArrayLen(sources); at >> int <- 0;
+        if (count == 0) return 65;
+        while (at < count) {
+            row >> int <- jsonArrayBorrow(sources,at);
+            source >> str <- repo+"/"+field(row,"source"); destination >> str <- project+"/"+field(row,"destination");
+            valid >> bool <- copy(source,destination,field(row,"sha256"));
+            strRelease(source); strRelease(destination); jsonRelease(row);
+            if (!valid) return 69;
+            at += 1;
+        }
+        windows >> bool <- envHas("WINDIR");
+        triple >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+        library >> str <- windows ? "ncruntime.dll" : "libncruntime.so.2";
+        if (!copy(provider+"/"+library,project+"/"+library,"")) return 70;
+        started >> int <- monotonicMs();
+        line >> str <- quote(seed)+" project objects "+quote(project)+" --target "+triple+" --no-incremental";
+        valid >> bool <- invoke(line); strRelease(line);
+        if (!valid) return 71;
+        response >> str <- strSubstring("",0,0); objects >> int <- jsonNewArray();
+        at <- 0;
+        while (at < count) {
+            row >> int <- jsonArrayBorrow(sources,at);
+            destination >> str <- field(row,"destination");
+            slash >> int <- strByteLen(destination)-1;
+            while (slash >= 0 && rd(off(cast<byte>(destination),slash)) != 47) slash -= 1;
+            unit >> str <- strSubstring(destination,slash+1,strByteLen(destination)-slash-3);
+            object >> str <- project+"/.ncc/obj/"+(windows ? "w64/" : "l64/")+unit+(windows ? ".obj" : ".o");
+            if (fsSize(object) <= 0) return 72;
+            response <- append(response,object);
+            item >> int <- jsonNewObject(); digest >> str <- sha256.nccSha256.file(object);
+            jsonObjectSet(item,"unit",jsonNewString(unit)); jsonObjectSet(item,"sha256",jsonNewString(digest));
+            jsonArrayPush(objects,item); jsonRelease(item); strRelease(digest); strRelease(object); strRelease(unit); jsonRelease(row);
+            at += 1;
+        }
+        if (windows) {
+            entry >> str <- project+"/entry.obj";
+            if (!coff_entry.coffEntry79.write(entry)) return 73;
+            response <- append(response,entry);
+            response <- append(response,provider+"/ncruntime.lib");
+            response <- append(response,"C:/msys64/mingw64/lib/libkernel32.a"); strRelease(entry);
+        }
+        else {
+            entry >> str <- project+"/entry.o";
+            if (!elf_entry.elfEntry79.write(entry)) return 73;
+            response <- append(response,entry); response <- append(response,provider+"/libncruntime.so.2"); strRelease(entry);
+        }
+        rsp >> str <- project+"/link.rsp";
+        if (fsWriteFrom(rsp,cast<byte>(response),strByteLen(response),false) != strByteLen(response)) return 74;
+        strRelease(response);
+        image >> str <- project+(windows ? "/ncc.exe" : "/ncc");
+        linker >> str <- windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "/usr/bin/ld";
+        options >> str <- windows ? " /nodefaultlib /entry:nc_start /subsystem:console /machine:x64 /opt:ref /timestamp:0 /stack:1048576,65536 /out:" :
+            " -z defs -z noexecstack -z separate-code --build-id=none -e _start --dynamic-linker /lib64/ld-linux-x86-64.so.2 -rpath $ORIGIN -o ";
+        line <- quote(linker)+options+quote(image)+" @"+quote(rsp);
+        valid <- invoke(line); strRelease(line);
+        if (!valid || fsSize(image) <= 0) return 75;
+        report >> int <- jsonNewObject();
+        jsonObjectSet(report,"schema",jsonNewString("nc.compiler.unit-rebuild.v81"));
+        jsonObjectSet(report,"passed",jsonNewBool(true)); jsonObjectSet(report,"objects",objects);
+        jsonObjectSet(report,"source_count",jsonNewInt(count)); jsonObjectSet(report,"retained_project_objects",jsonNewInt(0));
+        jsonObjectSet(report,"incremental",jsonNewBool(false)); jsonObjectSet(report,"whole_program_lto",jsonNewBool(false));
+        jsonObjectSet(report,"linker",jsonNewString(linker)); jsonObjectSet(report,"elapsed_ms",jsonNewInt(monotonicMs()-started));
+        jsonObjectSet(report,"entry_contract",jsonNewString(windows ? "nc_start -> main -> ExitProcess; Win64 unwind" : "_start -> main -> exit_group"));
+        digest >> str <- sha256.nccSha256.file(image); jsonObjectSet(report,"image_sha256",jsonNewString(digest)); strRelease(digest);
+        valid <- jsonSaveFile(report,project+"/compiler-build.json",2);
+        jsonRelease(report); jsonRelease(objects); jsonRelease(sources); jsonRelease(family); jsonRelease(families); jsonRelease(model);
+        strRelease(repo); strRelease(seed); strRelease(project); strRelease(provider); strRelease(image); strRelease(rsp); argsRelease(arguments);
+        println(valid ? "native nC compiler unit rebuild PASS" : "native nC compiler unit rebuild FAIL"); return valid ? 0 : 76;
+    }
+    ref main ->> run;
+    fa: return true;
+}

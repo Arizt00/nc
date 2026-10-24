@@ -1,0 +1,51 @@
+use <io:output, render>;
+use <process:args>;
+
+nativeFsStress69 {
+    verify(root >> str) -> int {
+        buffer >> array<byte,8192>;
+        data >> p<byte> <- cast<byte>(&buffer);
+        expected >> int <- 0;
+        index >> int <- 0;
+        while (index < 48) {
+            number >> str <- renderInt(index);
+            name >> str <- number+".dat";
+            path >> str <- root+"/"+name;
+            expected += strByteLen(name)+1;
+            if (fsWriteFrom(path,cast<byte>("bytes"),5,false) != 5) return 1;
+            if (fsMetadataInto(path,data,8192) <= 0) return 2;
+            if (!strStartsWith(cast<str>(data),"type=file;length=5;")) return 3;
+            if (fsPermissionsInto(path,data,8192) <= 0) return 4;
+            strRelease(number); strRelease(name); strRelease(path);
+            index += 1;
+        }
+        index = 0;
+        while (index < 64) {
+            if (listDirInto(root,null,0) != expected || listDirInto(root,data,8192) != expected) return 5;
+            if (rd(off(data,expected)) != 0) return 6;
+            if (officialPathInto(root,data,8192) <= 0) return 7;
+            index += 1;
+        }
+        index = 0;
+        while (index < 48) {
+            number >> str <- renderInt(index);
+            name >> str <- number+".dat";
+            path >> str <- root+"/"+name;
+            if (!delete_file(path)) return 8;
+            strRelease(number); strRelease(name); strRelease(path);
+            index += 1;
+        }
+        if (listDirInto(root,data,8192) != 0 || rd(data) != 0) return 9;
+        println("filesystem-stress-ok");
+        return 224;
+    }
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (argsCount(arguments) != 2) { argsRelease(arguments); return 64; }
+        code >> int <- verify(argsAt(arguments,1));
+        argsRelease(arguments);
+        return code;
+    }
+    ref main ->> run;
+    fa: return true;
+}

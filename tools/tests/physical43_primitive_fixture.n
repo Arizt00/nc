@@ -1,0 +1,34 @@
+use <process:args>;
+use <process:env>;
+use <io:erroroutput>;
+use <project:physical43_common, release_io>;
+
+physical43PrimitiveFixture {
+    fn:
+        public:
+            native(path >> str) -> str { if (envHas("WINDIR") && strByteLen(path) > 3 && strSubstring(path,0,1) == "/" && strSubstring(path,2,1) == "/") return strSubstring(path,1,1)+":"+strSubstring(path,2,strByteLen(path)-2); return path; }
+            run() -> int {
+                arguments >> addr <- argsOpen(); name >> str <- physical43_common.physical43Common.basename(argsAt(arguments,0)); count >> int <- argsCount(arguments);
+                if (name == "cargo" || name == "cargo.exe") {
+                    if (count != 16 && count != 18) { eprintln("fixture cargo rejects unknown argc"); return 91; }
+                    if (argsAt(arguments,1) != "run" || argsAt(arguments,2) != "-p" || argsAt(arguments,3) != "ncc-cli" || argsAt(arguments,4) != "--" || argsAt(arguments,5) != "build-sovereign" || argsAt(arguments,6) != "examples/primitive/boot_serial_hello.ncp" || argsAt(arguments,8) != "--profile" || argsAt(arguments,9) != "primitive" || argsAt(arguments,10) != "--target" || argsAt(arguments,11) != "x86_64-unknown-none" || argsAt(arguments,12) != "--entry" || argsAt(arguments,13) != "kernelEntry" || argsAt(arguments,14) != "--linker" || argsAt(arguments,15) != "link/x86_64_baremetal.ld") { eprintln("fixture cargo rejects unknown argv"); return 92; }
+                    if (physical43_common.physical43Common.env("PHYSICAL43_FIXTURE_FAIL") == "1") return 89;
+                    path >> str <- release_io.releaseIo.forwardPath(argsAt(arguments,7)); elf >> bool <- count == 18;
+                    if (elf) { if (argsAt(arguments,16) != "--image-format" || argsAt(arguments,17) != "elf") return 93; }
+                    if (!strEndsWith(path,elf ? "/var/primitive/qemu-smoke/boot_serial_hello.elf" : "/var/primitive/qemu-smoke/boot_serial_hello.sov")) return 94;
+                    bytes >> int <- elf ? 64 : 512; data >> p<byte> <- cast(alloc(bytes)); guard data != null else return 95; at >> int <- 0; while (at < bytes) { wr(off(data,at),0); at += 1; }
+                    if (elf) { wr(data,127); wr(off(data,1),69); wr(off(data,2),76); wr(off(data,3),70); }
+                    else { wr(data,186); wr(off(data,1),238); wr(off(data,2),236); wr(off(data,3),168); wr(off(data,4),244); wr(off(data,510),85); wr(off(data,511),170); }
+                    valid >> bool <- fsWriteFrom(native(path),data,bytes,false) == bytes; free(data); return valid ? 0 : 96;
+                }
+                if (name == "qemu-system-x86_64" || name == "qemu-system-x86_64.exe") {
+                    if (count != 12) return 97;
+                    if (argsAt(arguments,1) != "-nographic" || argsAt(arguments,2) != "-serial" || argsAt(arguments,4) != "-monitor" || argsAt(arguments,5) != "none" || argsAt(arguments,6) != "-no-reboot" || argsAt(arguments,7) != "-no-shutdown" || argsAt(arguments,8) != "-drive" || argsAt(arguments,10) != "-boot" || argsAt(arguments,11) != "a") { eprintln("fixture QEMU rejects unknown argv"); return 97; }
+                    serial >> str <- release_io.releaseIo.forwardPath(argsAt(arguments,3)); if (!strStartsWith(serial,"file:") || !strEndsWith(serial,"/var/primitive/qemu-smoke/qemu_serial.log")) return 98;
+                    return physical43_common.physical43Common.write(native(strSubstring(serial,5,strByteLen(serial)-5)),"CONTROLLED TEST FIXTURE, NOT QEMU OR PHYSICAL EXECUTION\nnC primitive alive\n") ? 0 : 99;
+                }
+                eprintln("primitive fixture rejects unknown executable role"); return 90;
+            }
+    ref main ->> run;
+    fa: return true;
+}

@@ -1,0 +1,115 @@
+use <data:json>;
+use <project:lexer_verifier_json>;
+
+lexerVerifierStream {
+    const:
+        BYTES >> int <- 56;
+    type:
+        Cursor {
+            public:
+                data >> addr;
+                size >> u64;
+                position >> u64;
+                header >> u64;
+                count >> u64;
+                valid >> u64;
+                ended >> u64;
+            layout:
+                repr(C);
+                align(8);
+        }
+    fn:
+        private:
+            get(cursor >> p<byte>, field >> int) -> int { return rd<int>(off(cursor,field)); }
+            put(cursor >> p<byte>, field >> int, value >> int) -> void { wr<int>(off(cursor,field),value); }
+            bytes(cursor >> p<byte>) -> p<byte> { return cast<byte>(rd<addr>(cursor)); }
+            peek(cursor >> p<byte>) -> int { return get(cursor,16) < get(cursor,8) ? rd(off(bytes(cursor),get(cursor,16))) & 255 : -1; }
+            advance(cursor >> p<byte>) -> void { put(cursor,16,get(cursor,16)+1); }
+            space(cursor >> p<byte>) -> void {
+                while(peek(cursor) == 32 || peek(cursor) == 9 || peek(cursor) == 10 || peek(cursor) == 13) { advance(cursor); }
+            }
+            piece(cursor >> p<byte>, start >> int, end >> int, oracle >> bool) -> int {
+                count >> int <- end-start;
+                data >> p<byte> <- cast(alloc(count+1));
+                guard data != null else return 0;
+                cp(data,off(bytes(cursor),start),count); wr(off(data,count),0);
+                text >> str <- cast(data);
+                result >> int <- 0;
+                if(lexer_verifier_json.lexerVerifierJson.noNul(text)) result <- oracle ? lexer_verifier_json.lexerVerifierJson.tokens(text) : jsonParse(text);
+                free(data); return result;
+            }
+            finish(cursor >> p<byte>) -> void {
+                advance(cursor); space(cursor);
+                if(peek(cursor) != 125) { put(cursor,40,0); return; }
+                advance(cursor); space(cursor);
+                put(cursor,40,get(cursor,16) == get(cursor,8) ? 1 : 0);
+                put(cursor,48,1);
+            }
+        public:
+            open(text >> str) -> p<byte> {
+                guard sizeOf(Cursor) == BYTES && offsetOf<Cursor>(ended) == 48 else return null;
+                cursor >> p<byte> <- cast(calloc(1,BYTES));
+                guard cursor != null else return null;
+                wr<addr>(cursor,adr(cast<byte>(text))); put(cursor,8,strByteLen(text));
+                quoted >> bool <- false; escaped >> bool <- false; depth >> int <- 0; key >> int <- -1;
+                while(get(cursor,16) < get(cursor,8)) {
+                    code >> int <- peek(cursor);
+                    if(escaped) escaped <- false;
+                    else if(quoted && code == 92) escaped <- true;
+                    else if(code == 34) {
+                        if(!quoted && depth == 1 && get(cursor,16)+8 <= get(cursor,8)) {
+                            candidate >> int <- get(cursor,16);
+                            advance(cursor);
+                            matches >> bool <- true; index >> int <- 0; name >> p<byte> <- cast("tokens\"");
+                            while(index < 7) { if(peek(cursor) != rd(off(name,index))) matches <- false; advance(cursor); index += 1; }
+                            if(matches) { space(cursor); if(peek(cursor) == 58) { advance(cursor); space(cursor); if(peek(cursor) == 91) { key <- candidate; break; } } }
+                            put(cursor,16,candidate);
+                        }
+                        quoted <- !quoted;
+                    } else if(!quoted && (code == 123 || code == 91)) depth += 1;
+                    else if(!quoted && (code == 125 || code == 93)) depth -= 1;
+                    advance(cursor);
+                }
+                if(key < 0) return cursor;
+                // Framing stays bounded; the JSON parser validates the header and each record.
+                data >> p<byte> <- cast(alloc(key+13));
+                guard data != null else return cursor;
+                cp(data,bytes(cursor),key);
+                suffix >> p<byte> <- cast("\"tokens\":[]}");
+                cp(off(data,key),suffix,12); wr(off(data,key+12),0);
+                headerText >> str <- cast(data);
+                parsed >> int <- lexer_verifier_json.lexerVerifierJson.tokens(headerText);
+                put(cursor,24,parsed); free(data); advance(cursor);
+                put(cursor,40,jsonKind(parsed) == 6 ? 1 : 0);
+                return cursor;
+            }
+            header(cursor >> p<byte>) -> int { return cursor == null ? 0 : get(cursor,24); }
+            good(cursor >> p<byte>) -> bool { return cursor != null && get(cursor,40) == 1; }
+            next(cursor >> p<byte>, oracle >> bool) -> int {
+                guard good(cursor) && get(cursor,48) == 0 else return 0;
+                space(cursor);
+                if(peek(cursor) == 93) { finish(cursor); return 0; }
+                if(get(cursor,32) > 0) {
+                    if(peek(cursor) != 44) { put(cursor,40,0); return 0; }
+                    advance(cursor); space(cursor);
+                }
+                if(peek(cursor) != 123) { put(cursor,40,0); return 0; }
+                start >> int <- get(cursor,16);
+                depth >> int <- 0; quoted >> bool <- false; escaped >> bool <- false;
+                while(get(cursor,16) < get(cursor,8)) {
+                    code >> int <- peek(cursor); advance(cursor);
+                    if(escaped) escaped <- false;
+                    else if(quoted && code == 92) escaped <- true;
+                    else if(code == 34) quoted <- !quoted;
+                    else if(!quoted && (code == 123 || code == 91)) depth += 1;
+                    else if(!quoted && (code == 125 || code == 93)) { depth -= 1; if(depth == 0) break; }
+                    if(depth > 64 || depth < 0) break;
+                }
+                row >> int <- depth == 0 && !quoted && !escaped ? piece(cursor,start,get(cursor,16),oracle) : 0;
+                put(cursor,40,jsonKind(row) == 6 ? 1 : 0); put(cursor,32,get(cursor,32)+1);
+                return row;
+            }
+            complete(cursor >> p<byte>) -> bool { return good(cursor) && get(cursor,48) == 1; }
+            close(cursor >> p<byte>) -> void { if(cursor != null) { jsonRelease(header(cursor)); free(cursor); } }
+    fa: return true;
+}

@@ -1,0 +1,113 @@
+use <io:output, render>;
+use <memory:ptr, heap>;
+
+punterosBasicoNormal {
+    stc:
+        suma       >> int <- 0;
+        valorLeido >> int <- 0;
+        valorA     >> int <- 0;
+        valorB     >> int <- 0;
+        distancia  >> int <- 0;
+
+        pA >> p<int>;
+        pB >> p<int>;
+
+    fn:
+        boot() -> bool {
+            pA !> p<int> : memory.heap.manager.alloc(16);
+            pB <- off(pA, 1);
+            *pA <- 10;
+            *pB <- 20;
+
+            return true;
+        }
+
+        leerPorPunteros() -> bool {
+            println(colorBold("===== LECTURA POR PUNTEROS =====", "cyan"));
+
+            valorLeido <- *pA;
+            println("Valor leido desde pA: " + renderInt(valorLeido));
+
+            valorLeido <- rd(pB);
+            println("Valor leido desde pB: " + renderInt(valorLeido));
+
+            return true;
+        }
+
+        modificarPorPuntero() -> bool {
+            println("");
+            println(colorBold("===== ESCRITURA POR PUNTERO =====", "yellow"));
+
+            *pA <- 100;
+            *pB <- 250;
+
+            valorA <- rd(pA);
+            valorB <- *pB;
+
+            println(colorBold("Nuevo valor de pA: " + renderInt(valorA), "red"));
+            println(colorBold("Nuevo valor de pB: " + renderInt(valorB), "blue"));
+
+            return true;
+        }
+
+        calcularSuma() -> bool {
+            println("");
+            println(colorBold("===== CALCULO USANDO VALORES MODIFICADOS =====", "magenta"));
+
+            valorA <- *pA;
+            valorB <- rd(pB);
+            suma <- valorA + valorB;
+
+            println("Suma: " + colorBold(renderInt(suma), "green"));
+
+            return true;
+        }
+
+        demostrarAlias() -> bool {
+            println("");
+            println(colorBold("===== DEMOSTRACION DE ALIAS =====", "cyan"));
+
+            println("pA apunta a una celda de heap auditada por runtime.");
+            println("pB apunta a la celda siguiente dentro del mismo bloque.");
+            println("Si escribimos usando pA, cambia esa celda material.");
+
+            *pA <- 777;
+            valorA <- *pA;
+
+            println("Valor final desde pA: " + renderInt(valorA));
+            distancia <- pDiff(pB, pA);
+            println("Distancia pB - pA: " + renderInt(distancia));
+
+            return true;
+        }
+
+        cerrarHeap() -> bool {
+            memory.heap.manager.free(pA);
+            return true;
+        }
+
+        run() -> bool {
+            boot();
+
+            println(colorBold("===== PUNTEROS EN nC COMPACTO =====", "green"));
+            valorA <- *pA;
+            valorB <- rd(pB);
+
+            println("Valor inicial de pA: " + renderInt(valorA));
+            println("Valor inicial de pB: " + renderInt(valorB));
+
+            leerPorPunteros();
+            modificarPorPuntero();
+            calcularSuma();
+            demostrarAlias();
+            cerrarHeap();
+
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

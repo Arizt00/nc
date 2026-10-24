@@ -1,0 +1,23 @@
+use <io:output>;
+use <process:args>;
+
+prepareRuntimeJson77 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 3) return 64;
+        source >> str <- argsAt(arguments,1)+"/runtime/nc/json_native_provider.n";
+        output >> str <- argsAt(arguments,2);
+        count >> int <- fsSize(source);
+        if (count < 1 || count > 1048576) {
+            strRelease(source); argsRelease(arguments); return 65;
+        }
+        data >> p<byte> <- alloc(count);
+        valid >> bool <- data != null && fsReadInto(source,data,count) == count &&
+            fsWriteFrom(output,data,count,false) == count;
+        free(data); strRelease(source); argsRelease(arguments);
+        println(valid ? "native JSON ABI source prepared from nC" : "native JSON source preparation failed");
+        return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

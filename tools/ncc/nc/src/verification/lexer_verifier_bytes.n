@@ -1,0 +1,190 @@
+use <data:json>;
+use <project:frontend_material>;
+
+lexerVerifierBytes {
+    fn:
+        public:
+            text(row >> int, key >> str) -> str {
+                value >> int <- jsonObjectBorrow(row,key);
+                result >> str <- jsonStringView(value,"");
+                jsonRelease(value);
+                return result;
+            }
+
+            hex(value >> int) -> int {
+                if (value >= 48 && value <= 57) return value-48;
+                if (value >= 65 && value <= 70) return value-55;
+                if (value >= 97 && value <= 102) return value-87;
+                return -1;
+            }
+            width(data >> p<byte>, size >> int, at >> int) -> int {
+                if (at < 0 || at >= size) return 0;
+                first >> int <- rd<byte>(off(data,at)) & 255;
+                if (first < 128) return 1;
+                count >> int <- first >= 194 && first <= 223 ? 2 : (first >= 224 && first <= 239 ? 3 : (first >= 240 && first <= 244 ? 4 : 0));
+                if (count == 0 || count > size-at) return 0;
+                next >> int <- rd<byte>(off(data,at+1)) & 255;
+                if ((first == 224 && next < 160) || (first == 237 && next >= 160) ||
+                    (first == 240 && next < 144) || (first == 244 && next >= 144)) return 0;
+                index >> int <- 1;
+                while (index < count) {
+                    value >> int <- rd<byte>(off(data,at+index)) & 255;
+                    if (value < 128 || value > 191) return 0;
+                    index += 1;
+                }
+                return count;
+            }
+            scalar(data >> p<byte>, at >> int, count >> int) -> int {
+                value >> int <- rd<byte>(off(data,at)) & 255;
+                if (count == 1) return value;
+                value <- value & (count == 2 ? 31 : (count == 3 ? 15 : 7));
+                index >> int <- 1;
+                while (index < count) { value <- value*64+(rd(off(data,at+index)) & 63); index += 1; }
+                return value;
+            }
+            push(values >> int, value >> int) -> void {
+                item >> int <- jsonNewInt(value); jsonArrayPush(values,item); jsonRelease(item);
+            }
+            utf8(values >> int, value >> int) -> bool {
+                if (value < 0 || value > 1114111 || (value >= 55296 && value <= 57343)) return false;
+                if (value < 128) push(values,value);
+                else if (value < 2048) { push(values,192+value/64); push(values,128+value%64); }
+                else if (value < 65536) { push(values,224+value/4096); push(values,128+(value/64)%64); push(values,128+value%64); }
+                else { push(values,240+value/262144); push(values,128+(value/4096)%64); push(values,128+(value/64)%64); push(values,128+value%64); }
+                return true;
+            }
+            // Decode Rust Debug payloads independently of the compiler lexer under test.
+            debugPayload(text >> str, first >> int, last >> int, character >> bool) -> int {
+                data >> p<byte> <- cast(text);
+                values >> int <- jsonNewArray();
+                at >> int <- first;
+                ok >> bool <- first >= 0 && last >= first && last <= strByteLen(text);
+                while (at < last && ok) {
+                    size >> int <- width(data,last,at);
+                    if (size == 0) { ok <- false; break; }
+                    value >> int <- scalar(data,at,size); at += size;
+                    if (value == 92) {
+                        if (at >= last) { ok <- false; break; }
+                        escape >> int <- rd(off(data,at)); at += 1;
+                        if (escape == 117 || escape == 120) {
+                            digits >> int <- 0; value <- 0;
+                            if (escape == 117) {
+                                if (at >= last || rd(off(data,at)) != 123) { ok <- false; break; }
+                                at += 1;
+                            }
+                            while (at < last) {
+                                code >> int <- rd(off(data,at));
+                                if (escape == 117 && code == 125) break;
+                                if (escape == 120 && digits == 2) break;
+                                digit >> int <- hex(code);
+                                if (digit < 0 || digits >= 6) { ok <- false; break; }
+                                value <- value*16+digit; digits += 1; at += 1;
+                            }
+                            if (escape == 117) {
+                                if (digits == 0 || at >= last || rd(off(data,at)) != 125) ok <- false;
+                                else at += 1;
+                            } else if (digits != 2) ok <- false;
+                        } else if (escape == 48) value <- 0;
+                        else if (escape == 110) value <- 10;
+                        else if (escape == 114) value <- 13;
+                        else if (escape == 116) value <- 9;
+                        else if (escape == 92 || escape == 34 || escape == 39) value <- escape;
+                        else ok <- false;
+                    }
+                    if (ok && character) { if (value > 255 || jsonArrayLen(values) != 0) ok <- false; else push(values,value); }
+                    else if (ok) ok <- utf8(values,value);
+                }
+                if (character && jsonArrayLen(values) != 1) ok <- false;
+                if (!ok) { jsonRelease(values); return 0; }
+                return values;
+            }
+            canonical(row >> int) -> int {
+                text >> str <- text(row,"kind");
+                data >> p<byte> <- cast(text);
+                size >> int <- strByteLen(text);
+                open >> int <- 0;
+                while (open < size && rd(off(data,open)) != 40) { open += 1; }
+                name >> str <- strSubstring(text,0,open);
+                payload >> int <- jsonNewArray();
+                if (open < size) {
+                    jsonRelease(payload);
+                    quote >> int <- name == "Char" ? 39 : 34;
+                    if (size < open+4 || rd(off(data,open+1)) != quote || rd(off(data,size-2)) != quote || rd(off(data,size-1)) != 41) { strRelease(name); return 0; }
+                    payload <- debugPayload(text,open+2,size-2,name == "Char");
+                    if (jsonKind(payload) != 5) { strRelease(name); return 0; }
+                }
+                result >> int <- jsonNewObject();
+                value >> int <- jsonNewString(name); jsonObjectSet(result,"kind",value); jsonRelease(value);
+                jsonObjectSet(result,"payload",payload); jsonRelease(payload);
+                line >> int <- jsonObjectBorrow(row,"line"); column >> int <- jsonObjectBorrow(row,"column");
+                jsonObjectSet(result,"line",line); jsonObjectSet(result,"column",column);
+                jsonRelease(line); jsonRelease(column);
+                strRelease(name);
+                return result;
+            }
+            position(text >> str) -> int {
+                data >> p<byte> <- cast(text); size >> int <- strByteLen(text);
+                at >> int <- 0;
+                // Paths may contain drive colons; select two numeric suffixes only.
+                while (at < size) {
+                    code >> int <- rd(off(data,at));
+                    if (code == 58 || code == 91) {
+                        cursor >> int <- at+1; line >> int <- 0; column >> int <- 0; digits >> int <- 0;
+                        while (cursor < size && rd(off(data,cursor)) >= 48 && rd(off(data,cursor)) <= 57 && digits < 8) {
+                            line <- line*10+rd(off(data,cursor))-48; cursor += 1; digits += 1;
+                        }
+                        if (digits > 0 && cursor < size && rd(off(data,cursor)) == 58) {
+                            cursor += 1; digits <- 0;
+                            while (cursor < size && rd(off(data,cursor)) >= 48 && rd(off(data,cursor)) <= 57 && digits < 8) {
+                                column <- column*10+rd(off(data,cursor))-48; cursor += 1; digits += 1;
+                            }
+                            if (digits > 0 && line > 0 && column > 0) {
+                                result >> int <- jsonNewArray(); push(result,line); push(result,column); return result;
+                            }
+                        }
+                    }
+                    at += 1;
+                }
+                return 0;
+            }
+            spans(data >> p<byte>, size >> int, tokens >> int) -> bool {
+                if (data == null || size < 0 || jsonKind(tokens) != 5 || jsonArrayLen(tokens) == 0) return false;
+                cursor >> int <- 0; line >> int <- 1; column >> int <- 1; previous >> int <- 0; index >> int <- 0;
+                while (index < jsonArrayLen(tokens)) {
+                    row >> int <- jsonArrayBorrow(tokens,index);
+                    start >> int <- frontend_material.frontendMaterial.number(row,"start");
+                    end >> int <- frontend_material.frontendMaterial.number(row,"end");
+                    if (start < previous || end < start || end > size) return false;
+                    while (cursor < start) {
+                        count >> int <- width(data,size,cursor);
+                        if (count == 0 || cursor+count > start) return false;
+                        if (rd(off(data,cursor)) == 10) { line += 1; column <- 1; } else column += 1;
+                        cursor += count;
+                    }
+                    if (frontend_material.frontendMaterial.number(row,"line") != line || frontend_material.frontendMaterial.number(row,"column") != column) return false;
+                    if (end < size && (rd(off(data,end)) & 192) == 128) return false;
+                    name >> str <- text(row,"kind");
+                    payload >> int <- jsonObjectBorrow(row,"payload");
+                    if (jsonKind(payload) != 5) return false;
+                    if (name == "Eof") {
+                        if (start != size || end != size || index+1 != jsonArrayLen(tokens) || jsonArrayLen(payload) != 0) return false;
+                    } else if (name == "Identifier" || name == "Number") {
+                        if (jsonArrayLen(payload) != end-start) return false;
+                        at >> int <- 0;
+                        while (at < end-start) {
+                            if (frontend_material.frontendMaterial.indexAt(payload,at) != (rd<byte>(off(data,start+at)) & 255)) return false;
+                            at += 1;
+                        }
+                    } else if (name == "String" || name == "Char") {
+                        quote >> int <- name == "String" ? 34 : 39;
+                        if (end-start < (name == "String" ? 2 : 3) || rd(off(data,start)) != quote || rd(off(data,end-1)) != quote) return false;
+                    } else if (end == start || jsonArrayLen(payload) != 0) return false;
+                    jsonRelease(payload); jsonRelease(row);
+                    previous <- end; index += 1;
+                }
+                finalRow >> int <- jsonArrayBorrow(tokens,index-1);
+                eof >> bool <- text(finalRow,"kind") == "Eof";
+                jsonRelease(finalRow); return eof;
+            }
+    fa: return true;
+}

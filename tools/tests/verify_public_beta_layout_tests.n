@@ -1,0 +1,193 @@
+use <io:output, render>;
+use <data:json>;
+use <fs:dir>;
+use <process:args, command>;
+
+verify_public_beta_layout_tests {
+    const:
+        CASE_COUNT >> int <- 32;
+    local:
+        checks >> int <- 0;
+    fn:
+        private:
+            makeDir(path >> str) -> bool {
+                createDir(path);
+                return exists(path);
+            }
+            option(arguments >> addr, name >> str) -> str {
+                index >> int <- 1;
+                while (index+1 < argsCount(arguments)) {
+                    if (argsAt(arguments,index) == name) return argsAt(arguments,index+1);
+                    index += 1;
+                }
+                return "";
+            }
+            quoted(value >> str) -> str {
+                source >> p<byte> <- cast(value);
+                size >> int <- strByteLen(value);
+                data >> p<byte> <- cast(alloc(size*2+3));
+                guard data != null else return "";
+                wr(data,34);
+                out >> int <- 1;
+                index >> int <- 0;
+                while (index < size) {
+                    byte >> int <- rd(off(source,index)) & 255;
+                    if (byte == 34 || byte == 92) { wr(off(data,out),92); out += 1; }
+                    wr(off(data,out),byte); out += 1; index += 1;
+                }
+                wr(off(data,out),34); wr(off(data,out+1),0);
+                text >> str <- cast(data);
+                return text;
+            }
+            writeText(path >> str, value >> str) -> bool {
+                size >> int <- strByteLen(value);
+                return fsWriteFrom(path,cast<byte>(value),size,false) == size;
+            }
+            required(index >> int) -> str {
+                if (index == 0) return "README.md";
+                if (index == 1) return "CHANGELOG.md";
+                if (index == 2) return "ROADMAP.md";
+                if (index == 3) return "docs/beta.md";
+                if (index == 4) return "docs/examples.md";
+                if (index == 5) return "tests/README.md";
+                if (index == 6) return "tools/release/public_beta_manifest.json";
+                return "PUBLIC_BETA_LAYOUT.md";
+            }
+            setup(root >> str, omitted >> int) -> bool {
+                guard makeDir(root) else return false;
+                guard makeDir(root+"/docs") && makeDir(root+"/tests") && makeDir(root+"/tools") &&
+                    makeDir(root+"/tools/release") && makeDir(root+"/examples") else return false;
+                index >> int <- 0;
+                while (index < 8) {
+                    if (index != omitted) {
+                        if (!writeText(root+"/"+required(index),"public\n")) return false;
+                    }
+                    index += 1;
+                }
+                return true;
+            }
+            invoke(candidate >> str, manifest >> str, root >> str, report >> str) -> int {
+                line >> str <- quoted(candidate)+" --manifest "+quoted(manifest)+" --dist "+quoted(root)+" --report "+quoted(report);
+                child >> addr <- commandOpen(line,"",null,null,null,0);
+                guard child != null else return -1;
+                if (!commandStarted(child)) { commandRelease(child); return -2; }
+                status >> int <- commandWait(child,30000);
+                if (status != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                result >> int <- status == 0 ? commandExitCode(child) : -3;
+                commandRelease(child);
+                return result;
+            }
+            exercise(candidate >> str, work >> str, index >> int, rows >> int) -> bool {
+                dir >> str <- work+"/case_"+renderInt(index);
+                guard makeDir(dir) else return false;
+                root >> str <- dir+"/dist";
+                omitted >> int <- index >= 1 && index <= 8 ? index-1 : -1;
+                guard setup(root,omitted) else return false;
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model,"dist_root",jsonNewString("unused"));
+                expected >> int <- index == 0 || index == 20 || index == 24 || index == 25 || index == 27 || index == 29 ? 0 : 1;
+                if (index >= 9 && index <= 13) {
+                    names >> int <- jsonParse("[\"_archive\",\"_tmp\",\"reports\",\"target\",\".ncc\"]");
+                    guard makeDir(root+"/"+jsonGetString(jsonArrayGet(names,index-9))) else return false;
+                    jsonRelease(names);
+                }
+                if (index == 14) {
+                    jsonObjectSet(model,"private_segments",jsonParse("[\"secret\"]"));
+                    guard makeDir(root+"/docs/secret") else return false;
+                }
+                if (index == 15) { if (!writeText(root+"/object.obj","object")) return false; }
+                if (index == 16) { if (!writeText(root+"/examples/PHASE1.n","demo {}")) return false; }
+                if (index == 17) { if (!writeText(root+"/tests/p11.n","demo {}")) return false; }
+                if (index == 18 || index == 19 || index == 24) {
+                    jsonObjectSet(model,"forbidden_text_fragments",jsonParse("[\"PRIVATE-MARKER\"]"));
+                    name >> str <- index == 18 ? "/docs/note.MD" : (index == 19 ? "/examples/note.n" : "/public.dat");
+                    if (index == 19) {
+                        data >> p<byte> <- cast(alloc(32));
+                        guard data != null else return false;
+                        wr(data,0); cp(off(data,1),cast<byte>("PRIVATE-MARKER"),14);
+                        written >> int <- fsWriteFrom(root+name,data,15,false);
+                        free(data);
+                        guard written == 15 else return false;
+                    }
+                    else if (!writeText(root+name,"PRIVATE-MARKER")) return false;
+                }
+                if (index == 20) {
+                    guard makeDir(root+"/tests/fixtures") && makeDir(root+"/tests/fixtures/old_examples") else return false;
+                    guard writeText(root+"/tests/fixtures/old_examples/phase1.n","demo {}") else return false;
+                }
+                if (index == 21) {
+                    jsonObjectSet(model,"forbidden_public_roots",jsonNewNull());
+                    guard makeDir(root+"/target") else return false;
+                }
+                if (index == 22) {
+                    guard delete_file(root+"/README.md") && makeDir(root+"/README.md") else return false;
+                }
+                if (index == 23) root <- dir+"/absent";
+                if (index == 25) {
+                    jsonObjectSet(model,"forbidden_public_roots",jsonNewArray());
+                    jsonObjectSet(model,"private_file_suffixes",jsonNewArray());
+                    guard makeDir(root+"/target") && writeText(root+"/target/allowed.obj","public") else return false;
+                }
+                if (index == 27) { if (!writeText(root+"/Unicode_\u{E9}_\u{1F642}.md","public")) return false; }
+                if (index == 28) {
+                    policy >> int <- jsonNewObject();
+                    jsonObjectSet(policy,"forbid_path_tokens",jsonParse("[\"legacy\"]"));
+                    jsonObjectSet(model,"public_example_name_policy",policy);
+                    guard writeText(root+"/examples/LEGACY.n","demo {}") else return false;
+                }
+                if (index == 29) jsonObjectRemove(model,"dist_root");
+                if (index == 30) jsonObjectSet(model,"private_segments",jsonParse("[17]"));
+                if (index == 31) { if (!writeText(root+"/Unicode_\u{E9}_\u{1F642}.obj","object")) return false; }
+                manifest >> str <- dir+"/manifest.json";
+                saved >> bool <- false;
+                if (index == 26) saved <- writeText(manifest,"{invalid");
+                else saved <- jsonSaveFile(model,manifest,2);
+                jsonRelease(model);
+                guard saved else return false;
+                report >> str <- dir+"/report.json";
+                actual >> int <- invoke(candidate,manifest,root,report);
+                result >> int <- jsonParseFile(report);
+                passed >> bool <- actual == expected && jsonKind(result) == 6 &&
+                    jsonGetBoolOr(jsonObjectGet(result,"passed"),expected != 0) == (expected == 0);
+                jsonRelease(result);
+                row >> int <- jsonNewObject();
+                jsonObjectSet(row,"case",jsonNewInt(index));
+                jsonObjectSet(row,"expected_exit",jsonNewInt(expected));
+                jsonObjectSet(row,"actual_exit",jsonNewInt(actual));
+                jsonObjectSet(row,"passed",jsonNewBool(passed));
+                jsonArrayPush(rows,row);
+                println((passed ? "PASS " : "FAIL ")+renderInt(index));
+                return passed;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                candidate >> str <- option(arguments,"--candidate");
+                work >> str <- option(arguments,"--work");
+                guard exists(candidate) && work != "" && !exists(work) else {
+                    println("Provide --candidate and a new --work directory with an existing parent.");
+                    argsRelease(arguments);
+                    return 2;
+                }
+                guard makeDir(work) else { argsRelease(arguments); return 2; }
+                rows >> int <- jsonNewArray();
+                index >> int <- 0;
+                passed >> bool <- true;
+                while (index < CASE_COUNT) {
+                    current >> bool <- exercise(candidate,work,index,rows);
+                    passed <- passed && current;
+                    index += 1;
+                }
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report,"schema",jsonNewString("nc.public-beta.layout.native-tests.v1"));
+                jsonObjectSet(report,"implementation_language",jsonNewString("nC"));
+                jsonObjectSet(report,"cases",rows);
+                jsonObjectSet(report,"passed",jsonNewBool(passed && jsonArrayLen(rows) == CASE_COUNT));
+                written >> bool <- jsonSaveFile(report,work+"/report.json",2);
+                jsonRelease(report); argsRelease(arguments);
+                return passed && written ? 0 : 1;
+            }
+    ref main ->> run;
+    fa:
+        return true;
+}

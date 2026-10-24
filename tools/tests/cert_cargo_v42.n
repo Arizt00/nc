@@ -1,0 +1,55 @@
+use <process:args, env>;
+use <io:output, errorOutput>;
+
+certCargoV42 {
+    fn:
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                count >> int <- argsCount(arguments);
+                list >> bool <- false;
+                text >> str <- "";
+                index >> int <- 1;
+                while (index < count) {
+                    word >> str <- argsAt(arguments,index);
+                    if (word == "--list") list <- true;
+                    if (index > 1) text += " ";
+                    text += word; index += 1;
+                }
+                modeBytes >> p<byte> <- cast(alloc(128));
+                guard modeBytes != null else return 90;
+                size >> int <- envGet("CERT_V42_MODE",adr(modeBytes),127);
+                if (size < 0 || size >= 127) size <- 0;
+                wr(off(modeBytes,size),0);
+                mode >> str <- cast(modeBytes);
+                if (list) {
+                    if (mode != "empty-list") {
+                        println("  alpha::one: test  ");
+                        println("beta: test");
+                        println("ignored: benchmark");
+                        println("nested: test: test");
+                        println("3 tests, 0 benchmarks");
+                    } else println("0 tests, 0 benchmarks");
+                } else {
+                    println("controlled fixture: "+text);
+                    eprintln("controlled stderr: "+text);
+                    if (mode == "long") {
+                        index <- 0;
+                        while (index < 250) { println("0123456789abcdefghijklmnopqrstuvwxyz"); eprintln("stderr-0123456789abcdefghijklmnopqrstuvwxyz"); index += 1; }
+                    }
+                    if (mode == "unicode") {
+                        index <- 0;
+                        while (index < 1500) { println("\u{E9}\u{1F642}"); eprintln("\u{E9}\u{1F642}"); index += 1; }
+                    }
+                }
+                fail >> bool <- mode == "all-fail" || (mode == "list-fail" && list) ||
+                    (mode == "suite-fail" && strContains(text,"--nocapture") && strContains(text,"expert_release_suite")) ||
+                    (mode == "command-fail" && strContains(text,"ffi-smoke")) ||
+                    (mode == "gate-fail" && strStartsWith(text,"clippy"));
+                free(modeBytes);
+                argsRelease(arguments);
+                return fail ? 17 : 0;
+            }
+    ref main ->> run;
+    fa: return true;
+}

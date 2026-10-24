@@ -1,0 +1,568 @@
+{
+  "schema": "nc.stoud.stdlib.catalog.v1",
+  "version": "1.0.0",
+  "canonicalFamilies": [
+    "io",
+    "data",
+    "memory",
+    "collections",
+    "math",
+    "time",
+    "fs",
+    "net",
+    "process",
+    "thread"
+  ],
+  "families": [
+    {
+      "family": "io",
+      "import": "use stoud.io { input, output, render };",
+      "items": ["input", "output", "render"],
+      "functions": [
+        {
+          "name": "readInt",
+          "signature": "readInt() -> int",
+          "params": [],
+          "returns": "int",
+          "errors": ["InputError when interactive input is unavailable or not an integer"],
+          "backend": "real runtime stdin read; hosted backend/runtime symbol"
+        },
+        {
+          "name": "readLine",
+          "signature": "readLine() -> str",
+          "params": [],
+          "returns": "str",
+          "errors": ["InputError when stdin is closed"],
+          "backend": "real runtime stdin read; hosted backend/runtime symbol"
+        },
+        {
+          "name": "print",
+          "signature": "print(value: printable) -> void",
+          "params": ["value: printable"],
+          "returns": "void",
+          "errors": ["OutputError when stdout cannot be written"],
+          "backend": "real runtime stdout write; hosted backend/runtime symbol"
+        },
+        {
+          "name": "println",
+          "signature": "println(value: printable) -> void",
+          "params": ["value: printable"],
+          "returns": "void",
+          "errors": ["OutputError when stdout cannot be written"],
+          "backend": "real runtime stdout write with newline"
+        },
+        {
+          "name": "renderInt",
+          "signature": "renderInt(value: int) -> str",
+          "params": ["value: int"],
+          "returns": "str",
+          "errors": [],
+          "backend": "pure render helper; can fold or lower as runtime formatting"
+        },
+        {
+          "name": "renderBinary",
+          "signature": "renderBinary(value: int) -> str",
+          "params": ["value: int"],
+          "returns": "str",
+          "errors": [],
+          "backend": "pure binary render helper; lowers to runtime formatting or native byte writer"
+        },
+        {
+          "name": "renderBin",
+          "signature": "renderBin(value: int) -> str",
+          "params": ["value: int"],
+          "returns": "str",
+          "errors": [],
+          "backend": "runtime/native compact alias for renderBinary with the same backend lowering"
+        }
+      ]
+    },
+    {
+      "family": "memory",
+      "import": "use stoud.memory { ptr, heap, region, map };",
+      "items": ["ptr", "heap", "region", "map", "alloc", "buffer", "bytes", "layout", "endian", "slice", "span"],
+      "functions": [
+        {
+          "name": "alloc",
+          "signature": "alloc<T>(count: int) -> ptr<T>",
+          "params": ["count: int"],
+          "returns": "ptr<T>",
+          "errors": ["MemoryError or null/stale pointer diagnostic when allocation fails"],
+          "backend": "real heap/runtime allocation; native pointer value"
+        },
+        {
+          "name": "free",
+          "signature": "free<T>(ptr: ptr<T>) -> void",
+          "params": ["ptr: ptr<T>"],
+          "returns": "void",
+          "errors": ["PtrError on null, stale or double-free evidence"],
+          "backend": "real heap/runtime free; invalidates provenance"
+        },
+        {
+          "name": "ptrRead",
+          "signature": "ptrRead<T>(ptr: ptr<T>) -> T",
+          "params": ["ptr: ptr<T>"],
+          "returns": "T",
+          "errors": ["PtrError on null, stale, unaligned or out-of-bounds access"],
+          "backend": "native load when proven; runtime checked load otherwise"
+        },
+        {
+          "name": "regionFromPtr",
+          "signature": "regionFromPtr<T>(ptr: ptr<T>, len: int) -> memRegion<T>",
+          "params": ["ptr: ptr<T>", "len: int"],
+          "returns": "memRegion<T>",
+          "errors": ["PtrError when pointer provenance or length is invalid"],
+          "backend": "descriptor construction; lowers to pointer plus length"
+        },
+        {
+          "name": "map",
+          "signature": "map(bytes: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["bytes: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when the OS mapping request fails"],
+          "backend": "native mmap/VirtualAlloc materialization"
+        },
+        {
+          "name": "mapAnonymous",
+          "signature": "mapAnonymous(bytes: int, protection: int, flags: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["bytes: int", "protection: int", "flags: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError for invalid size, protection, flags or OS failure"],
+          "backend": "native anonymous mmap/VirtualAlloc"
+        },
+        {
+          "name": "mapAt",
+          "signature": "mapAt(address: addr, bytes: int, protection: int, flags: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["address: addr", "bytes: int", "protection: int", "flags: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when the requested address cannot be mapped"],
+          "backend": "native fixed-address mapping request"
+        },
+        {
+          "name": "mapShared",
+          "signature": "mapShared(bytes: int, protection: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["bytes: int", "protection: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when shared mapping fails"],
+          "backend": "native shared mapping"
+        },
+        {
+          "name": "mapPrivate",
+          "signature": "mapPrivate(bytes: int, protection: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["bytes: int", "protection: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when private mapping fails"],
+          "backend": "native private mapping"
+        },
+        {
+          "name": "mapFile",
+          "signature": "mapFile(path: str, bytes: int, offset: int, protection: int, flags: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["path: str", "bytes: int", "offset: int", "protection: int", "flags: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError or filesystem error when opening or mapping the file"],
+          "backend": "native file-backed mapping"
+        },
+        {
+          "name": "mapFileShared",
+          "signature": "mapFileShared(path: str, bytes: int, offset: int, protection: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["path: str", "bytes: int", "offset: int", "protection: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError or filesystem error"],
+          "backend": "native shared file mapping"
+        },
+        {
+          "name": "mapFilePrivate",
+          "signature": "mapFilePrivate(path: str, bytes: int, offset: int, protection: int) -> Result<ptr<byte>, MemoryError>",
+          "params": ["path: str", "bytes: int", "offset: int", "protection: int"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError or filesystem error"],
+          "backend": "native private file mapping"
+        },
+        {
+          "name": "unmap",
+          "signature": "unmap(ptr: ptr<byte>) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError for unknown, stale or failed unmap"],
+          "backend": "native munmap/VirtualFree and lineage invalidation"
+        },
+        {
+          "name": "remap",
+          "signature": "remap(ptr: ptr<byte>, bytes: int, mayMove: bool) -> Result<ptr<byte>, MemoryError>",
+          "params": ["ptr: ptr<byte>", "bytes: int", "mayMove: bool"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when resize or relocation fails"],
+          "backend": "native mremap or allocate-copy-release fallback"
+        },
+        {
+          "name": "remapAt",
+          "signature": "remapAt(ptr: ptr<byte>, bytes: int, address: addr) -> Result<ptr<byte>, MemoryError>",
+          "params": ["ptr: ptr<byte>", "bytes: int", "address: addr"],
+          "returns": "Result<ptr<byte>, MemoryError>",
+          "errors": ["MemoryError when fixed relocation fails"],
+          "backend": "native fixed-address remap"
+        },
+        {
+          "name": "mapProtect",
+          "signature": "mapProtect(ptr: ptr<byte>, protection: int) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>", "protection: int"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError for invalid protection or OS denial"],
+          "backend": "native mprotect/VirtualProtect"
+        },
+        {
+          "name": "mapSync",
+          "signature": "mapSync(ptr: ptr<byte>, flags: int) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>", "flags: int"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError when synchronization fails"],
+          "backend": "native msync/FlushViewOfFile"
+        },
+        {
+          "name": "mapAdvise",
+          "signature": "mapAdvise(ptr: ptr<byte>, advice: int) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>", "advice: int"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError for unsupported or rejected advice"],
+          "backend": "native madvise or platform equivalent"
+        },
+        {
+          "name": "mapLock",
+          "signature": "mapLock(ptr: ptr<byte>) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError when pages cannot be locked"],
+          "backend": "native mlock/VirtualLock"
+        },
+        {
+          "name": "mapUnlock",
+          "signature": "mapUnlock(ptr: ptr<byte>) -> Result<bool, MemoryError>",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "Result<bool, MemoryError>",
+          "errors": ["MemoryError when pages cannot be unlocked"],
+          "backend": "native munlock/VirtualUnlock"
+        },
+        {
+          "name": "mapLen",
+          "signature": "mapLen(ptr: ptr<byte>) -> int",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "int",
+          "errors": [],
+          "backend": "native mapping descriptor length load"
+        },
+        {
+          "name": "mapAddress",
+          "signature": "mapAddress(ptr: ptr<byte>) -> ptr<byte>",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "ptr<byte>",
+          "errors": [],
+          "backend": "native mapping descriptor address load"
+        },
+        {
+          "name": "mapIsMapped",
+          "signature": "mapIsMapped(ptr: ptr<byte>) -> bool",
+          "params": ["ptr: ptr<byte>"],
+          "returns": "bool",
+          "errors": [],
+          "backend": "runtime mapping lifecycle lookup"
+        }
+      ]
+    },
+    {
+      "family": "collections",
+      "import": "use stoud.collections { list, queue, vector };",
+      "items": ["array", "list", "queue", "vector", "slice", "span", "option", "result"],
+      "functions": [
+        {
+          "name": "listGet",
+          "signature": "listGet<T>(list: list<T>, index: int) -> T",
+          "params": ["list: list<T>", "index: int"],
+          "returns": "T",
+          "errors": ["TypeError when index is not int"],
+          "backend": "descriptor access; native stride/load when lowered"
+        },
+        {
+          "name": "queuePush",
+          "signature": "queuePush<T>(queue: queue<T>, value: T) -> bool",
+          "params": ["queue: queue<T>", "value: T"],
+          "returns": "bool",
+          "errors": ["TypeError when value is not T"],
+          "backend": "runtime FIFO append or native descriptor write"
+        },
+        {
+          "name": "queuePop",
+          "signature": "queuePop<T>(queue: queue<T>) -> Option<T>",
+          "params": ["queue: queue<T>"],
+          "returns": "Option<T>",
+          "errors": [],
+          "backend": "runtime queue pop or native ring-buffer lowering"
+        },
+        {
+          "name": "queueGet",
+          "signature": "queueGet<T>(queue: queue<T>, index: int) -> T",
+          "params": ["queue: queue<T>", "index: int"],
+          "returns": "T",
+          "errors": ["TypeError when index is not int"],
+          "backend": "descriptor access; out-of-bounds returns the typed default"
+        },
+        {
+          "name": "queueLen",
+          "signature": "queueLen<T>(queue: queue<T>) -> int",
+          "params": ["queue: queue<T>"],
+          "returns": "int",
+          "errors": [],
+          "backend": "descriptor length load"
+        },
+        {
+          "name": "vectorPush",
+          "signature": "vectorPush<T>(vector: vector<T>, value: T) -> void",
+          "params": ["vector: vector<T>", "value: T"],
+          "returns": "void",
+          "errors": ["MemoryError when growth fails"],
+          "backend": "descriptor plus backing-buffer growth; native stride writes"
+        }
+      ]
+    },
+    {
+      "family": "data",
+      "import": "use stoud.data { json };",
+      "items": ["json"],
+      "functions": [
+        {
+          "name": "jsonParse",
+          "signature": "jsonParse(source: str) -> int",
+          "params": ["source: str"],
+          "returns": "int",
+          "errors": ["E_RUNTIME_JSON_PARSE_001 when source is invalid"],
+          "backend": "native JSON runtime parser"
+        },
+        {
+          "name": "jsonParseFile",
+          "signature": "jsonParseFile(path: str) -> int",
+          "params": ["path: str"],
+          "returns": "int",
+          "errors": ["JSON parse or filesystem error"],
+          "backend": "native filesystem plus JSON parser"
+        },
+        {
+          "name": "jsonValidate",
+          "signature": "jsonValidate(source: str) -> bool",
+          "params": ["source: str"],
+          "returns": "bool",
+          "errors": [],
+          "backend": "native JSON parser validation"
+        },
+        {
+          "name": "jsonStringify",
+          "signature": "jsonStringify(handle: int) -> str",
+          "params": ["handle: int"],
+          "returns": "str",
+          "errors": ["Invalid JSON handle"],
+          "backend": "native JSON serializer"
+        },
+        {
+          "name": "jsonStringifyPretty",
+          "signature": "jsonStringifyPretty(handle: int, indent: int) -> str",
+          "params": ["handle: int", "indent: int"],
+          "returns": "str",
+          "errors": ["Invalid JSON handle"],
+          "backend": "native formatted JSON serializer"
+        },
+        {
+          "name": "jsonObjectGet",
+          "signature": "jsonObjectGet(object: int, key: str) -> int",
+          "params": ["object: int", "key: str"],
+          "returns": "int",
+          "errors": ["Invalid handle or non-object value"],
+          "backend": "native JSON object lookup"
+        },
+        {
+          "name": "jsonObjectSet",
+          "signature": "jsonObjectSet(object: int, key: str, value: int) -> bool",
+          "params": ["object: int", "key: str", "value: int"],
+          "returns": "bool",
+          "errors": ["Invalid handle or non-object value"],
+          "backend": "native JSON object mutation"
+        },
+        {
+          "name": "jsonArrayGet",
+          "signature": "jsonArrayGet(array: int, index: int) -> int",
+          "params": ["array: int", "index: int"],
+          "returns": "int",
+          "errors": ["Invalid handle, non-array value or index"],
+          "backend": "native JSON array lookup"
+        },
+        {
+          "name": "jsonArrayPush",
+          "signature": "jsonArrayPush(array: int, value: int) -> bool",
+          "params": ["array: int", "value: int"],
+          "returns": "bool",
+          "errors": ["Invalid handle or non-array value"],
+          "backend": "native JSON array mutation"
+        },
+        {
+          "name": "jsonPointer",
+          "signature": "jsonPointer(root: int, pointer: str) -> int",
+          "params": ["root: int", "pointer: str"],
+          "returns": "int",
+          "errors": ["Invalid handle or JSON pointer"],
+          "backend": "native RFC 6901-style lookup"
+        },
+        {
+          "name": "jsonSaveFile",
+          "signature": "jsonSaveFile(handle: int, path: str, indent: int) -> bool",
+          "params": ["handle: int", "path: str", "indent: int"],
+          "returns": "bool",
+          "errors": ["Invalid handle or filesystem error"],
+          "backend": "native JSON serializer plus filesystem"
+        },
+        {
+          "name": "jsonRelease",
+          "signature": "jsonRelease(handle: int) -> bool",
+          "params": ["handle: int"],
+          "returns": "bool",
+          "errors": [],
+          "backend": "native JSON handle release"
+        }
+      ]
+    },
+    {
+      "family": "math",
+      "import": "use stoud.math { core, trig, numeric };",
+      "items": ["core", "algebra", "trig", "geometry", "vector", "matrix", "tensor", "stats", "prob", "calc", "numeric", "complex", "discrete"],
+      "functions": [
+        {
+          "name": "abs",
+          "signature": "abs(value: int|ft64) -> int|ft64",
+          "params": ["value: int|ft64"],
+          "returns": "int|ft64",
+          "errors": ["OverflowError for minimum signed integer in checked mode"],
+          "backend": "native arithmetic intrinsic"
+        },
+        {
+          "name": "sqrt",
+          "signature": "sqrt(value: ft64) -> ft64",
+          "params": ["value: ft64"],
+          "returns": "ft64",
+          "errors": ["DomainError for negative value in checked mode"],
+          "backend": "native libm/SIMD intrinsic when target supports it"
+        },
+        {
+          "name": "sin",
+          "signature": "sin(value: ft64) -> ft64",
+          "params": ["value: ft64"],
+          "returns": "ft64",
+          "errors": [],
+          "backend": "native libm or target math intrinsic"
+        }
+      ]
+    },
+    {
+      "family": "time",
+      "import": "use stoud.time { time, clock, sleep, timer };",
+      "items": ["time", "clock", "sleep", "timer"],
+      "functions": [
+        {
+          "name": "now",
+          "signature": "now() -> int",
+          "params": [],
+          "returns": "int",
+          "errors": ["TimeError when system time is unavailable"],
+          "backend": "real host clock/runtime call"
+        },
+        {
+          "name": "sleep",
+          "signature": "sleep(ms: int) -> void",
+          "params": ["ms: int"],
+          "returns": "void",
+          "errors": ["TimeError when sleep is interrupted or unsupported"],
+          "backend": "real host sleep/runtime call"
+        }
+      ]
+    },
+    {
+      "family": "fs",
+      "import": "use stoud.fs { read, write, path };",
+      "items": ["fs", "read", "write", "append", "sync", "exists", "delete", "copy", "mkdir", "rmdir", "list", "metadata", "permissions", "path", "file", "stream"],
+      "functions": [
+        {
+          "name": "readFile",
+          "signature": "readFile(path: str) -> Result<str, FsError>",
+          "params": ["path: str"],
+          "returns": "Result<str, FsError>",
+          "errors": ["FsError for missing file, permission denied, invalid encoding or IO failure"],
+          "backend": "real filesystem read; hosted runtime symbol"
+        },
+        {
+          "name": "writeFile",
+          "signature": "writeFile(path: str, content: str) -> Result<bool, FsError>",
+          "params": ["path: str", "content: str"],
+          "returns": "Result<bool, FsError>",
+          "errors": ["FsError for permission denied, invalid path or IO failure"],
+          "backend": "real filesystem write; hosted runtime symbol"
+        }
+      ]
+    },
+    {
+      "family": "net",
+      "import": "use stoud.net { tcp, udp, dns, http, tls };",
+      "items": ["net", "socket", "tcp", "udp", "http", "dns", "tls"],
+      "functions": [
+        {
+          "name": "tcpConnect",
+          "signature": "tcpConnect(host: str, port: int) -> Result<TcpHandle, TcpError>",
+          "params": ["host: str", "port: int"],
+          "returns": "Result<TcpHandle, TcpError>",
+          "errors": ["TcpError for DNS, connect, timeout or permission failure"],
+          "backend": "real network runtime call"
+        }
+      ]
+    },
+    {
+      "family": "process",
+      "import": "use stoud.process { spawn, wait, kill };",
+      "items": ["process", "spawn", "wait", "kill", "stdio", "status"],
+      "functions": [
+        {
+          "name": "spawn",
+          "signature": "spawn(command: str, args: list<str>) -> Result<ProcessHandle, ProcessError>",
+          "params": ["command: str", "args: list<str>"],
+          "returns": "Result<ProcessHandle, ProcessError>",
+          "errors": ["ProcessError for missing executable, permission denied or spawn failure"],
+          "backend": "real process runtime call; capability gated"
+        },
+        {
+          "name": "wait",
+          "signature": "wait(process: ProcessHandle) -> Result<int, ProcessError>",
+          "params": ["process: ProcessHandle"],
+          "returns": "Result<int, ProcessError>",
+          "errors": ["ProcessError for invalid handle or wait failure"],
+          "backend": "real process wait runtime call"
+        }
+      ]
+    },
+    {
+      "family": "thread",
+      "import": "use stoud.thread { spawn, join, sleep };",
+      "items": ["thread", "spawn", "join", "sleep", "local", "sync", "lock", "atomic", "channel"],
+      "functions": [
+        {
+          "name": "threadSpawn",
+          "signature": "threadSpawn(fn: fn) -> Result<ThreadHandle, ThreadError>",
+          "params": ["fn: fn"],
+          "returns": "Result<ThreadHandle, ThreadError>",
+          "errors": ["ThreadError for spawn failure or invalid callable"],
+          "backend": "real thread runtime call; capability gated"
+        },
+        {
+          "name": "threadJoin",
+          "signature": "threadJoin(thread: ThreadHandle) -> Result<any, ThreadError>",
+          "params": ["thread: ThreadHandle"],
+          "returns": "Result<any, ThreadError>",
+          "errors": ["ThreadError for invalid handle, panic or join failure"],
+          "backend": "real thread join runtime call"
+        }
+      ]
+    }
+  ]
+}

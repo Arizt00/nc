@@ -1,0 +1,72 @@
+
+fsDescribeHost {
+    fn:
+        public:
+            inspect(path >> str, out >> p<byte>) -> bool {
+                storage >> array<u64,32>;
+                data >> p<byte> <- cast<byte>(&storage);
+                if (osLstatx(-100,adr(path),0,0x7FF,adr(data)) != 0) return false;
+                present >> u32 <- rd<u32>(cast<u32>(data));
+                if ((present & 0x243) != 0x243) return false;
+                mode >> u32 <- rd<u16>(cast<u16>(off(data,28))) & 65535;
+                form >> u32 <- mode & 0xF000;
+                kind >> u32 <- form == 0x8000 ? 1 : (form == 0x4000 ? 2 : (form == 0xA000 ? 3 : 4));
+                wr<u64>(cast<u64>(out),rd<u64>(cast<u64>(off(data,40))));
+                seconds >> i64 <- rd<i64>(cast<i64>(off(data,112)));
+                wr<u64>(cast<u64>(off(out,8)),seconds < 0 ? 0 : seconds);
+                wr<u32>(cast<u32>(off(out,16)),kind);
+                wr<u32>(cast<u32>(off(out,20)),mode);
+                wr<u32>(cast<u32>(off(out,24)),(mode & 146) == 0 ? 1 : 0);
+                return true;
+            }
+            names(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                directory >> addr <- osLopendir(adr(path));
+                if (directory == null) return -1;
+                error >> p<i32> <- from<i32>(osL__errno_location());
+                needed >> int <- 0;
+                if (out != null && capacity > 0) wr(out,0);
+                status >> int <- 0;
+                while (true) {
+                    wr(error,0);
+                    entry >> addr <- osLreaddir64(directory);
+                    if (entry == null) { if (rd(error) != 0) status = -1; break; }
+                    name >> p<byte> <- off<byte>(from<byte>(entry),19);
+                    bytes >> int <- 0;
+                    while (rd(off(name,bytes)) != 0) { bytes += 1; }
+                    if (bytes == 1 && rd(name) == 46) continue;
+                    if (bytes == 2 && rd(name) == 46 && rd(off(name,1)) == 46) continue;
+                    if (needed > 2147483646 - bytes) { status = -1; break; }
+                    next >> int <- needed + bytes + 1;
+                    if (out != null && capacity > next) {
+                        index >> int <- 0;
+                        while (index < bytes) { wr(off(out,needed+index),rd(off(name,index))); index += 1; }
+                        wr(off(out,needed+bytes),10); wr(off(out,next),0);
+                    }
+                    needed = next;
+                }
+                if (osLclosedir(directory) != 0) status = -1;
+                return status == 0 ? needed : -1;
+            }
+            canonical(path >> str, out >> p<byte>, capacity >> u64) -> int {
+                storage >> p<byte> <- alloc(4096);
+                if (storage == null) return -4;
+                resolved >> addr <- osLrealpath(adr(path),adr(storage));
+                if (resolved == null) {
+                    error >> i32 <- rd<i32>(from<i32>(osL__errno_location()));
+                    free(storage);
+                    return error == 12 ? -4 : -3;
+                }
+                text >> p<byte> <- from<byte>(resolved);
+                bytes >> int <- 0;
+                while (rd(off(text,bytes)) != 0) { bytes += 1; }
+                result >> int <- -2;
+                if (capacity > bytes) {
+                    index >> int <- 0;
+                    while (index <= bytes) { wr(off(out,index),rd(off(text,index))); index += 1; }
+                    result = bytes;
+                }
+                free(storage);
+                return result;
+            }
+    fa: return true;
+}

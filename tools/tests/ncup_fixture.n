@@ -1,0 +1,137 @@
+use <io:output>;
+use <data:json>;
+use <process:args, env>;
+use <project:release_io, tool_cli, ncup_session>;
+
+ncupFixture {
+    stc:
+        arguments >> addr;
+        home >> str;
+        project >> str;
+        fault >> str;
+    fn:
+        private:
+            option(key >> str) -> str { return release_io.releaseIo.option(arguments,key,""); }
+            contains(word >> str) -> bool {
+                index >> int <- 1;
+                while (index < argsCount(arguments)) { if (argsAt(arguments,index) == word) return true; index += 1; }
+                return false;
+            }
+            allowed(path >> str) -> bool {
+                root >> str <- ncup_session.ncupSession.environment("NCC_FIXTURE_ROOT");
+                guard root != "" else return false;
+                prefix >> str <- release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(root))+"/";
+                absolute >> str <- release_io.releaseIo.forwardPath(tool_cli.toolCli.absolute(path));
+                return strStartsWith(absolute,prefix);
+            }
+            write(relative >> str, content >> str) -> bool {
+                return allowed(home+"/"+relative) && release_io.releaseIo.write(home+"/"+relative,content);
+            }
+            reportFixture(payload >> int) -> int {
+                jsonObjectSet(payload,"native_fixture_only",jsonNewBool(true));
+                println(jsonStringify(payload)); jsonRelease(payload); return 0;
+            }
+            init() -> int {
+                guard allowed(home) else return 78;
+                names >> int <- jsonParse("[\"toolchains\",\"downloads\",\"tmp\",\"manifests\",\"keys\",\"logs\",\"bin\"]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(names)) {
+                    item >> int <- jsonArrayGet(names,index);
+                    name >> str <- jsonGetString(item);
+                    if (!(fault == "missing-directory" && name == "keys")) release_io.releaseIo.makeDirectories(home+"/"+name);
+                    jsonRelease(item); index += 1;
+                }
+                jsonRelease(names);
+                write("manifests/toolchains.v1.json","{\"installed_toolchains\":[{\"id\":\"stable-x86_64-unknown-linux-gnu\"}]}");
+                if (fault != "missing-manifest") write("manifests/ncup-config.v1.json","{}");
+                write("env.sh","export PATH=\""+home+(envHas("WINDIR") ? "\\bin" : "/bin")+":$PATH\"\n");
+                write("env.bat","fixture only\n");
+                if (!contains("--json")) { println("FIXTURE ONLY: init"); return 0; }
+                demo >> str <- home+"/hello.n";
+                write("hello.n","hello { to main { return 0; } }\n");
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload,"schema",jsonNewString("ncup.init.first-run.v1"));
+                jsonObjectSet(payload,"status",jsonNewString("ok"));
+                jsonObjectSet(payload,"home",jsonNewString(home));
+                first >> int <- jsonParse("{\"doctor\":{\"status\":\"ok\"},\"post_install_guide\":[\"a\",\"b\",\"c\"]}");
+                entry >> int <- jsonParse("{\"status\":\"ok\",\"command\":\"ncc run hello.n\"}");
+                jsonObjectSet(entry,"demo_file",jsonNewString(demo));
+                if (fault == "bad-demo") jsonObjectSet(entry,"status",jsonNewString("error"));
+                jsonObjectSet(first,"demo",entry); jsonObjectSet(payload,"first_run",first);
+                return reportFixture(payload);
+            }
+            which() -> int {
+                if (contains("--require-component")) {
+                    println("missing required component 'nclsp'; ncup component add nclsp --toolchain");
+                    return fault == "false-success" ? 0 : 1;
+                }
+                if (fault == "malformed-which") { println("not JSON"); return 0; }
+                source >> str <- "global_default";
+                id >> str <- "stable-x86_64-unknown-linux-gnu";
+                if (envHas("NCUP_TOOLCHAIN")) { source <- "env_var"; id <- ncup_session.ncupSession.environment("NCUP_TOOLCHAIN"); }
+                override >> str <- project+"/nc-toolchain.toml";
+                if (release_io.releaseIo.fileType(override) == 1) {
+                    source <- "local_override";
+                    text >> str <- release_io.releaseIo.text(override);
+                    id <- strContains(text,"beta-") ? "beta-x86_64-unknown-linux-gnu" : "stable-wasm32-wasi";
+                }
+                if (!contains("--json")) { println(home+"/toolchains/"+id+"/bin"); return 0; }
+                payload >> int <- jsonNewObject();
+                jsonObjectSet(payload,"schema",jsonNewString("ncup.which.v1"));
+                jsonObjectSet(payload,"bin",jsonNewString("ncc"));
+                jsonObjectSet(payload,"source",jsonNewString(source));
+                jsonObjectSet(payload,"source_detail",jsonNewString("NCUP_TOOLCHAIN"));
+                jsonObjectSet(payload,"toolchain_id",jsonNewString(id));
+                jsonObjectSet(payload,"path",jsonNewString(argsAt(arguments,0)));
+                return reportFixture(payload);
+            }
+            execute() -> int {
+                guard envHas("NCC_FIXTURE_ROOT") else return 78;
+                arguments <- argsOpen();
+                fault <- ncup_session.ncupSession.environment("NCC_FIXTURE_FAULT");
+                action >> str <- argsAt(arguments,1);
+                if (action == "env-probe") {
+                    payload >> int <- jsonNewObject();
+                    jsonObjectSet(payload,"present",jsonNewBool(envHas("NCC_FIXTURE_PROBE")));
+                    jsonObjectSet(payload,"value",jsonNewString(ncup_session.ncupSession.environment("NCC_FIXTURE_PROBE")));
+                    return reportFixture(payload);
+                }
+                if (action == "build") { println("FIXTURE ONLY: no compilation"); return 0; }
+                if (action == "test") {
+                    println("FIXTURE ONLY: simulated Cargo test result, not compiler evidence");
+                    println(fault == "zero-tests" ? "test result: ok. 0 passed; 0 failed;" : "test result: ok. 1 passed; 0 failed;");
+                    return fault == "imports-failure" ? 7 : 0;
+                }
+                if (action == "phase10-toolchain-model") return reportFixture(jsonParse("{\"channels\":[\"stable\",\"beta\",\"nightly\"],\"toolchains\":[{\"id\":\"stable-x86_64-unknown-linux-gnu\"}]}"));
+                if (action == "run" && !contains("ncup")) {
+                    println("FIXTURE ONLY: demo command");
+                    return fault == "bad-global-run" ? 7 : 0;
+                }
+                start >> int <- 1;
+                while (start < argsCount(arguments) && argsAt(arguments,start) != "ncup") { start += 1; }
+                if (start+1 >= argsCount(arguments)) return 2;
+                action <- argsAt(arguments,start+1);
+                home <- option("--home");
+                project <- option("--cwd");
+                if (home == "") home <- ncup_session.ncupSession.environment("NCUP_HOME");
+                if (fault == "all-fail") { println("FIXTURE ONLY: failure"); return 9; }
+                if (action == "init") return init();
+                if (action == "toolchain" && contains("which")) return which();
+                if (contains("stable-x86_64-unknown-none-elf") || contains("x86_64-unknown-none-elf")) {
+                    println("does not support channel 'stable'; workaround: use nightly");
+                    return fault == "false-success" ? 0 : 1;
+                }
+                if (action == "doctor") { println("OK: ncup doctor (FIXTURE ONLY)"); return fault == "bad-doctor" ? 7 : 0; }
+                if (action == "override") {
+                    guard allowed(project) else return 78;
+                    return release_io.releaseIo.write(project+"/nc-toolchain.toml","[toolchain]\nid = \"stable-x86_64-unknown-linux-gnu\"\n") ? 0 : 7;
+                }
+                if (action == "self") return write("manifests/self-update.v1.json","{}") ? 0 : 7;
+                if (action == "uninstall" && fault == "empty-after-uninstall") write("manifests/toolchains.v1.json","{\"installed_toolchains\":[]}");
+                println("FIXTURE ONLY: command accepted"); return 0;
+            }
+        public:
+            run() -> int { result >> int <- execute(); argsRelease(arguments); return result; }
+    ref main ->> run;
+    fa: return true;
+}

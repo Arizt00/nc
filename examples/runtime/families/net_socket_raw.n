@@ -1,0 +1,47 @@
+use <io:output>;
+use <memory:stack>;
+use <net:net, socket>;
+
+rawSocketLoopback :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            receive >> p<byte> <- stackAlloc(16, 8);
+
+            started >> int <- netStartup();
+            client >> addr <- socketCreate(2, 1, 6);
+            connected >> int <- (started == 0 && client != null)
+                ? socketConnect(client, "127.0.0.1", 18766, 3000)
+                : -1;
+            sent >> int <- connected == 0
+                ? socketSend(client, adr(b"PING"), 4, 0)
+                : -1;
+            received >> int <- sent == 4
+                ? socketRecv(client, adr(receive), 16, 0)
+                : -1;
+
+            ok >> bool <-
+                received == 4 &&
+                rd(off(receive, 0)) == 80 &&
+                rd(off(receive, 1)) == 79 &&
+                rd(off(receive, 2)) == 78 &&
+                rd(off(receive, 3)) == 71;
+
+            if (client != null) {
+                socketShutdown(client, 2);
+                socketClose(client);
+            }
+            if (started == 0) { netShutdown(); }
+            stackRestore(mark);
+
+            print("manual nC Winsock backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

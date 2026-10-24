@@ -1,0 +1,84 @@
+use <data:json>;
+use <process:args>;
+use <io:output, render>;
+use <project:release_io, tool_cli, contract_checks, sha256, cert_json>;
+
+certEquivalenceV42 {
+    local:
+        compared >> int <- 0;
+        failure >> str <- "";
+    fn:
+        private:
+            equal(oracle >> int, native >> int, path >> str) -> bool {
+                if (jsonKind(oracle) != jsonKind(native)) { failure <- path+": type"; return false; }
+                if (jsonKind(oracle) == 6) {
+                    index >> int <- 0;
+                    while (index < jsonObjectLen(oracle)) {
+                        key >> str <- jsonObjectKeyAt(oracle,index);
+                        if (key != "generated_at_utc" && key != "duration_sec" && key != "list_duration_sec") {
+                            if (!jsonObjectHas(native,key)) { failure <- path+"/"+key+": missing"; free(cast<byte>(key)); return false; }
+                            a >> int <- jsonObjectBorrow(oracle,key);
+                            b >> int <- jsonObjectBorrow(native,key);
+                            childPath >> str <- path+"/"+key;
+                            same >> bool <- equal(a,b,childPath);
+                            strRelease(childPath);
+                            jsonRelease(a); jsonRelease(b);
+                            if (!same) { free(cast<byte>(key)); return false; }
+                        }
+                        free(cast<byte>(key));
+                        index += 1;
+                    }
+                    return true;
+                }
+                if (jsonKind(oracle) == 5) {
+                    if (jsonArrayLen(oracle) != jsonArrayLen(native)) { failure <- path+": length"; return false; }
+                    index >> int <- 0;
+                    while (index < jsonArrayLen(oracle)) {
+                        a >> int <- jsonArrayBorrow(oracle,index);
+                        b >> int <- jsonArrayBorrow(native,index);
+                        childPath >> str <- path+"/"+renderInt(index);
+                        same >> bool <- equal(a,b,childPath);
+                        strRelease(childPath);
+                        jsonRelease(a); jsonRelease(b);
+                        if (!same) return false;
+                        index += 1;
+                    }
+                    return true;
+                }
+                compared += 1;
+                if (!jsonEquals(oracle,native)) { failure <- path+": value"; return false; }
+                return true;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen();
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--oracle-report|--native-report|--out|","");
+                if (options == 0) { argsRelease(arguments); return 2; }
+                oraclePath >> str <- tool_cli.toolCli.value(options,"--oracle-report","");
+                nativePath >> str <- tool_cli.toolCli.value(options,"--native-report","");
+                output >> str <- tool_cli.toolCli.value(options,"--out","");
+                if (oraclePath == "" || nativePath == "" || output == "") { argsRelease(arguments); jsonRelease(options); return 2; }
+                oracle >> int <- jsonParseFile(oraclePath);
+                native >> int <- jsonParseFile(nativePath);
+                passed >> bool <- jsonKind(oracle) == 6 && jsonKind(native) == 6;
+                passed <- passed && cert_json.certJson.field(oracle,"schema") == "nc.release.industrial.matrix.v1";
+                passed <- passed && equal(oracle,native,"");
+                report >> int <- jsonNewObject();
+                cert_json.certJson.put(report,"schema",jsonNewString("nc.cert.matrix.oracle_comparison.v42"));
+                cert_json.certJson.put(report,"status",jsonNewString(passed ? "passed" : "failed"));
+                cert_json.certJson.put(report,"compared_scalar_fields",jsonNewInt(compared));
+                cert_json.certJson.put(report,"failure",jsonNewString(failure));
+                cert_json.certJson.put(report,"oracle_report",jsonNewString(oraclePath));
+                cert_json.certJson.put(report,"native_report",jsonNewString(nativePath));
+                cert_json.certJson.put(report,"oracle_sha256",jsonNewString(sha256.nccSha256.file(oraclePath)));
+                cert_json.certJson.put(report,"native_sha256",jsonNewString(sha256.nccSha256.file(nativePath)));
+                cert_json.certJson.put(report,"ignored_oracle_fields",jsonParse("[\"generated_at_utc\",\"duration_sec\",\"list_duration_sec\"]"));
+                cert_json.certJson.put(report,"scope",jsonNewString("controlled process oracle equivalence; not compiler or physical certification"));
+                passed <- cert_json.certJson.save(output,report) && passed;
+                println(passed ? "PASS cert matrix oracle equivalence v42" : "FAIL cert matrix oracle equivalence v42: "+failure);
+                jsonRelease(report); jsonRelease(oracle); jsonRelease(native); jsonRelease(options); argsRelease(arguments);
+                return passed ? 0 : 1;
+            }
+    ref main ->> run;
+    fa: return true;
+}

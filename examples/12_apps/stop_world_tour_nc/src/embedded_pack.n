@@ -1,0 +1,225 @@
+/*
+ * nC embedded record-pack runtime.
+ *
+ * Pure nC implementation. A producer stores sorted records as front-coded
+ * blocks in immutable stc storage and publishes two u32 indices. The lowering
+ * chooses the target's physical read-only section automatically:
+ *
+ *   recordOffsets[index] -> record byte offset in payload
+ *   hashSlots[slot]       -> record index, or 0xFFFFFFFF
+ *
+ * Record encoding (little-endian):
+ *   u16 sharedPrefixBytes
+ *   u16 keySuffixBytes
+ *   u32 valueBytes
+ *   byte[keySuffixBytes]
+ *   byte[valueBytes]
+ *
+ * Only the block containing the requested key is reconstructed. Values are
+ * addressed directly and never require decompressing the complete package.
+ */
+nccEmbeddedPack :: runtime {
+    const:
+        EMPTY_SLOT >> u32 <- 4294967295;
+        HASH_SEED >> int <- 216613626;
+        HASH_PRIME >> int <- 16777619;
+
+    fn:
+        private:
+            u16At(base >> p<byte>, at >> int) -> int {
+                return (rd<byte>(off(base, at)) & 255) |
+                    ((rd<byte>(off(base, at + 1)) & 255) << 8);
+            }
+
+            u32At(base >> p<byte>, at >> int) -> u32 {
+                return cast((rd<byte>(off(base, at)) & 255) |
+                    ((rd<byte>(off(base, at + 1)) & 255) << 8) |
+                    ((rd<byte>(off(base, at + 2)) & 255) << 16) |
+                    ((rd<byte>(off(base, at + 3)) & 255) << 24));
+            }
+
+            offsetAt(offsets >> p<u32>, index >> int) -> int {
+                return cast(rd<u32>(off(offsets, index)));
+            }
+
+            slotAt(slots >> p<u32>, index >> int) -> u32 {
+                return rd<u32>(off(slots, index));
+            }
+
+            lowerAscii(value >> byte) -> byte {
+                guard value >= 65 && value <= 90 else return value;
+                return value + 32;
+            }
+
+            textBytes(value >> str) -> int {
+                bytes >> p<byte> <- cast<byte>(value);
+                guard bytes != null else return 0;
+                at >> int <- 0;
+                while (rd<byte>(off(bytes, at)) != 0) { at += 1; }
+                return at;
+            }
+
+            hashText(value >> str) -> int {
+                bytes >> p<byte> <- cast<byte>(value);
+                count >> int <- textBytes(value);
+                hash >> int <- HASH_SEED;
+                at >> int <- 0;
+                while (at < count) {
+                    hash <- ((hash ^ (lowerAscii(rd<byte>(off(bytes, at))) & 255)) *
+                        HASH_PRIME) & 0x7FFFFFFF;
+                    at += 1;
+                }
+                return hash;
+            }
+
+            sameText(left >> p<byte>, leftBytes >> int, right >> str) -> bool {
+                rightBytes >> p<byte> <- cast<byte>(right);
+                count >> int <- textBytes(right);
+                guard leftBytes == count else return false;
+                at >> int <- 0;
+                while (at < count) {
+                    if (lowerAscii(rd<byte>(off(left, at))) !=
+                        lowerAscii(rd<byte>(off(rightBytes, at)))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            copyBytes(target >> p<byte>, targetAt >> int,
+                source >> p<byte>, sourceAt >> int, count >> int) -> int {
+                at >> int <- 0;
+                while (at < count) {
+                    wr<byte>(off(target, targetAt + at), rd<byte>(off(source, sourceAt + at)));
+                    at += 1;
+                }
+                return targetAt + count;
+            }
+
+            recordCursor(payload >> p<byte>, offsets >> p<u32>, index >> int) -> p<byte> {
+                return off(payload, offsetAt(offsets, index));
+            }
+
+            valueLength(payload >> p<byte>, offsets >> p<u32>, index >> int) -> int {
+                record >> p<byte> <- recordCursor(payload, offsets, index);
+                return cast(u32At(record, 4));
+            }
+
+            valueData(payload >> p<byte>, offsets >> p<u32>, index >> int) -> p<byte> {
+                record >> p<byte> <- recordCursor(payload, offsets, index);
+                suffix >> int <- u16At(record, 2);
+                return off(record, 8 + suffix);
+            }
+
+            keyRaw(payload >> p<byte>, offsets >> p<u32>, count >> int,
+                blockSize >> int, maxKeyBytes >> int, index >> int) -> p<byte> {
+                guard payload != null && offsets != null && count > 0 else return null;
+                guard blockSize > 0 && maxKeyBytes > 0 else return null;
+                guard index >= 0 && index < count else return null;
+
+                out >> p<byte> <- cast<byte>(alloc(maxKeyBytes + 1));
+                guard out != null else return null;
+                first >> int <- (index / blockSize) * blockSize;
+                current >> int <- first;
+                keyBytes >> int <- 0;
+                while (current <= index) {
+                    record >> p<byte> <- recordCursor(payload, offsets, current);
+                    prefix >> int <- u16At(record, 0);
+                    suffix >> int <- u16At(record, 2);
+                    guard prefix <= keyBytes && prefix + suffix <= maxKeyBytes else {
+                        free(out);
+                        return null;
+                    }
+                    keyBytes <- copyBytes(out, prefix, record, 8, suffix);
+                    current += 1;
+                }
+                wr<byte>(off(out, keyBytes), 0);
+                return out;
+            }
+
+        public:
+            packCount(count >> int) -> int {
+                guard count >= 0 else return 0;
+                return count;
+            }
+
+            packFind(payload >> p<byte>, offsets >> p<u32>, slots >> p<u32>,
+                count >> int, slotCount >> int, blockSize >> int,
+                maxKeyBytes >> int, key >> str) -> int {
+                guard payload != null && offsets != null && slots != null else return -1;
+                guard count > 0 && slotCount > 1 &&
+                    (slotCount & (slotCount - 1)) == 0 else return -1;
+                guard key != "" else return -1;
+
+                slot >> int <- hashText(key) & (slotCount - 1);
+                probes >> int <- 0;
+                while (probes < slotCount) {
+                    encoded >> u32 <- slotAt(slots, slot);
+                    guard encoded != EMPTY_SLOT else return -1;
+                    index >> int <- cast(encoded);
+                    if (index >= 0 && index < count) {
+                        candidate >> p<byte> <- keyRaw(payload, offsets, count,
+                            blockSize, maxKeyBytes, index);
+                        guard candidate != null else return -1;
+                        candidateBytes >> int <- 0;
+                        while (rd<byte>(off(candidate, candidateBytes)) != 0) {
+                            candidateBytes += 1;
+                        }
+                        equal >> bool <- sameText(candidate, candidateBytes, key);
+                        free(candidate);
+                        if (equal) return index;
+                    }
+                    slot <- (slot + 1) & (slotCount - 1);
+                    probes += 1;
+                }
+                return -1;
+            }
+
+            packContains(payload >> p<byte>, offsets >> p<u32>, slots >> p<u32>,
+                count >> int, slotCount >> int, blockSize >> int,
+                maxKeyBytes >> int, key >> str) -> bool {
+                return packFind(payload, offsets, slots, count, slotCount,
+                    blockSize, maxKeyBytes, key) >= 0;
+            }
+
+            packKeyAt(payload >> p<byte>, offsets >> p<u32>, count >> int,
+                blockSize >> int, maxKeyBytes >> int, index >> int) -> str {
+                value >> p<byte> <- keyRaw(payload, offsets, count,
+                    blockSize, maxKeyBytes, index);
+                return cast(value);
+            }
+
+            packTextAt(payload >> p<byte>, offsets >> p<u32>, count >> int,
+                index >> int) -> str {
+                guard index >= 0 && index < count else return "";
+                bytes >> int <- valueLength(payload, offsets, index);
+                source >> p<byte> <- valueData(payload, offsets, index);
+                out >> p<byte> <- cast<byte>(alloc(bytes + 1));
+                guard out != null else return "";
+                copyBytes(out, 0, source, 0, bytes);
+                wr<byte>(off(out, bytes), 0);
+                return cast(out);
+            }
+
+            packValueSize(payload >> p<byte>, offsets >> p<u32>, count >> int,
+                index >> int) -> int {
+                guard index >= 0 && index < count else return 0;
+                return valueLength(payload, offsets, index);
+            }
+
+            packByteAt(payload >> p<byte>, offsets >> p<u32>, count >> int,
+                index >> int, byteIndex >> int) -> int {
+                guard index >= 0 && index < count && byteIndex >= 0 else return -1;
+                bytes >> int <- valueLength(payload, offsets, index);
+                guard byteIndex < bytes else return -1;
+                return rd<byte>(off(valueData(payload, offsets, index), byteIndex)) & 255;
+            }
+
+            packReleaseText(value >> str) -> bool {
+                guard value != "" && cast<byte>(value) != null else return true;
+                free(cast<byte>(value));
+                return true;
+            }
+
+    fa:
+        return true;
+}

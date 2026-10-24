@@ -1,0 +1,2105 @@
+use <io:output, render>;
+use <project:ir, mct_values, native_types, heap_abi, memory_abi, output_abi, string_abi, fs_abi, time_abi, json_abi, command_abi, binary64>;
+
+nccNativeBody {
+    const:
+        HEADER >> int <- 128;
+        RECORD >> int <- 32;
+        ROLE_STRENGTH_SHL_BASE >> int <- 4096;
+        ROLE_STRENGTH_SHR_U_BASE >> int <- 4160;
+        ROLE_INLINE_BASE >> int <- 8192;
+    fn:
+        private:
+            g(c >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(c)); }
+            slots(c >> p<byte>) -> p<int> { return from<int>(rd<addr>(off(c,16))); }
+            get(c >> p<byte>, at >> int) -> int { return rd<int>(off(c,at)); }
+            set(c >> p<byte>, at >> int, value >> int) -> void { wr<int>(off(c,at),value); }
+            reject(c >> p<byte>, node >> int) -> void {
+                if (get(c,36) == 0) {
+                    print("native body rejected node "); print(renderInt(node));
+                    if (node >= 0 && node < ir.nccIr.graphNodes(g(c))) {
+                        print(" kind="); print(renderInt(ir.nccIr.graphNodeAstKind(g(c),node)));
+                        print(" line="); print(renderInt(ir.nccIr.graphNodeLine(g(c),node)));
+                    }
+                    println("");
+                }
+                set(c,36,1);
+            }
+            put(c >> p<byte>, value >> int) -> void {
+                at >> int <- get(c,32);
+                if (at >= get(c,28)) { reject(c,0); return; }
+                wr<byte>(off(code(c),at),cast<byte>(value)); set(c,32,at+1);
+            }
+            word(c >> p<byte>, value >> int) -> void {
+                put(c,value); put(c,value >> 8); put(c,value >> 16); put(c,value >> 24);
+            }
+            begin(c >> p<byte>, node >> int, opcode >> int) -> int {
+                index >> int <- get(c,40);
+                if (index >= get(c,24)) { reject(c,node); return -1; }
+                item >> p<byte> <- record(c,index);
+                wr<int>(item,node); wr<int>(off(item,4),opcode);
+                wr<int>(off(item,8),get(c,32)); wr<int>(off(item,16),-1);
+                wr<int>(off(item,20),-1);
+                wr<int>(off(item,24),-1); wr<int>(off(item,28),1);
+                set(c,40,index+1); return index;
+            }
+            end(c >> p<byte>, index >> int) -> void {
+                if (index < 0) return;
+                item >> p<byte> <- record(c,index);
+                length >> int <- get(c,32)-rd<int>(off(item,8));
+                wr<int>(off(item,12),length);
+                if (length > 32) reject(c,rd<int>(item));
+            }
+            byteOp(c >> p<byte>, node >> int, opcode >> int, byte >> int) -> void {
+                index >> int <- begin(c,node,opcode); put(c,byte); end(c,index);
+            }
+            constant(c >> p<byte>, node >> int, value >> int) -> void {
+                index >> int <- begin(c,node,5); put(c,0xB8); word(c,value); end(c,index);
+            }
+            constant64(c >> p<byte>, node >> int, value >> u64) -> void {
+                index >> int <- begin(c,node,5);
+                put(c,0x48); put(c,0xB8);
+                at >> int <- 0;
+                while (at < 8) {
+                    part >> u64 <- value >> (at*8);
+                    piece >> int <- part; put(c,piece); at += 1;
+                }
+                end(c,index);
+            }
+            push(c >> p<byte>, node >> int) -> void {
+                byteOp(c,node,7,0x50); set(c,44,get(c,44)+1);
+            }
+            pop(c >> p<byte>, node >> int, reg >> int) -> void {
+                index >> int <- begin(c,node,7);
+                if (reg >= 8) put(c,0x41);
+                put(c,0x58+(reg & 7)); end(c,index); set(c,44,get(c,44)-1);
+            }
+            frameAccess(c >> p<byte>, node >> int, declaration >> int, store >> bool, reg >> int) -> void {
+                if (declaration < 0) { reject(c,node); return; }
+                slot >> int <- rd<int>(off(slots(c),declaration));
+                if (slot < 0) {
+                    if (globalSection(c,declaration) > 0) globalAccess(c,node,declaration,store,reg,false);
+                    else reject(c,node);
+                    return;
+                }
+                if (store && reg == 0) normalize(c,node,typeNode(c,declaration));
+                index >> int <- begin(c,node,store ? 9 : 6);
+                put(c,reg >= 8 ? 0x4C : 0x48);
+                put(c,store ? 0x89 : 0x8B); put(c,0x85+((reg & 7)*8));
+                word(c,-8*(slot+1)); end(c,index);
+                if (!store && reg == 0) normalize(c,node,typeNode(c,declaration));
+            }
+            scalar(c >> p<byte>, node >> int, allowVoid >> bool) -> bool {
+                type >> int <- native_types.nccNativeTypes.code(g(c),node);
+                return (type > 0 && !native_types.nccNativeTypes.aggregate(type)) || (allowVoid && (node < 0 || type == 0));
+            }
+            typeNode(c >> p<byte>, node >> int) -> int {
+                return native_types.nccNativeTypes.typeNode(g(c),node);
+            }
+            normalize(c >> p<byte>, node >> int, type >> int) -> void {
+                normalizeCode(c,node,native_types.nccNativeTypes.code(g(c),type));
+            }
+            normalizeCode(c >> p<byte>, node >> int, type >> int) -> void {
+                if (native_types.nccNativeTypes.aggregate(type) || native_types.nccNativeTypes.floating(type)) return;
+                if (type == 33) {
+                    index >> int <- begin(c,node,7);
+                    put(c,0x84); put(c,0xC0); put(c,0x0F); put(c,0x95); put(c,0xC0);
+                    put(c,0x0F); put(c,0xB6); put(c,0xC0); end(c,index); return;
+                }
+                width >> int <- native_types.nccNativeTypes.width(type);
+                signed >> bool <- native_types.nccNativeTypes.signed(type);
+                if (width <= 0 || width == 8) return;
+                index >> int <- begin(c,node,7);
+                if (width == 4) {
+                    if (signed) { put(c,0x48); put(c,0x63); put(c,0xC0); }
+                    else { put(c,0x89); put(c,0xC0); }
+                }
+                else {
+                    if (signed) put(c,0x48);
+                    put(c,0x0F); put(c,(signed ? 0xBE : 0xB6)+(width == 2 ? 1 : 0)); put(c,0xC0);
+                }
+                end(c,index);
+            }
+            functionOf(c >> p<byte>, node >> int) -> int {
+                while (node >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(g(c),node) == 15) return node;
+                    node <- ir.nccIr.graphNodeParent(g(c),node);
+                }
+                return -1;
+            }
+            registerFor(c >> p<byte>, parameter >> int) -> int {
+                if (ir.nccIr.graphAbi(g(c)) == 2) {
+                    if (parameter == 0) return 1;
+                    if (parameter == 1) return 2;
+                    return parameter+6;
+                }
+                if (parameter == 0) return 7;
+                if (parameter == 1) return 6;
+                if (parameter == 2) return 2;
+                if (parameter == 3) return 1;
+                return parameter+4;
+            }
+            adjust(c >> p<byte>, node >> int, bytes >> int, restore >> bool) -> void {
+                if (bytes == 0) return;
+                if (!restore && bytes >= 4096) {
+                    moveReg(c,node,0,4);
+                    index >> int <- begin(c,node,7);
+                    put(c,0x48); put(c,0x2D); word(c,bytes); end(c,index);
+                    probeTo(c,node); return;
+                }
+                index >> int <- begin(c,node,7);
+                put(c,0x48); put(c,0x81); put(c,restore ? 0xC4 : 0xEC); word(c,bytes);
+                end(c,index);
+            }
+            // RAX is the new stack boundary. Touch every page without moving the frame pointer.
+            probeTo(c >> p<byte>, node >> int) -> void {
+                moveReg(c,node,11,4);
+                index >> int <- begin(c,node,7);
+                put(c,0x49); put(c,0x29); put(c,0xC3); end(c,index);
+                loopAt >> int <- get(c,32);
+                index <- begin(c,node,7);
+                put(c,0x49); put(c,0x81); put(c,0xFB); word(c,4096); end(c,index);
+                finish >> int <- flagBranch(c,node,0x86);
+                index <- begin(c,node,7);
+                put(c,0x48); put(c,0x81); put(c,0xEC); word(c,4096);
+                put(c,0xF6); put(c,0x04); put(c,0x24); put(c,0);
+                put(c,0x49); put(c,0x81); put(c,0xEB); word(c,4096); end(c,index);
+                back >> int <- branch(c,node,-1); patch(c,back,loopAt); patch(c,finish,get(c,32));
+                index <- begin(c,node,7);
+                put(c,0x4C); put(c,0x29); put(c,0xDC);
+                put(c,0xF6); put(c,0x04); put(c,0x24); put(c,0); end(c,index);
+            }
+            callBases(c >> p<byte>) -> p<int> { return from<int>(rd<addr>(off(c,8))); }
+            callAlignment(c >> p<byte>, node >> int) -> int {
+                if (ir.nccIr.graphAbi(g(c)) == 2) return 16;
+                alignment >> int <- 16;
+                arg >> int <- ir.nccIr.graphNodeNextSibling(g(c),ir.nccIr.graphNodeFirstChild(g(c),node));
+                while (arg >= 0) {
+                    type >> int <- native_types.nccNativeTypes.expression(g(c),arg,0);
+                    current >> int <- native_types.nccNativeTypes.aggregate(type) ? native_types.nccNativeTypes.aggregateAlign(g(c),type) : 1;
+                    if (current > alignment) alignment <- current;
+                    arg <- ir.nccIr.graphNodeNextSibling(g(c),arg);
+                }
+                return alignment;
+            }
+            callValue(c >> p<byte>, node >> int, padding >> int, displacement >> int, reg >> int, realigned >> bool) -> void {
+                if (!realigned) { stackAccess(c,node,padding+displacement,reg,false); return; }
+                memoryOp(c,node,5,-8*(rd(off(callBases(c),node))+1),8,false,11,false);
+                memoryOp(c,node,11,displacement,8,false,reg,false);
+            }
+            stackAccess(c >> p<byte>, node >> int, displacement >> int, reg >> int, store >> bool) -> void {
+                index >> int <- begin(c,node,store ? 9 : 6);
+                put(c,reg >= 8 ? 0x4C : 0x48); put(c,store ? 0x89 : 0x8B);
+                put(c,0x84+8*(reg & 7)); put(c,0x24); word(c,displacement); end(c,index);
+            }
+            moveReg(c >> p<byte>, node >> int, destination >> int, source >> int) -> void {
+                index >> int <- begin(c,node,7);
+                put(c,0x48+(source >= 8 ? 4 : 0)+(destination >= 8 ? 1 : 0));
+                put(c,0x89); put(c,0xC0+(source & 7)*8+(destination & 7)); end(c,index);
+            }
+            xmm(c >> p<byte>, node >> int, register >> int, gpr >> int, toXmm >> bool, type >> int) -> void {
+                index >> int <- begin(c,node,7);
+                put(c,0x66);
+                rex >> int <- 0x40+(type == 41 ? 8 : 0)+(register >= 8 ? 4 : 0)+(gpr >= 8 ? 1 : 0);
+                if (rex != 0x40) put(c,rex);
+                put(c,0x0F); put(c,toXmm ? 0x6E : 0x7E);
+                put(c,0xC0+(register & 7)*8+(gpr & 7)); end(c,index);
+            }
+            fpOp(c >> p<byte>, node >> int, opcode >> int, type >> int, modrm >> int) -> void {
+                index >> int <- begin(c,node,7);
+                put(c,type == 41 ? 0xF2 : 0xF3); put(c,0x0F); put(c,opcode); put(c,modrm); end(c,index);
+            }
+            fpConvert(c >> p<byte>, node >> int, source >> int, destination >> int) -> void {
+                if (source == destination || (!native_types.nccNativeTypes.floating(source) && !native_types.nccNativeTypes.floating(destination))) return;
+                if (native_types.nccNativeTypes.floating(source)) {
+                    xmm(c,node,0,0,true,source);
+                    if (native_types.nccNativeTypes.floating(destination)) {
+                        fpOp(c,node,0x5A,source,0xC0); xmm(c,node,0,0,false,destination); return;
+                    }
+                    if (destination == 8) {
+                        constant64(c,node,source == 41 ? 0x43E0000000000000 : 0x5F000000);
+                        xmm(c,node,1,0,true,source);
+                        index >> int <- begin(c,node,7);
+                        if (source == 41) put(c,0x66);
+                        put(c,0x0F); put(c,0x2E); put(c,0xC1); end(c,index);
+                        low >> int <- flagBranch(c,node,0x82);
+                        fpOp(c,node,0x5C,source,0xC1);
+                        index <- begin(c,node,7); put(c,source == 41 ? 0xF2 : 0xF3);
+                        put(c,0x48); put(c,0x0F); put(c,0x2C); put(c,0xC0); end(c,index);
+                        moveReg(c,node,1,0); constant64(c,node,0x8000000000000000);
+                        index <- begin(c,node,7); put(c,0x48); put(c,0x09); put(c,0xC8); end(c,index);
+                        finish >> int <- branch(c,node,-1); patch(c,low,get(c,32));
+                        index <- begin(c,node,7); put(c,source == 41 ? 0xF2 : 0xF3);
+                        put(c,0x48); put(c,0x0F); put(c,0x2C); put(c,0xC0); end(c,index);
+                        patch(c,finish,get(c,32)); return;
+                    }
+                    if (destination == 33) {
+                        index >> int <- begin(c,node,7); put(c,0x66); put(c,0x0F); put(c,0xEF); put(c,0xC9);
+                        if (source == 41) put(c,0x66);
+                        put(c,0x0F); put(c,0x2E); put(c,0xC1);
+                        put(c,0x0F); put(c,0x95); put(c,0xC0); put(c,0x0F); put(c,0x9A); put(c,0xC2);
+                        put(c,0x08); put(c,0xD0); put(c,0x0F); put(c,0xB6); put(c,0xC0); end(c,index); return;
+                    }
+                    index >> int <- begin(c,node,7); put(c,source == 41 ? 0xF2 : 0xF3);
+                    put(c,0x48); put(c,0x0F); put(c,0x2C); put(c,0xC0); end(c,index);
+                    normalizeCode(c,node,destination); return;
+                }
+                normalizeCode(c,node,source);
+                if (source == 8) {
+                    low >> int <- branch(c,node,0x89);
+                    index >> int <- begin(c,node,7);
+                    put(c,0x48); put(c,0x89); put(c,0xC1); put(c,0x48); put(c,0xD1); put(c,0xE8);
+                    put(c,0x83); put(c,0xE1); put(c,1); put(c,0x48); put(c,0x09); put(c,0xC8);
+                    put(c,destination == 41 ? 0xF2 : 0xF3); put(c,0x48); put(c,0x0F); put(c,0x2A); put(c,0xC0); end(c,index);
+                    fpOp(c,node,0x58,destination,0xC0);
+                    finish >> int <- branch(c,node,-1); patch(c,low,get(c,32));
+                    index <- begin(c,node,7); put(c,destination == 41 ? 0xF2 : 0xF3);
+                    put(c,0x48); put(c,0x0F); put(c,0x2A); put(c,0xC0); end(c,index); patch(c,finish,get(c,32));
+                } else {
+                    index >> int <- begin(c,node,7); put(c,destination == 41 ? 0xF2 : 0xF3);
+                    put(c,0x48); put(c,0x0F); put(c,0x2A); put(c,0xC0); end(c,index);
+                }
+                xmm(c,node,0,0,false,destination);
+            }
+            fpBinary(c >> p<byte>, node >> int, op >> int, type >> int) -> void {
+                xmm(c,node,0,1,true,type); xmm(c,node,1,0,true,type);
+                if (op == 35 || op == 37 || op == 36 || op == 38 || op == 40 || op == 39 || op == 18 || op == 47 || op == 41) {
+                    fpOp(c,node,op == 35 || op == 37 || op == 36 ? 0x58 :
+                        (op == 38 || op == 40 || op == 39 ? 0x5C : (op == 41 ? 0x5E : 0x59)),type,0xC1);
+                    xmm(c,node,0,0,false,type); return;
+                }
+                if (op != 31 && op != 32 && (op < 26 || op > 29)) { reject(c,node); return; }
+                index >> int <- begin(c,node,7);
+                if (type == 41) put(c,0x66);
+                put(c,0x0F); put(c,0x2E); put(c,0xC1);
+                cc >> int <- op == 31 ? 0x94 : (op == 32 ? 0x95 : (op == 26 ? 0x97 : (op == 27 ? 0x92 : (op == 28 ? 0x93 : 0x96))));
+                put(c,0x0F); put(c,cc); put(c,0xC0);
+                if (op == 31 || op == 32 || op == 27 || op == 29) {
+                    put(c,0x0F); put(c,op == 32 ? 0x9A : 0x9B); put(c,0xC2);
+                    put(c,op == 32 ? 0x08 : 0x20); put(c,0xD0);
+                }
+                put(c,0x0F); put(c,0xB6); put(c,0xC0); end(c,index);
+            }
+            fpArgument(c >> p<byte>, node >> int, index >> int, indirect >> bool) -> int {
+                graph >> p<byte> <- g(c); callee >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (ir.nccIr.graphNodeAstKind(graph,callee) == 74) callee <- ir.nccIr.graphNodeFirstChild(graph,callee);
+                if (indirect) return native_types.nccNativeTypes.code(graph,native_types.nccNativeTypes.functionParameter(graph,native_types.nccNativeTypes.expressionType(graph,callee,0),index));
+                if (ir.nccIr.graphSignatureArity(graph,callee) >= 0) return native_types.nccNativeTypes.signatureCode(graph,callee,index);
+                target >> int <- mct_values.nccMctValues.resolve(graph,callee);
+                if (target >= 0) {
+                    parameter >> int <- ir.nccIr.graphNodeFirstChild(graph,target);
+                    while (parameter >= 0) {
+                        if (ir.nccIr.graphNodeAstKind(graph,parameter) == 16) {
+                            if (index == 0) return native_types.nccNativeTypes.code(graph,typeNode(c,parameter));
+                            index -= 1;
+                        }
+                        parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                    }
+                    return -1;
+                }
+                json >> int <- json_abi.nccJsonAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee));
+                return json > 0 ? json_abi.nccJsonAbi.argumentCode(json,index) : native_types.nccNativeTypes.expression(graph,native_types.nccNativeTypes.argument(graph,node,index),0);
+            }
+            fpCall(c >> p<byte>, node >> int, arity >> int, result >> int, indirect >> bool) -> void {
+                locations >> array<int,256>; where >> p<int> <- cast<int>(&locations);
+                windows >> bool <- ir.nccIr.graphAbi(g(c)) == 2;
+                gp >> int <- 0; fp >> int <- 0; spilled >> int <- 0; at >> int <- 0;
+                while (at < arity) {
+                    floating >> bool <- native_types.nccNativeTypes.floating(fpArgument(c,node,at,indirect));
+                    position >> int <- windows ? at : (floating ? fp : gp);
+                    limit >> int <- windows ? 4 : (floating ? 8 : 6);
+                    if (position < limit) wr(off(where,at),(floating ? 16 : 0)+position);
+                    else { wr(off(where,at),32+spilled); spilled += 1; }
+                    if (floating) fp += 1; else gp += 1;
+                    at += 1;
+                }
+                shadow >> int <- windows ? 32 : 0;
+                padding >> int <- shadow+spilled*8+((get(c,44)+spilled) & 1)*8;
+                adjust(c,node,padding,false); at <- 0;
+                while (at < arity) {
+                    location >> int <- rd(off(where,at));
+                    if (location >= 32) {
+                        stackAccess(c,node,padding+(arity-1-at)*8,0,false);
+                        stackAccess(c,node,shadow+(location-32)*8,0,true);
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (at < arity) {
+                    location >> int <- rd(off(where,at));
+                    if (location < 32) {
+                        stackAccess(c,node,padding+(arity-1-at)*8,0,false);
+                        if (location >= 16) xmm(c,node,location-16,0,true,fpArgument(c,node,at,indirect));
+                        else moveReg(c,node,registerFor(c,location),0);
+                    }
+                    at += 1;
+                }
+                if (indirect) stackAccess(c,node,padding+arity*8,11,false);
+                index >> int <- begin(c,node,indirect ? 7 : 8);
+                if (indirect) { put(c,0x41); put(c,0xFF); put(c,0xD3); }
+                else { put(c,0xE8); wr<int>(off(record(c,index),16),get(c,32)); word(c,0); }
+                end(c,index);
+                adjust(c,node,padding+(arity+(indirect ? 1 : 0))*8,true); set(c,44,get(c,44)-arity-(indirect ? 1 : 0));
+                if (native_types.nccNativeTypes.floating(result)) xmm(c,node,0,0,false,result);
+                else normalizeCode(c,node,result);
+            }
+            memoryOp(c >> p<byte>, node >> int, base >> int, displacement >> int,
+                width >> int, signed >> bool, reg >> int, store >> bool) -> void {
+                if (width != 1 && width != 2 && width != 4 && width != 8) { reject(c,node); return; }
+                index >> int <- begin(c,node,store ? 9 : 6);
+                if (store && width == 2) put(c,0x66);
+                prefix >> int <- 0x40+(reg >= 8 ? 4 : 0)+(base >= 8 ? 1 : 0);
+                if (width == 8 || (!store && signed)) prefix += 8;
+                if (prefix != 0x40 || (store && width == 1 && reg >= 4)) put(c,prefix);
+                if (!store && width < 4) { put(c,0x0F); put(c,(signed ? 0xBE : 0xB6)+(width == 2 ? 1 : 0)); }
+                else put(c,store ? (width == 1 ? 0x88 : 0x89) : (width == 4 && signed ? 0x63 : 0x8B));
+                put(c,0x80+(reg & 7)*8+(base & 7));
+                if ((base & 7) == 4) put(c,0x24);
+                word(c,displacement); end(c,index);
+            }
+            packedLoad(c >> p<byte>, node >> int, base >> int, displacement >> int,
+                bytes >> int, destination >> int) -> void {
+                if (bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8) {
+                    memoryOp(c,node,base,displacement,bytes,false,destination,false); return;
+                }
+                if (bytes < 1 || bytes > 8) { reject(c,node); return; }
+                constant(c,node,0);
+                at >> int <- 0;
+                while (at < bytes) {
+                    memoryOp(c,node,base,displacement+at,1,false,11,false);
+                    index >> int <- begin(c,node,7);
+                    if (at > 0) { put(c,0x49); put(c,0xC1); put(c,0xE3); put(c,at*8); }
+                    put(c,0x4C); put(c,0x09); put(c,0xD8); end(c,index); at += 1;
+                }
+                if (destination != 0) moveReg(c,node,destination,0);
+            }
+            packedStore(c >> p<byte>, node >> int, base >> int, displacement >> int,
+                bytes >> int, source >> int) -> void {
+                if (bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8) {
+                    memoryOp(c,node,base,displacement,bytes,false,source,true); return;
+                }
+                if (bytes < 1 || bytes > 8) { reject(c,node); return; }
+                moveReg(c,node,10,source);
+                at >> int <- 0;
+                while (at < bytes) {
+                    memoryOp(c,node,base,displacement+at,1,false,10,true);
+                    index >> int <- begin(c,node,7);
+                    put(c,0x49); put(c,0xC1); put(c,0xEA); put(c,8); end(c,index); at += 1;
+                }
+            }
+            addAddress(c >> p<byte>, node >> int, bytes >> int) -> void {
+                if (bytes == 0) return;
+                index >> int <- begin(c,node,7);
+                put(c,0x48); put(c,0x05); word(c,bytes); end(c,index);
+            }
+            copyTo(c >> p<byte>, node >> int, bytes >> int) -> void {
+                // R10 is source; RAX is destination. No allocator or runtime call is inserted.
+                push(c,node); moveReg(c,node,11,0); constant(c,node,bytes);
+                if (bytes <= 128) {
+                    at >> int <- 0;
+                    while (at < bytes) {
+                        left >> int <- bytes-at;
+                        width >> int <- left >= 8 ? 8 : (left >= 4 ? 4 : (left >= 2 ? 2 : 1));
+                        memoryOp(c,node,10,at,width,false,0,false);
+                        memoryOp(c,node,11,at,width,false,0,true); at += width;
+                    }
+                    pop(c,node,0); return;
+                }
+                loopAt >> int <- get(c,32); finish >> int <- branch(c,node,0x84);
+                index >> int <- begin(c,node,9);
+                put(c,0x41); put(c,0x8A); put(c,0x12); put(c,0x41); put(c,0x88); put(c,0x13);
+                put(c,0x49); put(c,0xFF); put(c,0xC2); put(c,0x49); put(c,0xFF); put(c,0xC3);
+                put(c,0x48); put(c,0xFF); put(c,0xC8); end(c,index);
+                back >> int <- branch(c,node,-1); patch(c,back,loopAt); patch(c,finish,get(c,32));
+                pop(c,node,0);
+            }
+            reserveSlot(c >> p<byte>, node >> int, type >> int, count >> int) -> int {
+                if (!native_types.nccNativeTypes.aggregate(type)) {
+                    wr(off(slots(c),node),count); return count+1;
+                }
+                bytes >> int <- native_types.nccNativeTypes.aggregateBytes(g(c),type);
+                alignment >> int <- native_types.nccNativeTypes.aggregateAlign(g(c),type);
+                if (bytes <= 0 || bytes > 1048576 || alignment <= 0 || alignment > 1048576 ||
+                    (alignment & (alignment-1)) != 0 ||
+                    native_types.nccNativeTypes.returnMode(g(c),type) < 0) { reject(c,node); return count; }
+                alignment <- alignment < 8 ? 8 : alignment;
+                if (ir.nccIr.graphAbi(g(c)) == 2 && native_types.nccNativeTypes.returnMode(g(c),type) == 3 && alignment < 16) alignment <- 16;
+                extra >> int <- alignment > 16 ? alignment-1 : 0;
+                if (count > (2147483632-bytes-extra)/8) { reject(c,node); return count; }
+                endAt >> int <- alignment > 16 ? ((count*8+bytes+extra+7) & ~7) : ((count*8+bytes+alignment-1) & (0-alignment));
+                wr(off(slots(c),node),endAt/8-1); return endAt/8;
+            }
+            recordExpression(c >> p<byte>, node >> int, depth >> int, type >> int) -> bool {
+                graph >> p<byte> <- g(c);
+                declaration >> int <- type-100000;
+                if (!native_types.nccNativeTypes.materialRecord(graph,declaration,0) || !address(c,node,node)) { reject(c,node); return false; }
+                push(c,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                supplied >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                while (supplied >= 0) {
+                    selected >> int <- native_types.nccNativeTypes.field(graph,declaration,supplied);
+                    if (selected < 0) { reject(c,supplied); return false; }
+                    fieldType >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,selected));
+                    value >> int <- ir.nccIr.graphNodeFirstChild(graph,supplied);
+                    if (!expressionAs(c,value,depth+1,fieldType)) return false;
+                    displacement >> int <- ir.nccIr.graphNodeLayoutValue(graph,selected);
+                    if (native_types.nccNativeTypes.aggregate(fieldType)) {
+                        moveReg(c,node,10,0); stackAccess(c,node,0,0,false); addAddress(c,node,displacement);
+                        copyTo(c,node,native_types.nccNativeTypes.aggregateBytes(graph,fieldType));
+                    } else {
+                        normalizeCode(c,node,fieldType); stackAccess(c,node,0,11,false);
+                        memoryOp(c,node,11,displacement,native_types.nccNativeTypes.width(fieldType),false,0,true);
+                    }
+                    supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                }
+                unionType >> bool <- (ir.nccIr.graphNodeFlags(graph,declaration) & 255) == 2;
+                supplied <- ir.nccIr.graphNodeNextSibling(graph,first);
+                if (unionType && (supplied < 0 || ir.nccIr.graphNodeNextSibling(graph,supplied) >= 0)) { reject(c,node); return false; }
+                selected >> int <- unionType ? -1 : ir.nccIr.graphNodeFirstChild(graph,declaration);
+                while (selected >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,selected) == 14) {
+                        count >> int <- 0; supplied <- ir.nccIr.graphNodeNextSibling(graph,first);
+                        while (supplied >= 0) {
+                            if (native_types.nccNativeTypes.field(graph,declaration,supplied) == ir.nccIr.graphCanonicalType(graph,selected)) count += 1;
+                            supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                        }
+                        if (count != 1) { reject(c,node); return false; }
+                    }
+                    selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                }
+                pop(c,node,0); return healthy(c);
+            }
+            placeArgument(c >> p<byte>, type >> int, gp >> int, fp >> int, row >> p<byte>) -> void {
+                graph >> p<byte> <- g(c); windows >> bool <- ir.nccIr.graphAbi(graph) == 2;
+                mode >> int <- native_types.nccNativeTypes.returnMode(graph,type);
+                wr<int>(off(row,8),-1); wr<int>(off(row,12),-2);
+                if (windows) {
+                    if (gp < 4) wr<int>(off(row,8),gp+(native_types.nccNativeTypes.floating(type) ? 16 : 0));
+                    gp += 1;
+                } else {
+                    ints >> int <- native_types.nccNativeTypes.abiRegisters(graph,type,1);
+                    floats >> int <- native_types.nccNativeTypes.abiRegisters(graph,type,2);
+                    if (mode != 3 && gp+ints <= 6 && fp+floats <= 8) {
+                        lane >> int <- 0;
+                        while (lane < (mode == 2 ? 2 : 1)) {
+                            kind >> int <- native_types.nccNativeTypes.abiClass(graph,type,lane);
+                            if (kind == 1) { wr<int>(off(row,8+lane*4),gp); gp += 1; }
+                            else if (kind == 2) { wr<int>(off(row,8+lane*4),16+fp); fp += 1; }
+                            lane += 1;
+                        }
+                    }
+                }
+                wr<int>(off(row,24),gp); wr<int>(off(row,28),fp);
+            }
+            returnRecord(c >> p<byte>, node >> int, type >> int, receive >> bool) -> void {
+                graph >> p<byte> <- g(c); bytes >> int <- native_types.nccNativeTypes.aggregateBytes(graph,type);
+                mode >> int <- native_types.nccNativeTypes.returnMode(graph,type);
+                gp >> int <- 0; fp >> int <- 0; lane >> int <- 0;
+                if (receive) { moveReg(c,node,9,0); address(c,node,node); moveReg(c,node,11,0); }
+                else moveReg(c,node,10,0);
+                while (lane < (mode == 2 ? 2 : 1)) {
+                    kind >> int <- native_types.nccNativeTypes.abiClass(graph,type,lane);
+                    width >> int <- bytes-lane*8; width <- width > 8 ? 8 : width;
+                    if (receive) {
+                        if (kind == 2) { xmm(c,node,fp,0,false,41); packedStore(c,node,11,lane*8,width,0); fp += 1; }
+                        else if (kind == 1) { packedStore(c,node,11,lane*8,width,gp == 0 ? 9 : 2); gp += 1; }
+                    } else {
+                        if (kind == 2) { packedLoad(c,node,10,lane*8,width,0); xmm(c,node,fp,0,true,41); fp += 1; }
+                        else if (kind == 1) { packedLoad(c,node,10,lane*8,width,gp == 0 ? 9 : 2); gp += 1; }
+                    }
+                    lane += 1;
+                }
+                if (!receive && gp > 0) moveReg(c,node,0,9);
+            }
+            callAggregate(c >> p<byte>, node >> int, depth >> int, callee >> int, target >> int) -> bool {
+                graph >> p<byte> <- g(c);
+                external >> bool <- target < 0;
+                indirect >> bool <- target == -2;
+                functionType >> int <- indirect ? native_types.nccNativeTypes.expressionType(graph,callee,0) : -1;
+                if (indirect) { if (!expression(c,callee,depth+1)) return false; push(c,node); }
+                resultType >> int <- indirect ? native_types.nccNativeTypes.code(graph,native_types.nccNativeTypes.functionResult(graph,functionType)) :
+                    (external ? native_types.nccNativeTypes.signatureCode(graph,callee,-1) : native_types.nccNativeTypes.code(graph,typeNode(c,target)));
+                if (indirect) {
+                    arity >> int <- native_types.nccNativeTypes.functionArity(graph,functionType);
+                    if (arity < 0 || arity > 256) { reject(c,node); return false; }
+                    hasFloat >> bool <- native_types.nccNativeTypes.floating(resultType);
+                    hasRecord >> bool <- native_types.nccNativeTypes.aggregate(resultType); at >> int <- 0;
+                    while (at < arity) {
+                        code >> int <- native_types.nccNativeTypes.code(graph,native_types.nccNativeTypes.functionParameter(graph,functionType,at));
+                        if (native_types.nccNativeTypes.floating(code)) hasFloat <- true;
+                        if (native_types.nccNativeTypes.aggregate(code)) hasRecord <- true;
+                        at += 1;
+                    }
+                    if (hasFloat && !hasRecord) {
+                        at <- 0;
+                        while (at < arity) {
+                            argument >> int <- native_types.nccNativeTypes.argument(graph,node,at);
+                            if (!expressionAs(c,argument,depth+1,fpArgument(c,node,at,true))) return false;
+                            push(c,node); at += 1;
+                        }
+                        if (native_types.nccNativeTypes.argument(graph,node,arity) >= 0) { reject(c,node); return false; }
+                        fpCall(c,node,arity,resultType,true); return healthy(c);
+                    }
+                }
+                mode >> int <- native_types.nccNativeTypes.returnMode(graph,resultType);
+                if (mode < 0) { reject(c,node); return false; }
+                rows >> p<byte> <- cast<byte>(calloc(256,32));
+                if (rows == null) { reject(c,node); return false; }
+                parameter >> int <- external ? -1 : ir.nccIr.graphNodeFirstChild(graph,target);
+                arg >> int <- ir.nccIr.graphNodeNextSibling(graph,ir.nccIr.graphNodeFirstChild(graph,node));
+                arity >> int <- 0; gpr >> int <- mode == 3 ? 1 : 0; fpr >> int <- 0; outgoing >> int <- 0;
+                windows >> bool <- ir.nccIr.graphAbi(graph) == 2;
+                limit >> int <- windows ? 4 : 6;
+                while (arg >= 0 && healthy(c)) {
+                    while (parameter >= 0 && ir.nccIr.graphNodeAstKind(graph,parameter) != 16) { parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter); }
+                    expected >> int <- indirect ? native_types.nccNativeTypes.code(graph,native_types.nccNativeTypes.functionParameter(graph,functionType,arity)) :
+                        (external ? native_types.nccNativeTypes.signatureCode(graph,callee,arity) : native_types.nccNativeTypes.code(graph,typeNode(c,parameter)));
+                    if (arity >= 256 || expected <= 0 || (!external && parameter < 0)) { reject(c,node); break; }
+                    isRecord >> bool <- native_types.nccNativeTypes.aggregate(expected);
+                    bytes >> int <- isRecord ? native_types.nccNativeTypes.aggregateBytes(graph,expected) : 8;
+                    abiMode >> int <- native_types.nccNativeTypes.returnMode(graph,expected);
+                    if (abiMode < 0 || !expressionAs(c,arg,depth+1,expected)) break;
+                    if (isRecord) {
+                        actual >> int <- native_types.nccNativeTypes.expression(graph,arg,0);
+                        if (!native_types.nccNativeTypes.aggregateCompatible(graph,actual,expected)) { reject(c,arg); break; }
+                        moveReg(c,node,10,0); address(c,node,arg); copyTo(c,node,bytes);
+                    } else normalizeCode(c,node,expected);
+                    push(c,node);
+                    row >> p<byte> <- off(rows,arity*32);
+                    wr<int>(row,expected); wr<int>(off(row,4),arg); wr<int>(off(row,20),bytes);
+                    placeArgument(c,expected,gpr,fpr,row);
+                    gpr <- rd<int>(off(row,24)); fpr <- rd<int>(off(row,28));
+                    if (rd<int>(off(row,8)) < 0) {
+                        alignment >> int <- !windows && isRecord ? native_types.nccNativeTypes.aggregateAlign(graph,expected) : 8;
+                        alignment <- alignment < 8 ? 8 : alignment;
+                        outgoing <- (outgoing+alignment-1) & (0-alignment);
+                        wr<int>(off(row,8),-1); wr<int>(off(row,16),outgoing);
+                        outgoing += windows || !isRecord ? 8 : ((bytes+7) & ~7);
+                    }
+                    if (parameter >= 0) parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                    arity += 1; arg <- ir.nccIr.graphNodeNextSibling(graph,arg);
+                }
+                while (parameter >= 0 && ir.nccIr.graphNodeAstKind(graph,parameter) != 16) { parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter); }
+                if ((external && arity != (indirect ? native_types.nccNativeTypes.functionArity(graph,functionType) : ir.nccIr.graphSignatureArity(graph,callee))) || parameter >= 0) reject(c,node);
+                if (!healthy(c)) { free(rows); return false; }
+                shadow >> int <- windows ? 32 : 0;
+                padding >> int <- outgoing+shadow+((get(c,44)*8+outgoing+shadow) & 15);
+                alignment >> int <- callAlignment(c,node);
+                realigned >> bool <- alignment > 16;
+                if (realigned) {
+                    memoryOp(c,node,5,-8*(rd(off(callBases(c),node))+1),8,false,4,true);
+                    moveReg(c,node,0,4);
+                    index >> int <- begin(c,node,7);
+                    put(c,0x48); put(c,0x2D); word(c,outgoing);
+                    put(c,0x48); put(c,0x25); word(c,0-alignment); end(c,index);
+                    probeTo(c,node);
+                } else adjust(c,node,padding,false);
+                at >> int <- 0;
+                // Stack arguments precede register loads so copy loops cannot clobber live ABI arguments.
+                while (at < arity) {
+                    row >> p<byte> <- off(rows,at*32);
+                    if (rd<int>(off(row,8)) < 0) {
+                        type >> int <- rd<int>(row);
+                        callValue(c,node,padding,(arity-1-at)*8,0,realigned);
+                        placement >> int <- shadow+rd<int>(off(row,16));
+                        if (!windows && native_types.nccNativeTypes.aggregate(type)) {
+                            moveReg(c,node,10,0);
+                            index >> int <- begin(c,node,7); put(c,0x48); put(c,0x8D); put(c,0x84); put(c,0x24); word(c,placement); end(c,index);
+                            copyTo(c,node,rd<int>(off(row,20)));
+                        } else {
+                            if (windows && native_types.nccNativeTypes.aggregate(type) && native_types.nccNativeTypes.returnMode(graph,type) == 1) {
+                                moveReg(c,node,10,0); packedLoad(c,node,10,0,rd<int>(off(row,20)),0);
+                            }
+                            stackAccess(c,node,placement,0,true);
+                        }
+                    }
+                    at += 1;
+                }
+                at <- 0;
+                while (at < arity) {
+                    row >> p<byte> <- off(rows,at*32); position >> int <- rd<int>(off(row,8));
+                    if (position >= 0) {
+                        type >> int <- rd<int>(row);
+                        callValue(c,node,padding,(arity-1-at)*8,0,realigned);
+                        if (native_types.nccNativeTypes.aggregate(type) && !(windows && native_types.nccNativeTypes.returnMode(graph,type) == 3)) {
+                            moveReg(c,node,10,0); bytes >> int <- rd<int>(off(row,20));
+                            lane >> int <- 0;
+                            while (lane < (!windows && native_types.nccNativeTypes.returnMode(graph,type) == 2 ? 2 : 1)) {
+                                location >> int <- rd<int>(off(row,8+lane*4)); width >> int <- bytes-lane*8;
+                                if (location >= 16) { packedLoad(c,node,10,lane*8,width > 8 ? 8 : width,0); xmm(c,node,location-16,0,true,41); }
+                                else if (location >= 0) packedLoad(c,node,10,lane*8,width > 8 ? 8 : width,registerFor(c,location));
+                                lane += 1;
+                            }
+                        } else if (position >= 16) xmm(c,node,position-16,0,true,type);
+                        else moveReg(c,node,registerFor(c,position),0);
+                    }
+                    at += 1;
+                }
+                if (mode == 3) { address(c,node,node); moveReg(c,node,registerFor(c,0),0); }
+                if (indirect) {
+                    callValue(c,node,padding,arity*8,11,realigned);
+                    index >> int <- begin(c,node,8); put(c,0x41); put(c,0xFF); put(c,0xD3); end(c,index);
+                } else {
+                    index >> int <- begin(c,node,8); put(c,0xE8);
+                    wr<int>(off(record(c,index),16),get(c,32)); word(c,0); end(c,index);
+                }
+                if (realigned) memoryOp(c,node,5,-8*(rd(off(callBases(c),node))+1),8,false,4,false);
+                adjust(c,node,(realigned ? 0 : padding)+(arity+(indirect ? 1 : 0))*8,true);
+                set(c,44,get(c,44)-arity-(indirect ? 1 : 0)); free(rows);
+                if (mode == 1 || mode == 2) {
+                    returnRecord(c,node,resultType,true);
+                }
+                if (mode > 0) address(c,node,node);
+                else if (native_types.nccNativeTypes.floating(resultType)) xmm(c,node,0,0,false,resultType);
+                else normalizeCode(c,node,resultType);
+                return healthy(c);
+            }
+            branch(c >> p<byte>, node >> int, condition >> int) -> int {
+                index >> int <- begin(c,node,condition < 0 ? 13 : 12);
+                if (condition >= 0) { put(c,0x48); put(c,0x85); put(c,0xC0); put(c,0x0F); put(c,condition); }
+                else put(c,0xE9);
+                patch >> int <- get(c,32); word(c,0); end(c,index); return patch;
+            }
+            patch(c >> p<byte>, at >> int, destination >> int) -> void {
+                delta >> int <- destination-at-4;
+                atByte >> int <- 0;
+                while (atByte < 4) { wr<byte>(off(code(c),at+atByte),cast<byte>(delta >> (atByte*8))); atByte += 1; }
+            }
+            flagBranch(c >> p<byte>, node >> int, condition >> int) -> int {
+                index >> int <- begin(c,node,12);
+                put(c,0x0F); put(c,condition);
+                at >> int <- get(c,32); word(c,0); end(c,index); return at;
+            }
+            literalOffsets(c >> p<byte>) -> p<int> { return from<int>(rd<addr>(off(c,64))); }
+            globalSections(c >> p<byte>) -> p<int> { return from<int>(rd<addr>(off(c,72))); }
+            globalOffsets(c >> p<byte>) -> p<int> { return from<int>(rd<addr>(off(c,80))); }
+            globalSection(c >> p<byte>, node >> int) -> int {
+                return node < 0 ? 0 : rd(off(globalSections(c),node));
+            }
+            globalAccess(c >> p<byte>, node >> int, declaration >> int,
+                store >> bool, reg >> int, addressOnly >> bool) -> void {
+                type >> int <- native_types.nccNativeTypes.code(g(c),typeNode(c,declaration));
+                width >> int <- addressOnly ? 8 : native_types.nccNativeTypes.width(type);
+                if (width != 1 && width != 2 && width != 4 && width != 8) { reject(c,node); return; }
+                if (store && reg == 0) normalizeCode(c,node,type);
+                index >> int <- begin(c,node,store ? 9 : 6);
+                if (width == 2 && store) put(c,0x66);
+                if (width == 8) put(c,reg >= 8 ? 0x4C : 0x48);
+                else if (reg >= 8) put(c,0x44);
+                if (addressOnly) put(c,0x8D);
+                else if (!store && width < 4) { put(c,0x0F); put(c,width == 1 ? 0xB6 : 0xB7); }
+                else put(c,store ? (width == 1 ? 0x88 : 0x89) : 0x8B);
+                put(c,0x05+8*(reg & 7));
+                wr<int>(off(record(c,index),16),get(c,32));
+                wr<int>(off(record(c,index),24),declaration);
+                word(c,0); end(c,index);
+                if (!store && !addressOnly && reg == 0) normalizeCode(c,node,type);
+            }
+            globalDeclaration(c >> p<byte>, node >> int) -> bool {
+                return ir.nccIr.graphNodeAstKind(g(c),node) == 12 && functionOf(c,node) < 0 &&
+                    !mct_values.nccMctValues.isConstant(g(c),node);
+            }
+            staticNormalize(value >> u64, type >> int) -> u64 {
+                if (type == 40) return binary64.nccBinary64.narrow(value);
+                if (type == 33) return value == 0 ? 0 : 1;
+                width >> int <- native_types.nccNativeTypes.width(type);
+                if (width <= 0 || width >= 8) return value;
+                one >> u64 <- 1;
+                mask >> u64 <- (one << (width*8))-1;
+                value <- value & mask;
+                if (native_types.nccNativeTypes.signed(type) && (value & (one << (width*8-1))) != 0)
+                    value <- value | ~mask;
+                return value;
+            }
+            staticLess(left >> u64, right >> u64) -> bool {
+                at >> int <- 7;
+                while (at >= 0) {
+                    leftPart >> u64 <- (left >> (at*8)) & 255;
+                    rightPart >> u64 <- (right >> (at*8)) & 255;
+                    a >> int <- leftPart;
+                    b >> int <- rightPart;
+                    if (a != b) return a < b;
+                    at -= 1;
+                }
+                return false;
+            }
+            staticDivide(left >> u64, right >> u64, remainder >> bool) -> u64 {
+                quotient >> u64 <- 0;
+                rest >> u64 <- 0;
+                one >> u64 <- 1;
+                bitAt >> int <- 63;
+                while (bitAt >= 0) {
+                    carry >> bool <- (rest >> 63) != 0;
+                    rest <- (rest << 1) | ((left >> bitAt) & 1);
+                    if (carry || !staticLess(rest,right)) {
+                        rest -= right;
+                        quotient <- quotient | (one << bitAt);
+                    }
+                    bitAt -= 1;
+                }
+                return remainder ? rest : quotient;
+            }
+            staticShift(value >> u64, count >> int) -> u64 {
+                if (count == 0) return value;
+                zero >> u64 <- 0;
+                return (value >> count) & ~(~zero << (64-count));
+            }
+            staticNumeric(c >> p<byte>, node >> int, depth >> int) -> u64 {
+                value >> u64 <- staticValue(c,node,depth);
+                type >> int <- native_types.nccNativeTypes.expression(g(c),node,0);
+                if (native_types.nccNativeTypes.floating(type)) return value;
+                negative >> bool <- native_types.nccNativeTypes.signed(type) && (value >> 63) != 0;
+                return binary64.nccBinary64.fromUnsigned(negative ? 0-value : value) | (negative ? 0x8000000000000000 : 0);
+            }
+            staticValue(c >> p<byte>, node >> int, depth >> int) -> u64 {
+                if (node < 0) return 0;
+                if (depth > 256) { reject(c,node); return 0; }
+                graph >> p<byte> <- g(c);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                op >> int <- native_types.nccNativeTypes.operation(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (kind == 25 && (op == 2 || op == 4 || op == 76 || op == 77)) {
+                    if (op == 2 && !native_types.nccNativeTypes.integerLiteral(graph,node)) {
+                        value >> u64 <- binary64.nccBinary64.parse(ir.nccIr.graphNodeName(graph,node),ir.nccIr.graphNodeNameBytes(graph,node),true);
+                        if (!binary64.nccBinary64.finite(value)) reject(c,node);
+                        return value;
+                    }
+                    return native_types.nccNativeTypes.literal(graph,node);
+                }
+                if (ir.nccIr.graphTextValue(graph,node,"null")) return 0;
+                if (kind == 26) {
+                    decl >> int <- mct_values.nccMctValues.resolve(graph,node);
+                    if (mct_values.nccMctValues.isConstant(graph,decl)) {
+                        type >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,decl));
+                        initial >> int <- mct_values.nccMctValues.initializer(graph,decl);
+                        if (native_types.nccNativeTypes.floating(type)) {
+                            value >> u64 <- staticNumeric(c,initial,depth+1);
+                            return type == 40 ? binary64.nccBinary64.widen(binary64.nccBinary64.narrow(value)) : value;
+                        }
+                        return staticNormalize(staticValue(c,initial,depth+1),type);
+                    }
+                }
+                if (kind == 27) {
+                    value >> u64 <- staticValue(c,first,depth+1);
+                    if (native_types.nccNativeTypes.floating(native_types.nccNativeTypes.expression(graph,node,0))) {
+                        if (op == 38) return value ^ 0x8000000000000000;
+                        if (op == 35) return value;
+                        reject(c,node); return 0;
+                    }
+                    if (op == 38) return 0-value;
+                    if (op == 34) return ~value;
+                    if (op == 33) return value == 0 ? 1 : 0;
+                    if (op == 35) return value;
+                }
+                if (kind == 28) {
+                    rightNode >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    floatType >> int <- native_types.nccNativeTypes.common(native_types.nccNativeTypes.expression(graph,first,0),native_types.nccNativeTypes.expression(graph,rightNode,0));
+                    if (native_types.nccNativeTypes.floating(floatType)) {
+                        left >> u64 <- staticNumeric(c,first,depth+1); right >> u64 <- staticNumeric(c,rightNode,depth+1);
+                        if (op == 31 || op == 32 || (op >= 26 && op <= 29)) return binary64.nccBinary64.compareValues(left,right,op) ? 1 : 0;
+                        if (op != 35 && op != 38 && op != 18 && op != 41) { reject(c,node); return 0; }
+                        return floatType == 40 ? binary64.nccBinary64.widen(binary64.nccBinary64.operateSingle(left,right,op)) :
+                            binary64.nccBinary64.operate(left,right,op);
+                    }
+                    left >> u64 <- staticValue(c,first,depth+1);
+                    if (op == 48 && left == 0) return 0;
+                    if (op == 49 && left != 0) return 1;
+                    if (op > ROLE_STRENGTH_SHL_BASE && op < ROLE_STRENGTH_SHL_BASE+32)
+                        return left << (op-ROLE_STRENGTH_SHL_BASE);
+                    if (op > ROLE_STRENGTH_SHR_U_BASE && op < ROLE_STRENGTH_SHR_U_BASE+32)
+                        return staticShift(left,op-ROLE_STRENGTH_SHR_U_BASE);
+                    second >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    right >> u64 <- staticValue(c,second,depth+1);
+                    signed >> bool <- native_types.nccNativeTypes.signed(native_types.nccNativeTypes.common(
+                        native_types.nccNativeTypes.expression(graph,first,0),native_types.nccNativeTypes.expression(graph,second,0)));
+                    negativeLeft >> bool <- signed && (left >> 63) != 0;
+                    negativeRight >> bool <- signed && (right >> 63) != 0;
+                    if (op == 35) return left+right;
+                    if (op == 38) return left-right;
+                    if (op == 18) return left*right;
+                    if (op == 43) return left & right;
+                    if (op == 25) return left | right;
+                    if (op == 44) return left ^ right;
+                    if (op == 46 && right < 64) return left << right;
+                    if ((op == 21 || op == 22) && staticLess(right,64)) {
+                        zero >> u64 <- 0;
+                        count >> int <- right;
+                        if (op == 22 && native_types.nccNativeTypes.width(native_types.nccNativeTypes.expression(graph,first,0)) < 8)
+                            left <- left & 0xFFFFFFFF;
+                        shifted >> u64 <- staticShift(left,count);
+                        if (op == 21 && negativeLeft && count > 0) return shifted | (~zero << (64-count));
+                        return shifted;
+                    }
+                    if ((op == 41 || op == 42) && right != 0) {
+                        magnitudeLeft >> u64 <- negativeLeft ? 0-left : left;
+                        magnitudeRight >> u64 <- negativeRight ? 0-right : right;
+                        result >> u64 <- staticDivide(magnitudeLeft,magnitudeRight,op == 42);
+                        if (op == 41 ? negativeLeft != negativeRight : negativeLeft) return 0-result;
+                        return result;
+                    }
+                    if (op == 48 || op == 49) return right == 0 ? 0 : 1;
+                    if (op == 31) return left == right ? 1 : 0;
+                    if (op == 32) return left != right ? 1 : 0;
+                    if (op >= 26 && op <= 29) {
+                        less >> bool <- signed && negativeLeft != negativeRight ? negativeLeft : staticLess(left,right);
+                        greater >> bool <- signed && negativeLeft != negativeRight ? negativeRight : staticLess(right,left);
+                        return op == 26 ? (greater ? 1 : 0) : (op == 27 ? (less ? 1 : 0) :
+                            (op == 28 ? (!less ? 1 : 0) : (!greater ? 1 : 0)));
+                    }
+                }
+                if (kind == 32) {
+                    condition >> u64 <- staticValue(c,first,depth+1);
+                    selected >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    if (condition == 0) selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                    return native_types.nccNativeTypes.floating(native_types.nccNativeTypes.expression(graph,node,0)) ?
+                        staticNumeric(c,selected,depth+1) : staticValue(c,selected,depth+1);
+                }
+                if (kind == 29 && ir.nccIr.graphNodeLayoutValid(graph,node))
+                    return ir.nccIr.graphNodeLayoutValue(graph,node);
+                if (kind == 29 && ir.nccIr.graphNodeIntrinsicId(graph,node) == 7) {
+                    argument >> int <- native_types.nccNativeTypes.argument(graph,node,0);
+                    destination >> int <- native_types.nccNativeTypes.expression(graph,node,0);
+                    if (native_types.nccNativeTypes.floating(destination)) {
+                        value >> u64 <- staticNumeric(c,argument,depth+1);
+                        return destination == 40 ? binary64.nccBinary64.widen(binary64.nccBinary64.narrow(value)) : value;
+                    }
+                    if (native_types.nccNativeTypes.floating(native_types.nccNativeTypes.expression(graph,argument,0)))
+                        return staticNormalize(binary64.nccBinary64.integer(staticNumeric(c,argument,depth+1)),destination);
+                }
+                if (kind == 29 && ir.nccIr.graphNodeIntrinsicId(graph,node) >= 6 &&
+                    ir.nccIr.graphNodeIntrinsicId(graph,node) <= 8)
+                    return staticValue(c,native_types.nccNativeTypes.argument(graph,node,0),depth+1);
+                reject(c,node); return 0;
+            }
+            staticTarget(c >> p<byte>, node >> int, depth >> int) -> int {
+                if (node < 0 || depth > 256) return -1;
+                graph >> p<byte> <- g(c);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (kind == 25 && native_types.nccNativeTypes.operation(graph,node) == 3) return node;
+                if (kind == 28) {
+                    op >> int <- native_types.nccNativeTypes.operation(graph,node);
+                    left >> int <- staticTarget(c,first,depth+1);
+                    right >> int <- staticTarget(c,ir.nccIr.graphNodeNextSibling(graph,first),depth+1);
+                    if ((op == 35 || op == 38) && left >= 0 && right < 0) return left;
+                    if (op == 35 && right >= 0 && left < 0) return right;
+                }
+                if (kind == 29) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                    if (id == 3 || (id >= 6 && id <= 8))
+                        return staticTarget(c,native_types.nccNativeTypes.argument(graph,node,0),depth+1);
+                }
+                if (kind == 32) {
+                    selected >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    if (staticValue(c,first,depth+1) == 0) selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                    return staticTarget(c,selected,depth+1);
+                }
+                if (kind == 27 && native_types.nccNativeTypes.operation(graph,node) == 43)
+                    return staticAddressTarget(c,first,depth+1);
+                if (kind == 26) {
+                    decl >> int <- mct_values.nccMctValues.resolve(graph,node);
+                    if (mct_values.nccMctValues.isConstant(graph,decl))
+                        return staticTarget(c,mct_values.nccMctValues.initializer(graph,decl),depth+1);
+                }
+                return -1;
+            }
+            staticAddressTarget(c >> p<byte>, node >> int, depth >> int) -> int {
+                if (node < 0 || depth > 256) return -1;
+                graph >> p<byte> <- g(c); kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                if (kind == 30 && ir.nccIr.graphSignatureArity(graph,node) >= 0) return node;
+                if (kind == 30 || kind == 31)
+                    return staticAddressTarget(c,ir.nccIr.graphNodeFirstChild(graph,node),depth+1);
+                declaration >> int <- mct_values.nccMctValues.resolve(graph,node);
+                return globalDeclaration(c,declaration) || ir.nccIr.graphNodeAstKind(graph,declaration) == 15 ? declaration : -1;
+            }
+            staticAddressAddend(c >> p<byte>, node >> int, depth >> int) -> u64 {
+                if (node < 0 || depth > 256) { reject(c,node); return 0; }
+                graph >> p<byte> <- g(c); kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (kind == 30 && ir.nccIr.graphSignatureArity(graph,node) < 0) {
+                    selected >> int <- native_types.nccNativeTypes.member(graph,node,0);
+                    if (selected < 0) { reject(c,node); return 0; }
+                    return staticAddressAddend(c,first,depth+1)+ir.nccIr.graphNodeLayoutValue(graph,selected);
+                }
+                if (kind == 31) {
+                    type >> int <- native_types.nccNativeTypes.expression(graph,node,0);
+                    stride >> int <- native_types.nccNativeTypes.aggregate(type) ?
+                        native_types.nccNativeTypes.aggregateBytes(graph,type) : native_types.nccNativeTypes.width(type);
+                    if (stride <= 0) { reject(c,node); return 0; }
+                    return staticAddressAddend(c,first,depth+1)+stride*staticValue(c,ir.nccIr.graphNodeNextSibling(graph,first),depth+1);
+                }
+                return 0;
+            }
+            staticAddend(c >> p<byte>, node >> int, depth >> int) -> u64 {
+                if (node < 0 || depth > 256) return 0;
+                graph >> p<byte> <- g(c);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                if (kind == 27 && native_types.nccNativeTypes.operation(graph,node) == 43)
+                    return staticAddressAddend(c,ir.nccIr.graphNodeFirstChild(graph,node),depth+1);
+                if (kind == 28) {
+                    first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                    second >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    left >> int <- staticTarget(c,first,depth+1); right >> int <- staticTarget(c,second,depth+1);
+                    op >> int <- native_types.nccNativeTypes.operation(graph,node);
+                    if ((op == 35 || op == 38) && left >= 0 && right < 0) {
+                        addend >> u64 <- staticValue(c,second,depth+1);
+                        return staticAddend(c,first,depth+1)+(op == 38 ? 0-addend : addend);
+                    }
+                    if (op == 35 && right >= 0 && left < 0)
+                        return staticValue(c,first,depth+1)+staticAddend(c,second,depth+1);
+                    reject(c,node); return 0;
+                }
+                if (kind == 26) {
+                    decl >> int <- mct_values.nccMctValues.resolve(graph,node);
+                    if (mct_values.nccMctValues.isConstant(graph,decl))
+                        return staticAddend(c,mct_values.nccMctValues.initializer(graph,decl),depth+1);
+                }
+                if (kind == 29) {
+                    id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                    base >> u64 <- staticAddend(c,native_types.nccNativeTypes.argument(graph,node,0),depth+1);
+                    if (id == 3) return base+staticValue(c,native_types.nccNativeTypes.argument(graph,node,1),depth+1)*
+                        ir.nccIr.graphNodeIntrinsicTypeBytes(graph,node);
+                    if (id >= 6 && id <= 8) return base;
+                }
+                if (kind == 32) {
+                    first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                    selected >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    if (staticValue(c,first,depth+1) == 0) selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                    return staticAddend(c,selected,depth+1);
+                }
+                return 0;
+            }
+            staticInitialize(c >> p<byte>, node >> int, type >> int, cursor >> int, depth >> int) -> bool {
+                if (depth > 256 || type <= 0) { reject(c,node); return false; }
+                if (node < 0) return true;
+                graph >> p<byte> <- g(c); kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (native_types.nccNativeTypes.aggregate(type)) {
+                    if (kind == 26) {
+                        declaration >> int <- mct_values.nccMctValues.resolve(graph,node);
+                        if (mct_values.nccMctValues.isConstant(graph,declaration))
+                            return staticInitialize(c,mct_values.nccMctValues.initializer(graph,declaration),type,cursor,depth+1);
+                    }
+                    if (kind == 32) {
+                        selected >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                        if (staticValue(c,first,depth+1) == 0) selected <- ir.nccIr.graphNodeNextSibling(graph,selected);
+                        return healthy(c) && staticInitialize(c,selected,type,cursor,depth+1);
+                    }
+                    declaration >> int <- type-100000;
+                    if (kind == 33 && ir.nccIr.graphNodeAstKind(graph,declaration) == 21) {
+                        element >> int <- native_types.nccNativeTypes.code(graph,ir.nccIr.graphNodeFirstChild(graph,declaration));
+                        stride >> int <- native_types.nccNativeTypes.aggregate(element) ?
+                            native_types.nccNativeTypes.aggregateBytes(graph,element) : native_types.nccNativeTypes.width(element);
+                        bytes >> int <- native_types.nccNativeTypes.aggregateBytes(graph,type); at >> int <- 0;
+                        if (stride <= 0) { reject(c,node); return false; }
+                        while (first >= 0 && healthy(c)) {
+                            if (at > bytes-stride || !staticInitialize(c,first,element,cursor+at,depth+1)) { reject(c,node); return false; }
+                            at += stride; first <- ir.nccIr.graphNodeNextSibling(graph,first);
+                        }
+                        if (at != bytes) { reject(c,node); return false; }
+                        return healthy(c);
+                    }
+                    if (kind == 45 && native_types.nccNativeTypes.aggregateCompatible(graph,type,native_types.nccNativeTypes.expression(graph,node,0))) {
+                        supplied >> int <- ir.nccIr.graphNodeNextSibling(graph,first); count >> int <- 0;
+                        while (supplied >= 0 && healthy(c)) {
+                            field >> int <- native_types.nccNativeTypes.field(graph,declaration,supplied);
+                            if (field < 0 || !native_types.nccNativeTypes.argumentCompatible(graph,typeNode(c,field),ir.nccIr.graphNodeFirstChild(graph,supplied)) ||
+                                !staticInitialize(c,ir.nccIr.graphNodeFirstChild(graph,supplied),
+                                native_types.nccNativeTypes.code(graph,typeNode(c,field)),
+                                cursor+ir.nccIr.graphNodeLayoutValue(graph,field),depth+1)) { reject(c,supplied); return false; }
+                            count += 1; supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                        }
+                        unionType >> bool <- (ir.nccIr.graphNodeFlags(graph,declaration) & 255) == 2;
+                        field >> int <- unionType ? -1 : ir.nccIr.graphNodeFirstChild(graph,declaration);
+                        while (field >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(graph,field) == 14) {
+                                matches >> int <- 0; supplied <- ir.nccIr.graphNodeNextSibling(graph,first);
+                                while (supplied >= 0) {
+                                    if (native_types.nccNativeTypes.field(graph,declaration,supplied) == ir.nccIr.graphCanonicalType(graph,field)) matches += 1;
+                                    supplied <- ir.nccIr.graphNodeNextSibling(graph,supplied);
+                                }
+                                if (matches != 1) { reject(c,node); return false; }
+                            }
+                            field <- ir.nccIr.graphNodeNextSibling(graph,field);
+                        }
+                        if (unionType && count != 1) { reject(c,node); return false; }
+                        return healthy(c);
+                    }
+                    reject(c,node); return false;
+                }
+                width >> int <- native_types.nccNativeTypes.width(type);
+                target >> int <- staticTarget(c,node,0);
+                value >> u64 <- target >= 0 ? staticAddend(c,node,0) : staticNormalize(
+                    native_types.nccNativeTypes.floating(type) ? staticNumeric(c,node,0) : staticValue(c,node,0),type);
+                if (width <= 0 || width > 8 || (target >= 0 && width != 8)) { reject(c,node); return false; }
+                at >> int <- 0;
+                while (at < width) { wr<byte>(off(data(c),cursor+at),cast<byte>(value >> (at*8))); at += 1; }
+                if (target >= 0) {
+                    index >> int <- begin(c,node,5); item >> p<byte> <- record(c,index);
+                    wr<int>(off(item,8),cursor); wr<int>(off(item,12),0);
+                    wr<int>(off(item,16),cursor); wr<int>(off(item,24),target); wr<int>(off(item,28),2);
+                    if (ir.nccIr.graphNodeAstKind(graph,target) == 25) wr(off(literalOffsets(c),target),-2);
+                }
+                return healthy(c);
+            }
+            storagePlan(c >> p<byte>) -> void {
+                graph >> p<byte> <- g(c);
+                node >> int <- 0;
+                while (node < ir.nccIr.graphNodes(graph) && healthy(c)) {
+                    if (globalDeclaration(c,node)) {
+                        if (ir.nccIr.graphTarget(graph) != 1 && ir.nccIr.graphTarget(graph) != 2) { reject(c,node); return; }
+                        type >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,node));
+                        init >> int <- mct_values.nccMctValues.initializer(graph,node);
+                        aggregate >> bool <- native_types.nccNativeTypes.aggregate(type);
+                        width >> int <- aggregate ? native_types.nccNativeTypes.aggregateBytes(graph,type) : native_types.nccNativeTypes.width(type);
+                        alignment >> int <- aggregate ? native_types.nccNativeTypes.aggregateAlign(graph,type) : width;
+                        if (type <= 0 || width <= 0 || (!aggregate && width > 8) ||
+                            (aggregate && native_types.nccNativeTypes.aggregateSignature(graph,type) < 0) ||
+                            alignment <= 0 || alignment > 1048576 || (alignment & (alignment-1)) != 0) { reject(c,node); return; }
+                        if (init >= 0 && !native_types.nccNativeTypes.argumentCompatible(graph,typeNode(c,node),init)) { reject(c,init); return; }
+                        target >> int <- staticTarget(c,init,0);
+                        value >> u64 <- aggregate ? 0 : (target >= 0 ? staticAddend(c,init,0) : staticNormalize(
+                            native_types.nccNativeTypes.floating(type) ? staticNumeric(c,init,0) : staticValue(c,init,0),type));
+                        section >> int <- aggregate ? (init < 0 ? 3 : 2) : (value == 0 && target < 0 ? 3 : 2);
+                        cursorSlot >> int <- section == 2 ? 96 : 100;
+                        if (get(c,cursorSlot) > 2147483647-width-alignment) { reject(c,node); return; }
+                        cursor >> int <- (get(c,cursorSlot)+alignment-1) & ~(alignment-1);
+                        wr(off(globalSections(c),node),section); wr(off(globalOffsets(c),node),cursor);
+                        set(c,cursorSlot,cursor+width);
+                        index >> int <- begin(c,node,3);
+                        item >> p<byte> <- record(c,index);
+                        wr<int>(off(item,8),cursor); wr<int>(off(item,12),width); wr<int>(off(item,28),section);
+                        wr<int>(off(item,20),alignment);
+                        if (section == 2 && !staticInitialize(c,init,type,cursor,0)) return;
+                    }
+                    node += 1;
+                }
+            }
+            stringAddress(c >> p<byte>, node >> int) -> void {
+                index >> int <- begin(c,node,5);
+                put(c,0x48); put(c,0x8D); put(c,0x05);
+                wr<int>(off(record(c,index),16),get(c,32));
+                wr<int>(off(record(c,index),24),node);
+                if (ir.nccIr.graphTarget(g(c)) == 3) {
+                    wr<int>(off(record(c,index),20),get(c,32));
+                    wr<int>(off(record(c,index),16),-1); wr<int>(off(record(c,index),24),-1);
+                }
+                word(c,0); end(c,index);
+                wr(off(literalOffsets(c),node),-2);
+            }
+            stringPool(c >> p<byte>) -> void {
+                graph >> p<byte> <- g(c);
+                inlinePool >> bool <- ir.nccIr.graphTarget(graph) == 3;
+                node >> int <- 0;
+                while (node < ir.nccIr.graphNodes(graph) && healthy(c)) {
+                    if (rd(off(literalOffsets(c),node)) == -2) {
+                        wr(off(literalOffsets(c),node),inlinePool ? get(c,32) : get(c,104));
+                        count >> int <- ir.nccIr.graphNodeNameBytes(graph,node);
+                        data >> p<byte> <- ir.nccIr.graphNodeName(graph,node);
+                        at >> int <- 0;
+                        while (at <= count && healthy(c)) {
+                            index >> int <- begin(c,node,!inlinePool && at == 0 ? 3 : 1);
+                            chunk >> int <- 0;
+                            while (at <= count && chunk < 32) {
+                                if (inlinePool) put(c,at < count ? rd<byte>(off(data,at)) : 0);
+                                else {
+                                    wr<byte>(off(rodata(c),get(c,104)),at < count ? rd<byte>(off(data,at)) : 0);
+                                    set(c,104,get(c,104)+1);
+                                }
+                                at += 1; chunk += 1;
+                            }
+                            if (inlinePool) end(c,index);
+                            else {
+                                item >> p<byte> <- record(c,index);
+                                wr<int>(off(item,8),get(c,104)-chunk); wr<int>(off(item,12),chunk); wr<int>(off(item,28),4);
+                            }
+                        }
+                    }
+                    node += 1;
+                }
+                if (inlinePool) {
+                    at >> int <- 0;
+                    while (at < get(c,40)) {
+                        item >> p<byte> <- record(c,at);
+                        location >> int <- rd<int>(off(item,20));
+                        if (location >= 0) patch(c,location,rd(off(literalOffsets(c),rd<int>(item))));
+                        at += 1;
+                    }
+                }
+            }
+            stringCompare(c >> p<byte>, node >> int, op >> int) -> void {
+                index >> int <- begin(c,node,7);
+                put(c,0x49); put(c,0x89); put(c,0xCA);
+                put(c,0x49); put(c,0x89); put(c,0xC3); end(c,index);
+                loopAt >> int <- get(c,32);
+                index <- begin(c,node,6);
+                put(c,0x41); put(c,0x0F); put(c,0xB6); put(c,0x02);
+                put(c,0x41); put(c,0x0F); put(c,0xB6); put(c,0x13);
+                put(c,0x39); put(c,0xD0); end(c,index);
+                different >> int <- flagBranch(c,node,0x85);
+                index <- begin(c,node,7); put(c,0x85); put(c,0xC0); end(c,index);
+                finished >> int <- flagBranch(c,node,0x84);
+                index <- begin(c,node,7);
+                put(c,0x49); put(c,0xFF); put(c,0xC2);
+                put(c,0x49); put(c,0xFF); put(c,0xC3); end(c,index);
+                back >> int <- branch(c,node,-1); patch(c,back,loopAt);
+                patch(c,different,get(c,32)); patch(c,finished,get(c,32));
+                index <- begin(c,node,7);
+                put(c,0x39); put(c,0xD0); put(c,0x0F);
+                put(c,op == 31 ? 0x94 : (op == 32 ? 0x95 : (op == 26 ? 0x97 :
+                    (op == 27 ? 0x92 : (op == 28 ? 0x93 : 0x96)))));
+                put(c,0xC0); put(c,0x0F); put(c,0xB6); put(c,0xC0); end(c,index);
+            }
+            stringJoin(c >> p<byte>, node >> int) -> void {
+                stackAccess(c,node,8,registerFor(c,0),false);
+                stackAccess(c,node,0,registerFor(c,1),false);
+                padding >> int <- ir.nccIr.graphAbi(g(c)) == 2 ? 32 : 0;
+                if ((get(c,44) & 1) != 0) padding += 8;
+                adjust(c,node,padding,false);
+                index >> int <- begin(c,node,8);
+                put(c,0xE8); wr<int>(off(record(c,index),16),get(c,32));
+                word(c,0); end(c,index);
+                adjust(c,node,padding+16,true); set(c,44,get(c,44)-2);
+            }
+            boolean(c >> p<byte>, node >> int) -> void {
+                index >> int <- begin(c,node,7);
+                put(c,0x48); put(c,0x85); put(c,0xC0); put(c,0x0F); put(c,0x95); put(c,0xC0);
+                put(c,0x0F); put(c,0xB6); put(c,0xC0); end(c,index);
+            }
+            emitBinary(c >> p<byte>, node >> int, op >> int, type >> int) -> void {
+                if (native_types.nccNativeTypes.floating(type)) { fpBinary(c,node,op,type); return; }
+                index >> int <- begin(c,node,7);
+                wide >> bool <- native_types.nccNativeTypes.width(type) == 8;
+                signed >> bool <- native_types.nccNativeTypes.signed(type);
+                // RCX holds the left operand, RAX the right operand.
+                if (wide && op != 41 && op != 42) put(c,0x48);
+                if (op == 35 || op == 37 || op == 36) { put(c,0x01); put(c,0xC8); }
+                else if (op == 38 || op == 40 || op == 39) {
+                    put(c,0x29); put(c,0xC1); if (wide) put(c,0x48); put(c,0x89); put(c,0xC8);
+                }
+                else if (op == 18 || op == 47) { put(c,0x0F); put(c,0xAF); put(c,0xC1); }
+                else if (op == 41 || op == 42) {
+                    put(c,wide ? 0x49 : 0x41); put(c,0x89); put(c,0xC2);
+                    if (wide) put(c,0x48); put(c,0x89); put(c,0xC8);
+                    if (signed) { if (wide) put(c,0x48); put(c,0x99); }
+                    else { put(c,0x31); put(c,0xD2); }
+                    put(c,wide ? 0x49 : 0x41); put(c,0xF7); put(c,signed ? 0xFA : 0xF2);
+                    if (op == 42) { if (wide) put(c,0x48); put(c,0x89); put(c,0xD0); }
+                }
+                else if (op == 43 || op == 25 || op == 44) {
+                    put(c,op == 43 ? 0x21 : (op == 25 ? 0x09 : 0x31)); put(c,0xC8);
+                }
+                else if (op == 46 || op == 21 || op == 22) {
+                    put(c,0x91); if (wide) put(c,0x48); put(c,0xD3);
+                    put(c,op == 46 ? 0xE0 : (op == 21 && signed ? 0xF8 : 0xE8));
+                }
+                else if (op == 31 || op == 32 || (op >= 26 && op <= 29)) {
+                    put(c,0x39); put(c,0xC1); put(c,0x0F);
+                    cc >> int <- op == 31 ? 0x94 : (op == 32 ? 0x95 :
+                        (op == 26 ? (signed ? 0x9F : 0x97) : (op == 27 ? (signed ? 0x9C : 0x92) :
+                        (op == 28 ? (signed ? 0x9D : 0x93) : (signed ? 0x9E : 0x96)))));
+                    put(c,cc); put(c,0xC0); put(c,0x0F); put(c,0xB6); put(c,0xC0);
+                }
+                else reject(c,node);
+                end(c,index);
+                if (!(op == 31 || op == 32 || (op >= 26 && op <= 29))) normalizeCode(c,node,type);
+            }
+            expression(c >> p<byte>, node >> int, depth >> int) -> bool {
+                return expressionAs(c,node,depth,-1);
+            }
+            address(c >> p<byte>, node >> int, declaration >> int) -> bool {
+                if (declaration < 0) { reject(c,node); return false; }
+                slot >> int <- rd<int>(off(slots(c),declaration));
+                if (slot < 0) {
+                    if (globalSection(c,declaration) > 0 || ir.nccIr.graphNodeAstKind(g(c),declaration) == 15) {
+                        globalAccess(c,node,declaration,false,0,true); return healthy(c);
+                    }
+                    reject(c,node); return false;
+                }
+                index >> int <- begin(c,node,7);
+                put(c,0x48); put(c,0x8D); put(c,0x85); word(c,-8*(slot+1)); end(c,index);
+                kind >> int <- ir.nccIr.graphNodeAstKind(g(c),declaration);
+                type >> int <- kind == 12 || kind == 16 ? native_types.nccNativeTypes.code(g(c),typeNode(c,declaration)) :
+                    native_types.nccNativeTypes.expression(g(c),declaration,0);
+                alignment >> int <- native_types.nccNativeTypes.aggregate(type) ? native_types.nccNativeTypes.aggregateAlign(g(c),type) : 1;
+                if (alignment > 16) {
+                    index <- begin(c,node,7);
+                    put(c,0x48); put(c,0x05); word(c,alignment-1);
+                    put(c,0x48); put(c,0x25); word(c,0-alignment); end(c,index);
+                }
+                return true;
+            }
+            functionAddress(c >> p<byte>, node >> int, declaration >> int) -> bool {
+                index >> int <- begin(c,node,6); put(c,0x48); put(c,0x8D); put(c,0x05);
+                wr<int>(off(record(c,index),16),get(c,32)); wr<int>(off(record(c,index),24),declaration);
+                word(c,0); end(c,index); return healthy(c);
+            }
+            rawAccess(c >> p<byte>, node >> int, bytes >> int, signed >> bool, store >> bool) -> void {
+                if (bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8) { reject(c,node); return; }
+                index >> int <- begin(c,node,store ? 9 : 6);
+                if (store) {
+                    if (bytes == 2) put(c,0x66);
+                    if (bytes == 8) put(c,0x48);
+                    put(c,bytes == 1 ? 0x88 : 0x89); put(c,0x01);
+                }
+                else if (bytes < 4) {
+                    if (signed) put(c,0x48);
+                    put(c,0x0F); put(c,(signed ? 0xBE : 0xB6)+(bytes == 2 ? 1 : 0)); put(c,0x00);
+                }
+                else {
+                    if (bytes == 8 || signed) put(c,0x48);
+                    put(c,bytes == 4 && signed ? 0x63 : 0x8B); put(c,0x00);
+                }
+                end(c,index);
+            }
+            intrinsic(c >> p<byte>, node >> int, depth >> int) -> bool {
+                graph >> p<byte> <- g(c);
+                id >> int <- ir.nccIr.graphNodeIntrinsicId(graph,node);
+                arg >> int <- native_types.nccNativeTypes.argument(graph,node,0);
+                bytes >> int <- ir.nccIr.graphNodeIntrinsicTypeBytes(graph,node);
+                signed >> bool <- ir.nccIr.graphNodeIntrinsicTypeSigned(graph,node);
+                intrinsicCode >> int <- -1;
+                if (id >= 1 && id <= 4 || id == 60 || id == 61) {
+                    intrinsicType >> int <- native_types.nccNativeTypes.intrinsicType(graph,node,0);
+                    intrinsicCode <- native_types.nccNativeTypes.code(graph,intrinsicType);
+                    if (intrinsicCode >= 0) {
+                        bytes <- native_types.nccNativeTypes.aggregate(intrinsicCode) ? native_types.nccNativeTypes.aggregateBytes(graph,intrinsicCode) : native_types.nccNativeTypes.width(intrinsicCode);
+                        signed <- native_types.nccNativeTypes.signed(intrinsicCode);
+                    }
+                }
+                if (id == 90) {
+                    if (ir.nccIr.graphTarget(graph) != 1 || ir.nccIr.graphAbi(graph) != 1) { reject(c,node); return false; }
+                    at >> int <- 0;
+                    while (at < 7) {
+                        if (!expressionAs(c,native_types.nccNativeTypes.argument(graph,node,at),depth+1,24)) return false;
+                        push(c,node); at += 1;
+                    }
+                    if (native_types.nccNativeTypes.argument(graph,node,7) >= 0) { reject(c,node); return false; }
+                    stackAccess(c,node,48,0,false);
+                    at <- 0;
+                    while (at < 6) {
+                        reg >> int <- at == 3 ? 10 : registerFor(c,at);
+                        stackAccess(c,node,(5-at)*8,reg,false); at += 1;
+                    }
+                    index >> int <- begin(c,node,7); put(c,0x0F); put(c,0x05); end(c,index);
+                    adjust(c,node,56,true); set(c,44,get(c,44)-7); return healthy(c);
+                }
+                if (id >= 24 && id <= 26) {
+                    if (!ir.nccIr.graphNodeLayoutValid(graph,node)) return false;
+                    constant64(c,node,ir.nccIr.graphNodeLayoutValue(graph,node)); return true;
+                }
+                if (!expression(c,arg,depth+1)) return false;
+                if (id == 7) {
+                    fpConvert(c,node,native_types.nccNativeTypes.expression(graph,native_types.nccNativeTypes.argument(graph,node,0),0),
+                        native_types.nccNativeTypes.expression(graph,node,0)); return healthy(c);
+                }
+                if (id == 6 || id == 8) return true;
+                if (id == 5) {
+                    boolean(c,node);
+                    index >> int <- begin(c,node,7); put(c,0x83); put(c,0xF0); put(c,1); end(c,index);
+                    return true;
+                }
+                if (id == 1 || id == 60) {
+                    if (!native_types.nccNativeTypes.aggregate(native_types.nccNativeTypes.expression(graph,node,0))) rawAccess(c,node,bytes,signed,false);
+                    return healthy(c);
+                }
+                push(c,node);
+                arg <- native_types.nccNativeTypes.argument(graph,node,1);
+                storedType >> int <- id == 2 || id == 61 ? intrinsicCode : -1;
+                if (!expressionAs(c,arg,depth+1,id == 2 || id == 61 ? (storedType >= 0 ? storedType : bytes+(signed ? 16 : 0)) : -1)) return false;
+                if (id == 61 && native_types.nccNativeTypes.aggregate(storedType)) { reject(c,node); return false; }
+                if (id == 2 && native_types.nccNativeTypes.aggregate(storedType)) {
+                    moveReg(c,node,10,0); pop(c,node,11); moveReg(c,node,0,11); copyTo(c,node,bytes); return healthy(c);
+                }
+                if (id == 20) {
+                    push(c,node);
+                    if (!expression(c,native_types.nccNativeTypes.argument(graph,node,2),depth+1)) return false;
+                    pop(c,node,11); pop(c,node,10);
+                    loopAt >> int <- get(c,32);
+                    finish >> int <- branch(c,node,0x84);
+                    index >> int <- begin(c,node,9);
+                    put(c,0x41); put(c,0x8A); put(c,0x13); put(c,0x41); put(c,0x88); put(c,0x12);
+                    put(c,0x49); put(c,0xFF); put(c,0xC3); put(c,0x49); put(c,0xFF); put(c,0xC2);
+                    put(c,0x48); put(c,0xFF); put(c,0xC8); end(c,index);
+                    back >> int <- branch(c,node,-1); patch(c,back,loopAt); patch(c,finish,get(c,32));
+                    return healthy(c);
+                }
+                pop(c,node,1);
+                if (id == 2 || id == 61) { rawAccess(c,node,bytes,signed,true); return healthy(c); }
+                if (id == 3) {
+                    index >> int <- begin(c,node,7);
+                    put(c,0x48); put(c,0x69); put(c,0xC0); word(c,bytes);
+                    put(c,0x48); put(c,0x01); put(c,0xC8); end(c,index); return true;
+                }
+                if (id == 4) {
+                    emitBinary(c,node,38,24);
+                    push(c,node); constant(c,node,bytes); pop(c,node,1); emitBinary(c,node,41,24);
+                    return healthy(c);
+                }
+                reject(c,node); return false;
+            }
+            indexedAddress(c >> p<byte>, node >> int, depth >> int) -> bool {
+                graph >> p<byte> <- g(c);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                element >> int <- native_types.nccNativeTypes.expression(graph,node,0);
+                stride >> int <- native_types.nccNativeTypes.aggregate(element) ? native_types.nccNativeTypes.aggregateBytes(graph,element) : native_types.nccNativeTypes.width(element);
+                if (stride <= 0 || !expression(c,first,depth+1)) { reject(c,node); return false; }
+                push(c,node);
+                if (!expressionAs(c,ir.nccIr.graphNodeNextSibling(graph,first),depth+1,24)) return false;
+                index >> int <- begin(c,node,7);
+                put(c,0x48); put(c,0x69); put(c,0xC0); word(c,stride); end(c,index);
+                pop(c,node,1);
+                index <- begin(c,node,7); put(c,0x48); put(c,0x01); put(c,0xC8); end(c,index);
+                return healthy(c);
+            }
+            expressionAs(c >> p<byte>, node >> int, depth >> int, expected >> int) -> bool {
+                if (node < 0 || depth > 256 || !healthy(c)) { reject(c,node); return false; }
+                source >> int <- ir.nccIr.graphNodeGvnSource(g(c),node);
+                if (source < 0) {
+                    actual >> int <- native_types.nccNativeTypes.expression(g(c),node,0);
+                    floating >> bool <- native_types.nccNativeTypes.floating(actual) || native_types.nccNativeTypes.floating(expected);
+                    castCall >> bool <- ir.nccIr.graphNodeAstKind(g(c),node) == 29 && ir.nccIr.graphNodeIntrinsicId(g(c),node) == 7;
+                    requested >> int <- floating && !castCall ? -1 : expected;
+                    if (native_types.nccNativeTypes.floating(actual) && ir.nccIr.graphNodeAstKind(g(c),node) == 32) requested <- actual;
+                    valid >> bool <- expressionRaw(c,node,depth,requested);
+                    if (valid && floating && !castCall && expected > 0) fpConvert(c,node,actual,expected);
+                    return valid && healthy(c);
+                }
+                type >> int <- ir.nccIr.graphNodeGvnType(g(c),node);
+                slot >> int <- rd<int>(off(slots(c),source));
+                if (slot < 0 || (expected > 0 && expected != type)) { reject(c,node); return false; }
+                if (source == node) {
+                    if (!expressionRaw(c,node,depth,type)) return false;
+                    normalizeCode(c,node,type);
+                    memoryOp(c,node,5,-8*(slot+1),8,false,0,true);
+                } else {
+                    memoryOp(c,node,5,-8*(slot+1),8,false,0,false);
+                    normalizeCode(c,node,type);
+                }
+                return healthy(c);
+            }
+            inlineRoot(graph >> p<byte>, node >> int) -> int {
+                if (node < 0 || ir.nccIr.graphNodeAstKind(graph,node) != 29) return -1;
+                root >> int <- ir.nccIr.graphNodeRoleHash(graph,node)-ROLE_INLINE_BASE;
+                return root >= 0 && root < ir.nccIr.graphNodes(graph) ? root : -1;
+            }
+            inlineCall(c >> p<byte>, node >> int, root >> int, depth >> int, expected >> int) -> bool {
+                graph >> p<byte> <- g(c);
+                target >> int <- functionOf(c,root);
+                if (target < 0 || target == functionOf(c,node)) { reject(c,node); return false; }
+                count >> int <- 0;
+                parameter >> int <- ir.nccIr.graphNodeFirstChild(graph,target);
+                while (parameter >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,parameter) == 16) count += 1;
+                    parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                }
+                saved >> p<int> <- cast<int>(alloc((count+1)*3*sizeOf(int)));
+                if (saved == null) { reject(c,node); return false; }
+                parameter <- ir.nccIr.graphNodeFirstChild(graph,target);
+                arg >> int <- ir.nccIr.graphNodeNextSibling(graph,ir.nccIr.graphNodeFirstChild(graph,node));
+                at >> int <- 0;
+                while (arg >= 0 && healthy(c)) {
+                    while (parameter >= 0 && ir.nccIr.graphNodeAstKind(graph,parameter) != 16) {
+                        parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                    }
+                    if (parameter < 0 || at >= count) { reject(c,node); break; }
+                    type >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,parameter));
+                    slot >> int <- rd(off(slots(c),arg));
+                    if (slot < 0 || !expressionAs(c,arg,depth+1,type)) { reject(c,node); break; }
+                    if (native_types.nccNativeTypes.aggregate(type)) {
+                        if (!native_types.nccNativeTypes.aggregateCompatible(graph,type,
+                            native_types.nccNativeTypes.expression(graph,arg,0))) { reject(c,arg); break; }
+                        moveReg(c,node,10,0); address(c,node,arg);
+                        copyTo(c,node,native_types.nccNativeTypes.aggregateBytes(graph,type));
+                    } else {
+                        normalizeCode(c,node,type);
+                        memoryOp(c,node,5,-8*(slot+1),8,false,0,true);
+                    }
+                    wr(off(saved,at*3),parameter);
+                    wr(off(saved,at*3+1),rd(off(slots(c),parameter)));
+                    wr(off(saved,at*3+2),slot);
+                    at += 1;
+                    parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                    arg <- ir.nccIr.graphNodeNextSibling(graph,arg);
+                }
+                while (parameter >= 0 && ir.nccIr.graphNodeAstKind(graph,parameter) != 16) {
+                    parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                }
+                if (at != count || parameter >= 0) reject(c,node);
+                if (!healthy(c)) { free(saved); return false; }
+                at <- 0;
+                while (at < count) {
+                    wr(off(slots(c),rd(off(saved,at*3))),rd(off(saved,at*3+2))); at += 1;
+                }
+                resultType >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,target));
+                result >> bool <- expressionAs(c,root,depth+1,resultType);
+                if (result) normalizeCode(c,node,resultType);
+                at <- 0;
+                while (at < count) {
+                    wr(off(slots(c),rd(off(saved,at*3))),rd(off(saved,at*3+1))); at += 1;
+                }
+                free(saved);
+                if (result && expected > 0) normalizeCode(c,node,expected);
+                return result && healthy(c);
+            }
+            expressionRaw(c >> p<byte>, node >> int, depth >> int, expected >> int) -> bool {
+                if (node < 0 || depth > 256 || get(c,36) != 0) { reject(c,node); return false; }
+                graph >> p<byte> <- g(c);
+                inlined >> int <- inlineRoot(graph,node);
+                if (inlined >= 0) return inlineCall(c,node,inlined,depth,expected);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                first >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                op >> int <- native_types.nccNativeTypes.operation(graph,node);
+                type >> int <- native_types.nccNativeTypes.expression(graph,node,0);
+                if (kind == 33) {
+                    if (!native_types.nccNativeTypes.aggregate(type)) { reject(c,node); return false; }
+                    array >> int <- type-100000;
+                    element >> int <- native_types.nccNativeTypes.code(graph,ir.nccIr.graphNodeFirstChild(graph,array));
+                    stride >> int <- native_types.nccNativeTypes.aggregate(element) ? native_types.nccNativeTypes.aggregateBytes(graph,element) : native_types.nccNativeTypes.width(element);
+                    if (stride <= 0) { reject(c,node); return false; }
+                    displacement >> int <- 0; at >> int <- first;
+                    while (at >= 0 && healthy(c)) {
+                        if (!expressionAs(c,at,depth+1,element)) return false;
+                        if (native_types.nccNativeTypes.aggregate(element)) {
+                            moveReg(c,node,10,0); address(c,node,node); addAddress(c,node,displacement); copyTo(c,node,stride);
+                        } else {
+                            normalizeCode(c,node,element); push(c,node); address(c,node,node); addAddress(c,node,displacement);
+                            moveReg(c,node,1,0); pop(c,node,0); rawAccess(c,node,stride,false,true);
+                        }
+                        displacement += stride; at <- ir.nccIr.graphNodeNextSibling(graph,at);
+                    }
+                    if (displacement != native_types.nccNativeTypes.aggregateBytes(graph,type)) { reject(c,node); return false; }
+                    return address(c,node,node);
+                }
+                if (kind == 31) {
+                    if (!indexedAddress(c,node,depth+1)) return false;
+                    if (!native_types.nccNativeTypes.aggregate(type)) {
+                        rawAccess(c,node,native_types.nccNativeTypes.width(type),native_types.nccNativeTypes.signed(type),false);
+                        normalizeCode(c,node,type);
+                    }
+                    return healthy(c);
+                }
+                if (kind == 45) return recordExpression(c,node,depth,type);
+                if (kind == 30) {
+                    selected >> int <- native_types.nccNativeTypes.member(graph,node,0);
+                    if (selected >= 0) {
+                        if (!expression(c,first,depth+1)) return false;
+                        addAddress(c,node,ir.nccIr.graphNodeLayoutValue(graph,selected));
+                        if (!native_types.nccNativeTypes.aggregate(type)) {
+                            memoryOp(c,node,0,0,native_types.nccNativeTypes.width(type),native_types.nccNativeTypes.signed(type),0,false);
+                            normalizeCode(c,node,type);
+                        }
+                        return healthy(c);
+                    }
+                }
+                if (kind == 25 && op == 2 && !native_types.nccNativeTypes.integerLiteral(graph,node)) {
+                    value >> u64 <- binary64.nccBinary64.parse(ir.nccIr.graphNodeName(graph,node),ir.nccIr.graphNodeNameBytes(graph,node),true);
+                    if (!binary64.nccBinary64.finite(value)) { reject(c,node); return false; }
+                    constant64(c,node,value); return healthy(c);
+                }
+                if (expected > 0 && (expected == 34 || type == 34) && expected != type &&
+                    !(expected == 34 && (ir.nccIr.graphTextValue(graph,node,"null") ||
+                        (kind == 29 && ir.nccIr.graphNodeIntrinsicId(graph,node) == 7)))) { reject(c,node); return false; }
+                if (kind == 25 && op == 3) { stringAddress(c,node); return healthy(c); }
+                if (kind == 25 && ir.nccIr.graphTextValue(graph,node,"null")) { constant(c,node,0); return true; }
+                if (kind == 25 && (op == 2 || op == 4 || op == 76 || op == 77)) {
+                    constant64(c,node,native_types.nccNativeTypes.literal(graph,node));
+                    normalizeCode(c,node,expected > 0 ? expected : type); return healthy(c);
+                }
+                if (kind == 26 || kind == 30) {
+                    if (ir.nccIr.graphTextValue(graph,node,"null")) { constant(c,node,0); return true; }
+                    target >> int <- mct_values.nccMctValues.resolve(graph,node);
+                    if (mct_values.nccMctValues.isConstant(graph,target))
+                        return expressionAs(c,mct_values.nccMctValues.initializer(graph,target),depth+1,
+                            native_types.nccNativeTypes.code(graph,typeNode(c,target)));
+                    if (native_types.nccNativeTypes.aggregate(type)) return address(c,node,target);
+                    frameAccess(c,node,target,false,0); return get(c,36) == 0;
+                }
+                if (kind == 27 && op == 43) {
+                    if (ir.nccIr.graphSignatureArity(graph,first) >= 0) return functionAddress(c,node,first);
+                    if (ir.nccIr.graphNodeAstKind(graph,first) == 31) return indexedAddress(c,first,depth+1);
+                    if (ir.nccIr.graphNodeAstKind(graph,first) == 30 && native_types.nccNativeTypes.member(graph,first,0) >= 0) {
+                        selected >> int <- native_types.nccNativeTypes.member(graph,first,0);
+                        if (!expression(c,ir.nccIr.graphNodeFirstChild(graph,first),depth+1)) return false;
+                        addAddress(c,node,ir.nccIr.graphNodeLayoutValue(graph,selected)); return healthy(c);
+                    }
+                    return address(c,node,mct_values.nccMctValues.resolve(graph,first));
+                }
+                if (kind == 27 && (op == 35 || op == 38 || op == 33 || op == 34)) {
+                    if (native_types.nccNativeTypes.floating(type)) {
+                        if (!expressionAs(c,first,depth+1,type)) return false;
+                        if (op == 38) {
+                            moveReg(c,node,1,0); constant64(c,node,type == 41 ? 0x8000000000000000 : 0x80000000);
+                            index >> int <- begin(c,node,7); put(c,0x48); put(c,0x31); put(c,0xC8); end(c,index);
+                        } else if (op != 35) reject(c,node);
+                        return healthy(c);
+                    }
+                    if (expected > 0) type <- expected;
+                    if (!expressionAs(c,first,depth+1,type)) return false;
+                    index >> int <- begin(c,node,7);
+                    if ((native_types.nccNativeTypes.width(type) == 8 && (op == 38 || op == 34)) || op == 33) put(c,0x48);
+                    if (op == 38 || op == 34) { put(c,0xF7); put(c,op == 38 ? 0xD8 : 0xD0); }
+                    if (op == 33) {
+                        put(c,0x85); put(c,0xC0); put(c,0x0F); put(c,0x94); put(c,0xC0);
+                        put(c,0x0F); put(c,0xB6); put(c,0xC0);
+                    }
+                    end(c,index); if (op != 33) normalizeCode(c,node,type); return get(c,36) == 0;
+                }
+                if (kind == 28 || kind == 32) {
+                    second >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    binaryType >> int <- native_types.nccNativeTypes.common(
+                        native_types.nccNativeTypes.expression(graph,first,0),
+                        native_types.nccNativeTypes.expression(graph,second,0));
+                    nullComparison >> bool <- (op == 31 || op == 32) && (ir.nccIr.graphTextValue(graph,first,"null") ||
+                        ir.nccIr.graphTextValue(graph,second,"null"));
+                    if (nullComparison) binaryType <- 8;
+                    if (kind == 28 && binaryType == 34) {
+                        if (op == 35) {
+                            if (!expressionAs(c,first,depth+1,34)) return false;
+                            push(c,node);
+                            if (!expressionAs(c,second,depth+1,34)) return false;
+                            push(c,node);
+                            stringJoin(c,node);
+                            return healthy(c);
+                        }
+                        if (!(op == 31 || op == 32 || (op >= 26 && op <= 29))) { reject(c,node); return false; }
+                        if (!expressionAs(c,first,depth+1,34)) return false;
+                        push(c,node);
+                        if (!expressionAs(c,second,depth+1,34)) return false;
+                        pop(c,node,1); stringCompare(c,node,op); return healthy(c);
+                    }
+                    leftShift >> bool <- op > ROLE_STRENGTH_SHL_BASE && op < ROLE_STRENGTH_SHL_BASE+32;
+                    rightShift >> bool <- op > ROLE_STRENGTH_SHR_U_BASE && op < ROLE_STRENGTH_SHR_U_BASE+32;
+                    if (kind == 28 && (leftShift || rightShift)) {
+                        if (native_types.nccNativeTypes.width(expected) == 8 &&
+                            native_types.nccNativeTypes.width(binaryType) < 8) binaryType <- expected;
+                        if (!expressionAs(c,first,depth+1,binaryType)) return false;
+                        index >> int <- begin(c,node,7);
+                        if (native_types.nccNativeTypes.width(binaryType) == 8) put(c,0x48);
+                        put(c,0xC1); put(c,leftShift ? 0xE0 : 0xE8);
+                        put(c,op-(leftShift ? ROLE_STRENGTH_SHL_BASE : ROLE_STRENGTH_SHR_U_BASE));
+                        end(c,index); normalizeCode(c,node,binaryType); return healthy(c);
+                    }
+                    if (native_types.nccNativeTypes.width(expected) == 8 && native_types.nccNativeTypes.width(binaryType) < 8 &&
+                        !(op == 31 || op == 32 || (op >= 26 && op <= 29))) binaryType <- expected;
+                    if (!expressionAs(c,first,depth+1,kind == 32 || op == 48 || op == 49 || nullComparison ? -1 : binaryType)) return false;
+                    if (kind == 32 || op == 48 || op == 49) {
+                        alternate >> int <- branch(c,node,op == 49 ? 0x85 : 0x84);
+                        expressionAs(c,second,depth+1,kind == 32 ? expected : -1);
+                        if (kind != 32) boolean(c,node);
+                        finish >> int <- branch(c,node,-1);
+                        patch(c,alternate,get(c,32));
+                        if (kind == 32) expressionAs(c,ir.nccIr.graphNodeNextSibling(graph,second),depth+1,expected);
+                        else constant(c,node,op == 49 ? 1 : 0);
+                        patch(c,finish,get(c,32)); return get(c,36) == 0;
+                    }
+                    push(c,node);
+                    if (!expressionAs(c,second,depth+1,nullComparison ? -1 : binaryType)) return false;
+                    pop(c,node,1); emitBinary(c,node,op,binaryType); return get(c,36) == 0;
+                }
+                if (kind == 29 && ir.nccIr.graphNodeIntrinsicId(graph,node) != 0) return intrinsic(c,node,depth);
+                if (kind == 29 && ir.nccIr.graphNodeIntrinsicId(graph,node) == 0) {
+                    callee >> int <- first;
+                    if (ir.nccIr.graphNodeAstKind(graph,callee) == 74) callee <- ir.nccIr.graphNodeFirstChild(graph,callee);
+                    target >> int <- mct_values.nccMctValues.resolve(graph,callee);
+                    functionType >> int <- native_types.nccNativeTypes.expressionType(graph,callee,0);
+                    if ((target < 0 || ir.nccIr.graphNodeAstKind(graph,target) != 15) &&
+                        ir.nccIr.graphNodeAstKind(graph,functionType) == 23) return callAggregate(c,node,depth,callee,-2);
+                    if (target >= 0 && ir.nccIr.graphNodeAstKind(graph,target) == 15) {
+                        recordCall >> bool <- native_types.nccNativeTypes.aggregate(native_types.nccNativeTypes.code(graph,typeNode(c,target)));
+                        parameterNode >> int <- ir.nccIr.graphNodeFirstChild(graph,target);
+                        while (parameterNode >= 0) {
+                            if (ir.nccIr.graphNodeAstKind(graph,parameterNode) == 16 &&
+                                native_types.nccNativeTypes.aggregate(native_types.nccNativeTypes.code(graph,typeNode(c,parameterNode)))) recordCall <- true;
+                            parameterNode <- ir.nccIr.graphNodeNextSibling(graph,parameterNode);
+                        }
+                        if (recordCall) return callAggregate(c,node,depth,callee,target);
+                    }
+                    if (target < 0 && ir.nccIr.graphSignatureArity(graph,callee) >= 0) {
+                        recordCall >> bool <- native_types.nccNativeTypes.aggregate(native_types.nccNativeTypes.signatureCode(graph,callee,-1));
+                        parameterAt >> int <- 0;
+                        while (parameterAt < ir.nccIr.graphSignatureArity(graph,callee)) {
+                            if (native_types.nccNativeTypes.aggregate(native_types.nccNativeTypes.signatureCode(graph,callee,parameterAt))) recordCall <- true;
+                            parameterAt += 1;
+                        }
+                        if (recordCall) return callAggregate(c,node,depth,callee,-1);
+                    }
+                    heap >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        heap_abi.nccHeapAbi.resolve(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee)) : 0;
+                    memory >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        memory_abi.nccMemoryAbi.resolve(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee)) : 0;
+                    output >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        output_abi.nccOutputAbi.resolve(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    external >> bool <- target < 0 && ir.nccIr.graphSignatureArity(graph,callee) >= 0;
+                    string >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        string_abi.nccStringAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    json >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        json_abi.nccJsonAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    command >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        command_abi.nccCommandAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    filesystem >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        fs_abi.nccFsAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    if (external && native_types.nccNativeTypes.signatureCode(graph,callee,-1) < 0) { reject(c,node); return false; }
+                    timer >> int <- target < 0 && ir.nccIr.graphNodeRuntimeIdentity(graph,callee) ?
+                        time_abi.nccTimeAbi.owned(ir.nccIr.graphNodeName(graph,callee),ir.nccIr.graphNodeNameBytes(graph,callee),
+                            ir.nccIr.graphNodeOwner(graph,callee),ir.nccIr.graphNodeOwnerBytes(graph,callee)) : 0;
+                    if ((target < 0 && heap == 0 && memory == 0 && output == 0 && string == 0 && json == 0 && command == 0 && filesystem == 0 && timer == 0 && !external) || (target >= 0 && ir.nccIr.graphNodeAstKind(graph,target) != 15)) { reject(c,node); return false; }
+                    parameter >> int <- target >= 0 ? ir.nccIr.graphNodeFirstChild(graph,target) : -1;
+                    arity >> int <- 0;
+                    floatingCall >> bool <- native_types.nccNativeTypes.floating(type);
+                    arg >> int <- ir.nccIr.graphNodeNextSibling(graph,first);
+                    while (arg >= 0) {
+                        while (parameter >= 0 && ir.nccIr.graphNodeAstKind(graph,parameter) != 16) {
+                            parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                        }
+                        if (output > 0 && arity > 0) { reject(c,node); return false; }
+                        if (heap == 0 && memory == 0 && output == 0 && string == 0 && json == 0 && command == 0 && filesystem == 0 && timer == 0 && !external && parameter < 0) { reject(c,node); return false; }
+                        expected >> int <- command > 0 ? command_abi.nccCommandAbi.argumentCode(command,arity) : (json > 0 ? json_abi.nccJsonAbi.argumentCode(json,arity) : (string > 0 ? string_abi.nccStringAbi.argumentCode(string,arity) : (output >= 10 ? output_abi.nccOutputAbi.argumentCode(output) : (output > 0 ? native_types.nccNativeTypes.expression(graph,arg,0) : (heap > 0 ? 8 : (external ? native_types.nccNativeTypes.signatureCode(graph,callee,arity) :
+                            native_types.nccNativeTypes.code(graph,typeNode(c,parameter))))))));
+                        if (filesystem > 0) expected <- fs_abi.nccFsAbi.argumentCode(filesystem,arity);
+                        if (timer > 0) expected <- time_abi.nccTimeAbi.argumentCode(timer,arity);
+                        if (memory > 0) expected <- memory_abi.nccMemoryAbi.argumentCode(memory,arity);
+                        if (expected <= 0) { reject(c,node); return false; }
+                        if (arity >= 256) { reject(c,node); return false; }
+                        if (native_types.nccNativeTypes.floating(expected)) floatingCall <- true;
+                        if (!expressionAs(c,arg,depth+1,expected)) return false;
+                        normalizeCode(c,node,expected);
+                        if (parameter >= 0) parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                        push(c,node); arity += 1; arg <- ir.nccIr.graphNodeNextSibling(graph,arg);
+                    }
+                    if (output > 0) {
+                        if (!output_abi.nccOutputAbi.validArity(output,arity)) { reject(c,node); return false; }
+                        if (output == 1 || output == 2) {
+                            value >> int <- native_types.nccNativeTypes.argument(graph,node,0);
+                            tag >> int <- arity == 0 ? 0 : native_types.nccNativeTypes.outputTag(graph,value);
+                            if (tag < 0) { reject(c,node); return false; }
+                            if (arity == 0) { constant(c,node,0); push(c,node); }
+                            constant(c,node,tag); push(c,node);
+                            arity <- 2;
+                        }
+                    }
+                    limit >> int <- ir.nccIr.graphAbi(graph) == 2 ? 4 : 6;
+                    parameter <- target >= 0 ? ir.nccIr.graphNodeFirstChild(graph,target) : -1;
+                    count >> int <- command > 0 ? command_abi.nccCommandAbi.arity(command) : (json > 0 ? json_abi.nccJsonAbi.arity(json) : (string > 0 ? string_abi.nccStringAbi.arity(string) : (output > 0 ? output_abi.nccOutputAbi.machineArity(output) : (heap > 0 ? heap_abi.nccHeapAbi.arity(heap) :
+                        (external ? ir.nccIr.graphSignatureArity(graph,callee) : 0)))));
+                    if (filesystem > 0) count <- fs_abi.nccFsAbi.arity(filesystem);
+                    if (timer > 0) count <- time_abi.nccTimeAbi.arity(timer);
+                    if (memory > 0) count <- memory_abi.nccMemoryAbi.arity(memory);
+                    while (parameter >= 0) {
+                        if (ir.nccIr.graphNodeAstKind(graph,parameter) == 16) count += 1;
+                        parameter <- ir.nccIr.graphNodeNextSibling(graph,parameter);
+                    }
+                    if (arity != count) { reject(c,node); return false; }
+                    if (floatingCall) { fpCall(c,node,arity,type,false); return healthy(c); }
+                    at >> int <- 0;
+                    while (at < arity && at < limit) {
+                        stackAccess(c,node,(arity-1-at)*8,registerFor(c,at),false); at += 1;
+                    }
+                    extra >> int <- arity > limit ? arity-limit : 0;
+                    shadow >> int <- ir.nccIr.graphAbi(graph) == 2 ? 32 : 0;
+                    padding >> int <- shadow+extra*8+((get(c,44)+extra) & 1)*8;
+                    adjust(c,node,padding,false);
+                    at <- limit;
+                    while (at < arity) {
+                        stackAccess(c,node,padding+(arity-1-at)*8,0,false);
+                        stackAccess(c,node,shadow+(at-limit)*8,0,true); at += 1;
+                    }
+                    index >> int <- begin(c,node,8); put(c,0xE8);
+                    wr<int>(off(record(c,index),16),get(c,32)); word(c,0); end(c,index);
+                    adjust(c,node,padding+arity*8,true); set(c,44,get(c,44)-arity);
+                    if (filesystem > 0) { normalizeCode(c,node,fs_abi.nccFsAbi.resultCode(filesystem)); return get(c,36) == 0; }
+                    if (timer > 0) { normalizeCode(c,node,time_abi.nccTimeAbi.resultCode(timer)); return get(c,36) == 0; }
+                    if (memory > 0) { normalizeCode(c,node,memory_abi.nccMemoryAbi.resultCode(memory)); return get(c,36) == 0; }
+                    normalizeCode(c,node,command > 0 ? command_abi.nccCommandAbi.resultCode(command) : (json > 0 ? json_abi.nccJsonAbi.resultCode(json) : (string > 0 ? string_abi.nccStringAbi.resultCode(string) : (output > 0 ? output_abi.nccOutputAbi.resultCode(output) : (heap > 0 ? heap_abi.nccHeapAbi.resultCode(heap) :
+                        (external ? native_types.nccNativeTypes.signatureCode(graph,callee,-1) :
+                        native_types.nccNativeTypes.code(graph,typeNode(c,target)))))))); return get(c,36) == 0;
+                }
+                reject(c,node); return false;
+            }
+            statement(c >> p<byte>, node >> int, depth >> int, breaks >> p<int>, continueAt >> int) -> void {
+                if (node < 0 || depth > 256 || get(c,36) != 0) { reject(c,node); return; }
+                graph >> p<byte> <- g(c);
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                if (kind == 34) {
+                    while (child >= 0) { statement(c,child,depth+1,breaks,continueAt); child <- ir.nccIr.graphNodeNextSibling(graph,child); }
+                    return;
+                }
+                if (kind == 12) {
+                    if (mct_values.nccMctValues.isConstant(graph,node)) return;
+                    declared >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,node));
+                    if (native_types.nccNativeTypes.aggregate(declared)) {
+                        initial >> int <- mct_values.nccMctValues.initializer(graph,node);
+                        if (initial >= 0) {
+                            if (!expressionAs(c,initial,depth+1,declared)) return;
+                            if (!native_types.nccNativeTypes.aggregateCompatible(graph,declared,
+                                native_types.nccNativeTypes.expression(graph,initial,0))) { reject(c,node); return; }
+                            moveReg(c,node,10,0); address(c,node,node); copyTo(c,node,native_types.nccNativeTypes.aggregateBytes(graph,declared));
+                        }
+                        return;
+                    }
+                    if (!scalar(c,typeNode(c,node),false)) { reject(c,node); return; }
+                    initial >> int <- mct_values.nccMctValues.initializer(graph,node);
+                    if (initial >= 0 && expressionAs(c,initial,depth+1,native_types.nccNativeTypes.code(graph,typeNode(c,node)))) frameAccess(c,node,node,true,0);
+                    return;
+                }
+                if (kind == 35) { expression(c,child,depth+1); return; }
+                if (kind == 36) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) == 31) {
+                        element >> int <- native_types.nccNativeTypes.expression(graph,child,0);
+                        if (!indexedAddress(c,child,depth+1)) return;
+                        push(c,node);
+                        operation >> int <- ir.nccIr.graphNodeRoleHash(graph,node);
+                        if (operation != 30 && operation != 24) {
+                            if (native_types.nccNativeTypes.aggregate(element)) { reject(c,node); return; }
+                            rawAccess(c,node,native_types.nccNativeTypes.width(element),native_types.nccNativeTypes.signed(element),false); push(c,node);
+                        }
+                        if (operation == 36 || operation == 39) constant(c,node,1);
+                        else expressionAs(c,ir.nccIr.graphNodeNextSibling(graph,child),depth+1,element);
+                        if (native_types.nccNativeTypes.aggregate(element)) {
+                            moveReg(c,node,10,0); pop(c,node,0); copyTo(c,node,native_types.nccNativeTypes.aggregateBytes(graph,element));
+                        } else {
+                            if (operation != 30 && operation != 24) { pop(c,node,1); emitBinary(c,node,operation,element); }
+                            normalizeCode(c,node,element); pop(c,node,1); rawAccess(c,node,native_types.nccNativeTypes.width(element),false,true);
+                        }
+                        return;
+                    }
+                    selected >> int <- native_types.nccNativeTypes.member(graph,child,0);
+                    fieldType >> int <- selected >= 0 ? native_types.nccNativeTypes.code(graph,typeNode(c,selected)) : -1;
+                    assignedType >> int <- native_types.nccNativeTypes.expression(graph,child,0);
+                    assignment >> int <- ir.nccIr.graphNodeRoleHash(graph,node);
+                    if (selected >= 0 || native_types.nccNativeTypes.aggregate(assignedType)) {
+                        if (selected >= 0) {
+                            expression(c,ir.nccIr.graphNodeFirstChild(graph,child),depth+1);
+                            addAddress(c,node,ir.nccIr.graphNodeLayoutValue(graph,selected));
+                        } else address(c,node,mct_values.nccMctValues.resolve(graph,child));
+                        push(c,node);
+                        if (assignment != 30 && assignment != 24) {
+                            if (native_types.nccNativeTypes.aggregate(assignedType)) { reject(c,node); return; }
+                            memoryOp(c,node,0,0,native_types.nccNativeTypes.width(fieldType),native_types.nccNativeTypes.signed(fieldType),0,false); push(c,node);
+                        }
+                        if (assignment == 36 || assignment == 39) constant(c,node,1);
+                        else expressionAs(c,ir.nccIr.graphNodeNextSibling(graph,child),depth+1,assignedType);
+                        if (native_types.nccNativeTypes.aggregate(assignedType)) {
+                            moveReg(c,node,10,0); pop(c,node,0); copyTo(c,node,native_types.nccNativeTypes.aggregateBytes(graph,assignedType));
+                        } else {
+                            if (assignment != 30 && assignment != 24) { pop(c,node,1); emitBinary(c,node,assignment,fieldType); }
+                            normalizeCode(c,node,fieldType); pop(c,node,1); rawAccess(c,node,native_types.nccNativeTypes.width(fieldType),false,true);
+                        }
+                        return;
+                    }
+                    target >> int <- mct_values.nccMctValues.resolve(graph,child);
+                    op >> int <- ir.nccIr.graphNodeRoleHash(graph,node);
+                    if (target < 0 || mct_values.nccMctValues.isConstant(graph,target)) { reject(c,node); return; }
+                    if (op != 30 && op != 24) { frameAccess(c,node,target,false,0); push(c,node); }
+                    if (op == 36 || op == 39) {
+                        type >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,target));
+                        if (native_types.nccNativeTypes.floating(type)) constant64(c,node,type == 41 ? 0x3FF0000000000000 : 0x3F800000);
+                        else constant(c,node,1);
+                    }
+                    else expressionAs(c,ir.nccIr.graphNodeNextSibling(graph,child),depth+1,
+                        native_types.nccNativeTypes.code(graph,typeNode(c,target)));
+                    if (stringConcat(graph,node)) {
+                        push(c,node); stringJoin(c,node);
+                        frameAccess(c,node,target,true,0); return;
+                    }
+                    if (op != 30 && op != 24) { pop(c,node,1); emitBinary(c,node,op,native_types.nccNativeTypes.code(graph,typeNode(c,target))); }
+                    frameAccess(c,node,target,true,0); return;
+                }
+                if (kind == 37) {
+                    resultType >> int <- typeNode(c,functionOf(c,node));
+                    resultCode >> int <- native_types.nccNativeTypes.code(graph,resultType);
+                    if (child >= 0) expressionAs(c,child,depth+1,resultCode);
+                    if (native_types.nccNativeTypes.aggregate(resultCode)) {
+                        mode >> int <- native_types.nccNativeTypes.returnMode(graph,resultCode);
+                        if (child < 0 || !native_types.nccNativeTypes.aggregateCompatible(graph,resultCode,
+                            native_types.nccNativeTypes.expression(graph,child,0))) { reject(c,node); return; }
+                        bytes >> int <- native_types.nccNativeTypes.aggregateBytes(graph,resultCode);
+                        if (mode == 3) {
+                            moveReg(c,node,10,0);
+                            memoryOp(c,node,5,-8*(get(c,120)+1),8,false,0,false); copyTo(c,node,bytes);
+                        } else returnRecord(c,node,resultCode,false);
+                    }
+                    if (child < 0 || ir.nccIr.graphTextValue(graph,resultType,"void")) constant(c,node,0);
+                    normalize(c,node,resultType);
+                    if (native_types.nccNativeTypes.floating(resultCode)) xmm(c,node,0,0,true,resultCode);
+                    index >> int <- begin(c,node,11); put(c,0xC9); put(c,0xC3); end(c,index); return;
+                }
+                if (kind == 38 || kind == 41 || kind == 58) {
+                    expression(c,child,depth+1);
+                    alternate >> int <- branch(c,node,kind == 38 ? 0x84 : 0x85);
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                    statement(c,child,depth+1,breaks,continueAt);
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                    finish >> int <- child >= 0 ? branch(c,node,-1) : -1;
+                    patch(c,alternate,get(c,32));
+                    if (child >= 0) { statement(c,child,depth+1,breaks,continueAt); patch(c,finish,get(c,32)); }
+                    return;
+                }
+                if (kind == 39 || kind == 55) {
+                    start >> int <- get(c,32);
+                    exit >> int <- -1;
+                    head >> int <- -1;
+                    if (kind == 39) {
+                        expression(c,child,depth+1); exit <- branch(c,node,0x84);
+                        child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                    }
+                    statement(c,child,depth+1,&head,start);
+                    backEdge >> int <- branch(c,node,-1); patch(c,backEdge,start);
+                    if (exit >= 0) patch(c,exit,get(c,32));
+                    while (head >= 0) {
+                        next >> int <- rd<int>(off(code(c),head)); patch(c,head,get(c,32)); head <- next;
+                    }
+                    return;
+                }
+                if (kind == 56 || kind == 57) {
+                    if (ir.nccIr.graphNodeAstKind(graph,child) != 34) { reject(c,node); return; }
+                    condition >> int <- ir.nccIr.graphNodeNextSibling(graph,child);
+                    if (condition < 0) { reject(c,node); return; }
+                    enter >> int <- branch(c,node,-1);
+                    testAt >> int <- get(c,32);
+                    expression(c,condition,depth+1);
+                    exit >> int <- branch(c,node,kind == 56 ? 0x85 : 0x84);
+                    patch(c,enter,get(c,32));
+                    head >> int <- -1;
+                    statement(c,child,depth+1,&head,testAt);
+                    backEdge >> int <- branch(c,node,-1); patch(c,backEdge,testAt);
+                    patch(c,exit,get(c,32));
+                    while (head >= 0) {
+                        next >> int <- rd<int>(off(code(c),head)); patch(c,head,get(c,32)); head <- next;
+                    }
+                    return;
+                }
+                if (kind == 43 || kind == 44) {
+                    if (continueAt < 0 || (kind == 43 && breaks == null)) { reject(c,node); return; }
+                    at >> int <- branch(c,node,-1);
+                    if (kind == 44) patch(c,at,continueAt);
+                    else { wr<int>(off(code(c),at),rd<int>(breaks)); wr<int>(breaks,at); }
+                    return;
+                }
+                reject(c,node);
+            }
+            emitFunction(c >> p<byte>, node >> int) -> void {
+                graph >> p<byte> <- g(c);
+                resultCode >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,node));
+                if (!scalar(c,typeNode(c,node),true) && !native_types.nccNativeTypes.aggregate(resultCode)) { reject(c,node); return; }
+                aggregateAbi >> bool <- native_types.nccNativeTypes.aggregate(resultCode);
+                needsFp >> bool <- false;
+                scan >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                while (scan >= 0) {
+                    if (ir.nccIr.graphNodeAstKind(graph,scan) == 16) {
+                        parameterType >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,scan));
+                        if (native_types.nccNativeTypes.aggregate(parameterType)) aggregateAbi <- true;
+                        if (native_types.nccNativeTypes.floating(parameterType) ||
+                            (native_types.nccNativeTypes.aggregate(parameterType) &&
+                            native_types.nccNativeTypes.abiRegisters(graph,parameterType,2) > 0)) needsFp <- true;
+                    }
+                    scan <- ir.nccIr.graphNodeNextSibling(graph,scan);
+                }
+                mode >> int <- native_types.nccNativeTypes.returnMode(graph,resultCode);
+                if (mode < 0) { reject(c,node); return; }
+                limit >> int <- ir.nccIr.graphAbi(graph) == 2 ? 4 : 6;
+                set(c,120,mode == 3 ? 0 : -1); set(c,124,mode == 3 ? 1 : 0);
+                fpLimit >> int <- needsFp ? (ir.nccIr.graphAbi(graph) == 2 ? 4 : 8) : 0;
+                count >> int <- (mode == 3 ? 1 : 0)+(aggregateAbi ? limit+fpLimit : 0);
+                at >> int <- 0;
+                while (at < ir.nccIr.graphNodes(graph)) {
+                    kind >> int <- ir.nccIr.graphNodeAstKind(graph,at);
+                    if (kind == 29 && functionOf(c,at) == node && callAlignment(c,at) > 16) {
+                        wr(off(callBases(c),at),count); count += 1;
+                    }
+                    if ((kind == 12 || kind == 16) && functionOf(c,at) == node &&
+                        !mct_values.nccMctValues.isConstant(graph,at)) count <- reserveSlot(c,at,native_types.nccNativeTypes.code(graph,typeNode(c,at)),count);
+                    if (ir.nccIr.graphNodeGvnSource(graph,at) == at && functionOf(c,at) == node) {
+                        wr<int>(off(slots(c),at),count); count += 1;
+                    }
+                    if (kind >= 25 && kind <= 45 && functionOf(c,at) == node) {
+                        type >> int <- native_types.nccNativeTypes.expression(graph,at,0);
+                        parent >> int <- ir.nccIr.graphNodeParent(graph,at);
+                        argument >> bool <- parent >= 0 && ir.nccIr.graphNodeAstKind(graph,parent) == 29 &&
+                            ir.nccIr.graphNodeFirstChild(graph,parent) != at;
+                        if (argument && inlineRoot(graph,parent) >= 0 && !native_types.nccNativeTypes.aggregate(type))
+                            count <- reserveSlot(c,at,type,count);
+                        if (native_types.nccNativeTypes.aggregate(type) && (kind == 45 || kind == 33 || kind == 29 || argument))
+                            count <- reserveSlot(c,at,type,count);
+                    }
+                    at += 1;
+                }
+                set(c,44,0);
+                index >> int <- begin(c,node,2);
+                put(c,0x55); put(c,0x48); put(c,0x89); put(c,0xE5);
+                frameBytes >> int <- (count*8+15) & ~15;
+                if (frameBytes < 4096) {
+                    put(c,0x48); put(c,0x81); put(c,0xEC); word(c,frameBytes); end(c,index);
+                } else { end(c,index); adjust(c,node,frameBytes,false); }
+                if (aggregateAbi) {
+                    at <- 0;
+                    while (at < limit) { memoryOp(c,node,5,-8*(get(c,124)+at+1),8,false,registerFor(c,at),true); at += 1; }
+                    at <- 0;
+                    while (at < fpLimit) {
+                        xmm(c,node,at,0,false,41);
+                        memoryOp(c,node,5,-8*(get(c,124)+limit+at+1),8,false,0,true); at += 1;
+                    }
+                    if (mode == 3) {
+                        memoryOp(c,node,5,-8*(get(c,124)+1),8,false,0,false);
+                        memoryOp(c,node,5,-8*(get(c,120)+1),8,false,0,true);
+                    }
+                }
+                child >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                parameter >> int <- mode == 3 ? 1 : 0;
+                incoming >> int <- 0;
+                gpParameter >> int <- mode == 3 ? 1 : 0; fpParameter >> int <- 0;
+                argumentRow >> array<int,8>; row >> p<byte> <- cast<byte>(&argumentRow);
+                while (child >= 0) {
+                    kind >> int <- ir.nccIr.graphNodeAstKind(graph,child);
+                    if (kind == 16) {
+                        if (aggregateAbi) {
+                            type >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,child));
+                            isRecord >> bool <- native_types.nccNativeTypes.aggregate(type);
+                            bytes >> int <- isRecord ? native_types.nccNativeTypes.aggregateBytes(graph,type) : 8;
+                            argMode >> int <- native_types.nccNativeTypes.returnMode(graph,type);
+                            placeArgument(c,type,gpParameter,fpParameter,row);
+                            gpParameter <- rd<int>(off(row,24)); fpParameter <- rd<int>(off(row,28));
+                            location >> int <- rd<int>(off(row,8));
+                            if (location >= 0) {
+                                if (isRecord && !(ir.nccIr.graphAbi(graph) == 2 && argMode == 3)) {
+                                    address(c,child,child); moveReg(c,child,11,0); lane >> int <- 0;
+                                    while (lane < (argMode == 2 ? 2 : 1)) {
+                                        location <- rd<int>(off(row,8+lane*4));
+                                        if (location >= 0) {
+                                            offset >> int <- location >= 16 ? limit+location-16 : location;
+                                            memoryOp(c,child,5,-8*(get(c,124)+offset+1),8,false,0,false);
+                                            width >> int <- bytes-lane*8;
+                                            packedStore(c,child,11,lane*8,width > 8 ? 8 : width,0);
+                                        }
+                                        lane += 1;
+                                    }
+                                } else if (isRecord) {
+                                    memoryOp(c,child,5,-8*(get(c,124)+location+1),8,false,0,false);
+                                    moveReg(c,child,10,0); address(c,child,child); copyTo(c,child,bytes);
+                                } else {
+                                    offset >> int <- location >= 16 ? limit+location-16 : location;
+                                    memoryOp(c,child,5,-8*(get(c,124)+offset+1),8,false,0,false);
+                                    frameAccess(c,child,child,true,0);
+                                }
+                            } else {
+                                alignment >> int <- ir.nccIr.graphAbi(graph) != 2 && isRecord ? native_types.nccNativeTypes.aggregateAlign(graph,type) : 8;
+                                alignment <- alignment < 8 ? 8 : alignment;
+                                incoming <- (incoming+alignment-1) & (0-alignment);
+                                displacement >> int <- 16+(ir.nccIr.graphAbi(graph) == 2 ? 32 : 0)+incoming;
+                                if (isRecord && ir.nccIr.graphAbi(graph) != 2) {
+                                    index <- begin(c,child,7); put(c,0x4C); put(c,0x8D); put(c,0x95); word(c,displacement); end(c,index);
+                                    address(c,child,child); copyTo(c,child,bytes);
+                                } else {
+                                    memoryOp(c,child,5,displacement,8,false,0,false);
+                                    if (isRecord && argMode == 3) { moveReg(c,child,10,0); address(c,child,child); copyTo(c,child,bytes); }
+                                    else if (isRecord) { moveReg(c,child,9,0); address(c,child,child); moveReg(c,child,11,0); packedStore(c,child,11,0,bytes,9); }
+                                    else frameAccess(c,child,child,true,0);
+                                }
+                                incoming += ir.nccIr.graphAbi(graph) == 2 || !isRecord ? 8 : ((bytes+7) & ~7);
+                            }
+                            child <- ir.nccIr.graphNodeNextSibling(graph,child); continue;
+                        }
+                        if (!scalar(c,typeNode(c,child),false)) { reject(c,child); return; }
+                        paramType >> int <- native_types.nccNativeTypes.code(graph,typeNode(c,child));
+                        floating >> bool <- native_types.nccNativeTypes.floating(paramType);
+                        position >> int <- ir.nccIr.graphAbi(graph) == 2 ? parameter : (floating ? fpParameter : gpParameter);
+                        limit <- ir.nccIr.graphAbi(graph) == 2 ? 4 : (floating ? 8 : 6);
+                        if (position < limit) {
+                            if (floating) xmm(c,child,position,0,false,paramType);
+                            else moveReg(c,child,0,registerFor(c,position));
+                        } else {
+                            memoryOp(c,child,5,16+(ir.nccIr.graphAbi(graph) == 2 ? 32 : 0)+incoming,8,false,0,false);
+                            incoming += 8;
+                        }
+                        frameAccess(c,child,child,true,0);
+                        if (floating) fpParameter += 1; else gpParameter += 1;
+                        parameter += 1;
+                        child <- ir.nccIr.graphNodeNextSibling(graph,child); continue;
+                    }
+                    if (kind == 34) statement(c,child,0,null,-1);
+                    child <- ir.nccIr.graphNodeNextSibling(graph,child);
+                }
+                if (native_types.nccNativeTypes.floating(resultCode)) {
+                    constant(c,node,0); xmm(c,node,0,0,true,resultCode);
+                }
+                index <- begin(c,node,11); put(c,0x31); put(c,0xC0); put(c,0xC9); put(c,0xC3); end(c,index);
+            }
+        internal:
+            stringConcat(graph >> p<byte>, node >> int) -> bool {
+                guard node >= 0 else return false;
+                kind >> int <- ir.nccIr.graphNodeAstKind(graph,node);
+                op >> int <- native_types.nccNativeTypes.operation(graph,node);
+                if (!((kind == 28 && op == 35) || (kind == 36 && op == 37))) return false;
+                left >> int <- ir.nccIr.graphNodeFirstChild(graph,node);
+                right >> int <- ir.nccIr.graphNodeNextSibling(graph,left);
+                return native_types.nccNativeTypes.expression(graph,left,0) == 34 &&
+                    native_types.nccNativeTypes.expression(graph,right,0) == 34;
+            }
+            code(c >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(off(c,56))); }
+            record(c >> p<byte>, index >> int) -> p<byte> { return off(from<byte>(rd<addr>(off(c,48))),index*RECORD); }
+            count(c >> p<byte>) -> int { return get(c,40); }
+            bytes(c >> p<byte>) -> int { return get(c,32); }
+            data(c >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(off(c,88))); }
+            dataBytes(c >> p<byte>) -> int { return get(c,96); }
+            bssBytes(c >> p<byte>) -> int { return get(c,100); }
+            rodata(c >> p<byte>) -> p<byte> { return from<byte>(rd<addr>(off(c,112))); }
+            rodataBytes(c >> p<byte>) -> int { return get(c,104); }
+            healthy(c >> p<byte>) -> bool {
+                guard c != null else return false;
+                return get(c,36) == 0;
+            }
+            release(c >> p<byte>) -> void {
+                if (c != null) { free(callBases(c)); free(slots(c)); free(code(c)); free(literalOffsets(c)); free(globalSections(c)); free(globalOffsets(c)); free(data(c)); free(rodata(c)); free(from<byte>(rd<addr>(off(c,48)))); free(c); }
+            }
+            create(graph >> p<byte>) -> p<byte> {
+                c >> p<byte> <- cast<byte>(calloc(1,HEADER));
+                if (c == null) return null;
+                wr<addr>(c,adr(graph));
+                nodes >> int <- ir.nccIr.graphNodes(graph);
+                poolBytes >> int <- 0;
+                storageBytes >> int <- 0;
+                at >> int <- 0;
+                while (at < nodes) {
+                    if (ir.nccIr.graphNodeAstKind(graph,at) == 25 && ir.nccIr.graphNodeRoleHash(graph,at) == 3)
+                        poolBytes += ir.nccIr.graphNodeNameBytes(graph,at)+1;
+                    if (globalDeclaration(c,at)) {
+                        type >> int <- native_types.nccNativeTypes.code(graph,native_types.nccNativeTypes.typeNode(graph,at));
+                        width >> int <- native_types.nccNativeTypes.aggregate(type) ? native_types.nccNativeTypes.aggregateBytes(graph,type) : native_types.nccNativeTypes.width(type);
+                        alignment >> int <- native_types.nccNativeTypes.aggregate(type) ? native_types.nccNativeTypes.aggregateAlign(graph,type) : 16;
+                        if (width <= 0 || alignment <= 0 || alignment > 1048576 || width > 2147483646-storageBytes-alignment) { free(c); return null; }
+                        storageBytes += width+alignment-1;
+                    }
+                    at += 1;
+                }
+                wr<addr>(c,adr(graph));
+                wr<addr>(off(c,8),adr(calloc(nodes,sizeOf(int))));
+                wr<addr>(off(c,16),adr(alloc(nodes*sizeOf(int))));
+                set(c,24,nodes*17+poolBytes/32); set(c,28,nodes*256+poolBytes);
+                wr<addr>(off(c,48),adr(calloc(get(c,24),RECORD)));
+                wr<addr>(off(c,56),adr(alloc(get(c,28))));
+                wr<addr>(off(c,64),adr(alloc(nodes*sizeOf(int))));
+                wr<addr>(off(c,72),adr(calloc(nodes,sizeOf(int))));
+                wr<addr>(off(c,80),adr(calloc(nodes,sizeOf(int))));
+                wr<addr>(off(c,88),adr(calloc(storageBytes+1,1)));
+                wr<addr>(off(c,112),adr(alloc(poolBytes+1)));
+                if (callBases(c) == null || slots(c) == null || code(c) == null || literalOffsets(c) == null || globalSections(c) == null || globalOffsets(c) == null || data(c) == null || rodata(c) == null || from<byte>(rd<addr>(off(c,48))) == null) { release(c); return null; }
+                at <- 0;
+                while (at < nodes) { wr<int>(off(slots(c),at),-1); wr(off(literalOffsets(c),at),-1); at += 1; }
+                storagePlan(c);
+                at <- 0;
+                while (at < nodes && healthy(c)) {
+                    if (ir.nccIr.graphNodeAstKind(graph,at) == 15 && !ir.nccIr.graphNodeOptimizedOut(graph,at)) emitFunction(c,at);
+                    at += 1;
+                }
+                if (healthy(c)) stringPool(c);
+                return c;
+            }
+    fa:
+        return true;
+}

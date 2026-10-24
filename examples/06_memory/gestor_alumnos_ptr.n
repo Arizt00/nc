@@ -1,0 +1,457 @@
+/*
+ * Gestor de alumnos con arrays, punteros reales y nomenclatura nueva.
+ *
+ * La idea didactica es separar dos capas:
+ * - datos visibles del dominio: nombres[] y notas[].
+ * - metricas vivas del sistema: cantidad, aprobados y suspensos en ptr<int>;
+ *   suma/promedio en ft64 mediante ptr<ft64>.
+ *
+ * En Java esto normalmente seria una clase con ArrayList<Alumno>.
+ * En C/C++ seria mas cercano a arrays + punteros + malloc/new.
+ * En nC usamos punteros tipados, origen, region y liberacion explicita.
+ */
+use <collections:result>;
+use <io:output, render, input>;
+use <memory:ptr, heap, region>;
+
+gestorAlumnosPunteros :: runtime {
+    stc:
+        /*
+         * Este ejemplo conserva slots escalares para enseñar aliasing y
+         * movimientos de puntero uno a uno. No es una limitacion del lenguaje:
+         * los gestores compactos pueden usar array<str, N> con storage y
+         * relocaciones reales. Las notas quedan en ft64 para conservar
+         * decimales reales.
+         */
+        nombre0 >> str             <- "";
+        nombre1 >> str             <- "";
+        nombre2 >> str             <- "";
+        nombre3 >> str             <- "";
+        nombre4 >> str             <- "";
+        nombre5 >> str             <- "";
+        nombre6 >> str             <- "";
+        nombre7 >> str             <- "";
+        nombre8 >> str             <- "";
+        nombre9 >> str             <- "";
+        notas   >> array<ft64, 10> <- [0.0];
+        /*
+         * Todo lo operativo baja a local para que stc no sea un cajon gigante:
+         * punteros, regiones, menu, acumuladores y temporales de entrada.
+         */
+        opcion    >> int  <- 0;
+        cantidad  >> int  <- 0;
+        aprobados >> int  <- 0;
+        suspensos >> int  <- 0;
+        indice    >> int  <- 0;
+        i         >> int  <- 0;
+        freed     >> bool <- false;
+
+        suma           >> ft64 <- 0.0;
+        promedio       >> ft64 <- 0.0;
+        cantidadFt     >> ft64 <- 0.0;
+        nombreTemporal >> str  <- "";
+        notaTemporal   >> ft64 <- 0.0;
+        metricValue    >> ft64 <- 0.0;
+
+        /*
+         * Punteros y regiones de metricas:
+         * slot 0 <- cantidad
+         * slot 1 <- aprobados
+         * slot 2 <- reservado
+         * slot 3 <- suspensos
+         *
+         * La suma usa ft64 en otra region para mantener precision decimal.
+         */
+        metricPtr>> p<int>; //ptr<int> ==> int*
+        cantidadPtr >> p<int>;
+        aprobadosPtr >> p<int>;
+        suspensosPtr >> p<int>;
+        metrics >> memRegion<int>;
+
+        sumaMetricPtr>> p<ft64>; //ptr<ft64> ==> ft64*
+        sumaPtr >> p<ft64>;
+        sumaRegion >> memRegion<ft64>;
+
+    fn:
+        nombreEn(index >> int) -> str {
+            if (index == 0) { return nombre0; }
+            if (index == 1) { return nombre1; }
+            if (index == 2) { return nombre2; }
+            if (index == 3) { return nombre3; }
+            if (index == 4) { return nombre4; }
+            if (index == 5) { return nombre5; }
+            if (index == 6) { return nombre6; }
+            if (index == 7) { return nombre7; }
+            if (index == 8) { return nombre8; }
+            if (index == 9) { return nombre9; }
+            return "";
+        }
+
+        escribirNombre(index >> int, value >> str) -> bool {
+            if (index == 0) { nombre0 <- value; return true; }
+            if (index == 1) { nombre1 <- value; return true; }
+            if (index == 2) { nombre2 <- value; return true; }
+            if (index == 3) { nombre3 <- value; return true; }
+            if (index == 4) { nombre4 <- value; return true; }
+            if (index == 5) { nombre5 <- value; return true; }
+            if (index == 6) { nombre6 <- value; return true; }
+            if (index == 7) { nombre7 <- value; return true; }
+            if (index == 8) { nombre8 <- value; return true; }
+            if (index == 9) { nombre9 <- value; return true; }
+            return false;
+        }
+
+        leerMetrica(p >> p<int>) -> int {
+            return rd(p);
+        }
+
+        leerMetricaFt(p >> p<ft64>) -> ft64 {
+            return rd(p);
+        }
+
+        sincronizarMetricas() -> bool {
+            /*
+             * Copiamos las metricas heap a variables normales para imprimir
+             * y comparar sin repetir lecturas de puntero en cada linea.
+            */
+            cantidad <- leerMetrica(cantidadPtr);
+            aprobados <- leerMetrica(aprobadosPtr);
+            suspensos <- leerMetrica(suspensosPtr);
+            suma <- leerMetricaFt(sumaPtr);
+            return true;
+        }
+
+        escribirMetricas() -> bool {
+            /*
+             * Esta funcion es la frontera inversa: estado normal -> heap.
+             * Mantiene la region de metricas como fuente auditable.
+            */
+            wr(cantidadPtr, cantidad);
+            wr(aprobadosPtr, aprobados);
+            wr(suspensosPtr, suspensos);
+            wr(sumaPtr, suma);
+            return true;
+        }
+
+        notaTexto(nota >> ft64) -> str {
+            return renderFloat(nota, 2);
+        }
+
+        clasificarNota(nota >> ft64) -> str {
+            if (nota < 5.0) { return "Suspenso"; }
+            if (nota < 7.0) { return "Aprobado"; }
+            if (nota < 9.0) { return "Notable"; }
+            return "Excelente";
+        }
+
+        mostrarMenu() -> bool {
+            println("");
+            println(colorBold("===== GESTOR DE ALUMNOS + PUNTEROS =====", "cyan"));
+            println(color("1. Registrar alumno", "163, 206, 241"));
+            println(color("2. Listar alumnos", "163, 206, 241"));
+            println(color("3. Modificar nota", "163, 206, 241"));
+            println(color("4. Eliminar alumno", "96, 150, 186"));
+            println(color("5. Estadisticas desde heap", "163, 206, 241"));
+            println(color("6. Auditoria de punteros", "163, 206, 241"));
+            println(color("7. Salir", "154, 3, 30"));
+            print("> ");
+            return true;
+        }
+
+        leerOpcion() -> bool {
+            opcion <- readInt();
+            opcion !> int : dev(runtime.InputParseError);
+            return true;
+        }
+
+        leerNota() -> bool {
+            print("Nota =  ");
+            notaTemporal <- readFloat();
+            notaTemporal !> ft64 : dev(runtime.InputParseError);
+
+            if (notaTemporal < 0.0) {
+                println("La nota minima es 0.0");
+                return false;
+            }
+
+            if (notaTemporal > 10.0) {
+                println("La nota maxima es 10.0");
+                return false;
+            }
+
+            return true;
+        }
+
+        buscarIndice(nombre >> str) -> int {
+            i <- 0;
+
+            while (i < cantidad) {
+                if (nombreEn(i) == nombre) {
+                    return i;
+                }
+
+                i <- i + 1;
+            }
+
+            return -1;
+        }
+
+        registrarAlumno() -> bool {
+            sincronizarMetricas();
+
+            if (cantidad >= 10) {
+                println("No caben mas alumnos.");
+                return false;
+            }
+
+            print("Nombre: ");
+            nombreTemporal <- readLine();
+            nombreTemporal !> str : dev(runtime.InputParseError);
+
+            if (nombreTemporal == "") {
+                println("El nombre no puede estar vacio.");
+                return false;
+            }
+
+            indice <- buscarIndice(nombreTemporal);
+            if (indice != -1) {
+                println("Ese alumno ya existe.");
+                return false;
+            }
+
+            if (!leerNota()) {
+                return false;
+            }
+
+            escribirNombre(cantidad, nombreTemporal);
+            notas[cantidad] <- notaTemporal;
+
+            cantidad <- cantidad + 1;
+            suma <- suma + notaTemporal;
+
+            if (notaTemporal >= 5.0) {
+                aprobados <- aprobados + 1;
+            } else {
+                suspensos <- suspensos + 1;
+            }
+
+            escribirMetricas();
+            println("Alumno registrado.");
+            return true;
+        }
+
+        listarAlumnos() -> bool {
+            sincronizarMetricas();
+
+            if (cantidad == 0) {
+                println("No hay alumnos.");
+                return false;
+            }
+
+            println("");
+            println(colorBold("===== LISTA =====", "cyan"));
+            i <- 0;
+
+            while (i < cantidad) {
+                println(
+                    renderInt(i + 1) + ". " +
+                    nombreEn(i) +
+                    " | nota = " + notaTexto(notas[i]) +
+                    " | " + clasificarNota(notas[i])
+                );
+
+                i <- i + 1;
+            }
+
+            return true;
+        }
+
+        modificarNota() -> bool {
+            sincronizarMetricas();
+
+            if (cantidad == 0) {
+                println("No hay alumnos.");
+                return false;
+            }
+
+            print("Nombre a modificar: ");
+            nombreTemporal <- readLine();
+            nombreTemporal !> str : dev(runtime.InputParseError);
+
+            indice <- buscarIndice(nombreTemporal);
+            if (indice == -1) {
+                println("Alumno no encontrado.");
+                return false;
+            }
+
+            metricValue <- notas[indice];
+            println("Nota actual: " + notaTexto(metricValue));
+
+            if (!leerNota()) {
+                return false;
+            }
+
+            suma <- suma - metricValue + notaTemporal;
+
+            if (metricValue >= 5.0) {
+                aprobados <- aprobados - 1;
+            } else {
+                suspensos <- suspensos - 1;
+            }
+
+            if (notaTemporal >= 5.0) {
+                aprobados <- aprobados + 1;
+            } else {
+                suspensos <- suspensos + 1;
+            }
+
+            notas[indice] <- notaTemporal;
+            escribirMetricas();
+            println(color("Nota modificada.", "88, 129, 87"));
+            return true;
+        }
+
+        eliminarAlumno() -> bool {
+            sincronizarMetricas();
+
+            if (cantidad == 0) {
+                println("No hay alumnos.");
+                return false;
+            }
+
+            print("Nombre a eliminar: ");
+            nombreTemporal <- readLine();
+            nombreTemporal !> str : dev(runtime.InputParseError);
+
+            indice <- buscarIndice(nombreTemporal);
+            if (indice == -1) {
+                println(colorBold("Alumno no encontrado.", "244, 156, 187"));
+                return false;
+            }
+
+            metricValue <- notas[indice];
+            suma <- suma - metricValue;
+
+            if (metricValue >= 5.0) {
+                aprobados <- aprobados - 1;
+            } else {
+                suspensos <- suspensos - 1;
+            }
+
+            i <- indice;
+            while (i < cantidad - 1) {
+                escribirNombre(i, nombreEn(i + 1));
+                notas[i] <- notas[i + 1];
+                i <- i + 1;
+            }
+
+            escribirNombre(cantidad - 1, "");
+            notas[cantidad - 1] <- 0.0;
+            cantidad <- cantidad - 1;
+
+            escribirMetricas();
+            println(color("Alumno eliminado.", "221, 45, 74"));
+            return true;
+        }
+
+        mostrarEstadisticas() -> bool {
+            sincronizarMetricas();
+
+            println("");
+            println(colorBold("===== ESTADISTICAS =====", "magenta"));
+            println("Cantidad: " + renderInt(cantidad));
+            println("Suma: " + renderFloat(suma, 2));
+            println("Aprobados: " + renderInt(aprobados));
+            println("Suspensos: " + renderInt(suspensos));
+
+            if (cantidad > 0) {
+                cantidadFt <- 0.0;
+                i <- 0;
+                while (i < cantidad) {
+                    cantidadFt <- cantidadFt + 1.0;
+                    i <- i + 1;
+                }
+
+                promedio <- suma / cantidadFt;
+                println("promedio: " + notaTexto(promedio));
+            } else {
+                println("promedio: sin datos");
+            }
+
+            return true;
+        }
+
+        auditoriaPunteros() -> bool {
+            sincronizarMetricas();
+            println("");
+            println(colorBold("===== AUDITORIA PTR/REGION =====", "blue"));
+            println("metricPtr owner -> heap.alloc(32)");
+            println("metrics -> regionFromPtr<int>(metricPtr, 4)");
+            println("sumaMetricPtr owner -> heap.alloc(16)");
+            println("sumaRegion -> regionFromPtr<ft64>(sumaMetricPtr, 1)");
+            println("cantidadPtr -> regionPtrAt(metrics, 0): " + renderInt(leerMetrica(cantidadPtr)));
+            println("aprobadosPtr -> regionPtrAt(metrics, 1): " + renderInt(leerMetrica(aprobadosPtr)));
+            println("suspensosPtr -> regionPtrAt(metrics, 3): " + renderInt(leerMetrica(suspensosPtr)));
+            println("sumaPtr -> regionPtrAt(sumaRegion, 0): " + renderFloat(leerMetricaFt(sumaPtr), 2));
+            println(color("Solo metricPtr es owner; los demas son aliases de la region.", "gray"));
+            return true;
+        }
+
+        ejecutar() -> bool {
+            /*
+             * Reservamos y liberamos en la misma funcion para que la
+             * provenance quede lineal: ejecutar() es owner del ciclo de
+             * vida del bloque de metricas.
+             */
+            metricPtr !> p<int> : memory.heap.manager.alloc(32);
+            metrics <- pRegion(metricPtr, 4);
+
+            cantidadPtr <- pAt(metrics, 0);
+            aprobadosPtr <- pAt(metrics, 1);
+            suspensosPtr <- pAt(metrics, 3);
+
+            sumaMetricPtr !> p<ft64> : memory.heap.manager.alloc(16);
+            sumaRegion <- pRegion(sumaMetricPtr, 1);
+            sumaPtr <- pAt(sumaRegion, 0);
+
+            wr(cantidadPtr, 0);
+            wr(aprobadosPtr, 0);
+            wr(suspensosPtr, 0);
+            wr(sumaPtr, 0.0);
+
+            while (true) {
+                mostrarMenu();
+                leerOpcion();
+
+                if (opcion == 1) { registrarAlumno(); }
+                else if (opcion == 2) { listarAlumnos(); }
+                else if (opcion == 3) { modificarNota(); }
+                else if (opcion == 4) { eliminarAlumno(); }
+                else if (opcion == 5) { mostrarEstadisticas(); }
+                else if (opcion == 6) { auditoriaPunteros(); }
+                else if (opcion == 7) {
+                    println(colorBold("Saliendo del gestor.", "cyan"));
+                    /*
+                     * Liberamos solo metricPtr, que es el owner real.
+                     * Los punteros derivados son aliases internos de sus
+                     * regiones, no se liberan individualmente.
+                     */
+                    freed <- memory.heap.manager.free(metricPtr);
+                    println("heap int liberado: " + renderBool(freed));
+                    freed <- memory.heap.manager.free(sumaMetricPtr);
+                    println("heap ft64 liberado: " + renderBool(freed));
+                    break;
+                } else {
+                    println(color("Opcion no valida.", "red"));
+                }
+            }
+
+            return true;
+        }
+
+    ref main ->> ejecutar;
+
+    fa:
+        return true;
+
+}

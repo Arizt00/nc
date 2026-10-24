@@ -1,0 +1,41 @@
+use <core.sync:atomic>;
+use <core.types:result>;
+use <io:output, render>;
+
+c11AtomicOrders :: runtime {
+    stc:
+        cell >> Result<AtomicHandle, ThreadError>;
+        stored >> Result<bool, ThreadError>;
+        old >> Result<int, ThreadError>;
+        loaded >> Result<int, ThreadError>;
+        value >> int;
+
+    fn:
+        run() -> bool {
+            cell >> Result<AtomicHandle, ThreadError> <- atomicCreate(7);
+            stored >> Result<bool, ThreadError> <- atomicStoreOrder(cell, 7, "release");
+            old >> Result<int, ThreadError> <- atomicFetchAdd(cell, 2, "acq_rel");
+            loaded >> Result<int, ThreadError> <- atomicLoadOrder(cell, "acquire");
+            atomicThreadFence("seq_cst");
+            atomicCompilerFence("acq_rel");
+            atomicNotifyAll(cell);
+
+            match (loaded) {
+                Ok(v) => {
+                    value >> int <- v;
+                }
+                Err(e) => {
+                    value >> int <- -1;
+                }
+            }
+
+            println("C11 atomic value=" + renderInt(value));
+            return value == 9 && isOk(stored) && isOk(old);
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

@@ -1,0 +1,160 @@
+use <io:output, render, std>;
+use <fs:dir>;
+use <process:args, command, env>;
+
+buildProviders62 {
+    fn:
+        private:
+            option(arguments >> addr, name >> str, fallback >> str) -> str {
+                at >> int <- 1;
+                while (at+1 < argsCount(arguments)) { if (argsAt(arguments,at) == name) return argsAt(arguments,at+1); at += 1; }
+                return fallback;
+            }
+            parent(path >> str) -> str {
+                at >> int <- strByteLen(path)-1;
+                while (at >= 0) { code >> byte <- rd<byte>(off(cast<byte>(path),at)); if (code == 47 || code == 92) return at == 0 ? "/" : strSubstring(path,0,at); at -= 1; }
+                return ".";
+            }
+            mkdir(path >> str) -> bool {
+                if (exists(path)) return true;
+                above >> str <- parent(path); if (above == path || !mkdir(above)) return false;
+                createDir(path); return exists(path);
+            }
+            quote(value >> str) -> str {
+                if (strContains(value,"\"") || strContains(value,"\n") || strContains(value,"\r")) return "";
+                return "\""+value+"\"";
+            }
+            copied(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source); if (bytes <= 0 || bytes > 4194304) return false;
+                data >> p<byte> <- cast<byte>(alloc(bytes)); if (data == null) return false;
+                valid >> bool <- fsReadInto(source,data,bytes) == bytes && fsWriteFrom(destination,data,bytes,false) == bytes;
+                free(data); return valid;
+            }
+            invoke(line >> str, windows >> bool) -> bool {
+                child >> addr <- commandOpen(line,".",windows ? stdIn() : null,windows ? stdOut() : null,windows ? stdErr() : null,0);
+                if (child == null) return false;
+                started >> bool <- commandStarted(child); waited >> int <- started ? commandWait(child,120000) : -1;
+                if (started && waited != 0) { commandTerminate(child,15); commandWait(child,3000); }
+                code >> int <- commandExitCode(child); commandRelease(child);
+                if (!started || waited != 0 || code != 0) { println("batch provider build failed: "+line); return false; }
+                return true;
+            }
+            build(arguments >> addr, windows >> bool) -> int {
+                base >> str <- option(arguments,"--base",""); out >> str <- option(arguments,"--out","");
+                native >> str <- option(arguments,"--native-object",""); host >> str <- option(arguments,"--host-object","");
+                generation >> str <- option(arguments,"--object-generation","candidate");
+                jsonNative >> str <- option(arguments,"--json-object","");
+                jsonFiles >> str <- option(arguments,"--json-files-object","");
+                stringNative >> str <- option(arguments,"--string-object","");
+                linker >> str <- option(arguments,"--linker",windows ? "C:/Program Files/LLVM/bin/lld-link.exe" : "ld");
+                objcopy >> str <- option(arguments,"--objcopy",windows ? "C:/Program Files/LLVM/bin/llvm-objcopy.exe" : "llvm-objcopy");
+                support >> str <- option(arguments,"--compiler-support","C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/lib/x64/msvcrt.lib");
+                kernel >> str <- option(arguments,"--kernel32","C:/msys64/mingw64/lib/libkernel32.a");
+                shell >> str <- option(arguments,"--shell32","C:/msys64/mingw64/lib/libshell32.a");
+                if (generation != "candidate" || base == "" || out == "" || native == "" || host == "" || jsonNative == "" || jsonFiles == "" || stringNative == "" || quote(stringNative) == "" || quote(jsonFiles) == "" || quote(jsonNative) == "" || quote(host) == "" || quote(base) == "" || quote(out) == "" || quote(native) == "" ||
+                    quote(linker) == "" || quote(objcopy) == "" || quote(support) == "" || quote(kernel) == "" || quote(shell) == "") return 64;
+                if (!mkdir(out)) return 73;
+                suffix >> str <- windows ? ".obj" : ".o";
+                exported >> str <- out+"/fs_io.exports"+suffix;
+                functions >> str <- "fs:fsWriteFrom fs:fsReadInto fs:fsSize";
+                heapNames >> str <- " --redefine-sym malloc=nC.runtime.heap.alloc --redefine-sym calloc=nC.runtime.heap.calloc --redefine-sym free=nC.runtime.heap.free ";
+                rename >> str <- generation == "stage0" ? heapNames : ""; at >> int <- 0; start >> int <- 0;
+                while (at <= strByteLen(functions)) {
+                    if (at == strByteLen(functions) || rd<byte>(off(cast<byte>(functions),at)) == 32) {
+                        name >> str <- strSubstring(functions,start,at-start);
+                        split >> int <- 0; while (rd<byte>(off(cast<byte>(name),split)) != 58) { split += 1; }
+                        family >> str <- strSubstring(name,0,split);
+                        function >> str <- strSubstring(name,split+1,strByteLen(name)-split-1);
+                        identifier >> str <- "provider_"+family+"_"+function;
+                        original >> str <- generation == "stage0" ? "fsIoProvider_"+identifier :
+                            "nc$S$P$12$fsIoProvider$"+renderInt(strByteLen(identifier))+"$"+identifier;
+                        rename += " --redefine-sym "+original+"=nC.runtime."+family+"."+function;
+                        start <- at+1;
+                    }
+                    at += 1;
+                }
+                if (!invoke(quote(objcopy)+rename+" "+quote(native)+" "+quote(exported),windows)) return 1;
+                if (!invoke(quote(objcopy)+heapNames+
+                     " --redefine-sym fsIoHost_readBytes=nc$S$P$8$fsIoHost$9$readBytes --redefine-sym fsIoHost_writeBytes=nc$S$P$8$fsIoHost$10$writeBytes --redefine-sym fsIoHost_size=nc$S$P$8$fsIoHost$4$size "+
+                    quote(host)+" "+quote(out+"/fs_io_host"+suffix),windows)) return 1;
+                names >> str <- "fs.exports fs_host heap.exports output.exports render.exports string_length.exports json.exports output_host command.exports command_host.exports string_release.exports json_bool_default.exports args.exports args_host env.exports env_host concat.exports";
+                jsonExport >> str <- out+"/json_int_default.exports"+suffix;
+                if (!invoke(quote(objcopy)+" --redefine-sym nc$S$P$22$jsonIntDefaultProvider$26$provider_json_jsonGetIntOr=nC.runtime.json.jsonGetIntOr "+quote(jsonNative)+" "+quote(jsonExport),windows)) return 1;
+                jsonFileExport >> str <- out+"/json_file.exports"+suffix;
+                if (!invoke(quote(objcopy)+" --redefine-sym nc$S$P$16$jsonFileProvider$27$provider_json_jsonParseFile=nC.runtime.json.jsonParseFile --redefine-sym nc$S$P$16$jsonFileProvider$26$provider_json_jsonSaveFile=nC.runtime.json.jsonSaveFile "+quote(jsonFiles)+" "+quote(jsonFileExport),windows)) return 1;
+                stringExport >> str <- out+"/string_query.exports"+suffix;
+                strings >> str <- "strSubstring strSlice substring strContains strStartsWith strEndsWith strCompare strIndexOf strEq";
+                rename <- ""; at <- 0; start <- 0;
+                while (at <= strByteLen(strings)) {
+                    if (at == strByteLen(strings) || rd<byte>(off(cast<byte>(strings),at)) == 32) {
+                        name >> str <- strSubstring(strings,start,at-start);
+                        identifier >> str <- "provider_string_"+name;
+                        rename += " --redefine-sym nc$S$P$19$stringQueryProvider$"+renderInt(strByteLen(identifier))+"$"+identifier+"=nC.runtime.string."+name;
+                        start <- at+1;
+                    }
+                    at += 1;
+                }
+                if (!invoke(quote(objcopy)+rename+" "+quote(stringNative)+" "+quote(stringExport),windows)) return 1;
+                inputs >> str <- " "+quote(exported)+" "+quote(out+"/fs_io_host"+suffix)+" "+quote(jsonExport)+" "+quote(jsonFileExport)+" "+quote(stringExport); at <- 0; start <- 0;
+                while (at <= strByteLen(names)) {
+                    if (at == strByteLen(names) || rd<byte>(off(cast<byte>(names),at)) == 32) {
+                        name >> str <- strSubstring(names,start,at-start)+suffix;
+                        if (name == "json.exports"+suffix) {
+                            extra >> str <- " --redefine-sym jsonProvider54_jsonStringifyPretty=nC.runtime.json.jsonStringifyPretty --redefine-sym jsonProvider54_jsonParse=nC.runtime.json.jsonParse --redefine-sym jsonProvider54_jsonGetStringOr=nC.runtime.json.jsonGetStringOr --redefine-sym jsonProvider54_jsonValidate=nC.runtime.json.jsonValidate ";
+                            if (!invoke(quote(objcopy)+extra+quote(base+"/"+name)+" "+quote(out+"/"+name),windows)) return 1;
+                        } else if (!copied(base+"/"+name,out+"/"+name)) return 74;
+                        inputs += " "+quote(out+"/"+name); start <- at+1;
+                    }
+                    at += 1;
+                }
+                artifact >> str <- out+(windows ? "/ncruntime.dll" : "/libncruntime.so.2");
+                if (windows) {
+                    families >> str <- "heap output render string json command std args env concat fs dir result";
+                    functions <- "alloc calloc realloc free|print println flush writeBytes|renderInt renderBool renderChar renderStr|strByteLen strLen len strRelease|jsonNewBool jsonObjectSet jsonNewObject jsonRelease jsonGetBool jsonKind jsonObjectBorrow jsonObjectLen jsonObjectHas jsonObjectGet jsonClone jsonNewNull jsonNewInt jsonNewString jsonNewArray jsonArrayPush jsonArrayBorrow jsonArrayLen jsonGetInt jsonStringView jsonObjectRemove jsonEquals jsonObjectKeyAt jsonStringify jsonGetBoolOr jsonGetIntOr jsonStringifyPretty jsonParse jsonGetStringOr jsonParseFile jsonValidate jsonSaveFile|commandOpen commandStarted commandWait commandExitCode commandTerminate commandProcessHandle commandThreadHandle commandId commandThreadId commandError commandRelease commandPipeOpen commandPipeReadHandle commandPipeWriteHandle commandPipeRead commandPipeWrite commandPipeCloseRead commandPipeCloseWrite commandPipeError commandPipeRelease|stdIn stdOut stdErr|argsOpen argsCount argsAt argsData argsBytes argsError argsRelease|envOpen envCount envAt envData envBytes envError envRelease envGet envHas envSet envRemove envExpand envLastError|concat concat3|exists createDir fsWriteFrom fsReadInto fsSize|createDir|isOk isErr";
+                    exports >> str <- ""; familyStart >> int <- 0; familyEnd >> int <- 0;
+                    at <- 0; start <- 0; bytes >> int <- strByteLen(functions);
+                    while (at <= bytes) {
+                        code >> int <- at == bytes ? 124 : rd<byte>(off(cast<byte>(functions),at));
+                        if (code == 32 || code == 124) {
+                            familyEnd <- familyStart;
+                            while (familyEnd < strByteLen(families) && rd<byte>(off(cast<byte>(families),familyEnd)) != 32) { familyEnd += 1; }
+                            exports += " /export:nC.runtime."+strSubstring(families,familyStart,familyEnd-familyStart)+"."+strSubstring(functions,start,at-start);
+                            start <- at+1; if (code == 124) familyStart <- familyEnd+1;
+                        }
+                        at += 1;
+                    }
+                    at <- 0; start <- 0;
+                    while (at <= strByteLen(strings)) {
+                        if (at == strByteLen(strings) || rd<byte>(off(cast<byte>(strings),at)) == 32) {
+                            exports += " /export:nC.runtime.string."+strSubstring(strings,start,at-start);
+                            start <- at+1;
+                        }
+                        at += 1;
+                    }
+                    if (!invoke(quote(linker)+" /dll /noentry /nodefaultlib /opt:ref /machine:x64 /out:"+quote(artifact)+exports+inputs+" "+quote(kernel)+" "+quote(shell)+" "+quote(support),windows)) return 1;
+                } else {
+                    if (!copied(base+"/runtime.exports.map",out+"/runtime.exports.map")) return 74;
+                    version >> str <- "NC_RUNTIME_62 { global: \"nC.runtime.json.jsonGetIntOr\"; \"nC.runtime.json.jsonStringifyPretty\"; \"nC.runtime.json.jsonParse\"; \"nC.runtime.json.jsonGetStringOr\"; \"nC.runtime.json.jsonParseFile\"; \"nC.runtime.json.jsonValidate\"; \"nC.runtime.json.jsonSaveFile\"; \"nC.runtime.fs.fsWriteFrom\"; \"nC.runtime.fs.fsReadInto\"; \"nC.runtime.fs.fsSize\"; } NC_RUNTIME_61;\n";
+                    version += "NC_RUNTIME_62S { global: "; at <- 0; start <- 0;
+                    while (at <= strByteLen(strings)) {
+                        if (at == strByteLen(strings) || rd<byte>(off(cast<byte>(strings),at)) == 32) {
+                            version += "\"nC.runtime.string."+strSubstring(strings,start,at-start)+"\"; ";
+                            start <- at+1;
+                        }
+                        at += 1;
+                    }
+                    version += "} NC_RUNTIME_62;\n";
+                    if (fsWriteFrom(out+"/runtime.exports.map",cast<byte>(version),strByteLen(version),true) != strByteLen(version)) return 74;
+                    if (!invoke(quote(linker)+" -shared -z defs -z text -z noexecstack --gc-sections -soname libncruntime.so.2 --version-script "+quote(out+"/runtime.exports.map")+" -o "+quote(artifact)+inputs+" -lc",windows)) return 1;
+                }
+                println("batch provider built from nC objects: "+artifact);
+                return fsSize(artifact) > 0 ? 0 : 74;
+            }
+        public:
+            run() -> int {
+                arguments >> addr <- argsOpen(); code >> int <- build(arguments,envHas("WINDIR"));
+                argsRelease(arguments); return code;
+            }
+    ref main ->> run;
+    fa: return true;
+}

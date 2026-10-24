@@ -1,0 +1,337 @@
+use <io:output, render>;
+
+nccDiagnostics {
+    fn:
+        private:
+            code(kind >> int) -> str {
+                if (kind == 1) return "E_LEXER_CHARACTER_001";
+                if (kind == 2) return "E_LEXER_COMMENT_UNTERMINATED_001";
+                if (kind == 3) return "E_LEXER_STRING_UNTERMINATED_001";
+                if (kind == 4) return "E_LEXER_ESCAPE_001";
+                return "E_LEXER_TOKEN_001";
+            }
+
+            message(kind >> int) -> str {
+                if (kind == 1) return "unexpected character";
+                if (kind == 2) return "unterminated block comment";
+                if (kind == 3) return "unterminated string literal";
+                if (kind == 4) return "invalid or unterminated string escape";
+                if (kind == 5) return "invalid character literal";
+                if (kind == 6) return "character literal does not fit in one byte";
+                if (kind == 7) return "invalid UTF-8 encoding";
+                if (kind == 8) return "token storage allocation or capacity failed";
+                return "invalid lexical token";
+            }
+
+        public:
+            emitDiagnostic(kind >> int, line >> int, column >> int, path >> str) -> int {
+                print("error[");
+                print(code(kind));
+                println("] lexer");
+                print(" --> ");
+                print(path);
+                print(":");
+                print(renderInt(line));
+                print(":");
+                println(renderInt(column));
+                print("     | lexer: ");
+                println(message(kind));
+                return 1;
+            }
+
+            emitParser(kind >> int, line >> int, column >> int, path >> str) -> int {
+                code >> str <- kind == 1 ? "E_PARSER_DELIMITER_001" :
+                    (kind == 2 ? "E_PARSER_DELIMITER_UNTERMINATED_001" :
+                    (kind == 3 ? "E_PARSER_IMPORT_TERMINATOR_001" :
+                    (kind == 4 ? "E_PARSER_TYPE_MATERIAL_001" :
+                    (kind == 5 ? "E_PARSER_EXPRESSION_MATERIAL_001" :
+                    (kind == 6 ? "E_PARSER_STATEMENT_MATERIAL_001" :
+                    "E_PARSER_ADVANCED_MATERIAL_001")))));
+                message >> str <- kind == 1 ? "closing delimiter does not match its opener" :
+                    (kind == 2 ? "source ended before an opened delimiter was closed" :
+                    (kind == 3 ? "top-level import requires a terminating semicolon" :
+                    (kind == 4 ? "invalid material type expression" :
+                    (kind == 5 ? "invalid material value expression" :
+                    (kind == 6 ? "invalid material statement or control-flow body" :
+                    "invalid advanced expression, closure, pattern or modal loop")))));
+                if (kind == 8 || kind == 9) code <- "E_HIGH_PACKAGE_PARSE_001";
+                if (kind == 8) message <- "expected package version string";
+                if (kind == 9) message <- "expected package field";
+                if (kind == 10 || kind == 12) code <- "E_PARSER_SYNTAX_001";
+                if (kind == 10) message <- "expected identifier";
+                if (kind == 12) message <- "expected colon";
+                if (kind == 13) {
+                    code <- "E_PARSER_EXPECTED_SEMICOLON_001";
+                    message <- "expected semicolon after the preceding declaration or statement";
+                }
+                if (kind == 14) { code <- "E_TYPE_CONTRACT_SECTION_001"; message <- "invalid or empty type contract section"; }
+                if (kind == 15) { code <- "E_TYPE_LAYOUT_001"; message <- "invalid compact layout attribute"; }
+                if (kind == 16) { code <- "E_TYPE_FIELD_001"; message <- "type field requires ':' or '>>' followed by its type"; }
+                print("error["); print(code); println("] parser");
+                print(" --> "); print(path); print(":");
+                print(renderInt(line)); print(":"); println(renderInt(column));
+                print("     | parser: "); println(message);
+                return 1;
+            }
+
+            emitAstShape(path >> str) -> int {
+                println("error[E_PARSER_AST_SHAPE_001] parser.ast");
+                print(" --> "); println(path);
+                println("     | material AST shape differs from its retained contract");
+                return 1;
+            }
+
+            emitSema(kind >> int, line >> int, column >> int, path >> str) -> int {
+                code >> str <- kind == 1 ? "E_LOCAL_DUP_SYMBOL_001" :
+                    (kind == 2 ? "E_SEMA_SYMBOL_UNRESOLVED_001" :
+                    (kind == 3 ? "E_TYPE_UNKNOWN_001" :
+                    (kind == 4 ? "E_CONDITION_BOOL_REQUIRED_001" :
+                    (kind == 5 ? "E_TYPE_MISMATCH_001" :
+                    (kind == 6 ? "E_TYPE_RETURN_001" :
+                    (kind == 7 ? "E_SEMA_CALL_ARITY_001" :
+                    (kind == 8 ? "E_SEMA_ENTRY_UNRESOLVED_001" :
+                    (kind == 9 ? "E_CONTROL_BREAK_SCOPE_001" :
+                    (kind == 10 ? "E_CONTROL_CONTINUE_SCOPE_001" :
+                    (kind == 11 ? "E_USE_V2_MODULE_001" :
+                    (kind == 12 ? "E_USE_DOMAIN_UNKNOWN_001" :
+                    (kind == 13 ? "E_USE_FAMILY_UNKNOWN_001" :
+                    (kind == 14 ? "E_USE_ITEM_UNKNOWN_001" :
+                    (kind == 15 ? "E_USE_WILDCARD_DENIED_001" :
+                    (kind == 16 ? "E_USE_FORBIDDEN_IN_MACHINE_001" :
+                    (kind == 17 ? "E_USE_FORBIDDEN_IN_PRIMITIVE_001" :
+                    (kind == 18 ? "E_USE_FORBIDDEN_IN_BASAL_001" :
+                    (kind == 19 ? "E_USE_FORBIDDEN_IN_KERNEL_001" :
+                    (kind == 20 ? "E_RUNTIME_USE_001" :
+                    (kind == 21 ? "E_USE_STOUD_AUTH_REQUIRED_001" :
+                    "E_USE_CONTEXT_AUTHORITY_001"))))))))))))))))))));
+                message >> str <- kind == 1 ? "duplicate symbol in the same lexical scope" :
+                    (kind == 2 ? "symbol cannot be resolved in this lexical scope" :
+                    (kind == 3 ? "type name cannot be resolved" :
+                    (kind == 4 ? "control-flow condition must have type bool" :
+                    (kind == 5 ? "expression type is incompatible with its destination" :
+                    (kind == 6 ? "returned expression is incompatible with the function result" :
+                    (kind == 7 ? "call argument count differs from the function signature" :
+                    (kind == 8 ? "ref main target cannot be resolved as a function" :
+                    (kind == 9 ? "break requires an enclosing loop" :
+                    (kind == 10 ? "continue requires an enclosing loop" :
+                    (kind == 11 ? "canonical use requires <family:items> or <domain.family:items>" :
+                    (kind == 12 ? "use domain is not part of the canonical import catalog" :
+                    (kind == 13 ? "use family is not part of the selected domain" :
+                    (kind == 14 ? "use item is not exported by the selected family" :
+                    (kind == 15 ? "wildcard imports are denied; list each item explicitly" :
+                    (kind == 16 ? "machine containers do not admit imports" :
+                    (kind == 17 ? "primitive containers do not admit imports" :
+                    (kind == 18 ? "basal containers do not admit imports" :
+                    (kind == 19 ? "kernel containers do not admit imports" :
+                    (kind == 20 ? "runtime call requires its explicit canonical import" :
+                    (kind == 21 ? "system authority must use auth.system instead of stoud.system" :
+                    "import crosses a forbidden context authority boundary"))))))))))))))))))));
+                print("error["); print(code); println("] sema");
+                print(" --> "); print(path); print(":");
+                print(renderInt(line)); print(":"); println(renderInt(column));
+                print("     | sema: "); println(message);
+                return 1;
+            }
+
+            emitImportShape(path >> str) -> int {
+                println("error[E_SEMA_IMPORT_SHAPE_001] sema.imports");
+                print(" --> "); println(path);
+                println("     | import, runtime or modal counts differ from the retained contract");
+                return 1;
+            }
+
+            emitAuthorityShape(path >> str) -> int {
+                println("error[E_SEMA_AUTHORITY_SHAPE_001] sema.authority");
+                print(" --> "); println(path);
+                println("     | capability, policy or context authority differs from its retained contract");
+                return 1;
+            }
+
+            emitRuntimeSignatureShape() -> int {
+                println("error[E_SEMA_RUNTIME_SIGNATURE_SHAPE_001] sema.runtime-signatures");
+                println("     | runtime family, typed signature or catalog fingerprint differs from its retained contract");
+                return 1;
+            }
+
+            emitGenericAbi(kind >> int, line >> int, column >> int, path >> str) -> int {
+                code >> str <- "E_HIGH_CONST_GENERIC_TYPE_001";
+                message >> str <- "const generic parameter requires an integer type";
+                if (kind == 1) { code <- "E_HIGH_GENERIC_DUP_PARAM_001"; message <- "generic parameter names must be unique"; }
+                if (kind == 2) { code <- "E_HIGH_BOUND_UNKNOWN_TRAIT_001"; message <- "generic bound names an unknown trait"; }
+                if (kind == 3) { code <- "E_HIGH_CONST_GENERIC_RANGE_001"; message <- "const generic argument is outside its declared integer range"; }
+                if (kind == 4) { code <- "E_HIGH_TRAIT_DUP_001"; message <- "trait name or member is declared more than once"; }
+                if (kind == 5) { code <- "E_HIGH_IMPL_UNKNOWN_TRAIT_001"; message <- "impl names a trait that is not declared"; }
+                if (kind == 6) { code <- "E_HIGH_TRAIT_METHOD_MISSING_001"; message <- "impl omits a required method or associated type binding"; }
+                if (kind == 7) { code <- "E_HIGH_IMPL_DUP_001"; message <- "trait and target already have an implementation"; }
+                if (kind == 8) { code <- "E_V2_ABI_REQUIRED_001"; message <- "manual ABI contract omits one or more required fields"; }
+                if (kind == 9) { code <- "E_V2_ABI_FIELD_001"; message <- "manual ABI field is unknown or malformed"; }
+                if (kind == 10) { code <- "E_V2_ABI_DUPLICATE_001"; message <- "manual ABI field is declared more than once"; }
+                if (kind == 11) { code <- "E_V2_ABI_STACK_ALIGN_001"; message <- "ABI stack alignment must be a positive power of two"; }
+                if (kind == 12) { code <- "E_V2_ABI_POINTER_001"; message <- "ABI pointer width must be 16, 32, 64 or 128 bits"; }
+                if (kind == 13) { code <- "E_V2_ABI_BIND_UNKNOWN_001"; message <- "binding names an ABI contract that is not declared"; }
+                if (kind == 14) { code <- "E_HIGH_DYN_IMPLICIT_001"; message <- "dynamic dispatch must be requested explicitly"; }
+                if (kind == 15) { code <- "E_HIGH_GENERIC_ARITY_001"; message <- "generic argument count differs from its template"; }
+                if (kind == 17) { code <- "E_V2_ABI_REGISTER_001"; message <- "ABI register list is empty or malformed"; }
+                print("error["); print(code); println("] sema.generic-trait-abi");
+                print(" --> "); print(path); print(":");
+                print(renderInt(line)); print(":"); println(renderInt(column));
+                print("     | "); println(message);
+                return 1;
+            }
+
+            emitPatternAsyncResource(kind >> int, line >> int,
+                column >> int, path >> str) -> int {
+                code >> str <- "E_HIGH_MATCH_EMPTY_001";
+                message >> str <- "match requires at least one arm";
+                if (kind == 2) { code <- "E_HIGH_MATCH_NON_EXHAUSTIVE_001"; message <- "match does not cover its complete material domain"; }
+                if (kind == 3) { code <- "E_HIGH_MATCH_UNREACHABLE_ARM_001"; message <- "match arm is unreachable or repeats a complete pattern"; }
+                if (kind == 4) { code <- "E_HIGH_GUARD_TYPE_001"; message <- "match guard must produce bool"; }
+                if (kind == 5) { code <- "E_HIGH_PATTERN_RANGE_EMPTY_001"; message <- "pattern range is empty or malformed"; }
+                if (kind == 6) { code <- "E_HIGH_CAPTURE_ALIAS_001"; message <- "closure capture is declared more than once"; }
+                if (kind == 7) { code <- "E_HIGH_CAPTURE_UNKNOWN_001"; message <- "closure capture does not resolve before the closure"; }
+                if (kind == 8) { code <- "E_HIGH_CAPTURE_MOVED_001"; message <- "moved capture is used again"; }
+                if (kind == 9) { code <- "E_HIGH_CAPTURE_MUT_REQUIRED_001"; message <- "written capture requires explicit mut mode"; }
+                if (kind == 10) { code <- "E_HIGH_DEFER_CONTROL_FLOW_001"; message <- "deferred cleanup cannot return, break or continue"; }
+                if (kind == 11) { code <- "E_HIGH_AWAIT_CONTEXT_001"; message <- "await requires an explicit async context"; }
+                if (kind == 12) { code <- "E_HIGH_AWAIT_NON_FUTURE_001"; message <- "await operand is not material future storage"; }
+                if (kind == 13) { code <- "E_HIGH_YIELD_CONTEXT_001"; message <- "yield requires Generator, Stream or AsyncStream context"; }
+                if (kind == 14) { code <- "E_HIGH_ASYNC_GENERATOR_KIND_001"; message <- "async generator must expose AsyncStream material protocol"; }
+                if (kind == 15) { code <- "E_HIGH_SPAWN_NON_ASYNC_001"; message <- "spawn target must be an async or Future expression"; }
+                print("error["); print(code); println("] sema.pattern-async-resource");
+                print(" --> "); print(path); print(":");
+                print(renderInt(line)); print(":"); println(renderInt(column));
+                print("     | "); println(message);
+                return 1;
+            }
+
+            emitIrTarget(path >> str, target >> str) -> int {
+                println("error[E_IR_TARGET_UNSUPPORTED_001] ir.target");
+                print(" --> "); println(path);
+                print("     | target '"); print(target);
+                println("' has no native IR layout contract");
+                return 1;
+            }
+
+            emitIrGraph(path >> str) -> int {
+                println("error[E_IR_GRAPH_MATERIAL_001] ir.material");
+                print(" --> "); println(path);
+                println("     | typed IR storage could not be materialized");
+                return 1;
+            }
+
+            emitIrShape(path >> str) -> int {
+                println("error[E_IR_GRAPH_SHAPE_001] ir.material");
+                print(" --> "); println(path);
+                println("     | IR target, ABI, object format or byte layout differs from its retained contract");
+                return 1;
+            }
+
+            emitMctMaterial(path >> str) -> int {
+                println("error[E_MCT_GRAPH_MATERIAL_001] mct.material");
+                print(" --> "); println(path);
+                println("     | MCT instruction records or target text bytes could not be materialized");
+                return 1;
+            }
+
+            emitMctWrite(path >> str) -> int {
+                println("error[E_MCT_ARTIFACT_WRITE_001] mct.output");
+                print(" --> "); println(path);
+                println("     | deterministic MCT artifact bytes could not be written");
+                return 1;
+            }
+
+            emitMctContract(path >> str) -> int {
+                println("error[E_MCT_CONTRACT_001] mct.contract");
+                print(" --> "); println(path);
+                println("     | instruction selection, relocation or material byte contract differs from exact-head");
+                return 1;
+            }
+
+            emitMctObjectMaterial(path >> str) -> int {
+                println("error[E_MCT_OBJECT_MATERIAL_001] mct.object");
+                print(" --> "); println(path);
+                println("     | relocatable object sections, symbols or relocations could not be materialized");
+                return 1;
+            }
+
+            emitMctObjectWrite(path >> str) -> int {
+                println("error[E_MCT_OBJECT_WRITE_001] mct.object.output");
+                print(" --> "); println(path);
+                println("     | relocatable object bytes could not be written");
+                return 1;
+            }
+
+            emitMctObjectContract(path >> str) -> int {
+                println("error[E_MCT_OBJECT_CONTRACT_001] mct.object.contract");
+                print(" --> "); println(path);
+                println("     | object header, section, symbol, relocation or hash differs from exact-head");
+                return 1;
+            }
+
+            emitMctImageTarget(path >> str, target >> str) -> int {
+                println("error[E_MCT_IMAGE_TARGET_001] mct.image.target");
+                print(" --> "); println(path);
+                print("     | native final image writer is not closed for target '");
+                print(target); println("'");
+                return 1;
+            }
+
+            emitMctImageMaterial(path >> str) -> int {
+                println("error[E_MCT_IMAGE_MATERIAL_001] mct.image");
+                print(" --> "); println(path);
+                println("     | final relocations, entry point or image sections could not be materialized");
+                return 1;
+            }
+
+            emitMctImageWrite(path >> str) -> int {
+                println("error[E_MCT_IMAGE_WRITE_001] mct.image.output");
+                print(" --> "); println(path);
+                println("     | native final image bytes could not be written");
+                return 1;
+            }
+
+            emitMctImageContract(path >> str) -> int {
+                println("error[E_MCT_IMAGE_CONTRACT_001] mct.image.contract");
+                print(" --> "); println(path);
+                println("     | image format, entry, imports, bytes or hash differs from exact-head");
+                return 1;
+            }
+
+            emitMctPdbTarget(path >> str, target >> str) -> int {
+                println("error[E_MCT_PDB_TARGET_001] mct.pdb.target");
+                print(" --> "); println(path);
+                print("     | PDB/MSF7 requires target 'x86_64-pc-windows-msvc', received '");
+                print(target); println("'");
+                return 1;
+            }
+
+            emitMctRelocation(kind >> str) -> int {
+                println("error[E_MACHINE_LINK_RELOCATION_001] mct.link.relocation");
+                print(" --> "); println(kind);
+                println("     | target, range, alignment or patched instruction differs from the relocation contract");
+                return 1;
+            }
+
+            emitSemaShape(path >> str) -> int {
+                println("error[E_SEMA_SHAPE_001] sema.graph");
+                print(" --> "); println(path);
+                println("     | material semantic scopes or symbols differ from the retained contract");
+                return 1;
+            }
+
+            stage0Required(command >> str) -> int {
+                print("error[E_BOOTSTRAP_STAGE0_REQUIRED_001] compiler.bootstrap\n");
+                print("     | command '");
+                print(command);
+                println("' has not migrated from Rust stage0");
+                return 69;
+            }
+
+            selfTest() -> bool {
+                return code(1) == "E_LEXER_CHARACTER_001" &&
+                    code(4) == "E_LEXER_ESCAPE_001";
+            }
+
+    fa:
+        return true;
+}

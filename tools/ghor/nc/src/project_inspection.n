@@ -1,0 +1,705 @@
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, env>;
+use <project:text, package_graph, build_pipeline, assurance, sha256>;
+
+projectInspection[@runtime] {
+    const:
+        LIST_BYTES >> int <- 1048576;
+
+    fn:
+        private:
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            asText(value >> p<byte>) -> str {
+                result >> str <- cast(value);
+                return result;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                if (at == 2 && rd(off(source, 1)) == 58) at += 1;
+                return strSubstring(path, 0, at);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                width >> int <- strByteLen(left);
+                source >> p<byte> <- cast(left);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                data >> p<byte> <- cast(alloc(required));
+                guard data != null else return "";
+                written >> int <- envGet(name, adr(data), required);
+                if (written <= 0) { free(data); return ""; }
+                return cast(data);
+            }
+
+            optionTakesValue(name >> str) -> bool {
+                return name == "--manifest" || name == "--manifest-path" ||
+                    name == "--path" || name == "--target" || name == "--features" ||
+                    name == "--profile" || name == "--out" || name == "--registry" ||
+                    name == "--lock" || name == "--lang" || name == "--host" ||
+                    name == "--checksum" || name == "--token" ||
+                    name == "--registry-protocol" || name == "--vers" ||
+                    name == "--version";
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") return "";
+                    if (current == name) return argsAt(handle, at + 1);
+                    at += optionTakesValue(current) ? 2 : 1;
+                }
+                return "";
+            }
+
+            positional(handle >> addr, requested >> int) -> str {
+                count >> int <- argsCount(handle);
+                found >> int <- 0;
+                at >> int <- 2;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if (current == "--") { at += 1; continue; }
+                    if (optionTakesValue(current)) { at += 2; continue; }
+                    if (rd(cast(current)) == 45) { at += 1; continue; }
+                    if (found == requested) return current;
+                    found += 1;
+                    at += 1;
+                }
+                return "";
+            }
+
+            isDirectory(path >> str) -> bool {
+                metadata >> p<byte> <- cast(alloc(256));
+                guard metadata != null else return false;
+                described >> int <- fsMetadataInto(path, metadata, 256);
+                result >> bool <- described >= 14 &&
+                    rd(off(metadata, 0)) == 116 && rd(off(metadata, 1)) == 121 &&
+                    rd(off(metadata, 2)) == 112 && rd(off(metadata, 3)) == 101 &&
+                    rd(off(metadata, 4)) == 61 && rd(off(metadata, 5)) == 100 &&
+                    rd(off(metadata, 6)) == 105 && rd(off(metadata, 7)) == 114 &&
+                    rd(off(metadata, 8)) == 101 && rd(off(metadata, 9)) == 99 &&
+                    rd(off(metadata, 10)) == 116 && rd(off(metadata, 11)) == 111 &&
+                    rd(off(metadata, 12)) == 114 && rd(off(metadata, 13)) == 121;
+                free(metadata);
+                return result;
+            }
+
+            sourceExtension(name >> str) -> bool {
+                return strEndsWith(name, ".n") || strEndsWith(name, ".nm") ||
+                    strEndsWith(name, ".nb") || strEndsWith(name, ".nbb") ||
+                    strEndsWith(name, ".ncp") || strEndsWith(name, ".c") ||
+                    strEndsWith(name, ".h") || strEndsWith(name, ".cpp") ||
+                    strEndsWith(name, ".hpp") || strEndsWith(name, ".rs") ||
+                    strEndsWith(name, ".java") || strEndsWith(name, ".py") ||
+                    strEndsWith(name, ".js") || strEndsWith(name, ".ts") ||
+                    strEndsWith(name, ".tsx");
+            }
+
+            collectFiles(root >> str, files >> int) -> bool {
+                if (!exists(root) || !isDirectory(root)) return true;
+                names >> p<byte> <- cast(alloc(LIST_BYTES));
+                guard names != null else return false;
+                listed >> int <- listDirInto(root, names, LIST_BYTES);
+                if (listed < 0 || listed >= LIST_BYTES) { free(names); return false; }
+                wr(off(names, listed), 0);
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= listed) {
+                    current >> byte <- rd(off(names, at));
+                    if (current == 10 || current == 13 || current == 0) {
+                        wr(off(names, at), 0);
+                        if (at > start) {
+                            name >> str <- cast(off(names, start));
+                            child >> str <- join(root, name);
+                            if (isDirectory(child)) {
+                                guard collectFiles(child, files) else { free(names); return false; }
+                            }
+                            else if (sourceExtension(name)) jsonArrayPush(files, jsonNewString(child));
+                        }
+                        while (at < listed &&
+                            (rd(off(names, at + 1)) == 10 || rd(off(names, at + 1)) == 13)) {
+                            at += 1;
+                        }
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(names);
+                return true;
+            }
+
+            knownTarget(at >> int) -> str {
+                if (at == 0) return "x86_64-unknown-linux-gnu";
+                if (at == 1) return "x86_64-pc-windows-msvc";
+                if (at == 2) return "x86_64-apple-darwin";
+                if (at == 3) return "aarch64-apple-darwin";
+                if (at == 4) return "aarch64-unknown-linux-gnu";
+                if (at == 5) return "riscv64-unknown-elf";
+                if (at == 6) return "wasm32-unknown-unknown";
+                return "";
+            }
+
+            targetKnown(triple >> str) -> bool {
+                at >> int <- 0;
+                while (at < 7) {
+                    if (triple == knownTarget(at)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            targetMatrix(manifestRoot >> int) -> int {
+                host >> str <- build_pipeline.buildPipeline.host();
+                declaredDefault >> str <- manifestRoot == 0 ? "" : jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(manifestRoot, "target_default"), "triple"), "");
+                declaredTargets >> int <- manifestRoot == 0 ? 0 : jsonObjectGet(manifestRoot, "targets");
+                targets >> int <- jsonNewArray();
+                at >> int <- 0;
+                while (at < 7) {
+                    triple >> str <- knownTarget(at);
+                    hostTarget >> bool <- triple == host;
+                    declared >> bool <- triple == declaredDefault ||
+                        (declaredTargets != 0 && jsonObjectHas(declaredTargets, triple));
+                    item >> int <- jsonNewObject();
+                    jsonObjectSet(item, "triple", jsonNewString(triple));
+                    jsonObjectSet(item, "host", jsonNewBool(hostTarget));
+                    jsonObjectSet(item, "declared", jsonNewBool(declared));
+                    jsonObjectSet(item, "status", jsonNewString(hostTarget ? "host_available" :
+                        (declared ? "declared_cross_target" : "known_supported_target")));
+                    jsonObjectSet(item, "cross_build", jsonNewString(hostTarget ? "native" :
+                        "requires_external_toolchain"));
+                    jsonArrayPush(targets, item);
+                    at += 1;
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.target.matrix.v1"));
+                jsonObjectSet(model, "host", jsonNewString(host));
+                jsonObjectSet(model, "targets", targets);
+                return model;
+            }
+
+            targetInfo(triple >> str) -> int {
+                host >> str <- build_pipeline.buildPipeline.host();
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.target.info.v1"));
+                jsonObjectSet(model, "triple", jsonNewString(triple));
+                jsonObjectSet(model, "host", jsonNewBool(triple == host));
+                jsonObjectSet(model, "known", jsonNewBool(true));
+                jsonObjectSet(model, "status", jsonNewString(triple == host ? "host_available" :
+                    "known_supported_target_requires_external_toolchain"));
+                return model;
+            }
+
+            profileModel(root >> int) -> int {
+                profiles >> int <- jsonClone(jsonObjectGet(root, "profiles"));
+                if (!jsonObjectHas(profiles, "debug")) jsonObjectSet(profiles, "debug", jsonNewObject());
+                if (!jsonObjectHas(profiles, "release")) jsonObjectSet(profiles, "release", jsonNewObject());
+                if (!jsonObjectHas(profiles, "test")) jsonObjectSet(profiles, "test", jsonNewObject());
+                if (!jsonObjectHas(profiles, "bench")) jsonObjectSet(profiles, "bench", jsonNewObject());
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.profile.v1"));
+                jsonObjectSet(model, "package", jsonClone(jsonObjectGet(jsonObjectGet(root, "package"), "name")));
+                jsonObjectSet(model, "profiles", profiles);
+                return model;
+            }
+
+            featureSelection(value >> str) -> int {
+                result >> int <- jsonNewArray();
+                width >> int <- strByteLen(value);
+                guard width > 0 else return result;
+                data >> p<byte> <- cast(alloc(width + 1));
+                guard data != null else return result;
+                cp(data, cast(value), width);
+                wr(off(data, width), 0);
+                start >> int <- 0;
+                at >> int <- 0;
+                while (at <= width) {
+                    current >> byte <- rd(off(data, at));
+                    if (current == 44 || current == 0) {
+                        wr(off(data, at), 0);
+                        while (start < at && (rd(off(data, start)) == 32 ||
+                            rd(off(data, start)) == 91 || rd(off(data, start)) == 34)) {
+                            start += 1;
+                        }
+                        end >> int <- at - 1;
+                        while (end >= start && (rd(off(data, end)) == 32 ||
+                            rd(off(data, end)) == 93 || rd(off(data, end)) == 34)) {
+                            wr(off(data, end), 0);
+                            end -= 1;
+                        }
+                        if (end >= start) jsonArrayPush(result, jsonNewString(asText(off(data, start))));
+                        start <- at + 1;
+                    }
+                    at += 1;
+                }
+                free(data);
+                return result;
+            }
+
+            featuresModel(root >> int, selected >> str) -> int {
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.features.v1"));
+                jsonObjectSet(model, "package", jsonClone(jsonObjectGet(jsonObjectGet(root, "package"), "name")));
+                jsonObjectSet(model, "features", jsonClone(jsonObjectGet(root, "features")));
+                jsonObjectSet(model, "selected", featureSelection(selected));
+                return model;
+            }
+
+            graphModel(root >> int) -> int {
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(root, "path"), "");
+                projectRoot >> str <- directory(manifestPath);
+                sources >> int <- jsonNewArray();
+                collected >> bool <- collectFiles(join(projectRoot, "src"), sources) &&
+                    collectFiles(join(projectRoot, "machine"), sources) &&
+                    collectFiles(join(projectRoot, "basal"), sources) &&
+                    collectFiles(join(projectRoot, "primitive"), sources);
+                if (!collected) { jsonRelease(sources); return 0; }
+                profiles >> int <- jsonNewArray();
+                declaredProfiles >> int <- jsonObjectGet(root, "profiles");
+                at >> int <- 0;
+                while (at < jsonObjectLen(declaredProfiles)) {
+                    jsonArrayPush(profiles, jsonNewString(jsonObjectKeyAt(declaredProfiles, at)));
+                    at += 1;
+                }
+                generated >> int <- jsonNewArray();
+                jsonArrayPush(generated, jsonNewString("target/ghor/debug"));
+                jsonArrayPush(generated, jsonNewString("target/ghor/release"));
+                jsonArrayPush(generated, jsonNewString("ghor.lock"));
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.graph.v1"));
+                jsonObjectSet(model, "package", jsonClone(jsonObjectGet(jsonObjectGet(root, "package"), "name")));
+                jsonObjectSet(model, "target", jsonClone(jsonObjectGet(root, "target_default")));
+                jsonObjectSet(model, "profiles", profiles);
+                jsonObjectSet(model, "sources", sources);
+                jsonObjectSet(model, "dependencies", jsonClone(jsonObjectGet(root, "dependencies")));
+                jsonObjectSet(model, "rust_dependencies", jsonClone(jsonObjectGet(root, "rust_dependencies")));
+                jsonObjectSet(model, "c_dependencies", jsonClone(jsonObjectGet(root, "c_dependencies")));
+                jsonObjectSet(model, "cpp_dependencies", jsonClone(jsonObjectGet(root, "cpp_dependencies")));
+                jsonObjectSet(model, "asm_dependencies", jsonClone(jsonObjectGet(root, "asm_dependencies")));
+                jsonObjectSet(model, "native_dependencies", jsonClone(jsonObjectGet(root, "native_dependencies")));
+                jsonObjectSet(model, "generated_artifacts", generated);
+                return model;
+            }
+
+            commandFamily(name >> str) -> str {
+                if (name == "new" || name == "init" || name == "check" || name == "build" ||
+                    name == "run" || name == "test" || name == "bench" || name == "clean" ||
+                    name == "fmt" || name == "fix" || name == "lint" || name == "doc") return "build";
+                if (name == "registry" || name == "cdn" || name == "governance" ||
+                    name == "moderation" || name == "search" || name == "info" ||
+                    name == "login" || name == "logout" || name == "owner" ||
+                    name == "yank" || name == "audit" || name == "sbom" ||
+                    name == "license" || name == "supply-chain" ||
+                    name == "capability-audit") return "registry-security";
+                if (name == "machine" || name == "basal" || name == "runtime" ||
+                    name == "compiler" || name == "primitive" || name == "interop" ||
+                    name == "cargo-exec" || name == "build-script" || name == "proc-macro" ||
+                    name == "external-compat" || name == "lang") return "systems-adapters";
+                if (name == "doctor" || name == "verify" || name == "evidence" ||
+                    name == "seal" || name == "conformance" || name == "public-beta" ||
+                    name == "release-check" || name == "release-hardening" ||
+                    name == "install-smoke" || name == "bootstrap") return "assurance";
+                return "package-workspace";
+            }
+
+            nativeE2e(name >> str) -> bool {
+                return name == "build" || name == "run" || name == "test" || name == "bench";
+            }
+
+            stage1Partial(name >> str) -> bool {
+                return false;
+            }
+
+            stage1Complete(name >> str) -> bool {
+                return name == "manifest" || name == "metadata" || name == "add" ||
+                    name == "remove" || name == "package" || name == "check" ||
+                    name == "install" || name == "uninstall" || name == "new" ||
+                    name == "init" || name == "clean" || name == "fmt" || name == "fix" ||
+                    name == "lint" || name == "doc" || name == "doctor" ||
+                    name == "toolchain" || name == "verify-toolchain" ||
+                    name == "sync-toolchain" || name == "verify" || name == "evidence" ||
+                    name == "seal" || name == "conformance" || name == "public-beta" ||
+                    name == "release-check" || name == "release-hardening" ||
+                    name == "install-smoke" || name == "audit" || name == "sbom" ||
+                    name == "license" || name == "supply-chain" ||
+                    name == "capability-audit" || name == "target" || name == "profile" ||
+                    name == "features" || name == "graph" || name == "report" || name == "bin" ||
+                    name == "locate-project" || name == "read-manifest" || name == "pkgid" ||
+                    name == "unit-graph" || name == "timings" ||
+                    name == "cross" || name == "link" || name == "native-deps" ||
+                    name == "ffi-manifest" || name == "artifact" ||
+                    name == "machine" || name == "basal" || name == "runtime" ||
+                    name == "compiler" || name == "primitive" || name == "cdn" ||
+                    name == "governance" || name == "moderation" ||
+                    name == "bootstrap" || name == "lang" || name == "interop" ||
+                    name == "cargo-exec" || name == "build-script" ||
+                    name == "proc-macro" || name == "external-compat" ||
+                    name == "resolve" || name == "lock" || name == "generate-lockfile" ||
+                    name == "verify-lock" || name == "fetch" || name == "vendor" ||
+                    name == "update" || name == "workspace" || name == "tree" ||
+                    name == "search" || name == "info" || name == "login" ||
+                    name == "logout" || name == "registry" || name == "publish" ||
+                    name == "owner" || name == "yank";
+            }
+
+            commandRoute(name >> str) -> str {
+                if (name == "build") return "nc-stage1-native-ncc-machine-artifact";
+                if (name == "test") return "nc-stage1-native-ncc-test-execution";
+                if (name == "run") return "nc-stage1-native-machine-execution";
+                if (name == "bench") return "nc-stage1-native-machine-benchmark";
+                if (name == "new" || name == "init") return "nc-stage1-native-project-scaffold";
+                if (name == "clean") return "nc-stage1-native-target-clean";
+                if (name == "fmt") return "nc-stage1-native-nfmt-orchestration";
+                if (name == "fix") return "nc-stage1-native-nfmt-fix";
+                if (name == "lint") return "nc-stage1-native-nlint-orchestration";
+                if (name == "doc") return "nc-stage1-native-documentation-inventory";
+                if (name == "target") return "nc-stage1-native-target-matrix";
+                if (name == "profile") return "nc-stage1-native-profile-inspection";
+                if (name == "features") return "nc-stage1-native-feature-selection";
+                if (name == "graph") return "nc-stage1-native-project-graph";
+                if (name == "report") return "nc-stage1-native-project-report";
+                if (name == "bin") return "nc-stage1-native-bin-location";
+                if (name == "cross") return "nc-stage1-native-cross-plan";
+                if (name == "link") return "nc-stage1-native-link-plan";
+                if (name == "native-deps") return "nc-stage1-native-dependency-validation";
+                if (name == "ffi-manifest") return "nc-stage1-native-ffi-manifest";
+                if (name == "artifact") return "nc-stage1-native-artifact-record";
+                if (name == "locate-project") return "nc-stage1-native-locate-project";
+                if (name == "read-manifest") return "nc-stage1-native-read-manifest";
+                if (name == "pkgid") return "nc-stage1-native-package-id";
+                if (name == "unit-graph") return "nc-stage1-native-unit-graph";
+                if (name == "timings") return "nc-stage1-native-timings";
+                if (name == "doctor") return "nc-stage1-native-host-doctor";
+                if (name == "toolchain") return "nc-stage1-native-toolchain-inspection";
+                if (name == "verify-toolchain") return "nc-stage1-native-toolchain-verification";
+                if (name == "sync-toolchain") return "nc-stage1-native-toolchain-sync-plan";
+                if (name == "verify") return "nc-stage1-native-verification";
+                if (name == "evidence") return "nc-stage1-native-evidence";
+                if (name == "seal") return "nc-stage1-native-seal";
+                if (name == "conformance") return "nc-stage1-native-conformance";
+                if (name == "public-beta") return "nc-stage1-native-public-beta";
+                if (name == "release-check") return "nc-stage1-native-release-check";
+                if (name == "release-hardening") return "nc-stage1-native-release-hardening";
+                if (name == "install-smoke") return "nc-stage1-native-install-smoke";
+                if (name == "audit") return "nc-stage1-native-security-audit";
+                if (name == "sbom") return "nc-stage1-native-complete-sbom";
+                if (name == "license") return "nc-stage1-native-license-report";
+                if (name == "supply-chain") return "nc-stage1-native-supply-chain-verify";
+                if (name == "capability-audit") return "nc-stage1-native-capability-audit";
+                if (name == "manifest") return "nc-stage1-native-manifest";
+                if (name == "metadata") return "nc-stage1-native-metadata";
+                if (name == "add") return "nc-stage1-native-validated-manifest-add";
+                if (name == "remove") return "nc-stage1-native-validated-manifest-remove";
+                if (name == "tree") return "nc-stage1-native-resolved-dependency-tree";
+                if (name == "workspace") return "nc-stage1-native-workspace-metadata";
+                if (name == "search") return "nc-stage1-native-registry-search";
+                if (name == "info") return "nc-stage1-native-registry-info";
+                if (name == "login" || name == "logout") return "nc-stage1-native-private-registry-credentials";
+                if (name == "registry") return "nc-stage1-native-registry-client";
+                if (name == "package") return "nc-stage1-native-reproducible-package";
+                if (name == "install") return "nc-stage1-native-material-install-transaction";
+                if (name == "uninstall") return "nc-stage1-native-owned-material-uninstall-transaction";
+                if (name == "publish") return "nc-stage1-native-transactional-publish";
+                if (name == "owner") return "nc-stage1-native-transactional-owner";
+                if (name == "yank") return "nc-stage1-native-transactional-yank";
+                if (name == "check") return "nc-stage1-native-ncc-parser-sema";
+                if (name == "resolve") return "nc-stage1-native-filesystem-http-sparse-git-source-replacement-basal-resolver";
+                if (name == "lock") return "nc-stage1-native-filesystem-http-sparse-git-source-replacement-basal-lock";
+                if (name == "generate-lockfile") return "nc-stage1-native-lockfile-generation";
+                if (name == "verify-lock") return "nc-stage1-native-filesystem-http-sparse-git-source-replacement-basal-lock-verify";
+                if (name == "fetch") return "nc-stage1-native-filesystem-http-sparse-git-source-replacement-basal-fetch";
+                if (name == "vendor") return "nc-stage1-native-filesystem-http-sparse-git-source-replacement-basal-vendor";
+                if (name == "update") return "nc-stage1-native-selective-precise-update";
+                if (name == "machine" || name == "basal" || name == "runtime" ||
+                    name == "compiler" || name == "primitive") return
+                    "nc-stage1-native-ncc-subsystem-passthrough";
+                if (name == "cdn") return "nc-stage1-native-content-addressed-cdn";
+                if (name == "governance") return "nc-stage1-native-registry-governance";
+                if (name == "moderation") return "nc-stage1-native-registry-moderation";
+                if (name == "bootstrap") return "nc-stage1-native-bootstrap-authority";
+                if (name == "lang") return "nc-stage1-native-language-forge";
+                if (name == "cargo-exec") return "nc-stage1-native-cargo-execution";
+                if (name == "build-script") return "nc-stage1-native-build-script-execution";
+                if (name == "proc-macro") return "nc-stage1-native-proc-macro-execution";
+                if (name == "interop") return "nc-stage1-native-foreign-interop";
+                if (name == "external-compat") return "nc-stage1-native-external-compatibility";
+                return "ghor-host-orchestration";
+            }
+
+            commandContracts() -> int {
+                names >> int <- package_graph.ghorPackageGraph.commands();
+                commands >> int <- jsonNewArray();
+                nativeCount >> int <- 0;
+                completeCount >> int <- 0;
+                partialCount >> int <- 0;
+                pendingCount >> int <- 0;
+                at >> int <- 0;
+                while (at < jsonArrayLen(names)) {
+                    name >> str <- jsonGetStringOr(jsonArrayGet(names, at), "");
+                    native >> bool <- nativeE2e(name);
+                    complete >> bool <- stage1Complete(name);
+                    partial >> bool <- stage1Partial(name);
+                    status >> str <- native ? "native_e2e" :
+                        (complete ? "stage1_native_e2e" :
+                        (partial ? "stage1_native_partial" : "stage0_functional_stage1_pending"));
+                    if (native) nativeCount += 1;
+                    else if (complete) completeCount += 1;
+                    else if (partial) partialCount += 1;
+                    else pendingCount += 1;
+                    entry >> int <- jsonNewObject();
+                    jsonObjectSet(entry, "name", jsonNewString(name));
+                    jsonObjectSet(entry, "family", jsonNewString(commandFamily(name)));
+                    jsonObjectSet(entry, "current_executor", jsonNewString(
+                        native || complete || partial ? "nc-stage1-when-available" : "rust-stage0"));
+                    jsonObjectSet(entry, "target_executor", jsonNewString("nc-stage1"));
+                    jsonObjectSet(entry, "route", jsonNewString(commandRoute(name)));
+                    jsonObjectSet(entry, "direct_machine_artifact", jsonNewBool(native || name == "install"));
+                    jsonObjectSet(entry, "status", jsonNewString(status));
+                    jsonArrayPush(commands, entry);
+                    at += 1;
+                }
+                jsonRelease(names);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.command-contracts.v1"));
+                jsonObjectSet(model, "command_count", jsonNewInt(jsonArrayLen(commands)));
+                jsonObjectSet(model, "native_e2e_count", jsonNewInt(nativeCount));
+                jsonObjectSet(model, "stage1_native_e2e_count", jsonNewInt(completeCount));
+                jsonObjectSet(model, "stage1_native_partial_count", jsonNewInt(partialCount));
+                jsonObjectSet(model, "stage1_pending_count", jsonNewInt(pendingCount));
+                jsonObjectSet(model, "commands", commands);
+                return model;
+            }
+
+            toolProbe(label >> str, program >> str, arguments >> str) -> int {
+                capture >> int <- assurance.assurance.captureProcess(program, arguments);
+                started >> bool <- capture != 0 && jsonGetBoolOr(jsonObjectGet(capture, "started"), false);
+                output >> str <- capture == 0 ? "" : assurance.assurance.captureOutput(capture);
+                hash >> str <- sha256.sha256.bytes(cast(output), strByteLen(output));
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "label", jsonNewString(label));
+                jsonObjectSet(model, "program", jsonNewString(program));
+                if (!started) {
+                    jsonObjectSet(model, "status", jsonNewString("missing_optional_tool"));
+                    jsonObjectSet(model, "error", jsonNewString("process could not be started"));
+                }
+                else {
+                    jsonObjectSet(model, "status", jsonNewString(
+                        assurance.assurance.captureOk(capture) ? "available" : "error"));
+                    jsonObjectSet(model, "exit_code", jsonClone(jsonObjectGet(capture, "exit_code")));
+                    jsonObjectSet(model, "stdout_hash", jsonNewString(hash));
+                    jsonObjectSet(model, "stderr_hash", jsonNewString(sha256.sha256.bytes(cast(""), 0)));
+                }
+                if (capture != 0) jsonRelease(capture);
+                return model;
+            }
+
+            foreignMatrix() -> int {
+                rust >> int <- jsonNewArray();
+                jsonArrayPush(rust, toolProbe("cargo", "cargo", "--version"));
+                jsonArrayPush(rust, toolProbe("rustc", "rustc", "--version"));
+                c >> int <- jsonNewArray();
+                jsonArrayPush(c, toolProbe("cc", "cc", "--version"));
+                jsonArrayPush(c, toolProbe("clang", "clang", "--version"));
+                jsonArrayPush(c, toolProbe("gcc", "gcc", "--version"));
+                cpp >> int <- jsonNewArray();
+                jsonArrayPush(cpp, toolProbe("c++", "c++", "--version"));
+                jsonArrayPush(cpp, toolProbe("clang++", "clang++", "--version"));
+                jsonArrayPush(cpp, toolProbe("g++", "g++", "--version"));
+                assembly >> int <- jsonNewArray();
+                jsonArrayPush(assembly, toolProbe("as", "as", "--version"));
+                jsonArrayPush(assembly, toolProbe("nasm", "nasm", "-v"));
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.foreign.toolchain.matrix.v1"));
+                jsonObjectSet(model, "note", jsonNewString(
+                    "ghor records host tool availability honestly; missing optional tools do not synthesize parity evidence"));
+                jsonObjectSet(model, "rust", rust);
+                jsonObjectSet(model, "c", c);
+                jsonObjectSet(model, "cpp", cpp);
+                jsonObjectSet(model, "asm", assembly);
+                return model;
+            }
+
+            printModel(model >> int) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_MANIFEST_001]: project manifest cannot be materialized");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                jsonRelease(model);
+                return 0;
+            }
+
+            executeTarget(handle >> addr) -> int {
+                action >> str <- positional(handle, 0);
+                if (action == "") action <- "list";
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                if (action == "list" || action == "matrix") {
+                    model >> int <- targetMatrix(root);
+                    if (root != 0) jsonRelease(root);
+                    return printModel(model);
+                }
+                if (action == "info") {
+                    triple >> str <- positional(handle, 1);
+                    if (triple == "") triple <- option(handle, "--target");
+                    if (triple == "" || !targetKnown(triple)) {
+                        if (root != 0) jsonRelease(root);
+                        println("error[E_GHOR_TARGET_001]: target info expects a supported target triple");
+                        return 2;
+                    }
+                    if (root != 0) jsonRelease(root);
+                    return printModel(targetInfo(triple));
+                }
+                if (root != 0) jsonRelease(root);
+                println("error[E_GHOR_TARGET_001]: unsupported target action");
+                return 2;
+            }
+
+            executeProfile(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return printModel(0);
+                model >> int <- profileModel(root);
+                jsonRelease(root);
+                return printModel(model);
+            }
+
+            executeFeatures(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return printModel(0);
+                model >> int <- featuresModel(root, option(handle, "--features"));
+                jsonRelease(root);
+                return printModel(model);
+            }
+
+            executeGraph(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return printModel(0);
+                model >> int <- graphModel(root);
+                jsonRelease(root);
+                guard model != 0 else {
+                    println("error[E_GHOR_GRAPH_001]: project source graph cannot be materialized");
+                    return 2;
+                }
+                return printModel(model);
+            }
+
+            executeBin() -> int {
+                home >> str <- envText("GHOR_HOME");
+                if (home == "") {
+                    home <- envText("HOME");
+                    if (home == "") home <- envText("USERPROFILE");
+                    if (home == "") home <- ".";
+                    home <- join(home, ".ghor");
+                }
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.bin.v1"));
+                jsonObjectSet(model, "path", jsonNewString(join(home, "bin")));
+                return printModel(model);
+            }
+
+            executeReport(handle >> addr) -> int {
+                action >> str <- positional(handle, 0);
+                if (action == "") action <- "summary";
+                if (action == "graph" || action == "build-graph") return executeGraph(handle);
+                if (action == "doctor") {
+                    doctor >> int <- assurance.assurance.hostDoctor();
+                    failed >> bool <- jsonGetStringOr(jsonObjectGet(doctor, "status"), "error") == "error";
+                    printModel(doctor);
+                    return failed ? 1 : 0;
+                }
+                if (action == "commands" || action == "command-contracts") {
+                    return printModel(commandContracts());
+                }
+                if (action == "target" || action == "targets") {
+                    root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                    model >> int <- targetMatrix(root);
+                    if (root != 0) jsonRelease(root);
+                    return printModel(model);
+                }
+                if (action == "summary") {
+                    root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                    guard root != 0 else return printModel(0);
+                    model >> int <- jsonNewObject();
+                    jsonObjectSet(model, "schema", jsonNewString("ghor.report.summary.v1"));
+                    jsonObjectSet(model, "status", jsonNewString("ok"));
+                    jsonObjectSet(model, "manifest", jsonClone(root));
+                    jsonObjectSet(model, "target_matrix", targetMatrix(root));
+                    jsonObjectSet(model, "foreign_toolchain_matrix", foreignMatrix());
+                    jsonObjectSet(model, "commands", package_graph.ghorPackageGraph.commands());
+                    jsonRelease(root);
+                    return printModel(model);
+                }
+                println("error[E_GHOR_REPORT_001]: unsupported report action");
+                return 2;
+            }
+
+        public:
+            targetSupported(value >> str) -> bool {
+                return targetKnown(value);
+            }
+
+            projectGraph(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return 0;
+                model >> int <- graphModel(root);
+                jsonRelease(root);
+                return model;
+            }
+
+            foreignToolchains() -> int {
+                return foreignMatrix();
+            }
+
+            contracts() -> int {
+                return commandContracts();
+            }
+
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "target" || selected == "profile" ||
+                    selected == "features" || selected == "graph" ||
+                    selected == "report" || selected == "bin";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "target") return executeTarget(handle);
+                if (selected == "profile") return executeProfile(handle);
+                if (selected == "features") return executeFeatures(handle);
+                if (selected == "graph") return executeGraph(handle);
+                if (selected == "report") return executeReport(handle);
+                return executeBin();
+            }
+
+            selfTest() -> bool {
+                return targetKnown("x86_64-unknown-linux-gnu") &&
+                    !targetKnown("unknown-target") &&
+                    stage1Complete("report") && stage1Complete("resolve") &&
+                    stage1Complete("verify-lock") && stage1Complete("vendor") &&
+                    stage1Complete("search") && stage1Complete("publish") &&
+                    !stage1Partial("search") &&
+                    commandRoute("graph") == "nc-stage1-native-project-graph";
+            }
+
+    fa:
+        return true;
+}

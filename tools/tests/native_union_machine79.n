@@ -1,0 +1,65 @@
+use <io:output>;
+
+nativeUnionMachine79 {
+    type:
+        Bits union { public: value >> ft64; bits >> u64; }
+        Float union { public: value >> ft64; samples >> array<ft32,2>; }
+    byteAt(code >> p<byte>, at >> int, value >> byte) -> int { wr(off(code,at),value); return at+1; }
+    immediate(code >> p<byte>, at >> int, reg >> int, value >> u64) -> int {
+        at <- byteAt(code,at,reg >= 8 ? 0x49 : 0x48); at <- byteAt(code,at,0xB8+(reg & 7));
+        wr<u64>(off(code,at),value); return at+8;
+    }
+    xmm(code >> p<byte>, at >> int, toXmm >> bool) -> int {
+        at <- byteAt(code,at,0x66); at <- byteAt(code,at,0x48); at <- byteAt(code,at,0x0F);
+        at <- byteAt(code,at,toXmm ? 0x6E : 0x7E); return byteAt(code,at,0xC0);
+    }
+    argument(code >> p<byte>, at >> int, windows >> bool, floating >> bool) -> int {
+        if (floating && !windows) return xmm(code,at,false);
+        at <- byteAt(code,at,0x48); at <- byteAt(code,at,0x89); return byteAt(code,at,windows ? 0xC8 : 0xF8);
+    }
+    result(code >> p<byte>, at >> int, windows >> bool, floating >> bool) -> int {
+        if (floating && !windows) at <- xmm(code,at,true);
+        return byteAt(code,at,0xC3);
+    }
+    callee(code >> p<byte>, at >> int, windows >> bool, floating >> bool) -> int {
+        at <- argument(code,at,windows,floating);
+        at <- immediate(code,at,10,floating ? 0x0010000000000000 : 1);
+        at <- byteAt(code,at,0x4C); at <- byteAt(code,at,0x01); at <- byteAt(code,at,0xD0);
+        return result(code,at,windows,floating);
+    }
+    caller(code >> p<byte>, at >> int, windows >> bool, floating >> bool) -> int {
+        at <- byteAt(code,at,0x49); at <- byteAt(code,at,0x89); at <- byteAt(code,at,windows ? 0xCB : 0xFB);
+        at <- byteAt(code,at,0x48); at <- byteAt(code,at,0x83); at <- byteAt(code,at,0xEC); at <- byteAt(code,at,windows ? 40 : 8);
+        at <- immediate(code,at,0,0x4004000000000000);
+        if (floating && !windows) at <- xmm(code,at,true);
+        else { at <- byteAt(code,at,0x48); at <- byteAt(code,at,0x89); at <- byteAt(code,at,windows ? 0xC1 : 0xC7); }
+        at <- byteAt(code,at,0x41); at <- byteAt(code,at,0xFF); at <- byteAt(code,at,0xD3);
+        if (floating && !windows) at <- xmm(code,at,false);
+        at <- byteAt(code,at,0x48); at <- byteAt(code,at,0x83); at <- byteAt(code,at,0xC4); at <- byteAt(code,at,windows ? 40 : 8);
+        return byteAt(code,at,0xC3);
+    }
+    bitsCallback(value >> Bits) -> Bits { value.bits += 1; return value; }
+    floatCallback(value >> Float) -> Float { value.value *= 2.0; return value; }
+    run() -> int {
+        windows >> bool <- vmReadWriteProtection() == 4;
+        bytes >> int <- vmPageSize(); code >> p<byte> <- vmReserve(null,bytes,0);
+        if (code == null || !vmCommit(code,bytes,vmReadWriteProtection())) return 1;
+        first >> int <- 0; second >> int <- callee(code,first,windows,false);
+        third >> int <- callee(code,second,windows,true);
+        fourth >> int <- caller(code,third,windows,false);
+        end >> int <- caller(code,fourth,windows,true);
+        if (end > bytes || fsWriteFrom("union-machine-abi.bin",code,end,false) != end || !vmExecutable(code,bytes)) return 2;
+        integerEntry >> fn(Bits) -> Bits <- cast(off(code,first));
+        floatEntry >> fn(Float) -> Float <- cast(off(code,second));
+        rawCaller >> fn(addr) -> u64 <- cast(off(code,third));
+        rawFloatCaller >> fn(addr) -> u64 <- cast(off(code,fourth));
+        a >> Bits <- integerEntry(Bits(bits: 0x4004000000000000));
+        b >> Float <- floatEntry(Float(value: 2.5));
+        if (a.bits != 0x4004000000000001 || b.value != 5.0) return 3;
+        if (rawCaller(adr(&bitsCallback)) != 0x4004000000000001 || rawFloatCaller(adr(&floatCallback)) != 0x4014000000000000) return 4;
+        if (!vmRelease(code,bytes)) return 5;
+        println("native-union-machine-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

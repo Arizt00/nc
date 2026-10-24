@@ -1,0 +1,142 @@
+use <io:output>;
+
+nativeOveralignment81 {
+    type:
+        A32 { public: first >> u64; last >> u64; layout: align(32); }
+        A64 { public: first >> u64; last >> u64; layout: align(64); }
+        A128 { public: first >> u64; last >> u64; layout: align(128); }
+        A256 { public: first >> u64; last >> u64; layout: align(256); }
+        A512 { public: first >> u64; last >> u64; layout: align(512); }
+        A1024 { public: first >> u64; last >> u64; layout: align(1024); }
+        A2048 { public: first >> u64; last >> u64; layout: align(2048); }
+        A4096 { public: first >> u64; last >> u64; layout: align(4096); }
+        A8192 { public: first >> u64; last >> u64; layout: align(8192); }
+        Nested { public: head >> byte; body >> A512; tail >> u64; }
+    stc:
+        data32 >> A32 <- A32(first: 32+1,last: 32+3);
+        zero32 >> A32;
+        data64 >> A64 <- A64(first: 64+1,last: 64+3);
+        zero64 >> A64;
+        data128 >> A128 <- A128(first: 128+1,last: 128+3);
+        zero128 >> A128;
+        data256 >> A256 <- A256(first: 256+1,last: 256+3);
+        zero256 >> A256;
+        data512 >> A512 <- A512(first: 512+1,last: 512+3);
+        zero512 >> A512;
+        data1024 >> A1024 <- A1024(first: 1024+1,last: 1024+3);
+        zero1024 >> A1024;
+        data2048 >> A2048 <- A2048(first: 2048+1,last: 2048+3);
+        zero2048 >> A2048;
+        data4096 >> A4096 <- A4096(first: 4096+1,last: 4096+3);
+        zero4096 >> A4096;
+        data8192 >> A8192 <- A8192(first: 8192+1,last: 8192+3);
+        zero8192 >> A8192;
+        pointers >> array<p<u64>,3> <- [&data32.first,&data512.last,&data8192.first];
+    step32(value >> A32, delta >> u64) -> A32 {
+        if (adr(&value) % 32 != 0) return A32(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step64(value >> A64, delta >> u64) -> A64 {
+        if (adr(&value) % 64 != 0) return A64(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step128(value >> A128, delta >> u64) -> A128 {
+        if (adr(&value) % 128 != 0) return A128(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step256(value >> A256, delta >> u64) -> A256 {
+        if (adr(&value) % 256 != 0) return A256(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step512(value >> A512, delta >> u64) -> A512 {
+        if (adr(&value) % 512 != 0) return A512(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step1024(value >> A1024, delta >> u64) -> A1024 {
+        if (adr(&value) % 1024 != 0) return A1024(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step2048(value >> A2048, delta >> u64) -> A2048 {
+        if (adr(&value) % 2048 != 0) return A2048(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step4096(value >> A4096, delta >> u64) -> A4096 {
+        if (adr(&value) % 4096 != 0) return A4096(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    step8192(value >> A8192, delta >> u64) -> A8192 {
+        if (adr(&value) % 8192 != 0) return A8192(first: 0,last: 0);
+        value.first += delta; value.last += 2; return value;
+    }
+    mixed(a >> int, b >> A64, c >> ft64, d >> A512, e >> int, f >> A32, g >> int) -> int {
+        if (adr(&b) % 64 != 0 || adr(&d) % 512 != 0 || adr(&f) % 32 != 0) return -1;
+        return a+cast<int>(b.first)+cast<int>(c)+cast<int>(d.first)+e+cast<int>(f.first)+g;
+    }
+    run() -> int {
+        if (alignOf(A32) != 32 || sizeOf(A32) != 32 || adr(&data32) % 32 != 0 || adr(&zero32) % 32 != 0 ||
+            data32.first != 32+1 || data32.last != 32+3 || zero32.first != 0 || zero32.last != 0) return 1;
+        local32 >> A32 <- step32(data32,5);
+        callback32 >> fn(A32,u64) -> A32 <- &step32;
+        local32 <- callback32(local32,7);
+        if (adr(&local32) % 32 != 0 || local32.first != 32+13 || local32.last != 32+7) return 301;
+        if (alignOf(A64) != 64 || sizeOf(A64) != 64 || adr(&data64) % 64 != 0 || adr(&zero64) % 64 != 0 ||
+            data64.first != 64+1 || data64.last != 64+3 || zero64.first != 0 || zero64.last != 0) return 2;
+        local64 >> A64 <- step64(data64,5);
+        callback64 >> fn(A64,u64) -> A64 <- &step64;
+        local64 <- callback64(local64,7);
+        if (adr(&local64) % 64 != 0 || local64.first != 64+13 || local64.last != 64+7) return 302;
+        if (alignOf(A128) != 128 || sizeOf(A128) != 128 || adr(&data128) % 128 != 0 || adr(&zero128) % 128 != 0 ||
+            data128.first != 128+1 || data128.last != 128+3 || zero128.first != 0 || zero128.last != 0) return 4;
+        local128 >> A128 <- step128(data128,5);
+        callback128 >> fn(A128,u64) -> A128 <- &step128;
+        local128 <- callback128(local128,7);
+        if (adr(&local128) % 128 != 0 || local128.first != 128+13 || local128.last != 128+7) return 304;
+        if (alignOf(A256) != 256 || sizeOf(A256) != 256 || adr(&data256) % 256 != 0 || adr(&zero256) % 256 != 0 ||
+            data256.first != 256+1 || data256.last != 256+3 || zero256.first != 0 || zero256.last != 0) return 8;
+        local256 >> A256 <- step256(data256,5);
+        callback256 >> fn(A256,u64) -> A256 <- &step256;
+        local256 <- callback256(local256,7);
+        if (adr(&local256) % 256 != 0 || local256.first != 256+13 || local256.last != 256+7) return 308;
+        if (alignOf(A512) != 512 || sizeOf(A512) != 512 || adr(&data512) % 512 != 0 || adr(&zero512) % 512 != 0 ||
+            data512.first != 512+1 || data512.last != 512+3 || zero512.first != 0 || zero512.last != 0) return 16;
+        local512 >> A512 <- step512(data512,5);
+        callback512 >> fn(A512,u64) -> A512 <- &step512;
+        local512 <- callback512(local512,7);
+        if (adr(&local512) % 512 != 0 || local512.first != 512+13 || local512.last != 512+7) return 316;
+        if (alignOf(A1024) != 1024 || sizeOf(A1024) != 1024 || adr(&data1024) % 1024 != 0 || adr(&zero1024) % 1024 != 0 ||
+            data1024.first != 1024+1 || data1024.last != 1024+3 || zero1024.first != 0 || zero1024.last != 0) return 32;
+        local1024 >> A1024 <- step1024(data1024,5);
+        callback1024 >> fn(A1024,u64) -> A1024 <- &step1024;
+        local1024 <- callback1024(local1024,7);
+        if (adr(&local1024) % 1024 != 0 || local1024.first != 1024+13 || local1024.last != 1024+7) return 332;
+        if (alignOf(A2048) != 2048 || sizeOf(A2048) != 2048 || adr(&data2048) % 2048 != 0 || adr(&zero2048) % 2048 != 0 ||
+            data2048.first != 2048+1 || data2048.last != 2048+3 || zero2048.first != 0 || zero2048.last != 0) return 64;
+        local2048 >> A2048 <- step2048(data2048,5);
+        callback2048 >> fn(A2048,u64) -> A2048 <- &step2048;
+        local2048 <- callback2048(local2048,7);
+        if (adr(&local2048) % 2048 != 0 || local2048.first != 2048+13 || local2048.last != 2048+7) return 364;
+        if (alignOf(A4096) != 4096 || sizeOf(A4096) != 4096 || adr(&data4096) % 4096 != 0 || adr(&zero4096) % 4096 != 0 ||
+            data4096.first != 4096+1 || data4096.last != 4096+3 || zero4096.first != 0 || zero4096.last != 0) return 128;
+        local4096 >> A4096 <- step4096(data4096,5);
+        callback4096 >> fn(A4096,u64) -> A4096 <- &step4096;
+        local4096 <- callback4096(local4096,7);
+        if (adr(&local4096) % 4096 != 0 || local4096.first != 4096+13 || local4096.last != 4096+7) return 428;
+        if (alignOf(A8192) != 8192 || sizeOf(A8192) != 8192 || adr(&data8192) % 8192 != 0 || adr(&zero8192) % 8192 != 0 ||
+            data8192.first != 8192+1 || data8192.last != 8192+3 || zero8192.first != 0 || zero8192.last != 0) return 256;
+        local8192 >> A8192 <- step8192(data8192,5);
+        callback8192 >> fn(A8192,u64) -> A8192 <- &step8192;
+        local8192 <- callback8192(local8192,7);
+        if (adr(&local8192) % 8192 != 0 || local8192.first != 8192+13 || local8192.last != 8192+7) return 556;
+        block >> Nested <- Nested(head: 1,body: A512(first: 2,last: 3),tail: 4);
+        cells >> array<A256,3> <- [A256(first: 11,last: 13),A256(first: 17,last: 19),A256(first: 23,last: 29)];
+        if (alignOf(Nested) != 512 || offsetOf(Nested,body) != 512 || offsetOf(Nested,tail) != 1024 || sizeOf(Nested) != 1536 ||
+            adr(&block) % 512 != 0 || adr(&block.body) % 512 != 0 || block.body.last != 3) return 601;
+        if (adr(&cells[0]) % 256 != 0 || adr(&cells[1])-adr(&cells[0]) != 256 || cells[2].last != 29) return 602;
+        if (rd(pointers[0]) != 33 || rd(pointers[1]) != 515 || rd(pointers[2]) != 8193) return 603;
+        total >> int <- mixed(1,A64(first: 2,last: 3),4.0,A512(first: 5,last: 6),7,A32(first: 8,last: 9),10);
+        if (total != 37 || 11+mixed(1,A64(first: 2,last: 3),4.0,A512(first: 5,last: 6),7,A32(first: 8,last: 9),10) != 48) return 604;
+        println("native-overalignment-ok"); return 0;
+    }
+    ref main ->> run;
+    fa: return true;
+}

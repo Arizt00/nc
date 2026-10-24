@@ -1,0 +1,71 @@
+use <project:output_host>;
+
+outputProvider :: runtime {
+    fn:
+        private:
+            writeAll(data >> p<byte>, bytes >> u64) -> bool {
+                at >> u64 <- 0;
+                while (at < bytes) {
+                    written >> i64 <- output_host.outputHost.writeOnce(off(data,at),bytes-at);
+                    if (written <= 0) return false;
+                    progress >> u64 <- written;
+                    if (progress > bytes-at) return false;
+                    at += progress;
+                }
+                return true;
+            }
+            length(text >> p<byte>) -> u64 {
+                bytes >> u64 <- 0;
+                while (volatileRead<byte>(off(text,bytes)) != 0) { bytes += 1; }
+                return bytes;
+            }
+            divide(value >> u64, base >> u64, quotient >> p<u64>) -> u64 {
+                if (((value >> 63) & 1) == 0) {
+                    wr(quotient,value/base); return value%base;
+                }
+                // Both divisions stay in the positive signed range of Stage0.
+                half >> u64 <- (value >> 1) & 9223372036854775807;
+                remainder >> u64 <- (half%base)*2+(value & 1);
+                wr(quotient,(half/base)*2+remainder/base);
+                return remainder%base;
+            }
+            valueBytes(value >> u64, tag >> int, newline >> bool) -> bool {
+                if (tag == 0) return !newline || writeAll(cast<byte>("\n"),1);
+                if (tag == 5) {
+                    text >> p<byte> <- from<byte>(value);
+                    if (text == null) return false;
+                    return writeAll(text,length(text)) && (!newline || writeAll(cast<byte>("\n"),1));
+                }
+                if (tag == 3) {
+                    text >> p<byte> <- cast<byte>(value == 0 ? "false" : "true");
+                    return writeAll(text,value == 0 ? 5 : 4) && (!newline || writeAll(cast<byte>("\n"),1));
+                }
+                buffer >> array<byte,32>;
+                out >> p<byte> <- cast<byte>(&buffer);
+                if (tag == 4) {
+                    wr<byte>(out,value);
+                    if (newline) wr(off(out,1),10);
+                    return writeAll(out,newline ? 2 : 1);
+                }
+                if (tag != 1 && tag != 2 && tag != 6) return false;
+                negative >> bool <- tag == 2 && (value >> 63) != 0;
+                magnitude >> u64 <- negative ? 0-value : value;
+                base >> u64 <- tag == 6 ? 16 : 10;
+                at >> int <- 32;
+                if (newline) { at -= 1; wr(off(out,at),10); }
+                repeat {
+                    digit >> u64 <- divide(magnitude,base,&magnitude);
+                    at -= 1;
+                    wr<byte>(off(out,at),digit < 10 ? 48+digit : 87+digit);
+                } until (magnitude == 0);
+                if (negative) { at -= 1; wr(off(out,at),45); }
+                if (tag == 6) { at -= 1; wr(off(out,at),120); at -= 1; wr(off(out,at),48); }
+                return writeAll(off(out,at),32-at);
+            }
+        public:
+            provider_output_print(value >> u64, tag >> int) -> void { valueBytes(value,tag,false); }
+            provider_output_println(value >> u64, tag >> int) -> void { valueBytes(value,tag,true); }
+            provider_output_flush() -> bool { return true; }
+            provider_output_writeBytes(data >> p<byte>, bytes >> u64) -> bool { return writeAll(data,bytes); }
+    fa: return true;
+}

@@ -1,0 +1,75 @@
+use foreign { c };
+use <io:output>;
+
+machineInteropBridge :: runtime {
+    module:
+        path: interop.machine;
+
+    export:
+        fn exportedAdd;
+        fn makePacket;
+        fn callProbe;
+        fn inspectPacket;
+        type Packet;
+
+    Packet :: type {
+            tag >> dword;
+            len >> qword;
+            payload >> p<byte>;
+            name >> str;
+        layout:
+            repr(C);
+        ffi:
+            language: C;
+            repr: C;
+            abi: C;
+    }
+
+    foreign:
+        c symbol "machine_probe_packet" {
+            abi: C;
+            header: "machine_probe_packet.h";
+            library: "machine_probe_packet";
+            linkage: dynamic;
+            layout: stable;
+            ownership: borrowed;
+            nullability: nonNull;
+            sideEffects: readsMemory;
+            signature: fn(addr, addr) -> int;
+        }
+
+    fn:
+        exportedAdd(a >> int, b >> int) -> int {
+            return a + b;
+        }
+
+        makePacket(tag >> dword, len >> qword, payload >> p<byte>, name >> str) -> Packet {
+            packet <- packet;
+            packet.tag <- tag;
+            packet.len <- len;
+            packet.payload <- payload;
+            packet.name <- name;
+            return packet;
+        }
+
+        callProbe(rawPacket >> addr, rawLabel >> addr) -> int {
+            return machine_probe_packet(rawPacket, rawLabel);
+        }
+
+        inspectPacket(p >> p<Packet>, label >> str) -> int {
+            print("packet: ");
+            println(label);
+            return 42;
+        }
+
+        run() -> bool {
+            println("machine interop");
+            return true;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+
+}

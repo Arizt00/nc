@@ -1,0 +1,40 @@
+use <io:output, concat>;
+
+nativeConcatStressV60 {
+    pick(order >> p<int>, expected >> int, value >> str) -> str {
+        guard rd(order) == expected else return "bad order";
+        wr(order,expected+1);
+        return value;
+    }
+    run() -> int {
+        data >> p<byte> <- cast<byte>(alloc(4097));
+        order >> p<int> <- cast<int>(alloc(4));
+        guard data != null && order != null else return 1;
+        at >> int <- 0;
+        while (at < 4096) { wr(off(data,at),cast<byte>(65+(at%26))); at += 1; }
+        wr(off(data,4096),0);
+        text >> str <- cast(data);
+        iteration >> int <- 0;
+        while (iteration < 1024) {
+            result >> str <- text+text;
+            guard strByteLen(result) == 8192 && rd<byte>(off(cast<byte>(result),8192)) == 0 else return 2;
+            at <- 0;
+            while (at < 8192) {
+                guard rd<byte>(off(cast<byte>(result),at)) == rd(off(data,at%4096)) else return 3;
+                at += 1;
+            }
+            guard strRelease(result) else return 4;
+            iteration += 1;
+        }
+        wr(order,0);
+        ordered >> str <- pick(order,0,"a")+pick(order,1,"b");
+        guard ordered == "ab" && rd(order) == 2 else return 5;
+        nested >> str <- concat3("[",ordered,"]");
+        guard nested == "[ab]" else return 6;
+        guard strRelease(ordered) && strRelease(nested) && free(data) && free(order) else return 7;
+        println("concat stress ok");
+        return 153;
+    }
+    ref main ->> run;
+    fa: return true;
+}

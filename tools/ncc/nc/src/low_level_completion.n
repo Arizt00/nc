@@ -1,0 +1,167 @@
+use <text:string>;
+use <project:source, machine_authority, nide_authority>;
+
+nccLowLevelCompletion {
+    const:
+        FAMILY_MACHINE >> str <- "machine";
+        FAMILY_BASAL >> str <- "basal";
+        FAMILY_PRIMITIVE >> str <- "primitive";
+        FAMILY_HARDWARE >> str <- "hardware";
+        LANE_MACHINE_TERMINAL >> str <- "terminal-machine-source";
+        LANE_BASAL_ROOT >> str <- "basal-root-source";
+        LANE_PRIMITIVE_MATERIAL >> str <- "primitive-material-source";
+        LANE_PHYSICAL_HARDWARE >> str <- "physical-hardware-source";
+
+    type:
+        CompletionContext {
+            public:
+                bytes >> int;
+                family >> str;
+                arch >> str;
+                symbol >> str;
+                semantic >> bool;
+        }
+
+    stc:
+        verified >> u64 <- 0;
+        rejected >> u64 <- 0;
+
+    local:
+        lastBytes >> int <- 0;
+
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                a >> p<byte> <- cast<byte>(left);
+                b >> p<byte> <- cast<byte>(right);
+                at >> int <- 0;
+                while (rd<byte>(off(a, at)) != 0 && rd<byte>(off(b, at)) != 0) {
+                    if (rd<byte>(off(a, at)) != rd<byte>(off(b, at))) return false;
+                    at += 1;
+                }
+                return rd<byte>(off(a, at)) == rd<byte>(off(b, at));
+            }
+
+            contains(data >> p<byte>, bytes >> int, needle >> str) -> bool {
+                needleBytes >> int <- strByteLen(needle);
+                guard data != null && needleBytes > 0 && bytes >= needleBytes else return false;
+                at >> int <- 0;
+                while (at + needleBytes <= bytes) {
+                    inner >> int <- 0;
+                    while (inner < needleBytes &&
+                        rd<byte>(off(data, at + inner)) == rd<byte>(off(cast<byte>(needle), inner))) {
+                        inner += 1;
+                    }
+                    if (inner == needleBytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            pathFamily(path >> str) -> str {
+                if (strEndsWith(path, ".nm")) return FAMILY_MACHINE;
+                if (strEndsWith(path, ".nb")) return FAMILY_BASAL;
+                if (strEndsWith(path, ".nbb")) return FAMILY_PRIMITIVE;
+                if (strEndsWith(path, ".ncp")) return FAMILY_HARDWARE;
+                return "";
+            }
+
+            reject() -> bool {
+                rejected += 1;
+                return false;
+            }
+
+        public:
+            completionAllowed(path >> str) -> bool {
+                return nide_authority.nccNideAuthority.completionAllowed(path);
+            }
+
+            supportsMachine(arch >> str, symbol >> str) -> bool {
+                return machine_authority.nccMachineAuthority.supports(arch, symbol);
+            }
+
+            supports(path >> str) -> bool {
+                return strEndsWith(path, ".nm") || strEndsWith(path, ".nb") ||
+                    strEndsWith(path, ".nbb") || strEndsWith(path, ".ncp");
+            }
+
+            lane(path >> str) -> str {
+                current >> str <- pathFamily(path);
+                if (current == FAMILY_MACHINE) return LANE_MACHINE_TERMINAL;
+                if (current == FAMILY_BASAL) return LANE_BASAL_ROOT;
+                if (current == FAMILY_PRIMITIVE) return LANE_PRIMITIVE_MATERIAL;
+                if (current == FAMILY_HARDWARE) return LANE_PHYSICAL_HARDWARE;
+                return "";
+            }
+
+            terminalOnly(path >> str) -> bool { return pathFamily(path) == FAMILY_MACHINE; }
+
+            physical(path >> str) -> bool { return pathFamily(path) == FAMILY_HARDWARE; }
+
+            inspect(path >> str, family >> str, arch >> str, symbol >> str) -> bool {
+                expectedFamily >> str <- pathFamily(path);
+                guard expectedFamily != "" && same(expectedFamily, family) else return reject();
+                bytes >> int <- fsSize(path);
+                guard bytes > 0 else return reject();
+                data >> p<byte> <- source.nccSource.load(path);
+                guard data != null else return reject();
+
+                valid >> bool <- contains(data, bytes, symbol);
+                if (same(family, FAMILY_MACHINE)) {
+                    valid <- valid && contains(data, bytes, ":: machine") &&
+                        contains(data, bytes, "arch: " + arch + ";");
+                    if (machine_authority.nccMachineAuthority.supportsAny(symbol)) {
+                        valid <- valid && supportsMachine(arch, symbol);
+                    }
+                }
+                if (same(family, FAMILY_BASAL)) {
+                    valid <- valid && (contains(data, bytes, ":: root") ||
+                        contains(data, bytes, ":: basal") ||
+                        contains(data, bytes, "[@]") ||
+                        contains(data, bytes, "NBB0"));
+                }
+                if (same(family, FAMILY_PRIMITIVE)) {
+                    valid <- valid && (contains(data, bytes, "primitive" + "[@]") ||
+                        contains(data, bytes, "NBB0"));
+                }
+                if (same(family, FAMILY_HARDWARE)) {
+                    valid <- valid && contains(data, bytes, "primitive" + "[@]");
+                }
+
+                source.nccSource.release(data);
+                if (!valid) return reject();
+                lastBytes <- bytes;
+                verified += 1;
+                return true;
+            }
+
+            selfTest() -> bool {
+                return supports("unit.nm") && supports("root.nb") && supports("root.nbb") &&
+                    supports("board.ncp") && !supports("source.n") &&
+                    same(pathFamily("unit.nm"), FAMILY_MACHINE) &&
+                    same(pathFamily("root.nb"), FAMILY_BASAL) &&
+                    same(pathFamily("unit.nbb"), FAMILY_PRIMITIVE) &&
+                    same(pathFamily("board.ncp"), FAMILY_HARDWARE) &&
+                    same(lane("unit.nm"), LANE_MACHINE_TERMINAL) && terminalOnly("unit.nm") &&
+                    same(lane("root.nb"), LANE_BASAL_ROOT) &&
+                    same(lane("unit.nbb"), LANE_PRIMITIVE_MATERIAL) &&
+                    same(lane("board.ncp"), LANE_PHYSICAL_HARDWARE) && physical("board.ncp") &&
+                    !physical("unit.nbb") && !terminalOnly("root.nb") &&
+                    supportsMachine("x86_64", "serialize") &&
+                    supportsMachine("x86_64", "endbr64") &&
+                    supportsMachine("i386", "rdpid") &&
+                    supportsMachine("aarch64", "ptrue") &&
+                    supportsMachine("aarch64", "wfet") &&
+                    supportsMachine("aarch64", "sb") &&
+                    supportsMachine("armv7", "yield") && supportsMachine("armv7", "dbg") &&
+                    supportsMachine("riscv32", "cbo.clean") &&
+                    supportsMachine("riscv64", "wrs.sto") && supportsMachine("riscv64", "sinval.vma") &&
+                    supportsMachine("wasm32", "memory.copy") && supportsMachine("wasm32", "table.init") &&
+                    !supportsMachine("x86_64", "cbo.clean") &&
+                    !completionAllowed("unit.nm") && !completionAllowed("root.nb") &&
+                    !completionAllowed("unit.nbb") && !completionAllowed("board.ncp");
+            }
+
+    fa:
+        return true;
+}

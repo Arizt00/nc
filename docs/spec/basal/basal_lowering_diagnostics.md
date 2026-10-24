@@ -1,0 +1,22 @@
+# Basal Lowering Diagnostics
+
+Basal Phase 4 diagnostics are official and separate from parser, table, IR, and machine diagnostics.
+
+Codes:
+
+- `E_BASAL_LOWERING_ROOT_001`
+- `E_BASAL_LOWERING_SITE_001`
+- `E_BASAL_LOWERING_BIND_001`
+- `E_BASAL_LOWERING_TARGET_001`
+- `E_BASAL_LOWERING_SYMBOL_001`
+- `E_BASAL_LOWERING_SECTION_001`
+- `E_BASAL_LOWERING_RELOCATION_001`
+- `E_BASAL_LOWERING_PERMISSION_001`
+- `E_BASAL_LOWERING_ALIGN_001`
+- `E_BASAL_LOWERING_UNRESOLVED_LOCAL_001`
+- `E_BASAL_LOWERING_UNRESOLVED_MACHINE_001`
+- `E_BASAL_LOWERING_DUPLICATE_SYMBOL_001`
+- `E_BASAL_LOWERING_FAKE_EVIDENCE_001`
+- `E_BASAL_LOWERING_NBB_FORBIDDEN_001`
+
+Lowering diagnostics preserve source spans from the BasalIR nodes that produced the failure.

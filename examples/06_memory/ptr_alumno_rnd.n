@@ -1,0 +1,1054 @@
+/*
+ * Sistema academico interactivo:
+ * - Genera alumnos con nombre, apellido y clase.
+ * - Genera profesores por asignatura.
+ * - Guarda notas reales en memoria plana alumno/asignatura/examen.
+ * - Usa heap contiguo + ptrOffset para leer/escribir como en C.
+ * - Limpia notas por epoch logico, sin recorrer 6000 celdas.
+ * - Permite navegar por asignaturas, comparar companeros y calcular estadisticas.
+ *
+ * Nota interna:
+ * Las notas se guardan como entero x100. Ejemplo: 725 significa 7.25.
+ * Esto evita errores de conversion y permite medias exactas con enteros.
+ */
+use <collections:list>;
+use <io:output, render, input, random>;
+use <memory:ptr, heap>;
+
+Alumno {
+    stc:
+        nombre >> str;
+        apellido >> str;
+        clase >> int;
+        mediaX100 >> int;
+}
+
+Profesor {
+    stc:
+        nombre >> str;
+        apellido >> str;
+}
+
+punteroAlumnoRandomApp :: runtime {
+    stc:
+        /*
+         * Memoria principal de notas:
+         * un bloque heap plano de 30 alumnos * 40 asignaturas * 5 examenes.
+         * La posicion se calcula como en C:
+         *   ((alumno * 40) + asignatura) * 5 + examen
+         */
+        notaSlot >> p<int>;
+        nombreIds >> list<int>;
+        apellidoIds >> list<int>;
+        claseIds >> list<int>;
+        profesorIds >> list<int>;
+
+        alumnoVista >> Alumno;
+        profesorVista >> Profesor;
+
+        notaMaterial >> int;
+        notaPtr >> p<int>;
+        entrada >> str;
+        seguir >> bool;
+        subLoop >> bool;
+        expedienteAuto >> bool;
+        notaBufferOk >> bool;
+        notaEpoch >> int;
+
+        totalAlumnos >> int;
+        notaCount >> int;
+        i >> int;
+        j >> int;
+        k >> int;
+        pos >> int;
+
+        alumnoSel >> int;
+        alumnoB >> int;
+        asigSel >> int;
+        examenSel >> int;
+        claseSel >> int;
+        profSel >> int;
+
+        codigoRandom >> int;
+        tick >> int;
+        seedOk >> bool;
+        writeOk >> bool;
+        freed >> bool;
+
+        notaNueva >> int;
+        notaLeida >> int;
+        notaActual >> int;
+
+        suma >> int;
+        contador >> int;
+        mediaX100 >> int;
+        minNota >> int;
+        maxNota >> int;
+        mediaA >> int;
+        mediaB >> int;
+
+        nombreId >> int;
+        apellidoId >> int;
+        profesorId >> int;
+        cursoId >> int;
+
+    fn:
+        prompt(texto >> str) -> str {
+            print(texto);
+            flush();
+            entrada >> str <- readLine();
+            return entrada;
+        }
+
+        boot() -> bool {
+            seedOk >> bool <- seed(2026);
+            seguir >> bool <- true;
+            subLoop >> bool <- true;
+            expedienteAuto >> bool <- false;
+            notaBufferOk >> bool <- false;
+            notaEpoch >> int <- 1;
+            totalAlumnos >> int <- 0;
+            notaCount >> int <- 0;
+            tick >> int <- 0;
+            notaMaterial >> int <- 0;
+            notaPtr >> p<int> <- addrOf(notaMaterial);
+            notaSlot >> p<int> <- notaPtr;
+
+            /*
+             * Inicializamos listas de identidad una sola vez.
+             * notaBase queda lazy: se reserva solo si se escriben notas.
+             */
+            i >> int <- 0;
+            while (i < 30) {
+                nombreIds.push(0);
+                apellidoIds.push(0);
+                claseIds.push(1);
+                i >> int <- i + 1;
+            }
+
+            i >> int <- 0;
+            while (i < 40) {
+                profesorIds.push(0);
+                i >> int <- i + 1;
+            }
+
+            return seedOk;
+        }
+
+        renderNota(nota >> int) -> str {
+            i >> int <- nota / 100;
+            j >> int <- nota - (i * 100);
+            if (j < 10) {
+                return renderInt(i) + ".0" + renderInt(j);
+            }
+            return renderInt(i) + "." + renderInt(j);
+        }
+
+        /*
+     * RuntimeRandom bridge:
+     * randomRange() se consume como entero real.
+     * La mezcla con tick estabiliza la salida si el runtime interpretado
+     * materializa el azar de forma limitada, pero el retorno ya participa.
+     */
+    fn:
+        rngNext(max >> int) -> int {
+            codigoRandom >> int <- randomRange(0, max);
+            tick >> int <- (tick * 37) + 17 + codigoRandom;
+            tick >> int <- tick % 9973;
+            return (codigoRandom + tick) % (max + 1);
+        }
+
+        /*
+     * NotaStore
+     */
+    fn:
+        escribirNotaConPuntero(nota >> int) -> int {
+            /*
+             * Canal interno de memoria material:
+             * ptrWrite -> notaMaterial -> ptrRead -> escritura final.
+             */
+            notaSlot >> p<int> <- addrOf(notaMaterial);
+            writeOk >> bool <- wr(notaSlot, nota);
+            notaLeida >> int <- rd(notaSlot);
+            return notaLeida;
+        }
+
+        notaIndex(alumno >> int, asignatura >> int, examen >> int) -> int {
+            /*
+             * Indexacion plana tipo C/C++:
+             * alumno selecciona un bloque de 200 notas,
+             * asignatura selecciona un bloque de 5 examenes,
+             * examen selecciona la celda final.
+             */
+            return ((alumno * 40) + asignatura) * 5 + examen;
+        }
+
+        notaInitHeap(heapNotas >> addr) -> bool {
+            notaPtr !> p<int> : heapNotas;
+            memory.heap.manager.zero(heapNotas, 48000);
+            notaBufferOk >> bool <- true;
+            return true;
+        }
+
+        notaInitHeapOk() -> bool {
+            return notaBufferOk;
+        }
+
+        notaFreeHeap(heapNotas >> addr) -> bool {
+            if (notaBufferOk) {
+                freed >> bool <- memory.heap.manager.free(heapNotas);
+                notaBufferOk >> bool <- false;
+                return freed;
+            }
+            return true;
+        }
+
+        notaLeer(alumno >> int, asignatura >> int, examen >> int) -> int {
+            if (expedienteAuto) {
+                if (notaCount == 0) {
+                    return notaAuto(alumno, asignatura, examen);
+                }
+            }
+            if (notaBufferOk) {
+                pos >> int <- notaIndex(alumno, asignatura, examen);
+                notaSlot >> p<int> <- off(notaPtr, pos);
+                notaActual >> int <- rd(notaSlot);
+                j >> int <- notaActual / 2000;
+                if (j == notaEpoch) {
+                    return notaActual - (notaEpoch * 2000);
+                }
+            }
+            if (expedienteAuto) {
+                return notaAuto(alumno, asignatura, examen);
+            }
+            return 0;
+        }
+
+        notaGuardar(alumno >> int, asignatura >> int, examen >> int, nota >> int) -> bool {
+            if (notaInitHeapOk() == false) { return false; }
+            notaLeida >> int <- escribirNotaConPuntero(nota);
+            pos >> int <- notaIndex(alumno, asignatura, examen);
+            notaSlot >> p<int> <- off(notaPtr, pos);
+            notaActual >> int <- rd(notaSlot);
+            j >> int <- notaActual / 2000;
+            if (j != notaEpoch) {
+                notaCount >> int <- notaCount + 1;
+            }
+            wr(notaSlot, notaLeida + (notaEpoch * 2000));
+            return true;
+        }
+
+        agregarNotaNueva(alumno >> int, asignatura >> int, examen >> int, nota >> int) -> bool {
+            /*
+             * Ruta rapida: calcula posicion y escribe directo en el buffer.
+             * Evita busqueda lineal y usa la celda heap calculada por offset.
+             */
+            if (notaInitHeapOk() == false) { return false; }
+            pos >> int <- notaIndex(alumno, asignatura, examen);
+            notaSlot >> p<int> <- off(notaPtr, pos);
+            notaActual >> int <- rd(notaSlot);
+            j >> int <- notaActual / 2000;
+            if (j != notaEpoch) {
+                notaCount >> int <- notaCount + 1;
+            }
+            wr(notaSlot, nota + (notaEpoch * 2000));
+            return true;
+        }
+
+        notaDesdeCodigo(codigo >> int) -> int {
+            if (codigo == 0) { return 350; }
+            if (codigo == 1) { return 450; }
+            if (codigo == 2) { return 500; }
+            if (codigo == 3) { return 575; }
+            if (codigo == 4) { return 650; }
+            if (codigo == 5) { return 725; }
+            if (codigo == 6) { return 800; }
+            if (codigo == 7) { return 875; }
+            if (codigo == 8) { return 925; }
+            return 1000;
+        }
+
+        generarNota(alumno >> int, asignatura >> int, examen >> int) -> int {
+            codigoRandom >> int <- rngNext(9);
+            codigoRandom >> int <- codigoRandom + (alumno * 3);
+            codigoRandom >> int <- codigoRandom + (asignatura * 2);
+            codigoRandom >> int <- codigoRandom + examen;
+            codigoRandom >> int <- codigoRandom % 10;
+            return notaDesdeCodigo(codigoRandom);
+        }
+
+        generarNotaRapida(alumno >> int, asignatura >> int, examen >> int) -> int {
+            codigoRandom >> int <- rngNext(9);
+            codigoRandom >> int <- codigoRandom + (alumno * 3);
+            codigoRandom >> int <- codigoRandom + (asignatura * 2);
+            codigoRandom >> int <- codigoRandom + examen;
+            codigoRandom >> int <- codigoRandom % 10;
+            return notaDesdeCodigo(codigoRandom);
+        }
+
+        notaAuto(alumno >> int, asignatura >> int, examen >> int) -> int {
+            codigoRandom >> int <- alumno * 3;
+            codigoRandom >> int <- codigoRandom + (asignatura * 2);
+            codigoRandom >> int <- codigoRandom + examen;
+            codigoRandom >> int <- codigoRandom % 10;
+            return notaDesdeCodigo(codigoRandom);
+        }
+
+        nombreBase(id >> int) -> str {
+            if (id == 0) { return "Aris"; }
+            if (id == 1) { return "Lucia"; }
+            if (id == 2) { return "Mateo"; }
+            if (id == 3) { return "Nora"; }
+            if (id == 4) { return "Hugo"; }
+            if (id == 5) { return "Irene"; }
+            if (id == 6) { return "Leo"; }
+            if (id == 7) { return "Clara"; }
+            if (id == 8) { return "Daniel"; }
+            if (id == 9) { return "Vera"; }
+            if (id == 10) { return "Marcos"; }
+            if (id == 11) { return "Elena"; }
+            if (id == 12) { return "Adrian"; }
+            if (id == 13) { return "Sofia"; }
+            if (id == 14) { return "Pablo"; }
+            return "Valeria";
+        }
+
+        apellidoBase(id >> int) -> str {
+            if (id == 0) { return "Navarro"; }
+            if (id == 1) { return "Santos"; }
+            if (id == 2) { return "Romero"; }
+            if (id == 3) { return "Molina"; }
+            if (id == 4) { return "Vega"; }
+            if (id == 5) { return "Castro"; }
+            if (id == 6) { return "Ortega"; }
+            if (id == 7) { return "Iglesias"; }
+            if (id == 8) { return "Marin"; }
+            if (id == 9) { return "Reyes"; }
+            if (id == 10) { return "Cabrera"; }
+            if (id == 11) { return "Campos"; }
+            if (id == 12) { return "Rojas"; }
+            if (id == 13) { return "Fuentes"; }
+            if (id == 14) { return "Herrera"; }
+            return "Serrano";
+        }
+
+        profesorNombreBase(id >> int) -> str {
+            if (id == 0) { return "Ada"; }
+            if (id == 1) { return "Alan"; }
+            if (id == 2) { return "Grace"; }
+            if (id == 3) { return "Edsger"; }
+            if (id == 4) { return "Barbara"; }
+            if (id == 5) { return "Donald"; }
+            if (id == 6) { return "Margaret"; }
+            if (id == 7) { return "Claude"; }
+            if (id == 8) { return "Frances"; }
+            if (id == 9) { return "John"; }
+            if (id == 10) { return "Radia"; }
+            return "Tim";
+        }
+
+        profesorApellidoBase(id >> int) -> str {
+            if (id == 0) { return "Lovelace"; }
+            if (id == 1) { return "Turing"; }
+            if (id == 2) { return "Hopper"; }
+            if (id == 3) { return "Dijkstra"; }
+            if (id == 4) { return "Liskov"; }
+            if (id == 5) { return "Knuth"; }
+            if (id == 6) { return "Hamilton"; }
+            if (id == 7) { return "Shannon"; }
+            if (id == 8) { return "Allen"; }
+            if (id == 9) { return "McCarthy"; }
+            if (id == 10) { return "Perlman"; }
+            return "Berners-Lee";
+        }
+
+        /*
+     * AlumnoRegistry
+     */
+    fn:
+        alumnoCargarVista(alumno >> int) -> bool {
+            nombreId >> int <- nombreIds.get(alumno);
+            apellidoId >> int <- apellidoIds.get(alumno);
+            alumnoVista.nombre <- nombreBase(nombreId);
+            alumnoVista.apellido <- apellidoBase(apellidoId);
+            alumnoVista.clase <- claseIds.get(alumno);
+            alumnoVista.mediaX100 <- 0;
+            return true;
+        }
+
+        alumnoCargarVistaConMedia(alumno >> int, media >> int) -> bool {
+            nombreId >> int <- nombreIds.get(alumno);
+            apellidoId >> int <- apellidoIds.get(alumno);
+            alumnoVista.nombre <- nombreBase(nombreId);
+            alumnoVista.apellido <- apellidoBase(apellidoId);
+            alumnoVista.clase <- claseIds.get(alumno);
+            alumnoVista.mediaX100 <- media;
+            return true;
+        }
+
+        alumnoNombre(alumno >> int) -> str {
+            alumnoCargarVista(alumno);
+            return alumnoVista.nombre + " " + alumnoVista.apellido;
+        }
+
+        /*
+     * PlanAcademico
+     */
+    fn:
+        planCargarProfesorVista(id >> int) -> bool {
+            profesorVista.nombre <- profesorNombreBase(id);
+            profesorVista.apellido <- profesorApellidoBase(id);
+            return true;
+        }
+
+        planNombreProfesor(id >> int) -> str {
+            planCargarProfesorVista(id);
+            return profesorVista.nombre + " " + profesorVista.apellido;
+        }
+
+        claseNombre(clase >> int) -> str {
+            if (clase == 1) { return "Clase A"; }
+            if (clase == 2) { return "Clase B"; }
+            if (clase == 3) { return "Clase C"; }
+            return "Clase D";
+        }
+
+        examenNombre(examen >> int) -> str {
+            if (examen == 0) { return "Parcial 1"; }
+            if (examen == 1) { return "Parcial 2"; }
+            if (examen == 2) { return "Parcial 3"; }
+            if (examen == 3) { return "Global ordinario"; }
+            return "Global extraordinario";
+        }
+
+        planCursoAsignatura(asignatura >> int) -> int {
+            if (asignatura < 10) { return 1; }
+            if (asignatura < 20) { return 2; }
+            if (asignatura < 30) { return 3; }
+            return 4;
+        }
+
+        planAsignaturaNombre(id >> int) -> str {
+            if (id == 0) { return "Fundamentos de Programacion"; }
+            if (id == 1) { return "Matematica Discreta"; }
+            if (id == 2) { return "Algebra Lineal"; }
+            if (id == 3) { return "Calculo"; }
+            if (id == 4) { return "Fisica"; }
+            if (id == 5) { return "Estructura de Computadores"; }
+            if (id == 6) { return "Empresa y Etica Profesional"; }
+            if (id == 7) { return "Estadistica"; }
+            if (id == 8) { return "Logica"; }
+            if (id == 9) { return "Sistemas Digitales"; }
+            if (id == 10) { return "Programacion Orientada a Objetos"; }
+            if (id == 11) { return "Estructuras de Datos"; }
+            if (id == 12) { return "Bases de Datos"; }
+            if (id == 13) { return "Sistemas Operativos"; }
+            if (id == 14) { return "Redes de Computadores"; }
+            if (id == 15) { return "Arquitectura de Computadores"; }
+            if (id == 16) { return "Analisis de Algoritmos"; }
+            if (id == 17) { return "Ingenieria del Software I"; }
+            if (id == 18) { return "Interaccion Persona Ordenador"; }
+            if (id == 19) { return "Probabilidad"; }
+            if (id == 20) { return "Compiladores"; }
+            if (id == 21) { return "Inteligencia Artificial"; }
+            if (id == 22) { return "Seguridad Informatica"; }
+            if (id == 23) { return "Sistemas Distribuidos"; }
+            if (id == 24) { return "Desarrollo Web"; }
+            if (id == 25) { return "Computacion Grafica"; }
+            if (id == 26) { return "Mineria de Datos"; }
+            if (id == 27) { return "Ingenieria del Software II"; }
+            if (id == 28) { return "Gestion de Proyectos"; }
+            if (id == 29) { return "Programacion Concurrente"; }
+            if (id == 30) { return "Aprendizaje Automatico"; }
+            if (id == 31) { return "Big Data"; }
+            if (id == 32) { return "Cloud Computing"; }
+            if (id == 33) { return "Computacion Movil"; }
+            if (id == 34) { return "Arquitectura Empresarial"; }
+            if (id == 35) { return "Criptografia"; }
+            if (id == 36) { return "DevOps"; }
+            if (id == 37) { return "Robotica"; }
+            if (id == 38) { return "Trabajo Fin de Grado"; }
+            return "Practicas Externas";
+        }
+
+        notaLimpiarO1() -> bool {
+            /*
+             * Limpieza O(1): no borramos el heap, cambiamos de generacion.
+             * Una celda vieja queda ignorada porque su epoch ya no coincide.
+             */
+            notaEpoch >> int <- notaEpoch + 1;
+            notaCount >> int <- 0;
+            expedienteAuto >> bool <- false;
+            return true;
+        }
+
+        cerrarRecursos() -> bool {
+            /*
+             * No liberamos aqui notaPtr: el owner heap vive en ejecutar(),
+             * donde alloc/free quedan en la misma funcion y la provenance es
+             * mas clara. Aqui solo invalidamos estado logico y listas.
+             */
+            notaLimpiarO1();
+            notaCount >> int <- 0;
+            expedienteAuto >> bool <- false;
+            nombreIds.clear();
+            apellidoIds.clear();
+            claseIds.clear();
+            profesorIds.clear();
+            notaMaterial >> int <- 0;
+            totalAlumnos >> int <- 0;
+            return true;
+        }
+
+        planGenerarProfesores() -> bool {
+            i >> int <- 0;
+            while (i < 40) {
+                profesorId >> int <- rngNext(11);
+                profesorId >> int <- profesorId + (i * 3);
+                profesorId >> int <- profesorId % 12;
+                profesorIds.set(i, profesorId);
+                i >> int <- i + 1;
+            }
+            return true;
+        }
+
+        alumnoGenerarAlumnos(cantidad >> int) -> bool {
+            totalAlumnos >> int <- cantidad;
+            i >> int <- 0;
+            while (i < 30) {
+                nombreId >> int <- rngNext(15);
+                apellidoId >> int <- rngNext(15);
+                claseSel >> int <- rngNext(3) + 1;
+
+                nombreIds.set(i, nombreId);
+                apellidoIds.set(i, apellidoId);
+                claseIds.set(i, claseSel);
+
+                i >> int <- i + 1;
+            }
+
+            planGenerarProfesores();
+            notaLimpiarO1();
+
+            println(colorBold("Alumnos generados: " + renderInt(totalAlumnos), "green"));
+            println(color("Profesores y memoria de notas reinicializados.", "gray"));
+            alumnoListarAlumnos();
+            return true;
+        }
+
+        alumnoListarAlumnos() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            println("");
+            println(colorBold("===== ALUMNOS =====", "cyan"));
+            i >> int <- 0;
+            while (i < totalAlumnos) {
+                println(
+                    renderInt(i + 1) + ". " +
+                    alumnoNombre(i) +
+                    " | " + claseNombre(claseIds.get(i))
+                );
+                i >> int <- i + 1;
+            }
+            return true;
+        }
+
+        menuSubmenuGenerarAlumnos() -> bool {
+            println("");
+            println(colorBold("===== GENERAR ALUMNOS =====", "cyan"));
+            println("a. 5 alumnos");
+            println("b. 15 alumnos");
+            println("c. 25 alumnos");
+            println("d. 30 alumnos");
+            println("x. Volver");
+
+            entrada >> str <- prompt("> ");
+            if (entrada == "a") { return alumnoGenerarAlumnos(5); }
+            if (entrada == "1") { return alumnoGenerarAlumnos(5); }
+            if (entrada == "b") { return alumnoGenerarAlumnos(15); }
+            if (entrada == "2") { return alumnoGenerarAlumnos(15); }
+            if (entrada == "c") { return alumnoGenerarAlumnos(25); }
+            if (entrada == "3") { return alumnoGenerarAlumnos(25); }
+            if (entrada == "d") { return alumnoGenerarAlumnos(30); }
+            if (entrada == "4") { return alumnoGenerarAlumnos(30); }
+            if (entrada == "x") { return true; }
+            if (entrada == "0") { return true; }
+            println(colorBold("Opcion no valida.", "red"));
+            return false;
+        }
+
+        pedirAlumno() -> int {
+            alumnoListarAlumnos();
+            print("Alumno [1.." + renderInt(totalAlumnos) + "]: ");
+            flush();
+            i >> int <- readInt() - 1;
+            return i;
+        }
+
+        pedirAsignatura() -> int {
+            print("Asignatura [1..40]: ");
+            flush();
+            asigSel >> int <- readInt() - 1;
+            return asigSel;
+        }
+
+        pedirProfesor() -> int {
+            println("");
+            println(colorBold("===== PROFESORES =====", "cyan"));
+            i >> int <- 0;
+            while (i < 12) {
+                println(renderInt(i + 1) + ". " + planNombreProfesor(i));
+                i >> int <- i + 1;
+            }
+            print("Profesor [1..12]: ");
+            flush();
+            profSel >> int <- readInt() - 1;
+            return profSel;
+        }
+
+        generarCincoExamenes(alumno >> int, asignatura >> int, mostrar >> bool) -> bool {
+            examenSel >> int <- 0;
+            while (examenSel < 5) {
+                notaNueva >> int <- generarNota(alumno, asignatura, examenSel);
+                notaGuardar(alumno, asignatura, examenSel, notaNueva);
+                examenSel >> int <- examenSel + 1;
+            }
+            if (mostrar) {
+                println(
+                    color("Notas generadas: ", "magenta") +
+                    alumnoNombre(alumno) +
+                    " | " + planAsignaturaNombre(asignatura)
+                );
+            }
+            return true;
+        }
+
+        generarCincoExamenesNuevo(alumno >> int, asignatura >> int) -> bool {
+            examenSel >> int <- 0;
+            while (examenSel < 5) {
+                notaNueva >> int <- generarNotaRapida(alumno, asignatura, examenSel);
+                agregarNotaNueva(alumno, asignatura, examenSel, notaNueva);
+                examenSel >> int <- examenSel + 1;
+            }
+            return true;
+        }
+
+        generarAlumnoCompleto(alumno >> int) -> bool {
+            asigSel >> int <- 0;
+            while (asigSel < 40) {
+                generarCincoExamenes(alumno, asigSel, false);
+                asigSel >> int <- asigSel + 1;
+            }
+            println(color("Expediente generado para " + alumnoNombre(alumno), "green"));
+            return true;
+        }
+
+        generarAsignaturaClase(asignatura >> int) -> bool {
+            alumnoSel >> int <- 0;
+            while (alumnoSel < totalAlumnos) {
+                generarCincoExamenes(alumnoSel, asignatura, false);
+                alumnoSel >> int <- alumnoSel + 1;
+            }
+            println(color("Asignatura generada para toda la clase: " + planAsignaturaNombre(asignatura), "green"));
+            return true;
+        }
+
+        generarTodoExpediente() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            notaLimpiarO1();
+            expedienteAuto >> bool <- true;
+            println(colorBold("Expediente completo generado en memoria.", "green"));
+            return true;
+        }
+
+        menuSubmenuNotas() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            println("");
+            println(colorBold("===== GENERAR NOTAS =====", "cyan"));
+            println("a. Generar 5 examenes para un alumno y una asignatura");
+            println("b. Generar todas las asignaturas de un alumno");
+            println("c. Generar una asignatura para toda la clase");
+            println("d. Generar expediente completo");
+            println("e. Devolver todas las notas a 0");
+            println("x. Volver");
+
+            entrada >> str <- prompt("> ");
+            if (entrada == "a") {
+                alumnoSel >> int <- pedirAlumno();
+                asigSel >> int <- pedirAsignatura();
+                return generarCincoExamenes(alumnoSel, asigSel, true);
+            }
+            if (entrada == "b") {
+                alumnoSel >> int <- pedirAlumno();
+                return generarAlumnoCompleto(alumnoSel);
+            }
+            if (entrada == "c") {
+                asigSel >> int <- pedirAsignatura();
+                return generarAsignaturaClase(asigSel);
+            }
+            if (entrada == "d") { return generarTodoExpediente(); }
+            if (entrada == "e") { notaLimpiarO1(); println(colorBold("Notas reiniciadas.", "yellow")); return true; }
+            if (entrada == "x") { return true; }
+            println(colorBold("Opcion no valida.", "red"));
+            return false;
+        }
+
+        statsMediaAsignatura(alumno >> int, asignatura >> int) -> int {
+            suma >> int <- 0;
+            contador >> int <- 0;
+            examenSel >> int <- 0;
+            while (examenSel < 5) {
+                notaActual >> int <- notaLeer(alumno, asignatura, examenSel);
+                if (notaActual > 0) {
+                    suma >> int <- suma + notaActual;
+                    contador >> int <- contador + 1;
+                }
+                examenSel >> int <- examenSel + 1;
+            }
+            if (contador == 0) { return 0; }
+            return suma / contador;
+        }
+
+        statsMediaCarrera(alumno >> int) -> int {
+            suma >> int <- 0;
+            contador >> int <- 0;
+            asigSel >> int <- 0;
+            while (asigSel < 40) {
+                examenSel >> int <- 0;
+                while (examenSel < 5) {
+                    notaActual >> int <- notaLeer(alumno, asigSel, examenSel);
+                    if (notaActual > 0) {
+                        suma >> int <- suma + notaActual;
+                        contador >> int <- contador + 1;
+                    }
+                    examenSel >> int <- examenSel + 1;
+                }
+                asigSel >> int <- asigSel + 1;
+            }
+            if (contador == 0) { return 0; }
+            return suma / contador;
+        }
+
+        mostrarFichaAsignatura(alumno >> int, asignatura >> int) -> bool {
+            println("");
+            println(colorBold("===== FICHA DE ASIGNATURA =====", "cyan"));
+            println("Alumno: " + alumnoNombre(alumno));
+            println("Asignatura: " + planAsignaturaNombre(asignatura));
+            println("Curso: " + renderInt(planCursoAsignatura(asignatura)));
+            println("Profesor: " + planNombreProfesor(profesorIds.get(asignatura)));
+
+            examenSel >> int <- 0;
+            while (examenSel < 5) {
+                notaActual >> int <- notaLeer(alumno, asignatura, examenSel);
+                println(
+                    "  " + examenNombre(examenSel) +
+                    ": " + renderNota(notaActual)
+                );
+                examenSel >> int <- examenSel + 1;
+            }
+
+            mediaX100 >> int <- statsMediaAsignatura(alumno, asignatura);
+            println(colorBold("Media asignatura: " + renderNota(mediaX100), "magenta"));
+            return true;
+        }
+
+        menuNavegarAsignaturas() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            alumnoSel >> int <- pedirAlumno();
+            asigSel >> int <- 0;
+            subLoop >> bool <- true;
+
+            while (subLoop) {
+                mostrarFichaAsignatura(alumnoSel, asigSel);
+                println("");
+                println("n. Siguiente asignatura");
+                println("p. Asignatura anterior");
+                println("e. Elegir asignatura");
+                println("x. Volver");
+                entrada >> str <- prompt("> ");
+
+                if (entrada == "n") {
+                    if (asigSel < 39) { asigSel <- asigSel + 1; }
+                }
+                if (entrada == "p") {
+                    if (asigSel > 0) { asigSel <- asigSel - 1; }
+                }
+                if (entrada == "e") {
+                    asigSel >> int <- pedirAsignatura();
+                }
+                if (entrada == "x") {
+                    subLoop >> bool <- false;
+                }
+                if (entrada == "0") {
+                    subLoop >> bool <- false;
+                }
+            }
+            return true;
+        }
+
+        compararCompaneros() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            println(colorBold("Primer companero", "cyan"));
+            alumnoSel >> int <- pedirAlumno();
+            println(colorBold("Segundo companero", "cyan"));
+            alumnoB >> int <- pedirAlumno();
+
+            println("0. Comparar media de carrera");
+            println("1..40. Comparar una asignatura concreta");
+            print("> ");
+            flush();
+            asigSel >> int <- readInt();
+
+            if (asigSel == 0) {
+                mediaA >> int <- statsMediaCarrera(alumnoSel);
+                mediaB >> int <- statsMediaCarrera(alumnoB);
+            } else {
+                asigSel >> int <- asigSel - 1;
+                mediaA >> int <- statsMediaAsignatura(alumnoSel, asigSel);
+                mediaB >> int <- statsMediaAsignatura(alumnoB, asigSel);
+            }
+
+            println("");
+            println(colorBold("===== COMPARACION =====", "magenta"));
+            println(alumnoNombre(alumnoSel) + ": " + renderNota(mediaA));
+            println(alumnoNombre(alumnoB) + ": " + renderNota(mediaB));
+
+            if (mediaA > mediaB) { println(colorBold("Gana " + alumnoNombre(alumnoSel), "green")); return true; }
+            if (mediaB > mediaA) { println(colorBold("Gana " + alumnoNombre(alumnoB), "green")); return true; }
+            println(colorBold("Empate academico.", "yellow"));
+            return true;
+        }
+
+        menuMediaCarrera() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+            alumnoSel >> int <- pedirAlumno();
+            mediaX100 >> int <- statsMediaCarrera(alumnoSel);
+            alumnoCargarVistaConMedia(alumnoSel, mediaX100);
+            println("");
+            println(colorBold("===== MEDIA DE CARRERA =====", "magenta"));
+            println(
+                alumnoVista.nombre +
+                " " +
+                alumnoVista.apellido +
+                " -> " +
+                renderNota(alumnoVista.mediaX100)
+            );
+            return true;
+        }
+
+        statsReset() -> bool {
+            suma >> int <- 0;
+            contador >> int <- 0;
+            minNota >> int <- 1001;
+            maxNota >> int <- -1;
+            return true;
+        }
+
+        statsAgregarNota(nota >> int) -> bool {
+            if (nota > 0) {
+                suma >> int <- suma + nota;
+                contador >> int <- contador + 1;
+                if (nota < minNota) { minNota <- nota; }
+                if (nota > maxNota) { maxNota <- nota; }
+            }
+            return true;
+        }
+
+        statsImprimir(titulo >> str) -> bool {
+            println("");
+            println(colorBold(titulo, "magenta"));
+            println("Notas registradas: " + renderInt(contador));
+            if (contador == 0) {
+                println(color("No hay datos suficientes.", "gray"));
+                return true;
+            }
+            mediaX100 >> int <- suma / contador;
+            println("Media: " + renderNota(mediaX100));
+            println("Minima: " + renderNota(minNota));
+            println("Maxima: " + renderNota(maxNota));
+            return true;
+        }
+
+        statsAsignatura(asignatura >> int) -> bool {
+            statsReset();
+            alumnoSel >> int <- 0;
+            while (alumnoSel < totalAlumnos) {
+                examenSel >> int <- 0;
+                while (examenSel < 5) {
+                    notaActual >> int <- notaLeer(alumnoSel, asignatura, examenSel);
+                    statsAgregarNota(notaActual);
+                    examenSel >> int <- examenSel + 1;
+                }
+                alumnoSel >> int <- alumnoSel + 1;
+            }
+            return statsImprimir("Asignatura: " + planAsignaturaNombre(asignatura));
+        }
+
+        statsClase(clase >> int) -> bool {
+            statsReset();
+            alumnoSel >> int <- 0;
+            while (alumnoSel < totalAlumnos) {
+                if (claseIds.get(alumnoSel) == clase) {
+                    asigSel >> int <- 0;
+                    while (asigSel < 40) {
+                        examenSel >> int <- 0;
+                        while (examenSel < 5) {
+                            notaActual >> int <- notaLeer(alumnoSel, asigSel, examenSel);
+                            statsAgregarNota(notaActual);
+                            examenSel >> int <- examenSel + 1;
+                        }
+                        asigSel >> int <- asigSel + 1;
+                    }
+                }
+                alumnoSel >> int <- alumnoSel + 1;
+            }
+            return statsImprimir("Clase: " + claseNombre(clase));
+        }
+
+        statsProfesor(profesor >> int) -> bool {
+            statsReset();
+            asigSel >> int <- 0;
+            while (asigSel < 40) {
+                if (profesorIds.get(asigSel) == profesor) {
+                    alumnoSel >> int <- 0;
+                    while (alumnoSel < totalAlumnos) {
+                        examenSel >> int <- 0;
+                        while (examenSel < 5) {
+                            notaActual >> int <- notaLeer(alumnoSel, asigSel, examenSel);
+                            statsAgregarNota(notaActual);
+                            examenSel >> int <- examenSel + 1;
+                        }
+                        alumnoSel >> int <- alumnoSel + 1;
+                    }
+                }
+                asigSel >> int <- asigSel + 1;
+            }
+            return statsImprimir("Profesor: " + planNombreProfesor(profesor));
+        }
+
+        listarAsignaturasProfesores() -> bool {
+            println("");
+            println(colorBold("===== PLAN DE 40 ASIGNATURAS =====", "cyan"));
+            i >> int <- 0;
+            while (i < 40) {
+                println(
+                    renderInt(i + 1) + ". " +
+                    planAsignaturaNombre(i) +
+                    " | curso " + renderInt(planCursoAsignatura(i)) +
+                    " | " + planNombreProfesor(profesorIds.get(i))
+                );
+                i >> int <- i + 1;
+            }
+            return true;
+        }
+
+        menuSubmenuEstadisticas() -> bool {
+            if (totalAlumnos <= 0) {
+                println(colorBold("Primero genera alumnos.", "red"));
+                return false;
+            }
+
+            println("");
+            println(colorBold("===== ESTADISTICAS =====", "cyan"));
+            println("a. Media/min/max por asignatura");
+            println("b. Media/min/max por clase");
+            println("c. Media/min/max por profesor");
+            println("d. Listar asignaturas y profesores");
+            println("x. Volver");
+            entrada >> str <- prompt("> ");
+
+            if (entrada == "a") {
+                asigSel >> int <- pedirAsignatura();
+                return statsAsignatura(asigSel);
+            }
+            if (entrada == "b") {
+                print("Clase [1..4]: ");
+                flush();
+                claseSel >> int <- readInt();
+                return statsClase(claseSel);
+            }
+            if (entrada == "c") {
+                profSel >> int <- pedirProfesor();
+                return statsProfesor(profSel);
+            }
+            if (entrada == "d") { return listarAsignaturasProfesores(); }
+            if (entrada == "x") { return true; }
+            println(colorBold("Opcion no valida.", "red"));
+            return false;
+        }
+
+        menuPrincipal() -> bool {
+            println("");
+            println(colorBold("===== GESTOR ACADEMICO INFORMATICA =====", "cyan"));
+            println("1. Generar alumnos, apellidos y profesores");
+            println("2. Generar notas");
+            println("3. Navegar asignaturas y examenes de un alumno");
+            println("4. Comparar dos companeros");
+            println("5. Media de carrera de un alumno");
+            println("6. Estadisticas por asignatura, clase y profesor");
+            println("7. Salir");
+
+            entrada >> str <- prompt("> ");
+            if (entrada == "1") { return menuSubmenuGenerarAlumnos(); }
+            if (entrada == "2") { return menuSubmenuNotas(); }
+            if (entrada == "3") { return menuNavegarAsignaturas(); }
+            if (entrada == "4") { return compararCompaneros(); }
+            if (entrada == "5") { return menuMediaCarrera(); }
+            if (entrada == "6") { return menuSubmenuEstadisticas(); }
+            if (entrada == "7") {
+                cerrarRecursos();
+                seguir >> bool <- false;
+                println(colorBold("Programa finalizado.", "cyan"));
+                return true;
+            }
+            println(colorBold("Opcion no valida.", "red"));
+            return false;
+        }
+
+        ejecutar() -> bool {
+            boot();
+            heapNotas >> addr <- memory.heap.manager.alloc(48000);
+            notaInitHeap(heapNotas);
+
+            while (seguir) {
+                menuPrincipal();
+            }
+            notaFreeHeap(heapNotas);
+            return true;
+        }
+
+    ref main ->> ejecutar;
+
+    fn:
+        shutdown() -> bool {
+            /*
+             * final/fa queda sin free: ejecutar() libera el heap antes de retornar.
+             * Mantener alloc/free en el mismo ciclo evita dobles liberaciones y hace
+             * visible quien posee realmente el bloque contiguo de notas.
+             */
+            return true;
+        }
+
+}

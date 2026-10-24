@@ -1,0 +1,73 @@
+use <io:output>;
+use <data:json>;
+use <project:release_io, tool_cli, contract_checks>;
+
+importsOperational {
+    fn:
+        private:
+            testsPassed(text >> str) -> bool {
+                data >> p<byte> <- cast(text);
+                at >> int <- 0;
+                length >> int <- strByteLen(text);
+                prefix >> str <- "test result: ok. ";
+                while (at+strByteLen(prefix) < length) {
+                    remaining >> str <- cast(off(data,at));
+                    if (rd(off(data,at)) == 116 && strStartsWith(remaining,prefix)) {
+                        first >> int <- at+strByteLen(prefix);
+                        cursor >> int <- first;
+                        nonzero >> bool <- false;
+                        while (cursor < length && rd(off(data,cursor)) >= 48 && rd(off(data,cursor)) <= 57) {
+                            nonzero <- nonzero || rd(off(data,cursor)) != 48;
+                            cursor += 1;
+                        }
+                        suffix >> str <- cast(off(data,cursor));
+                        if (cursor > first && nonzero && strStartsWith(suffix," passed;")) return true;
+                    }
+                    at += 1;
+                }
+                return false;
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--report|--cargo|","|--help|-h|");
+                if (options == 0) return 2;
+                if (tool_cli.toolCli.hasFlag(options,"--help") || tool_cli.toolCli.hasFlag(options,"-h")) {
+                    println("ncc-tools release-imports [--root REPO] [--report JSON] [--cargo STAGE0_CARGO]");
+                    jsonRelease(options); return 0;
+                }
+                root >> str <- tool_cli.toolCli.absolute(tool_cli.toolCli.value(options,"--root","."));
+                cargo >> str <- tool_cli.toolCli.value(options,"--cargo","cargo");
+                checks >> int <- jsonNewObject(); commands >> int <- jsonNewArray();
+                files >> int <- jsonParse("[\"docs/spec/release/v2_0_0_imports_operational_spec.md\",\"docs/spec/release/v2_0_0_imports_operational_compatibility_spec.md\",\"docs/spec/release/v2_0_0_imports_operational_contract.json\",\"docs/status/STATUS_IMPORTS_OPERATIONAL_v2_0_0.md\",\"docs/spec/root/base_inputs/nc_runtime_api_90_familias.md\",\"crates/ncc-ast/src/import_catalog/runtime_api_catalog_generated.rs\"]");
+                contract_checks.contractChecks.record(checks,"artifacts_present",contract_checks.contractChecks.files(root,files,true)); jsonRelease(files);
+                contract >> int <- jsonParseFile(root+"/docs/spec/release/v2_0_0_imports_operational_contract.json");
+                consistent >> bool <- release_io.releaseIo.field(contract,"schema") == "nc.imports.operational.contract.v1" && release_io.releaseIo.field(contract,"version") == "2.0.0" && release_io.releaseIo.field(contract,"state") == "frozen" && release_io.releaseIo.field(contract,"declaration") == "all_official_imports_operational";
+                contract_checks.contractChecks.record(checks,"contract_consistent",consistent); jsonRelease(contract);
+                cases >> int <- jsonParse("[[\"runtime_catalog_parseable\",\"ncc-ast\",\"runtime_api_families_are_parseable\"],[\"runtime_import_alias_surface\",\"ncc-cli\",\"runtime_import_alt_net_tests\"],[\"runtime_mode_import_surfaces\",\"ncc-cli\",\"runtime_f10_import_tests\"],[\"qualified_import_diagnostics_stable\",\"ncc-cli\",\"runtime_qualified_call_diagnostics_tests\"],[\"ref_main_import_target_executes\",\"ncc-cli\",\"runtime_ref_main_direct_import_path_executes_runtime_import_call\"]]");
+                index >> int <- 0;
+                while (index < jsonArrayLen(cases)) {
+                    row >> int <- jsonArrayGet(cases,index);
+                    name >> int <- jsonArrayGet(row,0); package >> int <- jsonArrayGet(row,1); filter >> int <- jsonArrayGet(row,2);
+                    argv >> int <- jsonNewArray();
+                    tool_cli.toolCli.append(argv,cargo); tool_cli.toolCli.append(argv,"test"); tool_cli.toolCli.append(argv,"-p");
+                    jsonArrayPush(argv,package); jsonArrayPush(argv,filter);
+                    tool_cli.toolCli.append(argv,"--"); tool_cli.toolCli.append(argv,"--nocapture");
+                    run >> int <- tool_cli.toolCli.execute(argv,root,600000);
+                    // Full output is retained: nonzero exits and incomplete captures cannot pass.
+                    contract_checks.contractChecks.record(checks,jsonGetString(name),tool_cli.toolCli.hasFlag(run,"ok") && testsPassed(release_io.releaseIo.field(run,"stdout")));
+                    jsonArrayPush(commands,run);
+                    jsonRelease(argv); jsonRelease(name); jsonRelease(row); index += 1;
+                }
+                jsonRelease(cases);
+                passed >> bool <- release_io.releaseIo.allTrue(checks);
+                report >> int <- release_io.releaseIo.report("nc.imports.operational.report.v1");
+                jsonObjectSet(report,"checks",checks); jsonObjectSet(report,"commands",commands);
+                jsonObjectSet(report,"status",jsonNewString(passed ? "ok" : "error"));
+                jsonObjectSet(report,"stage0_retained",jsonNewBool(true));
+                destination >> str <- tool_cli.toolCli.value(options,"--report",root+"/docs/status/IMPORTS_OPERATIONAL_v2_0_0_report.json");
+                saved >> bool <- release_io.releaseIo.save(destination,report);
+                println((passed && saved ? "OK: " : "FAIL: ")+destination);
+                jsonRelease(report); jsonRelease(options); return passed && saved ? 0 : 1;
+            }
+    fa: return true;
+}

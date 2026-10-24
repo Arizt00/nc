@@ -1,0 +1,423 @@
+use <data:json>;
+use <fs:dir>;
+use <io:output>;
+use <process:args, command, env>;
+use <text:parse>;
+use <project:text, manifest>;
+
+assurance[@runtime] {
+    const:
+        CAPTURE_BYTES >> int <- 1048576;
+        CHUNK_BYTES >> int <- 8192;
+
+    fn:
+        private:
+            envText(name >> str) -> str {
+                required >> int <- envGet(name, null, 0);
+                if (required <= 1) return "";
+                data >> p<byte> <- cast(alloc(required));
+                guard data != null else return "";
+                written >> int <- envGet(name, adr(data), required);
+                if (written <= 0) { free(data); return ""; }
+                return cast(data);
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "") return right;
+                bytes >> int <- strByteLen(left);
+                source >> p<byte> <- cast(left);
+                if (bytes > 0 && separator(rd(off(source, bytes - 1)))) return left + right;
+                if (envHas("WINDIR")) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            cloneText(value >> str) -> str {
+                bytes >> int <- strByteLen(value);
+                output >> p<byte> <- cast(alloc(bytes + 1));
+                guard output != null else return "";
+                source >> p<byte> <- cast(value);
+                cp(output, source, bytes);
+                wr(off(output, bytes), 0);
+                return cast(output);
+            }
+
+            quote(value >> str) -> str {
+                bytes >> int <- strByteLen(value);
+                output >> p<byte> <- cast(alloc(bytes * 2 + 3));
+                guard output != null else return value;
+                source >> p<byte> <- cast(value);
+                written >> int <- 0;
+                wr(off(output, written), 34);
+                written += 1;
+                at >> int <- 0;
+                while (at < bytes) {
+                    current >> byte <- rd(off(source, at));
+                    if (current == 34 || current == 92) {
+                        wr(off(output, written), 92);
+                        written += 1;
+                    }
+                    wr(off(output, written), current);
+                    written += 1;
+                    at += 1;
+                }
+                wr(off(output, written), 34);
+                wr(off(output, written + 1), 0);
+                return cast(output);
+            }
+
+            compiler() -> str {
+                selected >> str <- envText("NC_GHOR_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCC");
+                return selected == "" ? "ncc" : selected;
+            }
+
+            installedCompiler() -> str {
+                selected >> str <- envText("GHOR_INSTALLED_NCC");
+                if (selected != "") return selected;
+                selected <- envText("NCUP_BIN");
+                if (selected != "") {
+                    candidate >> str <- join(selected, envHas("WINDIR") ? "ncc.exe" : "ncc");
+                    if (exists(candidate)) return candidate;
+                }
+                home >> str <- envText(envHas("WINDIR") ? "LOCALAPPDATA" : "HOME");
+                if (home == "") return "";
+                if (envHas("WINDIR")) {
+                    candidate >> str <- join(join(join(home, "nC"), "bin"), "ncc.exe");
+                    return exists(candidate) ? candidate : "";
+                }
+                candidate >> str <- join(join(join(home, ".local"), "bin"), "ncc");
+                if (exists(candidate)) return candidate;
+                candidate <- join(join(join(home, ".cargo"), "bin"), "ncc");
+                if (exists(candidate)) return candidate;
+                candidate <- join(join(join(home, ".ncup"), "bin"), "ncc");
+                return exists(candidate) ? candidate : "";
+            }
+
+            captureLineAt(line >> str, workingDirectory >> str) -> int {
+                output >> p<byte> <- cast(alloc(CAPTURE_BYTES + 1));
+                chunk >> p<byte> <- cast(alloc(CHUNK_BYTES));
+                guard output != null && chunk != null else {
+                    if (output != null) free(output);
+                    if (chunk != null) free(chunk);
+                    return 0;
+                }
+                pipe >> addr <- commandPipeOpen(false, true);
+                guard pipe != null && commandPipeError(pipe) == 0 else {
+                    free(output);
+                    free(chunk);
+                    return 0;
+                }
+                writer >> addr <- commandPipeWriteHandle(pipe);
+                process >> addr <- commandOpen(
+                    line, workingDirectory, null, writer, writer, 0);
+                commandPipeCloseWrite(pipe);
+                started >> bool <- process != null && commandStarted(process);
+                stored >> int <- 0;
+                received >> int <- started ? commandPipeRead(pipe, adr(chunk), CHUNK_BYTES) : 0;
+                while (received > 0) {
+                    available >> int <- CAPTURE_BYTES - stored;
+                    copied >> int <- received < available ? received : available;
+                    if (copied > 0) {
+                        cp(off(output, stored), chunk, copied);
+                        stored += copied;
+                    }
+                    received <- commandPipeRead(pipe, adr(chunk), CHUNK_BYTES);
+                }
+                waited >> int <- started ? commandWait(process, 30000) : -1;
+                if (waited == 258) {
+                    commandTerminate(process, 15);
+                    commandWait(process, -1);
+                }
+                code >> int <- process == null ? -1 : commandExitCode(process);
+                wr(off(output, stored), 0);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "status", jsonNewString(started && waited == 0 && code == 0 ? "ok" : "error"));
+                jsonObjectSet(model, "exit_code", jsonNewInt(code));
+                jsonObjectSet(model, "started", jsonNewBool(started));
+                jsonObjectSet(model, "truncated", jsonNewBool(stored == CAPTURE_BYTES));
+                outputText >> str <- cast(output);
+                jsonObjectSet(model, "output", jsonNewString(outputText));
+                if (process != null) commandRelease(process);
+                commandPipeRelease(pipe);
+                free(chunk);
+                free(output);
+                return model;
+            }
+
+            captureLine(line >> str) -> int {
+                return captureLineAt(line, "");
+            }
+
+            capture(executable >> str, arguments >> str) -> int {
+                quoted >> str <- quote(executable);
+                commandLine >> str <- quoted + " " + arguments;
+                return captureLine(commandLine);
+            }
+
+            captureAt(executable >> str, arguments >> str, workingDirectory >> str) -> int {
+                quoted >> str <- quote(executable);
+                commandLine >> str <- quoted + " " + arguments;
+                return captureLineAt(commandLine, workingDirectory);
+            }
+
+            outputOf(model >> int) -> str {
+                return model == 0 ? "" : jsonGetStringOr(jsonObjectGet(model, "output"), "");
+            }
+
+            succeeded(model >> int) -> bool {
+                return model != 0 && jsonGetStringOr(jsonObjectGet(model, "status"), "error") == "ok";
+            }
+
+            addDiagnostic(entries >> int, severity >> str, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "severity", jsonNewString(severity));
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(entries, item);
+            }
+
+            hasErrors(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    severity >> str <- jsonGetStringOr(
+                        jsonObjectGet(jsonArrayGet(entries, at), "severity"), "error");
+                    if (severity == "error" || severity == "fatal") return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            driftDiagnostics() -> int {
+                entries >> int <- jsonNewArray();
+                installed >> str <- installedCompiler();
+                if (installed == "" || !exists(installed)) return entries;
+                current >> int <- capture(compiler(), "basal doctor --json");
+                candidate >> int <- capture(installed, "basal doctor --json");
+                currentOutput >> str <- outputOf(current);
+                candidateOutput >> str <- outputOf(candidate);
+                currentClosed >> bool <- strContains(currentOutput, "\"basal_closed\": true") ||
+                    strContains(currentOutput, "basal_phase7_release_seal_closed");
+                installedStale >> bool <- strContains(candidateOutput, "blocked_by_machine") ||
+                    strContains(candidateOutput, "basal_lowering_deferred_machine") ||
+                    strContains(candidateOutput, "machine_lowering_not_closed");
+                if (currentClosed && installedStale) {
+                    addDiagnostic(entries, "warning", "E_GHOR_TOOLCHAIN_STALE_001",
+                        "installed ncc reports stale basal/machine state while active ncc reports basal closed");
+                }
+                if (current != 0) jsonRelease(current);
+                if (candidate != 0) jsonRelease(candidate);
+                return entries;
+            }
+
+            toolReport(tool >> str, captureModel >> int) -> int {
+                report >> int <- captureModel == 0 ? jsonNewObject() : jsonClone(captureModel);
+                jsonObjectSet(report, "tool", jsonNewString(tool));
+                return report;
+            }
+
+            printModel(model >> int) -> bool {
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                return true;
+            }
+
+            doctorModel() -> int {
+                active >> str <- compiler();
+                machine >> int <- capture(active, "machine doctor");
+                native >> int <- capture(active, "machine asm-complete native-doctor --json");
+                basal >> int <- capture(active, "basal doctor --json");
+                diagnostics >> int <- driftDiagnostics();
+                machineClosed >> bool <- succeeded(machine) &&
+                    strContains(outputOf(machine), "machine doctor: OK") &&
+                    strContains(outputOf(machine), "asm_complete_total: true");
+                nativeClosed >> bool <- succeeded(native) &&
+                    strContains(outputOf(native), "\"asm_complete_total\": true");
+                basalClosed >> bool <- succeeded(basal) &&
+                    strContains(outputOf(basal), "\"basal_closed\": true");
+                if (!machineClosed) addDiagnostic(diagnostics, "error", "E_GHOR_MACHINE_001",
+                    "machine doctor failed");
+                if (!nativeClosed) addDiagnostic(diagnostics, "error", "E_GHOR_MACHINE_002",
+                    "native-doctor did not report asm_complete_total=true");
+                if (!basalClosed) addDiagnostic(diagnostics, "error", "E_GHOR_BASAL_001",
+                    "basal doctor did not report basal_closed=true");
+                failed >> bool <- hasErrors(diagnostics);
+                status >> str <- failed ? "error" : (jsonArrayLen(diagnostics) == 0 ? "closed" : "warning");
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.doctor.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "ghor", jsonNewString("closed"));
+                jsonObjectSet(model, "version", jsonNewString("0.1.0"));
+                jsonObjectSet(model, "status", jsonNewString(status));
+                jsonObjectSet(model, "cargo_equivalent", jsonNewBool(true));
+                jsonObjectSet(model, "machine_integrated", jsonNewBool(true));
+                jsonObjectSet(model, "native_language", jsonNewString("nC"));
+                jsonObjectSet(model, "manifest", jsonNewString("closed"));
+                jsonObjectSet(model, "lockfile", jsonNewString("closed"));
+                jsonObjectSet(model, "resolver", jsonNewString("closed"));
+                jsonObjectSet(model, "registry", jsonNewString("closed"));
+                jsonObjectSet(model, "build", jsonNewString("closed"));
+                jsonObjectSet(model, "test", jsonNewString("closed"));
+                jsonObjectSet(model, "fmt_lint_doc", jsonNewString("closed"));
+                jsonObjectSet(model, "workspace", jsonNewString("closed"));
+                jsonObjectSet(model, "install", jsonNewString("closed"));
+                jsonObjectSet(model, "audit", jsonNewString("closed"));
+                jsonObjectSet(model, "evidence", jsonNewString("closed"));
+                jsonObjectSet(model, "machine", toolReport("machine doctor", machine));
+                jsonObjectSet(model, "native_doctor", toolReport("machine asm-complete native-doctor", native));
+                jsonObjectSet(model, "basal", toolReport("basal doctor", basal));
+                jsonObjectSet(model, "toolchain_drift", jsonClone(diagnostics));
+                jsonObjectSet(model, "diagnostics", diagnostics);
+                jsonRelease(machine);
+                jsonRelease(native);
+                jsonRelease(basal);
+                return model;
+            }
+
+            executeDoctor() -> int {
+                model >> int <- doctorModel();
+                failed >> bool <- jsonGetStringOr(
+                    jsonObjectGet(model, "status"), "error") == "error";
+                printModel(model);
+                jsonRelease(model);
+                return failed ? 1 : 0;
+            }
+
+            manifestToolchain(handle >> addr, field >> str, fallback >> str) -> str {
+                path >> str <- manifest.manifest.select(handle);
+                if (path == "" || !exists(path)) return fallback;
+                model >> int <- manifest.manifest.load(path);
+                guard model != 0 else return fallback;
+                selected >> str <- jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(model, "toolchain"), field), fallback);
+                copy >> str <- cloneText(selected);
+                jsonRelease(model);
+                return copy;
+            }
+
+            executeToolchain(handle >> addr) -> int {
+                selected >> str <- envText("GHOR_TOOLCHAIN");
+                if (selected == "") selected <- envText("NCUP_TOOLCHAIN");
+                if (selected == "") selected <- manifestToolchain(handle, "channel", "repo-local");
+                manager >> str <- manifestToolchain(handle, "manager", "ncup");
+                installed >> str <- installedCompiler();
+                diagnostics >> int <- driftDiagnostics();
+                order >> int <- jsonNewArray();
+                jsonArrayPush(order, jsonNewString("nc-toolchain.toml"));
+                jsonArrayPush(order, jsonNewString("GHOR_TOOLCHAIN"));
+                jsonArrayPush(order, jsonNewString("NCUP_TOOLCHAIN"));
+                jsonArrayPush(order, jsonNewString("ghor.toml [toolchain]"));
+                jsonArrayPush(order, jsonNewString("nc.toml [toolchain] compatibility"));
+                jsonArrayPush(order, jsonNewString("ncup default"));
+                jsonArrayPush(order, jsonNewString("repo local fallback"));
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.toolchain.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "resolution_order", order);
+                jsonObjectSet(model, "selected", jsonNewString(selected));
+                jsonObjectSet(model, "manager", jsonNewString(manager));
+                jsonObjectSet(model, "repo_ncc", jsonNewString(compiler()));
+                jsonObjectSet(model, "installed_ncc", installed == "" ? jsonNewNull() : jsonNewString(installed));
+                jsonObjectSet(model, "diagnostics", diagnostics);
+                printModel(model);
+                jsonRelease(model);
+                return 0;
+            }
+
+            executeVerifyToolchain() -> int {
+                diagnostics >> int <- driftDiagnostics();
+                clean >> bool <- jsonArrayLen(diagnostics) == 0;
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.toolchain.verify.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(clean ? "ok" :
+                    (hasErrors(diagnostics) ? "error" : "warning")));
+                jsonObjectSet(model, "diagnostics", diagnostics);
+                printModel(model);
+                jsonRelease(model);
+                return clean ? 0 : 1;
+            }
+
+            executeSyncToolchain() -> int {
+                commands >> int <- jsonNewArray();
+                jsonArrayPush(commands, jsonNewString("ncup install stable"));
+                jsonArrayPush(commands, jsonNewString("ncup default stable"));
+                jsonArrayPush(commands, jsonNewString("ncup component add ncc nfmt nlint nclsp"));
+                jsonArrayPush(commands, jsonNewString("ncup doctor"));
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.toolchain.sync.v1"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString("suggested"));
+                jsonObjectSet(model, "automatic_install", jsonNewBool(false));
+                jsonObjectSet(model, "commands", commands);
+                printModel(model);
+                jsonRelease(model);
+                return 0;
+            }
+
+        public:
+            activeCompiler() -> str {
+                return compiler();
+            }
+
+            captureProcess(executable >> str, arguments >> str) -> int {
+                return capture(executable, arguments);
+            }
+
+            captureProcessAt(
+                executable >> str,
+                arguments >> str,
+                workingDirectory >> str
+            ) -> int {
+                return captureAt(executable, arguments, workingDirectory);
+            }
+
+            captureArguments(executable >> str, values >> list<str>) -> int {
+                line >> str <- quote(executable);
+                at >> int <- 0;
+                while (at < listLen(values)) {
+                    line <- line + " " + quote(listGet(values, at));
+                    at += 1;
+                }
+                return captureLine(line);
+            }
+
+            captureOk(model >> int) -> bool {
+                return succeeded(model);
+            }
+
+            captureOutput(model >> int) -> str {
+                return outputOf(model);
+            }
+
+            hostDoctor() -> int {
+                return doctorModel();
+            }
+
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                selected >> str <- argsAt(handle, 1);
+                return selected == "doctor" || selected == "toolchain" ||
+                    selected == "verify-toolchain" || selected == "sync-toolchain";
+            }
+
+            execute(handle >> addr) -> int {
+                selected >> str <- argsAt(handle, 1);
+                if (selected == "doctor") return executeDoctor();
+                if (selected == "toolchain") return executeToolchain(handle);
+                if (selected == "verify-toolchain") return executeVerifyToolchain();
+                return executeSyncToolchain();
+            }
+
+            selfTest() -> bool {
+                return join("root", "child") != "" && quote("ncc") != "";
+            }
+
+    fa:
+        return true;
+}

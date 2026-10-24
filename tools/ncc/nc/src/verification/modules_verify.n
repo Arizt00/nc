@@ -1,0 +1,268 @@
+use <data:json>;
+use <io:output, render>;
+use <process:env>;
+use <project:frontend_session, frontend_material, release_io, tool_cli, contract_checks, sha256>;
+use <project:modules_json, modules_projection, modules_binary>;
+
+modulesVerify {
+    const:
+        BODY >> str <- "sample { fn: run() -> int { return 42; } fa: return true; }";
+        CATALOG_HASH >> str <- "f79f5e53cecb92c23ce1ea4161cdac8431c4b742c2427270bf24185be7bd2996";
+        TARGETS >> str <- "[\"x86_64-unknown-linux-gnu\",\"x86_64-pc-windows-msvc\",\"x86_64-apple-darwin\",\"i386-unknown-linux-gnu\",\"aarch64-unknown-linux-gnu\",\"aarch64-apple-darwin\",\"armv7-unknown-linux-gnueabihf\",\"riscv32imac-unknown-elf\",\"riscv64gc-unknown-linux-gnu\",\"wasm32-wasi\"]";
+        MCT_KEYS >> str <- "[\"text_bytes\",\"text_hash\",\"text_prefix\",\"instruction_records\",\"calls\",\"branches\",\"returns\",\"loads\",\"stores\",\"runtime_import_targets\"]";
+    fn:
+        private:
+            check(value >> bool, label >> str) -> bool { return frontend_session.frontendSession.check(value,"modules-"+label); }
+            material(path >> str) -> int {
+                row >> int <- frontend_session.frontendSession.invoke("candidate",frontend_session.frontendSession.args("ast-head",path,"--material",""));
+                content >> str <- release_io.releaseIo.field(row,"stdout");
+                doc >> int <- modules_json.modulesJson.material(content);
+                check(tool_cli.toolCli.hasFlag(row,"ok") && jsonKind(doc) == 6,"material-document-"+path);
+                jsonRelease(row); strRelease(content); return doc;
+            }
+            oracle(path >> str) -> int {
+                row >> int <- frontend_session.frontendSession.invoke("stage0",frontend_session.frontendSession.args("ast",path,"--json",""));
+                content >> str <- release_io.releaseIo.field(row,"stdout");
+                doc >> int <- modules_json.modulesJson.normalize(content);
+                check(tool_cli.toolCli.hasFlag(row,"ok") && jsonKind(doc) == 6,"oracle-normalized-"+path);
+                strRelease(content); jsonRelease(row); return doc;
+            }
+            positives(cases >> int, details >> int) -> void {
+                rows >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(cases) && frontend_session.frontendSession.good()) {
+                    entry >> int <- jsonArrayGet(cases,index);
+                    source >> str <- release_io.releaseIo.field(entry,"source");
+                    path >> str <- frontend_session.frontendSession.fixture("modules_v42_positive_"+renderInt(index),source);
+                    check(sha256.nccSha256.file(path) == release_io.releaseIo.field(entry,"sha256"),"positive-source-"+renderInt(index));
+                    doc >> int <- material(path);
+                    projected >> int <- modules_projection.modulesProjection.declarations(doc,source);
+                    rust >> int <- oracle(path);
+                    expected >> int <- modules_projection.modulesProjection.expected(rust);
+                    check(projected != 0 && expected != 0 && contract_checks.contractChecks.equal(projected,expected),"declarations-"+renderInt(index));
+                    nodes >> int <- jsonObjectGet(doc,"nodes");
+                    check(frontend_material.frontendMaterial.countKind(nodes,"Container") == 1 &&
+                        frontend_material.frontendMaterial.countKind(nodes,"FunctionDecl") == 1 &&
+                        frontend_material.frontendMaterial.countKind(nodes,"TraitDecl") == 0 &&
+                        frontend_material.frontendMaterial.countKind(nodes,"ImplDecl") == 0 &&
+                        frontend_material.frontendMaterial.countKind(nodes,"AbiBinding") == 0,"roles-"+renderInt(index));
+                    encoded >> str <- modules_json.modulesJson.canonical(projected,true);
+                    hash >> str <- sha256.nccSha256.bytes(cast<byte>(encoded),strByteLen(encoded));
+                    row >> int <- jsonNewObject(); jsonObjectSet(row,"case",jsonNewInt(index));
+                    jsonObjectSet(row,"declarations_sha256",jsonNewString(hash)); jsonArrayPush(rows,row);
+                    strRelease(encoded); strRelease(hash); strRelease(source); strRelease(path);
+                    jsonRelease(row); jsonRelease(nodes); jsonRelease(projected); jsonRelease(expected); jsonRelease(rust); jsonRelease(doc); jsonRelease(entry);
+                    index += 1;
+                }
+                jsonObjectSet(details,"positives",rows); jsonRelease(rows);
+            }
+            containerNames(details >> int) -> void {
+                index >> int <- 0;
+                while (index < 2 && frontend_session.frontendSession.good()) {
+                    name >> str <- index == 0 ? "module" : "package";
+                    source >> str <- name+" { fn: run() -> int { return 42; } fa: return true; }";
+                    path >> str <- frontend_session.frontendSession.fixture("modules_v42_container_"+name,source);
+                    doc >> int <- material(path);
+                    projected >> int <- modules_projection.modulesProjection.declarations(doc,source);
+                    expected >> int <- jsonParse("{\"modules\":[],\"packages\":[]}");
+                    check(projected != 0 && contract_checks.contractChecks.equal(projected,expected),"container-"+name);
+                    rust >> int <- oracle(path);
+                    jsonRelease(rust); jsonRelease(doc); jsonRelease(projected); jsonRelease(expected); strRelease(source); strRelease(path); index += 1;
+                }
+                jsonObjectSet(details,"container_names",jsonNewInt(index));
+            }
+            negatives(cases >> int, details >> int) -> void {
+                rows >> int <- jsonNewArray(); index >> int <- 0;
+                while (index < jsonArrayLen(cases) && frontend_session.frontendSession.good()) {
+                    entry >> int <- jsonArrayGet(cases,index);
+                    source >> str <- release_io.releaseIo.field(entry,"source");
+                    path >> str <- frontend_session.frontendSession.fixture("modules_v42_negative_"+renderInt(index),source);
+                    check(sha256.nccSha256.file(path) == release_io.releaseIo.field(entry,"sha256"),"negative-source-"+renderInt(index));
+                    native >> int <- frontend_session.frontendSession.invoke("candidate",frontend_session.frontendSession.args("ast-head",path,"--material",""));
+                    rust >> int <- frontend_session.frontendSession.invoke("stage0",frontend_session.frontendSession.args("ast",path,"--json",""));
+                    out >> str <- release_io.releaseIo.field(native,"stdout")+release_io.releaseIo.field(native,"stderr");
+                    old >> str <- release_io.releaseIo.field(rust,"stdout")+release_io.releaseIo.field(rust,"stderr");
+                    location >> int <- modules_projection.modulesProjection.position(out);
+                    previous >> int <- modules_projection.modulesProjection.position(old);
+                    check(tool_cli.toolCli.clean(native) && tool_cli.toolCli.clean(rust) &&
+                        release_io.releaseIo.number(native,"code",0) == 1 && release_io.releaseIo.number(rust,"code",0) != 0 &&
+                        strContains(out,"error[") && strContains(old,"error[") && location != 0 && previous != 0 &&
+                        contract_checks.contractChecks.equal(location,previous),"diagnostic-"+renderInt(index));
+                    row >> int <- jsonNewObject(); jsonObjectSet(row,"case",jsonNewInt(index));
+                    jsonObjectSet(row,"line",jsonArrayGet(location,0)); jsonObjectSet(row,"column",jsonArrayGet(location,1));
+                    jsonArrayPush(rows,row); jsonRelease(row); jsonRelease(location); jsonRelease(previous); jsonRelease(native); jsonRelease(rust); jsonRelease(entry);
+                    strRelease(source); strRelease(path); strRelease(out); strRelease(old); index += 1;
+                }
+                jsonObjectSet(details,"negatives",rows); jsonRelease(rows);
+            }
+            emitImage(name >> str, fixture >> str, target >> str, output >> str) -> int {
+                words >> int <- frontend_session.frontendSession.args("emit-executable",fixture,"--json",target);
+                tool_cli.toolCli.append(words,"--out"); tool_cli.toolCli.append(words,output);
+                row >> int <- frontend_session.frontendSession.invoke(name,words);
+                text >> str <- release_io.releaseIo.field(row,"stdout"); doc >> int <- jsonParse(text);
+                check(tool_cli.toolCli.hasFlag(row,"ok") && jsonKind(doc) == 6,"emit-"+name+"-"+target);
+                strRelease(text); jsonRelease(row); return doc;
+            }
+            consumers(details >> int) -> void {
+                fixture >> str <- frontend_session.frontendSession.rootPath()+"/bootstrap/corpus/ncc-stage2-lexer/modules_packages_material.n";
+                source >> str <- release_io.releaseIo.text(fixture);
+                start >> int <- strIndexOf(source,"modulesPackagesMaterial");
+                check(start >= 0,"metadata-fixture-body");
+                body >> str <- modules_json.modulesJson.slice(source,start,strByteLen(source)-start);
+                plain >> str <- frontend_session.frontendSession.fixture("modules_v42_without_metadata",body);
+                if (source != "") free(cast<byte>(source)); strRelease(body);
+                targets >> int <- jsonParse(TARGETS); commands >> int <- jsonParse("[\"sema\",\"emit-ir\",\"emit-mct\"]");
+                keys >> int <- jsonParse(MCT_KEYS); consumers >> int <- jsonNewArray(); images >> int <- jsonNewArray();
+                index >> int <- 0;
+                while (index < jsonArrayLen(targets) && frontend_session.frontendSession.good()) {
+                    item >> int <- jsonArrayGet(targets,index); target >> str <- jsonStringView(item,"");
+                    command >> int <- 0; fingerprint >> int <- 0; baselineFingerprint >> int <- 0;
+                    irFingerprint >> int <- 0; baselineIrFingerprint >> int <- 0;
+                    while (command < 3 && frontend_session.frontendSession.good()) {
+                        action >> int <- jsonArrayGet(commands,command);
+                        doc >> int <- frontend_session.frontendSession.document("candidate",jsonStringView(action,""),fixture,"--json",target);
+                        if (command == 2) {
+                            old >> int <- frontend_session.frontendSession.document("baseline","emit-mct",plain,"--json",target);
+                            at >> int <- 0;
+                            while (at < jsonArrayLen(keys)) {
+                                key >> int <- jsonArrayGet(keys,at); name >> str <- jsonStringView(key,"");
+                                a >> int <- jsonObjectGet(doc,name); b >> int <- jsonObjectGet(old,name);
+                                check(jsonObjectHas(doc,name) && jsonObjectHas(old,name) && contract_checks.contractChecks.equal(a,b),"mct-"+target+"-"+name);
+                                jsonRelease(a); jsonRelease(b); jsonRelease(key); at += 1;
+                            }
+                            check(tool_cli.toolCli.hasFlag(doc,"link_selection_ready") && frontend_material.frontendMaterial.number(doc,"unresolved_targets") == 0,"link-ready-"+target);
+                            fingerprint <- frontend_material.frontendMaterial.number(doc,"fingerprint");
+                            baselineFingerprint <- frontend_material.frontendMaterial.number(old,"fingerprint");
+                            if (target == "wasm32-wasi") {
+                                check(jsonObjectHas(doc,"ir_fingerprint") && jsonObjectHas(old,"ir_fingerprint"),"wasm-ir-fingerprints-present");
+                                irFingerprint <- frontend_material.frontendMaterial.number(doc,"ir_fingerprint");
+                                baselineIrFingerprint <- frontend_material.frontendMaterial.number(old,"ir_fingerprint");
+                            }
+                            jsonRelease(old);
+                        }
+                        row >> int <- jsonNewObject(); jsonObjectSet(row,"command",action); jsonObjectSet(row,"target",item);
+                        jsonObjectSet(row,"sha256",jsonNewString(modules_json.modulesJson.hash(doc))); jsonArrayPush(consumers,row);
+                        jsonRelease(row); jsonRelease(doc); jsonRelease(action); command += 1;
+                    }
+                    if (frontend_session.frontendSession.good()) {
+                        imagePath >> str <- frontend_session.frontendSession.outputPath()+"/"+target+".bin";
+                        baselinePath >> str <- frontend_session.frontendSession.outputPath()+"/"+target+".baseline.bin";
+                        image >> int <- emitImage("candidate",fixture,target,imagePath);
+                        baselineImage >> int <- emitImage("baseline",plain,target,baselinePath);
+                        compared >> int <- target == "wasm32-wasi" ?
+                            modules_binary.modulesBinary.compareMaterial(imagePath,baselinePath,fingerprint,baselineFingerprint,irFingerprint,baselineIrFingerprint) :
+                            modules_binary.modulesBinary.compare(imagePath,baselinePath,false,fingerprint,baselineFingerprint);
+                        check(tool_cli.toolCli.hasFlag(compared,"valid"),"image-bytes-"+target);
+                        row >> int <- jsonNewObject(); jsonObjectSet(row,"target",item);
+                        jsonObjectSet(row,"bytes",jsonNewInt(fsSize(imagePath))); jsonObjectSet(row,"format",jsonObjectGet(image,"format"));
+                        identical >> bool <- tool_cli.toolCli.hasFlag(compared,"identical");
+                        jsonObjectSet(row,"byte_identical",jsonNewBool(identical));
+                        jsonObjectSet(row,"metadata_difference",identical ? jsonNewNull() :
+                            jsonNewString(tool_cli.toolCli.hasFlag(compared,"valid") ?
+                                "nC.mct fingerprints verified against MCT/IR reports; section size follows ULEB128 width" : "unverified difference: comparison failed"));
+                        jsonObjectSet(row,"comparison",compared);
+                        jsonObjectSet(row,"execution_certified",jsonNewBool(false));
+                        jsonObjectSet(row,"sha256",jsonNewString(sha256.nccSha256.file(imagePath)));
+                        jsonArrayPush(images,row); jsonRelease(row); jsonRelease(image); jsonRelease(baselineImage); jsonRelease(compared);
+                        strRelease(imagePath); strRelease(baselinePath);
+                    }
+                    jsonRelease(item); index += 1;
+                }
+                jsonObjectSet(details,"consumers",consumers); jsonObjectSet(details,"images",images);
+                jsonObjectSet(details,"metadata_text_equivalence_targets",jsonNewInt(jsonArrayLen(images)));
+                jsonRelease(consumers); jsonRelease(images); jsonRelease(keys); jsonRelease(commands); jsonRelease(targets); strRelease(plain);
+                if (frontend_session.frontendSession.good()) host(details,fixture);
+                strRelease(fixture);
+            }
+            host(details >> int, fixture >> str) -> void {
+                windows >> bool <- envHas("WINDIR");
+                target >> str <- windows ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-gnu";
+                path >> str <- frontend_session.frontendSession.outputPath()+(windows ? "/modules.exe" : "/modules");
+                image >> int <- emitImage("candidate",fixture,target,path);
+                check(release_io.releaseIo.fileType(path) == 1 && fsSize(path) == frontend_material.frontendMaterial.number(image,"bytes"),"host-image-size");
+                if (!windows) {
+                    words >> int <- jsonParse("[\"755\"]"); tool_cli.toolCli.append(words,path);
+                    row >> int <- frontend_session.frontendSession.invokeProgram("/bin/chmod",words,30000);
+                    check(tool_cli.toolCli.hasFlag(row,"ok"),"chmod"); jsonRelease(row);
+                }
+                row >> int <- frontend_session.frontendSession.invokeProgram(path,jsonNewArray(),30000);
+                code >> int <- release_io.releaseIo.number(row,"code",0);
+                check(tool_cli.toolCli.clean(row) && code == 42,"host-exit-42");
+                native >> int <- jsonNewObject(); jsonObjectSet(native,"target",jsonNewString(target));
+                jsonObjectSet(native,"expected_exit_code",jsonNewInt(42)); jsonObjectSet(native,"exit_code",jsonNewInt(code));
+                jsonObjectSet(native,"image",image); jsonObjectSet(native,"sha256",jsonNewString(sha256.nccSha256.file(path)));
+                jsonObjectSet(details,"native_execution",native);
+                jsonRelease(native); jsonRelease(row); jsonRelease(image); strRelease(path);
+            }
+            performance(details >> int) -> void {
+                rows >> int <- jsonNewArray(); width >> int <- 1000;
+                while (width <= 4000 && frontend_session.frontendSession.good()) {
+                    source >> str <- "package compiler {\n";
+                    index >> int <- 0;
+                    while (index < width) {
+                        next >> str <- source+"module m"+renderInt(index)+".parser;\n";
+                        strRelease(source); source <- next; index += 1;
+                    }
+                    full >> str <- source+"}\n"+BODY; strRelease(source);
+                    path >> str <- frontend_session.frontendSession.fixture("modules_v42_wide_"+renderInt(width),full);
+                    samples >> int <- jsonNewArray(); times >> p<int> <- cast(alloc(5*sizeOf(int)));
+                    if (!check(times != null,"timing-allocation")) { strRelease(full); strRelease(path); jsonRelease(samples); break; }
+                    sample >> int <- 0;
+                    while (sample < 5) {
+                        row >> int <- frontend_session.frontendSession.invoke("candidate",frontend_session.frontendSession.args("ast-head",path,"--quiet",""));
+                        check(tool_cli.toolCli.hasFlag(row,"ok"),"timing-"+renderInt(width)+"-"+renderInt(sample));
+                        elapsed >> int <- release_io.releaseIo.number(row,"elapsed_ms",-1); jsonArrayPush(samples,jsonNewInt(elapsed));
+                        at >> int <- sample;
+                        while (at > 0) {
+                            previous >> int <- rd(off(times,at-1)); if (previous <= elapsed) break;
+                            wr(off(times,at),previous); at -= 1;
+                        }
+                        wr(off(times,at),elapsed); jsonRelease(row); sample += 1;
+                    }
+                    doc >> int <- material(path);
+                    projected >> int <- modules_projection.modulesProjection.declarations(doc,full);
+                    packages >> int <- jsonObjectGet(projected,"packages"); package >> int <- jsonArrayGet(packages,0);
+                    modules >> int <- jsonObjectGet(package,"modules");
+                    check(projected != 0 && jsonArrayLen(modules) == width,"wide-material-"+renderInt(width));
+                    row >> int <- jsonNewObject(); jsonObjectSet(row,"modules",jsonNewInt(width));
+                    jsonObjectSet(row,"median_ms",jsonNewInt(rd(off(times,2)))); jsonObjectSet(row,"samples_ms",samples);
+                    jsonArrayPush(rows,row); jsonRelease(row); jsonRelease(samples); free(times);
+                    jsonRelease(modules); jsonRelease(package); jsonRelease(packages); jsonRelease(projected); jsonRelease(doc);
+                    strRelease(full); strRelease(path); width <- width*4;
+                }
+                jsonObjectSet(details,"timing",rows); jsonRelease(rows);
+                jsonObjectSet(details,"timing_resolution",jsonNewString("monotonic milliseconds; process startup, IO and parser; five samples, median; no threshold in original"));
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                options >> int <- tool_cli.toolCli.parse(arguments,"|--root|--out|--candidate|--baseline|--stage0|","");
+                if (options == 0) return 2;
+                root >> str <- tool_cli.toolCli.value(options,"--root",".");
+                work >> str <- tool_cli.toolCli.value(options,"--out",root+"/target/parser-modules-v36");
+                candidate >> str <- tool_cli.toolCli.value(options,"--candidate","");
+                baseline >> str <- tool_cli.toolCli.value(options,"--baseline","");
+                stage0 >> str <- tool_cli.toolCli.value(options,"--stage0","");
+                if (candidate == "" || baseline == "" || stage0 == "" || work == "") { jsonRelease(options); return 2; }
+                opened >> bool <- frontend_session.frontendSession.configure(root,work,candidate,baseline,stage0);
+                jsonRelease(options);
+                if (!opened) { println("verify-parser-modules --candidate EXE --baseline EXE --stage0 EXE [--out DIR] [--root REPO]"); return 2; }
+                details >> int <- jsonNewObject();
+                jsonObjectSet(details,"platform",jsonNewString(envHas("WINDIR") ? "Windows" : "Linux/Unix"));
+                jsonObjectSet(details,"rust_retirement",jsonNewBool(false));
+                path >> str <- frontend_session.frontendSession.rootPath()+"/bootstrap/modules-v42-cases.json";
+                hash >> str <- sha256.nccSha256.file(path);
+                check(hash == CATALOG_HASH,"catalog-hash");
+                jsonObjectSet(details,"catalog_sha256",jsonNewString(hash)); strRelease(hash);
+                catalog >> int <- jsonParseFile(path); strRelease(path);
+                positive >> int <- jsonObjectGet(catalog,"positive"); negative >> int <- jsonObjectGet(catalog,"negative");
+                check(jsonArrayLen(positive) == 94 && jsonArrayLen(negative) == 27,"catalog-counts");
+                if (frontend_session.frontendSession.good()) positives(positive,details);
+                if (frontend_session.frontendSession.good()) containerNames(details);
+                if (frontend_session.frontendSession.good()) negatives(negative,details);
+                if (frontend_session.frontendSession.good()) consumers(details);
+                if (frontend_session.frontendSession.good()) performance(details);
+                jsonRelease(positive); jsonRelease(negative); jsonRelease(catalog);
+                return frontend_session.frontendSession.finish("nc.parser.modules.verification.v1",details);
+            }
+    fa: return true;
+}

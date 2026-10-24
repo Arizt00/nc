@@ -1,0 +1,1449 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:text, manifest, cargo_config, package_graph, transport, sha256>;
+
+resolver[@runtime] {
+    const:
+        LOCK_VERSION >> int <- 1;
+        CARGO_LOCK_VERSION >> int <- 4;
+
+    fn:
+        private:
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            contains(value >> str, fragment >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(fragment);
+                wantedBytes >> int <- length(wanted);
+                if (wantedBytes == 0) return true;
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0) {
+                    scan >> int <- 0;
+                    while (scan < wantedBytes &&
+                        rd(off(source, at + scan)) == rd(off(wanted, scan))) { scan += 1; }
+                    if (scan == wantedBytes) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            lexical(left >> str, right >> str) -> int {
+                a >> p<byte> <- cast(left);
+                b >> p<byte> <- cast(right);
+                at >> int <- 0;
+                while (rd(off(a, at)) == rd(off(b, at))) {
+                    if (rd(off(a, at)) == 0) return 0;
+                    at += 1;
+                }
+                return rd(off(a, at)) - rd(off(b, at));
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            packageSpecMatches(spec >> str, name >> str) -> bool {
+                if (same(spec, name)) return true;
+                return starts(spec, name + "@") || starts(spec, name + ":") ||
+                    starts(spec, name + " ");
+            }
+
+            preciseFor(handle >> addr, name >> str) -> str {
+                precise >> str <- option(handle, "--precise");
+                if (precise == "") return "";
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                selected >> bool <- false;
+                sawPackage >> bool <- false;
+                while (at < count) {
+                    current >> str <- argsAt(handle, at);
+                    if ((same(current, "-p") || same(current, "--package")) && at + 1 < count) {
+                        sawPackage <- true;
+                        if (packageSpecMatches(argsAt(handle, at + 1), name)) selected <- true;
+                        at += 2;
+                        continue;
+                    }
+                    at += 1;
+                }
+                return (!sawPackage || selected) ? precise : "";
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                out >> p<byte> <- cast(alloc(at + 2));
+                guard out != null else return ".";
+                copy >> int <- 0;
+                while (copy < at) {
+                    wr(off(out, copy), rd(off(source, copy)));
+                    copy += 1;
+                }
+                if (copy == 0) { wr(out, 46); copy <- 1; }
+                wr(off(out, copy), 0);
+                result >> str <- cast(out);
+                return result;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            leaf(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                at >> int <- width - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                return strSubstring(path, at + 1, width - at - 1);
+            }
+
+            registryReference(root >> int, reference >> str) -> str {
+                if (reference == "" || starts(reference, "http://") || starts(reference, "https://") ||
+                    starts(reference, "sparse+http://") || starts(reference, "sparse+https://") ||
+                    starts(reference, "git+")) return reference;
+                bytes >> p<byte> <- cast(reference);
+                width >> int <- length(bytes);
+                if (width > 0 && separator(rd(bytes))) return reference;
+                if (width >= 2 && rd(off(bytes, 1)) == 58) return reference;
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(root, "path"), "ghor.toml");
+                return join(directory(manifestPath), reference);
+            }
+
+            dependencyName(dep >> int) -> str {
+                package >> str <- jsonGetStringOr(jsonObjectGet(dep, "package"), "");
+                if (package != "") return package;
+                return jsonGetStringOr(jsonObjectGet(dep, "name"), "");
+            }
+
+            dependencyVersion(dep >> int) -> str {
+                version >> str <- jsonGetStringOr(jsonObjectGet(dep, "version"), "");
+                if (version != "") return version;
+                return jsonGetStringOr(jsonObjectGet(dep, "req"), "*");
+            }
+
+            digit(value >> byte) -> bool {
+                return value >= 48 && value <= 57;
+            }
+
+            versionPart(value >> str, wanted >> int) -> int {
+                source >> p<byte> <- cast(value);
+                part >> int <- 0;
+                at >> int <- 0;
+                current >> int <- 0;
+                saw >> bool <- false;
+                while (rd(off(source, at)) != 0) {
+                    byteValue >> byte <- rd(off(source, at));
+                    if (digit(byteValue)) {
+                        if (part == wanted) {
+                            current <- current * 10 + byteValue - 48;
+                            saw <- true;
+                        }
+                    }
+                    else if (byteValue == 46) {
+                        if (part == wanted) return saw ? current : 0;
+                        part += 1;
+                        current <- 0;
+                        saw <- false;
+                    }
+                    else return part == wanted ? (saw ? current : 0) : 0;
+                    at += 1;
+                }
+                return part == wanted && saw ? current : 0;
+            }
+
+            coreEnd(value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0 && rd(off(source, at)) != 45 &&
+                    rd(off(source, at)) != 43) { at += 1; }
+                return at;
+            }
+
+            preStart(value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0) {
+                    if (rd(off(source, at)) == 45) return at + 1;
+                    if (rd(off(source, at)) == 43) return -1;
+                    at += 1;
+                }
+                return -1;
+            }
+
+            compareVersion(left >> str, right >> str) -> int {
+                at >> int <- 0;
+                while (at < 3) {
+                    delta >> int <- versionPart(left, at) - versionPart(right, at);
+                    if (delta != 0) return delta;
+                    at += 1;
+                }
+                leftPre >> int <- preStart(left);
+                rightPre >> int <- preStart(right);
+                if (leftPre < 0 && rightPre >= 0) return 1;
+                if (leftPre >= 0 && rightPre < 0) return -1;
+                if (leftPre < 0) return 0;
+                leftBytes >> p<byte> <- cast(left);
+                rightBytes >> p<byte> <- cast(right);
+                leftPointer >> p<byte> <- off(leftBytes, leftPre);
+                rightPointer >> p<byte> <- off(rightBytes, rightPre);
+                leftSuffix >> str <- cast(leftPointer);
+                rightSuffix >> str <- cast(rightPointer);
+                return lexical(leftSuffix, rightSuffix);
+            }
+
+            slice(value >> str, start >> int, end >> int) -> str {
+                source >> p<byte> <- cast(value);
+                bytes >> int <- end - start;
+                out >> p<byte> <- cast(alloc(bytes + 1));
+                guard out != null else return "";
+                at >> int <- 0;
+                while (at < bytes) {
+                    wr(off(out, at), rd(off(source, start + at)));
+                    at += 1;
+                }
+                wr(off(out, at), 0);
+                result >> str <- cast(out);
+                return result;
+            }
+
+            tokenMatches(token >> str, version >> str) -> bool {
+                source >> p<byte> <- cast(token);
+                bytes >> int <- length(source);
+                startAt >> int <- 0;
+                while (startAt < bytes && (rd(off(source, startAt)) == 32 ||
+                    rd(off(source, startAt)) == 9)) { startAt += 1; }
+                while (bytes > startAt && (rd(off(source, bytes - 1)) == 32 ||
+                    rd(off(source, bytes - 1)) == 9)) { bytes -= 1; }
+                if (bytes <= startAt) return true;
+                clean >> str <- slice(token, startAt, bytes);
+                if (same(clean, "*") || same(clean, "x") || same(clean, "X")) return true;
+
+                skipBytes >> int <- 0;
+                mode >> int <- 0;
+                if (starts(clean, ">=")) { skipBytes <- 2; mode <- 1; }
+                else if (starts(clean, "<=")) { skipBytes <- 2; mode <- 2; }
+                else if (starts(clean, ">")) { skipBytes <- 1; mode <- 3; }
+                else if (starts(clean, "<")) { skipBytes <- 1; mode <- 4; }
+                else if (starts(clean, "=")) { skipBytes <- 1; mode <- 5; }
+                else if (starts(clean, "^")) { skipBytes <- 1; mode <- 6; }
+                else if (starts(clean, "~")) { skipBytes <- 1; mode <- 7; }
+                cleanBytes >> p<byte> <- cast(clean);
+                boundPointer >> p<byte> <- off(cleanBytes, skipBytes);
+                bound >> str <- cast(boundPointer);
+                relation >> int <- compareVersion(version, bound);
+                if (mode == 1) return relation >= 0;
+                if (mode == 2) return relation <= 0;
+                if (mode == 3) return relation > 0;
+                if (mode == 4) return relation < 0;
+                if (mode == 5) return relation == 0;
+
+                wildcardMajor >> bool <- contains(bound, "*") || contains(bound, "x") || contains(bound, "X");
+                if (wildcardMajor) {
+                    first >> byte <- rd(cast(bound));
+                    if (first == 42 || first == 120 || first == 88) return true;
+                    if (versionPart(version, 0) != versionPart(bound, 0)) return false;
+                    dot >> int <- 0;
+                    scan >> int <- 0;
+                    boundBytes >> p<byte> <- cast(bound);
+                    while (rd(off(boundBytes, scan)) != 0) {
+                        if (rd(off(boundBytes, scan)) == 46) dot += 1;
+                        scan += 1;
+                    }
+                    if (dot >= 2) {
+                        return versionPart(version, 1) == versionPart(bound, 1);
+                    }
+                    return true;
+                }
+
+                major >> int <- versionPart(bound, 0);
+                minor >> int <- versionPart(bound, 1);
+                patch >> int <- versionPart(bound, 2);
+                if (relation < 0) return false;
+                if (mode == 7) {
+                    if (!contains(bound, ".")) return versionPart(version, 0) == major;
+                    return versionPart(version, 0) == major && versionPart(version, 1) == minor;
+                }
+                if (major > 0) return versionPart(version, 0) == major;
+                if (!contains(bound, ".")) return versionPart(version, 0) == 0;
+                if (minor > 0) return versionPart(version, 0) == 0 &&
+                    versionPart(version, 1) == minor;
+                boundDots >> int <- 0;
+                boundAt >> int <- 0;
+                boundSource >> p<byte> <- cast(bound);
+                while (rd(off(boundSource, boundAt)) != 0) {
+                    if (rd(off(boundSource, boundAt)) == 46) boundDots += 1;
+                    boundAt += 1;
+                }
+                if (boundDots < 2) return versionPart(version, 0) == 0 &&
+                    versionPart(version, 1) == 0;
+                return versionPart(version, 0) == 0 && versionPart(version, 1) == 0 &&
+                    versionPart(version, 2) == patch;
+            }
+
+            requirementMatches(requirement >> str, version >> str) -> bool {
+                if (requirement == "" || requirement == "*") return true;
+                if (preStart(version) >= 0 && !contains(requirement, "-")) return false;
+                source >> p<byte> <- cast(requirement);
+                bytes >> int <- length(source);
+                startAt >> int <- 0;
+                at >> int <- 0;
+                while (at <= bytes) {
+                    boundary >> bool <- at == bytes || rd(off(source, at)) == 44 ||
+                        rd(off(source, at)) == 32 || rd(off(source, at)) == 9;
+                    if (boundary) {
+                        if (at > startAt && !tokenMatches(slice(requirement, startAt, at), version)) return false;
+                        startAt <- at + 1;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            arrayHas(array >> int, value >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(array)) {
+                    if (same(jsonGetStringOr(jsonArrayGet(array, at), ""), value)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            pushUnique(array >> int, value >> str) -> bool {
+                if (value == "" || arrayHas(array, value)) return false;
+                return jsonArrayPush(array, jsonNewString(value));
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "code", jsonNewString(code));
+                jsonObjectSet(entry, "message", jsonNewString(message));
+                jsonObjectSet(entry, "severity", jsonNewString("error"));
+                return jsonArrayPush(diagnostics, entry);
+            }
+
+            allDependencies(root >> int, includeDev >> bool) -> int {
+                result >> int <- jsonNewArray();
+                names >> array<str> <- ["dependencies", "build_dependencies", "target_dependencies",
+                    "rust_dependencies", "c_dependencies", "cpp_dependencies", "asm_dependencies",
+                    "basal_dependencies"];
+                listAt >> int <- 0;
+                while (listAt < 8) {
+                    source >> int <- jsonObjectGet(root, names[listAt]);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(source)) {
+                        dependency >> int <- jsonArrayGet(source, at);
+                        kind >> str <- jsonGetStringOr(jsonObjectGet(dependency, "kind"), "normal");
+                        if (includeDev || kind != "dev") {
+                            jsonArrayPush(result, jsonClone(dependency));
+                        }
+                        at += 1;
+                    }
+                    listAt += 1;
+                }
+                if (includeDev) {
+                    source >> int <- jsonObjectGet(root, "dev_dependencies");
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(source)) {
+                        jsonArrayPush(result, jsonClone(jsonArrayGet(source, at)));
+                        at += 1;
+                    }
+                }
+                return result;
+            }
+
+            targetActive(dep >> int, target >> str, resolverVersion >> str) -> bool {
+                constraint >> str <- jsonGetStringOr(jsonObjectGet(dep, "target"), "");
+                if (constraint == "" || resolverVersion == "1") return true;
+                if (constraint == target || constraint == "all" || constraint == "cfg(any())") return true;
+                if (constraint == "cfg(windows)") return contains(target, "windows");
+                if (constraint == "cfg(unix)") return !contains(target, "windows") &&
+                    !contains(target, "none");
+                if (contains(constraint, "target_arch")) {
+                    if (contains(constraint, "x86_64")) return contains(target, "x86_64");
+                    if (contains(constraint, "x86")) return starts(target, "i386") || starts(target, "i686");
+                    if (contains(constraint, "aarch64")) return contains(target, "aarch64");
+                    if (contains(constraint, "arm")) return starts(target, "arm");
+                    if (contains(constraint, "riscv64")) return contains(target, "riscv64");
+                    if (contains(constraint, "riscv32")) return contains(target, "riscv32");
+                }
+                return false;
+            }
+
+            overrideFor(root >> int, dep >> int) -> int {
+                name >> str <- jsonGetStringOr(jsonObjectGet(dep, "name"), "");
+                lists >> array<str> <- ["replace_overrides", "patch_overrides"];
+                listAt >> int <- 0;
+                while (listAt < 2) {
+                    entries >> int <- jsonObjectGet(root, lists[listAt]);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(entries)) {
+                        entry >> int <- jsonArrayGet(entries, at);
+                        if (same(jsonGetStringOr(jsonObjectGet(entry, "name"), ""), name)) {
+                            result >> int <- jsonClone(dep);
+                            fieldAt >> int <- 0;
+                            while (fieldAt < jsonObjectLen(entry)) {
+                                key >> str <- jsonObjectKeyAt(entry, fieldAt);
+                                jsonObjectSet(result, key, jsonClone(jsonObjectGet(entry, key)));
+                                fieldAt += 1;
+                            }
+                            jsonObjectSet(result, "override", jsonNewString(
+                                listAt == 0 ? "replace" : "patch"));
+                            return result;
+                        }
+                        at += 1;
+                    }
+                    listAt += 1;
+                }
+                result >> int <- jsonClone(dep);
+                jsonObjectSet(result, "override", jsonNewString("none"));
+                return result;
+            }
+
+            registryRaw(node >> int) -> str {
+                if (jsonKind(node) == 4) return jsonGetStringOr(node, "");
+                if (jsonKind(node) != 6) return "";
+                keys >> array<str> <- ["index", "registry", "path", "local-registry", "directory", "git"];
+                at >> int <- 0;
+                while (at < 6) {
+                    value >> str <- jsonGetStringOr(jsonObjectGet(node, keys[at]), "");
+                    if (value != "") return value;
+                    at += 1;
+                }
+                return "";
+            }
+
+            sourceKind(node >> int) -> str {
+                if (jsonKind(node) != 6) return "registry";
+                keys >> array<str> <- ["local-registry", "directory", "git", "registry", "index", "path"];
+                at >> int <- 0;
+                while (at < 6) {
+                    if (jsonGetStringOr(jsonObjectGet(node, keys[at]), "") != "") return keys[at];
+                    at += 1;
+                }
+                return "unknown";
+            }
+
+            selection(
+                registry >> str,
+                name >> str,
+                effective >> str,
+                replacementKind >> str,
+                valid >> bool
+            ) -> int {
+                result >> int <- jsonNewObject();
+                jsonObjectSet(result, "registry", jsonNewString(registry));
+                jsonObjectSet(result, "name", jsonNewString(name));
+                jsonObjectSet(result, "effective", jsonNewString(effective));
+                jsonObjectSet(result, "replacement_kind", jsonNewString(replacementKind));
+                jsonObjectSet(result, "valid", jsonNewBool(valid));
+                return result;
+            }
+
+            basalRegistry(root >> int, dep >> int, handle >> addr, diagnostics >> int) -> int {
+                requested >> str <- option(handle, "--registry");
+                name >> str <- jsonGetStringOr(jsonObjectGet(dep, "registry"), "");
+                if (name == "") {
+                    if (requested == "") {
+                        addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                            "basal dependency requires a registry reference");
+                        return selection("", "basal-default", "basal-default",
+                            "basal_registry_default", false);
+                    }
+                    return selection(requested, "basal-default",
+                        "basal-default", "basal_registry_default", true);
+                }
+                registries >> int <- jsonObjectGet(root, "registries");
+                if (jsonObjectHas(registries, name)) {
+                    reference >> str <- registryRaw(jsonObjectGet(registries, name));
+                    if (reference == "") {
+                        addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                            "basal registry '" + name + "' has no material reference");
+                        return selection("", name, name, "basal_registry", false);
+                    }
+                    return selection(registryReference(root, reference), name, name,
+                        "basal_registry", true);
+                }
+                return selection(registryReference(root, name), name, name,
+                    "basal_registry_raw", true);
+            }
+
+            effectiveRegistry(root >> int, dep >> int, handle >> addr, diagnostics >> int) -> int {
+                sourceName >> str <- jsonGetStringOr(jsonObjectGet(dep, "registry"), "crates-io");
+                sources >> int <- jsonObjectGet(root, "source_replacements");
+                registries >> int <- jsonObjectGet(root, "registries");
+                current >> str <- sourceName;
+                visited >> int <- jsonNewArray();
+                while (jsonObjectHas(sources, current)) {
+                    if (arrayHas(visited, current)) {
+                        addDiagnostic(diagnostics, "E_GHOR_REGISTRY_RESOLUTION_001",
+                            "source replacement cycle detected at '" + current + "'");
+                        jsonRelease(visited);
+                        return selection("", sourceName, current, "cycle", false);
+                    }
+                    jsonArrayPush(visited, jsonNewString(current));
+                    node >> int <- jsonObjectGet(sources, current);
+                    replacement >> str <- jsonGetStringOr(jsonObjectGet(node, "replace-with"), "");
+                    if (replacement != "") {
+                        current <- replacement;
+                        continue;
+                    }
+                    reference >> str <- registryRaw(node);
+                    kind >> str <- sourceKind(node);
+                    if (reference != "") {
+                        if (kind == "git" && !starts(reference, "git+")) reference <- "git+" + reference;
+                        jsonRelease(visited);
+                        return selection(registryReference(root, reference), sourceName, current, kind, true);
+                    }
+                    if (jsonObjectHas(registries, current)) {
+                        reference <- registryRaw(jsonObjectGet(registries, current));
+                        jsonRelease(visited);
+                        if (reference != "") return selection(registryReference(root, reference),
+                            sourceName, current, "alternate_registry", true);
+                    }
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_RESOLUTION_001",
+                        "replacement source '" + current + "' has no registry, directory or git reference");
+                    jsonRelease(visited);
+                    return selection("", sourceName, current, "invalid", false);
+                }
+                jsonRelease(visited);
+                if (current != sourceName) {
+                    if (jsonObjectHas(registries, current)) {
+                        reference >> str <- registryRaw(jsonObjectGet(registries, current));
+                        if (reference != "") return selection(registryReference(root, reference), sourceName,
+                            current, "alternate_registry", true);
+                    }
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_RESOLUTION_001",
+                        "replacement source '" + current + "' is not defined");
+                    return selection("", sourceName, current, "missing", false);
+                }
+                if (jsonObjectHas(registries, sourceName)) {
+                    reference >> str <- registryRaw(jsonObjectGet(registries, sourceName));
+                    if (reference != "") return selection(registryReference(root, reference), sourceName,
+                        sourceName, "alternate_registry", true);
+                }
+                requested >> str <- option(handle, "--registry");
+                if (requested != "") return selection(requested,
+                    sourceName, sourceName, "none", true);
+                if (sourceName != "crates-io" && (contains(sourceName, "://") ||
+                    contains(sourceName, "/") || contains(sourceName, "\\"))) {
+                    return selection(registryReference(root, sourceName), sourceName,
+                        sourceName, "alternate_registry_raw", true);
+                }
+                addDiagnostic(diagnostics, "E_GHOR_REGISTRY_RESOLUTION_001",
+                    "registry source '" + sourceName + "' has no configured material reference");
+                return selection("", sourceName, sourceName, "missing", false);
+            }
+
+            selectIndexPackage(index >> int, name >> str, requirement >> str) -> int {
+                packages >> int <- jsonObjectGet(index, "packages");
+                best >> int <- 0;
+                bestVersion >> str <- "0.0.0-pre";
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    entry >> int <- jsonArrayGet(packages, at);
+                    entryName >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "");
+                    version >> str <- jsonGetStringOr(jsonObjectGet(entry, "version"), "");
+                    if (version == "") {
+                        version <- jsonGetStringOr(jsonObjectGet(jsonObjectGet(entry, "metadata"), "vers"), "");
+                    }
+                    if (same(entryName, name) && !jsonGetBoolOr(jsonObjectGet(entry, "yanked"), false) &&
+                        requirementMatches(requirement, version) &&
+                        (best == 0 || compareVersion(version, bestVersion) > 0)) {
+                        if (best != 0) jsonRelease(best);
+                        best <- jsonClone(entry);
+                        bestVersion <- version;
+                    }
+                    at += 1;
+                }
+                return best;
+            }
+
+            selectRegistry(registry >> str, dep >> int) -> int {
+                if (registry == "") return 0;
+                indexPath >> str <- join(registry, "index.json");
+                index >> int <- jsonParseFile(indexPath);
+                guard index != 0 else return 0;
+                best >> int <- selectIndexPackage(
+                    index, dependencyName(dep), dependencyVersion(dep));
+                jsonRelease(index);
+                return best;
+            }
+
+            selectBasalRegistry(registry >> str, dep >> int) -> int {
+                if (registry == "") return 0;
+                index >> int <- jsonParseFile(join(registry, "index.json"));
+                guard index != 0 else return 0;
+                packages >> int <- jsonObjectGet(index, "packages");
+                declared >> str <- jsonGetStringOr(jsonObjectGet(dep, "name"), "");
+                rootName >> str <- jsonGetStringOr(jsonObjectGet(dep, "package"), declared);
+                requirement >> str <- dependencyVersion(dep);
+                best >> int <- 0;
+                bestVersion >> str <- "0.0.0-pre";
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    entry >> int <- jsonArrayGet(packages, at);
+                    name >> str <- jsonGetStringOr(jsonObjectGet(entry, "name"), "");
+                    rootId >> str <- jsonGetStringOr(jsonObjectGet(entry, "root_id"), "");
+                    safeName >> str <- jsonGetStringOr(jsonObjectGet(entry, "safe_name"), "");
+                    version >> str <- jsonGetStringOr(jsonObjectGet(entry, "version"), "");
+                    if (version == "") version <- jsonGetStringOr(jsonObjectGet(entry, "vers"), "");
+                    matchesName >> bool <- same(rootId, rootName) || same(safeName, declared) ||
+                        same(name, declared) || same(name, rootName);
+                    if (matchesName && !jsonGetBoolOr(jsonObjectGet(entry, "yanked"), false) &&
+                        requirementMatches(requirement, version) &&
+                        (best == 0 || compareVersion(version, bestVersion) > 0)) {
+                        if (best != 0) jsonRelease(best);
+                        best <- jsonClone(entry);
+                        bestVersion <- version;
+                    }
+                    at += 1;
+                }
+                jsonRelease(index);
+                return best;
+            }
+
+            diagnosticsClosed(entries >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    if (jsonGetStringOr(jsonObjectGet(jsonArrayGet(entries, at), "severity"), "") == "error") {
+                        return false;
+                    }
+                    at += 1;
+                }
+                return true;
+            }
+
+            validateBasalManifest(
+                handle >> addr,
+                selected >> int,
+                registry >> str,
+                materialRoot >> str,
+                diagnostics >> int
+            ) -> int {
+                relative >> str <- jsonGetStringOr(jsonObjectGet(selected, "package_manifest"), "");
+                if (relative == "") relative <- jsonGetStringOr(jsonObjectGet(selected, "manifest"), "");
+                expected >> str <- jsonGetStringOr(jsonObjectGet(selected, "package_manifest_hash"), "");
+                if (relative == "" || expected == "") {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal registry entry has incomplete package manifest metadata");
+                    return 0;
+                }
+                guard transport.transport.ensureRegistryFile(
+                    handle, registry, materialRoot, relative, diagnostics) else return 0;
+                path >> str <- join(materialRoot, relative);
+                packageManifest >> int <- jsonParseFile(path);
+                if (packageManifest == 0) {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal package manifest is not valid JSON at '" + path + "'");
+                    return 0;
+                }
+                actual >> str <- sha256.sha256.file(path);
+                if (actual == "" || actual != expected) {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal package manifest SHA-256 mismatch at '" + path +
+                        "': expected=" + expected + " actual=" + actual);
+                    jsonRelease(packageManifest);
+                    return 0;
+                }
+                if (jsonGetStringOr(jsonObjectGet(packageManifest, "schema"), "") != "basal.package.v1" ||
+                    !jsonGetBoolOr(jsonObjectGet(packageManifest, "ghor_compatible"), false)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal package manifest contract is unsupported");
+                    jsonRelease(packageManifest);
+                    return 0;
+                }
+                nbb >> int <- jsonObjectGet(packageManifest, "nbb");
+                if (jsonGetStringOr(jsonObjectGet(nbb, "magic"), "") != "NBB0") {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal package must contain NBB0 metadata");
+                    jsonRelease(packageManifest);
+                    return 0;
+                }
+                ffi >> int <- jsonObjectGet(packageManifest, "ffi_link_manifest");
+                if (jsonGetStringOr(jsonObjectGet(ffi, "status"), "") != "closed" ||
+                    !diagnosticsClosed(jsonObjectGet(ffi, "diagnostics"))) {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal ffi_link_manifest is missing, open or contains errors");
+                    jsonRelease(packageManifest);
+                    return 0;
+                }
+                ffiCanonical >> str <- jsonStringify(ffi);
+                ffiHash >> str <- sha256.sha256.bytes(cast(ffiCanonical), length(cast(ffiCanonical)));
+                strRelease(ffiCanonical);
+                expectedFfi >> str <- jsonGetStringOr(jsonObjectGet(selected, "ffi_link_manifest_hash"), "");
+                manifestFfi >> str <- jsonGetStringOr(
+                    jsonObjectGet(packageManifest, "ffi_link_manifest_hash"), "");
+                if ((expectedFfi != "" && expectedFfi != ffiHash) ||
+                    (manifestFfi != "" && manifestFfi != ffiHash)) {
+                    addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                        "basal ffi_link_manifest SHA-256 mismatch");
+                    jsonRelease(packageManifest);
+                    return 0;
+                }
+                validation >> int <- jsonNewObject();
+                jsonObjectSet(validation, "status", jsonNewString("validated"));
+                jsonObjectSet(validation, "package_kind", jsonNewString("basal"));
+                jsonObjectSet(validation, "source", jsonNewString(relative));
+                jsonObjectSet(validation, "package_manifest_hash", jsonNewString(actual));
+                jsonObjectSet(validation, "ffi_link_manifest_hash", jsonNewString(ffiHash));
+                jsonObjectSet(validation, "root_id", jsonClone(jsonObjectGet(packageManifest, "root_id")));
+                jsonObjectSet(validation, "safe_name", jsonClone(jsonObjectGet(packageManifest, "safe_name")));
+                jsonObjectSet(validation, "nbb", jsonClone(nbb));
+                ffiValidation >> int <- jsonNewObject();
+                jsonObjectSet(ffiValidation, "status", jsonNewString("validated"));
+                jsonObjectSet(ffiValidation, "compiler_ffi_entry_count",
+                    jsonClone(jsonObjectGet(ffi, "compiler_ffi_entry_count")));
+                jsonObjectSet(validation, "ffi", ffiValidation);
+                jsonRelease(packageManifest);
+                return validation;
+            }
+
+            canonicalRegistryDependency(sourceDep >> int) -> int {
+                result >> int <- jsonClone(sourceDep);
+                name >> str <- jsonGetStringOr(jsonObjectGet(sourceDep, "name"), "");
+                package >> str <- jsonGetStringOr(jsonObjectGet(sourceDep, "package"), "");
+                if (package != "") jsonObjectSet(result, "name", jsonNewString(package));
+                else jsonObjectSet(result, "name", jsonNewString(name));
+                req >> str <- jsonGetStringOr(jsonObjectGet(sourceDep, "req"), "*");
+                jsonObjectSet(result, "version", jsonNewString(req));
+                jsonObjectSet(result, "source", jsonNewString("registry"));
+                if (!jsonObjectHas(result, "features")) jsonObjectSet(result, "features", jsonNewArray());
+                if (!jsonObjectHas(result, "kind")) jsonObjectSet(result, "kind", jsonNewString("normal"));
+                return result;
+            }
+
+            appendTransitive(queue >> int, selected >> int) -> bool {
+                metadata >> int <- jsonObjectGet(selected, "metadata");
+                dependencies >> int <- jsonObjectGet(metadata, "deps");
+                at >> int <- 0;
+                while (at < jsonArrayLen(dependencies)) {
+                    jsonArrayPush(queue, canonicalRegistryDependency(jsonArrayGet(dependencies, at)));
+                    at += 1;
+                }
+                return true;
+            }
+
+            appendResolvedDependencies(queue >> int, selected >> int) -> bool {
+                dependencies >> int <- jsonObjectGet(selected, "dependencies");
+                at >> int <- 0;
+                while (at < jsonArrayLen(dependencies)) {
+                    jsonArrayPush(queue, jsonClone(jsonArrayGet(dependencies, at)));
+                    at += 1;
+                }
+                return true;
+            }
+
+            alreadyResolvedGit(resolved >> int, name >> str, head >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(resolved)) {
+                    entry >> int <- jsonArrayGet(resolved, at);
+                    if (same(jsonGetStringOr(jsonObjectGet(entry, "name"), ""), name) &&
+                        same(jsonGetStringOr(jsonObjectGet(
+                            jsonObjectGet(entry, "source"), "resolved_head"), ""), head)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            addFeatures(out >> int, source >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(source)) {
+                    pushUnique(out, jsonGetStringOr(jsonArrayGet(source, at), ""));
+                    at += 1;
+                }
+                return true;
+            }
+
+            selectedFeatures(dep >> int, selected >> int) -> int {
+                result >> int <- jsonNewArray();
+                addFeatures(result, jsonObjectGet(dep, "features"));
+                definitions >> int <- jsonObjectGet(jsonObjectGet(selected, "metadata"), "features");
+                if (jsonGetBoolOr(jsonObjectGet(dep, "default_features"), true)) {
+                    addFeatures(result, jsonObjectGet(definitions, "default"));
+                }
+                cursor >> int <- 0;
+                while (cursor < jsonArrayLen(result)) {
+                    feature >> str <- jsonGetStringOr(jsonArrayGet(result, cursor), "");
+                    if (!contains(feature, "/") && !starts(feature, "dep:")) {
+                        addFeatures(result, jsonObjectGet(definitions, feature));
+                    }
+                    cursor += 1;
+                }
+                return result;
+            }
+
+            featureScope(dep >> int, target >> str, resolverVersion >> str) -> str {
+                if (resolverVersion == "1") return "unified";
+                kind >> str <- jsonGetStringOr(jsonObjectGet(dep, "kind"), "normal");
+                if (kind == "build") return "build";
+                constraint >> str <- jsonGetStringOr(jsonObjectGet(dep, "target"), "");
+                if (constraint != "") return "target:" + target;
+                return "normal";
+            }
+
+            mergeFeatureGroup(groups >> int, group >> str, features >> int) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(groups)) {
+                    entry >> int <- jsonArrayGet(groups, at);
+                    if (same(jsonGetStringOr(jsonObjectGet(entry, "group"), ""), group)) {
+                        return addFeatures(jsonObjectGet(entry, "features"), features);
+                    }
+                    at += 1;
+                }
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "group", jsonNewString(group));
+                jsonObjectSet(entry, "features", jsonClone(features));
+                return jsonArrayPush(groups, entry);
+            }
+
+            alreadyResolved(resolved >> int, name >> str, version >> str, registry >> str) -> bool {
+                at >> int <- 0;
+                while (at < jsonArrayLen(resolved)) {
+                    entry >> int <- jsonArrayGet(resolved, at);
+                    source >> int <- jsonObjectGet(entry, "source");
+                    if (same(jsonGetStringOr(jsonObjectGet(entry, "name"), ""), name) &&
+                        same(jsonGetStringOr(jsonObjectGet(entry, "version"), ""), version) &&
+                        same(jsonGetStringOr(jsonObjectGet(source, "registry"), ""), registry)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            resolverVersion(root >> int, handle >> addr) -> str {
+                selected >> str <- option(handle, "--resolver");
+                if (selected != "") return selected;
+                workspace >> int <- jsonObjectGet(root, "workspace");
+                selected <- jsonGetStringOr(jsonObjectGet(workspace, "resolver"), "");
+                if (selected != "") return selected;
+                package >> int <- jsonObjectGet(root, "package");
+                selected <- jsonGetStringOr(jsonObjectGet(package, "resolver"), "");
+                if (selected != "") return selected;
+                edition >> str <- jsonGetStringOr(jsonObjectGet(package, "edition"), "");
+                if (edition == "2024" || edition == "2026") return "3";
+                if (edition == "2021") return "2";
+                return "1";
+            }
+
+            resolveModel(handle >> addr) -> int {
+                root >> int <- package_graph.ghorPackageGraph.effectiveManifest(handle);
+                guard root != 0 else return 0;
+                cargo_config.cargoConfig.apply(handle, root);
+                resolverSelected >> str <- resolverVersion(root, handle);
+                target >> str <- option(handle, "--target");
+                if (target == "") target <- jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(root, "target_default"), "triple"),
+                    "x86_64-pc-windows-msvc");
+                includeDev >> bool <- hasFlag(handle, "--include-dev");
+                queue >> int <- allDependencies(root, includeDev);
+                resolved >> int <- jsonNewArray();
+                groups >> int <- jsonNewArray();
+                diagnostics >> int <- jsonClone(jsonObjectGet(root, "diagnostics"));
+                cursor >> int <- 0;
+                while (cursor < jsonArrayLen(queue)) {
+                    requested >> int <- jsonArrayGet(queue, cursor);
+                    cursor += 1;
+                    if (!targetActive(requested, target, resolverSelected)) {
+                        skipped >> int <- jsonNewObject();
+                        jsonObjectSet(skipped, "name", jsonClone(jsonObjectGet(requested, "name")));
+                        jsonObjectSet(skipped, "requested", jsonClone(requested));
+                        jsonObjectSet(skipped, "status", jsonNewString("skipped_inactive_target"));
+                        jsonObjectSet(skipped, "target", jsonClone(jsonObjectGet(requested, "target")));
+                        jsonObjectSet(skipped, "resolver", jsonNewString(resolverSelected));
+                        jsonArrayPush(resolved, skipped);
+                        continue;
+                    }
+                    dep >> int <- overrideFor(root, requested);
+                    name >> str <- dependencyName(dep);
+                    precise >> str <- preciseFor(handle, name);
+                    if (precise != "") {
+                        jsonObjectSet(dep, "version", jsonNewString("=" + precise));
+                        jsonObjectSet(dep, "req", jsonNewString("=" + precise));
+                    }
+                    path >> str <- jsonGetStringOr(jsonObjectGet(dep, "path"), "");
+                    if (path != "") {
+                        entry >> int <- jsonNewObject();
+                        jsonObjectSet(entry, "name", jsonNewString(name));
+                        jsonObjectSet(entry, "version", jsonNewString(dependencyVersion(dep)));
+                        jsonObjectSet(entry, "status", jsonNewString("resolved_path"));
+                        jsonObjectSet(entry, "path", jsonNewString(path));
+                        jsonObjectSet(entry, "kind", jsonClone(jsonObjectGet(dep, "kind")));
+                        jsonObjectSet(entry, "target", jsonClone(jsonObjectGet(dep, "target")));
+                        jsonObjectSet(entry, "override", jsonClone(jsonObjectGet(dep, "override")));
+                        jsonObjectSet(entry, "features", jsonClone(jsonObjectGet(dep, "features")));
+                        jsonObjectSet(entry, "default_features", jsonClone(jsonObjectGet(dep, "default_features")));
+                        jsonObjectSet(entry, "dependencies", jsonNewArray());
+                        jsonArrayPush(resolved, entry);
+                        jsonRelease(dep);
+                        continue;
+                    }
+                    git >> str <- jsonGetStringOr(jsonObjectGet(dep, "git"), "");
+                    if (git != "") {
+                        selectedGit >> int <- transport.transport.gitDependency(handle, dep, diagnostics);
+                        if (selectedGit == 0) {
+                            unresolvedGit >> int <- jsonNewObject();
+                            jsonObjectSet(unresolvedGit, "name", jsonNewString(name));
+                            jsonObjectSet(unresolvedGit, "requested", jsonClone(dep));
+                            jsonObjectSet(unresolvedGit, "status", jsonNewString("unresolved_git"));
+                            jsonArrayPush(resolved, unresolvedGit);
+                            jsonRelease(dep);
+                            continue;
+                        }
+                        head >> str <- jsonGetStringOr(jsonObjectGet(
+                            jsonObjectGet(selectedGit, "source"), "resolved_head"), "");
+                        if (!alreadyResolvedGit(resolved, name, head)) {
+                            gitVersion >> str <- jsonGetStringOr(
+                                jsonObjectGet(selectedGit, "version"), "0.0.0");
+                            gitFeatures >> int <- jsonClone(jsonObjectGet(selectedGit, "features"));
+                            mergeFeatureGroup(groups, name + "@" + gitVersion + ":" +
+                                featureScope(dep, target, resolverSelected), gitFeatures);
+                            jsonRelease(gitFeatures);
+                            jsonArrayPush(resolved, selectedGit);
+                            appendResolvedDependencies(queue, selectedGit);
+                        }
+                        else jsonRelease(selectedGit);
+                        jsonRelease(dep);
+                        continue;
+                    }
+                    sourceMarker >> str <- jsonGetStringOr(jsonObjectGet(dep, "source"), "");
+                    depKind >> str <- jsonGetStringOr(jsonObjectGet(dep, "kind"), "normal");
+                    if (sourceMarker == "basal-registry" || depKind == "basal") {
+                        selectedSource >> int <- basalRegistry(root, dep, handle, diagnostics);
+                        registry >> str <- jsonGetStringOr(
+                            jsonObjectGet(selectedSource, "registry"), "");
+                        validSource >> bool <- jsonGetBoolOr(
+                            jsonObjectGet(selectedSource, "valid"), false);
+                        materialRoot >> str <- validSource ?
+                            transport.transport.registryRoot(handle, registry, diagnostics) : "";
+                        selectedBasal >> int <- materialRoot == "" ? 0 :
+                            selectBasalRegistry(materialRoot, dep);
+                        declaredName >> str <- jsonGetStringOr(jsonObjectGet(dep, "name"), name);
+                        if (selectedBasal == 0) {
+                            unresolvedBasal >> int <- jsonNewObject();
+                            jsonObjectSet(unresolvedBasal, "name", jsonNewString(declaredName));
+                            jsonObjectSet(unresolvedBasal, "requested", jsonClone(dep));
+                            jsonObjectSet(unresolvedBasal, "status",
+                                jsonNewString("unresolved_basal_registry"));
+                            jsonObjectSet(unresolvedBasal, "source", jsonClone(selectedSource));
+                            jsonArrayPush(resolved, unresolvedBasal);
+                            if (validSource && materialRoot != "") addDiagnostic(diagnostics,
+                                "E_GHOR_BASAL_PACKAGE_001", "basal dependency '" + declaredName +
+                                "' has no matching registry version");
+                            jsonRelease(selectedSource);
+                            jsonRelease(dep);
+                            continue;
+                        }
+                        validation >> int <- validateBasalManifest(
+                            handle, selectedBasal, registry, materialRoot, diagnostics);
+                        expectedChecksum >> str <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "checksum"), "");
+                        if (expectedChecksum == "") expectedChecksum <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "cksum"), "");
+                        requestedChecksum >> str <- jsonGetStringOr(
+                            jsonObjectGet(dep, "checksum"), "");
+                        if (requestedChecksum != "" && requestedChecksum != expectedChecksum) {
+                            addDiagnostic(diagnostics, "E_GHOR_BASAL_PACKAGE_001",
+                                "basal dependency checksum mismatch for '" + declaredName + "'");
+                        }
+                        if (validation == 0 || (requestedChecksum != "" &&
+                            requestedChecksum != expectedChecksum)) {
+                            invalidBasal >> int <- jsonNewObject();
+                            jsonObjectSet(invalidBasal, "name", jsonNewString(declaredName));
+                            jsonObjectSet(invalidBasal, "requested", jsonClone(dep));
+                            jsonObjectSet(invalidBasal, "status",
+                                jsonNewString("unresolved_basal_validation"));
+                            jsonObjectSet(invalidBasal, "source", jsonClone(selectedSource));
+                            jsonArrayPush(resolved, invalidBasal);
+                            if (validation != 0) jsonRelease(validation);
+                            jsonRelease(selectedBasal);
+                            jsonRelease(selectedSource);
+                            jsonRelease(dep);
+                            continue;
+                        }
+                        version >> str <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "version"), "");
+                        if (version == "") version <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "vers"), "1");
+                        jsonObjectSet(selectedSource, "material_root", jsonNewString(materialRoot));
+                        basalEntry >> int <- jsonNewObject();
+                        jsonObjectSet(basalEntry, "name", jsonNewString(declaredName));
+                        jsonObjectSet(basalEntry, "root_id", jsonClone(
+                            jsonObjectGet(selectedBasal, "root_id")));
+                        jsonObjectSet(basalEntry, "safe_name", jsonClone(
+                            jsonObjectGet(selectedBasal, "safe_name")));
+                        jsonObjectSet(basalEntry, "version", jsonNewString(version));
+                        jsonObjectSet(basalEntry, "status", jsonNewString("resolved_basal_registry"));
+                        jsonObjectSet(basalEntry, "source", selectedSource);
+                        jsonObjectSet(basalEntry, "kind", jsonNewString("basal"));
+                        jsonObjectSet(basalEntry, "package_kind", jsonNewString("basal"));
+                        jsonObjectSet(basalEntry, "requested", jsonClone(dep));
+                        jsonObjectSet(basalEntry, "checksum", jsonNewString(expectedChecksum));
+                        archive >> str <- jsonGetStringOr(jsonObjectGet(selectedBasal, "archive"), "");
+                        jsonObjectSet(basalEntry, "archive", jsonNewString(archive));
+                        jsonObjectSet(basalEntry, "archive_name", jsonNewString(leaf(archive)));
+                        manifestPath >> str <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "package_manifest"), "");
+                        if (manifestPath == "") manifestPath <- jsonGetStringOr(
+                            jsonObjectGet(selectedBasal, "manifest"), "");
+                        jsonObjectSet(basalEntry, "package_manifest_path", jsonNewString(manifestPath));
+                        jsonObjectSet(basalEntry, "package_manifest_hash", jsonClone(
+                            jsonObjectGet(selectedBasal, "package_manifest_hash")));
+                        jsonObjectSet(basalEntry, "ffi_link_manifest_hash", jsonClone(
+                            jsonObjectGet(selectedBasal, "ffi_link_manifest_hash")));
+                        jsonObjectSet(basalEntry, "verification", jsonClone(validation));
+                        jsonObjectSet(basalEntry, "package_manifest_validation", validation);
+                        jsonObjectSet(basalEntry, "dependencies", jsonNewArray());
+                        jsonArrayPush(resolved, basalEntry);
+                        jsonRelease(selectedBasal);
+                        jsonRelease(dep);
+                        continue;
+                    }
+                    selectedSource >> int <- effectiveRegistry(root, dep, handle, diagnostics);
+                    registry >> str <- jsonGetStringOr(jsonObjectGet(selectedSource, "registry"), "");
+                    validSource >> bool <- jsonGetBoolOr(jsonObjectGet(selectedSource, "valid"), false);
+                    materialRoot >> str <- validSource ?
+                        transport.transport.registryRoot(handle, registry, diagnostics) : "";
+                    selected >> int <- materialRoot == "" ? 0 : selectRegistry(materialRoot, dep);
+                    if (selected == 0) {
+                        unresolved >> int <- jsonNewObject();
+                        jsonObjectSet(unresolved, "name", jsonNewString(name));
+                        jsonObjectSet(unresolved, "requested", jsonClone(dep));
+                        jsonObjectSet(unresolved, "status", jsonNewString("unresolved"));
+                        jsonObjectSet(unresolved, "source", jsonClone(selectedSource));
+                        jsonArrayPush(resolved, unresolved);
+                        if (materialRoot != "") addDiagnostic(diagnostics, "E_GHOR_RESOLVER_001",
+                            "dependency '" + name + "' has no matching registry version");
+                        jsonRelease(selectedSource);
+                        jsonRelease(dep);
+                        continue;
+                    }
+                    version >> str <- jsonGetStringOr(jsonObjectGet(selected, "version"), "");
+                    if (version == "") version <- jsonGetStringOr(
+                        jsonObjectGet(jsonObjectGet(selected, "metadata"), "vers"), "0.0.0");
+                    features >> int <- selectedFeatures(dep, selected);
+                    group >> str <- name + "@" + version + ":" +
+                        featureScope(dep, target, resolverSelected);
+                    mergeFeatureGroup(groups, group, features);
+                    if (!alreadyResolved(resolved, name, version, registry)) {
+                        source >> int <- jsonClone(selectedSource);
+                        jsonObjectSet(source, "material_root", jsonNewString(materialRoot));
+                        if (jsonGetStringOr(jsonObjectGet(source, "replacement_kind"), "") == "none") {
+                            jsonObjectSet(source, "replacement_kind", jsonNewString(
+                                transport.transport.kind(registry) + "_registry"));
+                        }
+                        entry >> int <- jsonNewObject();
+                        jsonObjectSet(entry, "name", jsonNewString(name));
+                        jsonObjectSet(entry, "version", jsonNewString(version));
+                        jsonObjectSet(entry, "status", jsonNewString("resolved_registry"));
+                        jsonObjectSet(entry, "requested", jsonClone(dep));
+                        jsonObjectSet(entry, "source", source);
+                        jsonObjectSet(entry, "kind", jsonClone(jsonObjectGet(dep, "kind")));
+                        jsonObjectSet(entry, "target", jsonClone(jsonObjectGet(dep, "target")));
+                        jsonObjectSet(entry, "checksum", jsonClone(jsonObjectGet(selected, "checksum")));
+                        jsonObjectSet(entry, "archive", jsonClone(jsonObjectGet(selected, "archive")));
+                        jsonObjectSet(entry, "archive_name", jsonClone(jsonObjectGet(selected, "archive_name")));
+                        jsonObjectSet(entry, "package_manifest_path", jsonClone(jsonObjectGet(selected, "manifest")));
+                        jsonObjectSet(entry, "package_manifest", jsonClone(jsonObjectGet(selected, "package_manifest")));
+                        jsonObjectSet(entry, "package_manifest_hash", jsonClone(jsonObjectGet(selected, "package_manifest_hash")));
+                        jsonObjectSet(entry, "files", jsonClone(jsonObjectGet(selected, "files")));
+                        jsonObjectSet(entry, "verification", jsonClone(jsonObjectGet(selected, "verification")));
+                        jsonObjectSet(entry, "features", features);
+                        jsonObjectSet(entry, "default_features", jsonClone(jsonObjectGet(dep, "default_features")));
+                        jsonObjectSet(entry, "override", jsonClone(jsonObjectGet(dep, "override")));
+                        transitive >> int <- jsonObjectGet(jsonObjectGet(selected, "metadata"), "deps");
+                        jsonObjectSet(entry, "dependencies", jsonClone(transitive));
+                        jsonArrayPush(resolved, entry);
+                        appendTransitive(queue, selected);
+                    }
+                    else jsonRelease(features);
+                    jsonRelease(selected);
+                    jsonRelease(selectedSource);
+                    jsonRelease(dep);
+                }
+
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.resolve.v2"));
+                jsonObjectSet(model, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(model, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                contract >> int <- jsonNewObject();
+                jsonObjectSet(contract, "version", jsonNewString(resolverSelected));
+                jsonObjectSet(contract, "target", jsonNewString(target));
+                jsonObjectSet(contract, "include_dev", jsonNewBool(includeDev));
+                jsonObjectSet(contract, "semver", jsonNewString("cargo_caret_tilde_wildcard_comparator"));
+                jsonObjectSet(contract, "features", jsonNewString("cargo_resolver_v1_v2_v3"));
+                overrides >> int <- jsonNewArray();
+                jsonArrayPush(overrides, jsonNewString("patch"));
+                jsonArrayPush(overrides, jsonNewString("replace"));
+                jsonArrayPush(overrides, jsonNewString("filesystem_registries"));
+                jsonArrayPush(overrides, jsonNewString("http_sparse_git_registries"));
+                jsonArrayPush(overrides, jsonNewString("source_replacement"));
+                jsonArrayPush(overrides, jsonNewString("basal_registries"));
+                jsonObjectSet(contract, "overrides", overrides);
+                jsonObjectSet(model, "resolver", contract);
+                jsonObjectSet(model, "package", jsonClone(jsonObjectGet(jsonObjectGet(root, "package"), "name")));
+                jsonObjectSet(model, "resolved", resolved);
+                jsonObjectSet(model, "feature_groups", groups);
+                jsonObjectSet(model, "diagnostics", diagnostics);
+                jsonObjectSet(model, "manifest", root);
+                jsonRelease(queue);
+                return model;
+            }
+
+            tomlValue(value >> str) -> str {
+                node >> int <- jsonNewString(value);
+                rendered >> str <- jsonStringify(node);
+                jsonRelease(node);
+                return rendered;
+            }
+
+            packageLess(left >> int, right >> int) -> bool {
+                leftKey >> str <- jsonGetStringOr(jsonObjectGet(left, "name"), "") + "\n" +
+                    jsonGetStringOr(jsonObjectGet(left, "version"), "") + "\n" +
+                    jsonGetStringOr(jsonObjectGet(left, "source"), "");
+                rightKey >> str <- jsonGetStringOr(jsonObjectGet(right, "name"), "") + "\n" +
+                    jsonGetStringOr(jsonObjectGet(right, "version"), "") + "\n" +
+                    jsonGetStringOr(jsonObjectGet(right, "source"), "");
+                return lexical(leftKey, rightKey) < 0;
+            }
+
+            cargoPackages(resolve >> int) -> int {
+                result >> int <- jsonNewArray();
+                entries >> int <- jsonObjectGet(resolve, "resolved");
+                at >> int <- 0;
+                while (at < jsonArrayLen(entries)) {
+                    resolved >> int <- jsonArrayGet(entries, at);
+                    status >> str <- jsonGetStringOr(jsonObjectGet(resolved, "status"), "");
+                    if (status == "resolved_registry" || status == "resolved_path" ||
+                        status == "resolved_git" || status == "resolved_basal_registry") {
+                        package >> int <- jsonNewObject();
+                        jsonObjectSet(package, "name", jsonClone(jsonObjectGet(resolved, "name")));
+                        jsonObjectSet(package, "version", jsonClone(jsonObjectGet(resolved, "version")));
+                        if (status == "resolved_registry" || status == "resolved_basal_registry") {
+                            registry >> str <- jsonGetStringOr(
+                                jsonObjectGet(jsonObjectGet(resolved, "source"), "registry"), "");
+                            prefix >> str <- status == "resolved_basal_registry" ? "basal+" : "registry+";
+                            jsonObjectSet(package, "source", jsonNewString(prefix + registry));
+                            jsonObjectSet(package, "checksum", jsonClone(jsonObjectGet(resolved, "checksum")));
+                        }
+                        else if (status == "resolved_git") {
+                            jsonObjectSet(package, "source", jsonClone(jsonObjectGet(
+                                jsonObjectGet(resolved, "source"), "source")));
+                        }
+                        dependencies >> int <- jsonNewArray();
+                        rawDependencies >> int <- jsonObjectGet(resolved, "dependencies");
+                        depAt >> int <- 0;
+                        while (depAt < jsonArrayLen(rawDependencies)) {
+                            pushUnique(dependencies, dependencyName(jsonArrayGet(rawDependencies, depAt)));
+                            depAt += 1;
+                        }
+                        jsonObjectSet(package, "dependencies", dependencies);
+                        insertAt >> int <- 0;
+                        while (insertAt < jsonArrayLen(result) &&
+                            !packageLess(package, jsonArrayGet(result, insertAt))) { insertAt += 1; }
+                        jsonArrayInsert(result, insertAt, package);
+                    }
+                    at += 1;
+                }
+                return result;
+            }
+
+            cargoToml(packages >> int) -> str {
+                output >> str <- "# This file is automatically @generated by ghor.\nversion = 4\n";
+                at >> int <- 0;
+                while (at < jsonArrayLen(packages)) {
+                    package >> int <- jsonArrayGet(packages, at);
+                    output <- output + "\n[[package]]\nname = " +
+                        tomlValue(jsonGetStringOr(jsonObjectGet(package, "name"), "")) +
+                        "\nversion = " + tomlValue(jsonGetStringOr(jsonObjectGet(package, "version"), "")) + "\n";
+                    source >> str <- jsonGetStringOr(jsonObjectGet(package, "source"), "");
+                    if (source != "") output <- output + "source = " + tomlValue(source) + "\n";
+                    checksum >> str <- jsonGetStringOr(jsonObjectGet(package, "checksum"), "");
+                    if (checksum != "") output <- output + "checksum = " + tomlValue(checksum) + "\n";
+                    dependencies >> int <- jsonObjectGet(package, "dependencies");
+                    if (jsonArrayLen(dependencies) > 0) {
+                        output <- output + "dependencies = [\n";
+                        depAt >> int <- 0;
+                        while (depAt < jsonArrayLen(dependencies)) {
+                            output <- output + "    " + tomlValue(
+                                jsonGetStringOr(jsonArrayGet(dependencies, depAt), "")) + ",\n";
+                            depAt += 1;
+                        }
+                        output <- output + "]\n";
+                    }
+                    at += 1;
+                }
+                return output;
+            }
+
+            fingerprint(value >> str) -> int {
+                source >> p<byte> <- cast(value);
+                hash >> int <- 2166136261;
+                at >> int <- 0;
+                while (rd(off(source, at)) != 0) {
+                    hash <- (hash ^ rd(off(source, at))) * 16777619;
+                    at += 1;
+                }
+                return hash;
+            }
+
+            lockPath(root >> int, handle >> addr) -> str {
+                selected >> str <- option(handle, "--lock");
+                if (selected != "") return selected;
+                selected <- jsonGetStringOr(jsonObjectGet(root, "shared_lockfile"), "");
+                if (selected != "") return selected;
+                manifestPath >> str <- jsonGetStringOr(jsonObjectGet(root, "path"), "ghor.toml");
+                return join(directory(manifestPath), "ghor.lock");
+            }
+
+            lockModel(resolve >> int) -> int {
+                manifestRoot >> int <- jsonObjectGet(resolve, "manifest");
+                packages >> int <- cargoPackages(resolve);
+                lockText >> str <- cargoToml(packages);
+                model >> int <- jsonNewObject();
+                jsonObjectSet(model, "schema", jsonNewString("ghor.lock.v1"));
+                jsonObjectSet(model, "lockfile_version", jsonNewInt(LOCK_VERSION));
+                jsonObjectSet(model, "cargo_lock_format_version", jsonNewInt(CARGO_LOCK_VERSION));
+                jsonObjectSet(model, "generated_by", jsonNewString("ghor 0.1.0 nc-stage1"));
+                package >> int <- jsonNewObject();
+                sourcePackage >> int <- jsonObjectGet(manifestRoot, "package");
+                jsonObjectSet(package, "name", jsonClone(jsonObjectGet(sourcePackage, "name")));
+                jsonObjectSet(package, "version", jsonClone(jsonObjectGet(sourcePackage, "version")));
+                manifestText >> str <- jsonStringify(manifestRoot);
+                jsonObjectSet(package, "hash", jsonNewString("fnv1a32:" + renderInt(fingerprint(manifestText))));
+                strRelease(manifestText);
+                jsonObjectSet(model, "package", package);
+                jsonObjectSet(model, "target", jsonClone(jsonObjectGet(manifestRoot, "target_default")));
+                jsonObjectSet(model, "profile", jsonNewString("debug"));
+                capabilities >> int <- jsonNewObject();
+                jsonObjectSet(capabilities, "machine", jsonClone(jsonObjectGet(manifestRoot, "machine")));
+                jsonObjectSet(capabilities, "basal", jsonClone(jsonObjectGet(manifestRoot, "basal")));
+                jsonObjectSet(capabilities, "runtime", jsonClone(jsonObjectGet(manifestRoot, "runtime")));
+                jsonObjectSet(capabilities, "primitive", jsonClone(jsonObjectGet(manifestRoot, "primitive")));
+                jsonObjectSet(model, "capabilities", capabilities);
+                jsonObjectSet(model, "dependencies", jsonClone(jsonObjectGet(manifestRoot, "dependencies")));
+                jsonObjectSet(model, "dev_dependencies", jsonClone(jsonObjectGet(manifestRoot, "dev_dependencies")));
+                jsonObjectSet(model, "build_dependencies", jsonClone(jsonObjectGet(manifestRoot, "build_dependencies")));
+                jsonObjectSet(model, "target_dependencies", jsonClone(jsonObjectGet(manifestRoot, "target_dependencies")));
+                jsonObjectSet(model, "resolve", jsonClone(resolve));
+                jsonObjectSet(model, "cargo_packages", packages);
+                jsonObjectSet(model, "cargo_lock_toml", jsonNewString(lockText));
+                compatible >> int <- jsonNewObject();
+                jsonObjectSet(compatible, "format", jsonNewString("Cargo.lock"));
+                jsonObjectSet(compatible, "version", jsonNewInt(CARGO_LOCK_VERSION));
+                jsonObjectSet(compatible, "package_id_semantics", jsonNewString("name version source"));
+                jsonObjectSet(model, "cargo_compatible", compatible);
+                canonical >> str <- jsonStringify(model);
+                jsonObjectSet(model, "material_fingerprint", jsonNewString(
+                    "fnv1a32:" + renderInt(fingerprint(canonical))));
+                strRelease(canonical);
+                return model;
+            }
+
+            printModel(model >> int) -> int {
+                guard model != 0 else {
+                    println("error[E_GHOR_RESOLVER_001]: resolver cannot be materialized");
+                    return 2;
+                }
+                rendered >> str <- jsonStringifyPretty(model, 2);
+                println(rendered);
+                strRelease(rendered);
+                errors >> int <- jsonArrayLen(jsonObjectGet(model, "diagnostics"));
+                jsonRelease(model);
+                return errors == 0 ? 0 : 2;
+            }
+
+            executeResolve(handle >> addr) -> int {
+                return printModel(resolveModel(handle));
+            }
+
+            executeLock(handle >> addr) -> int {
+                if (hasFlag(handle, "--frozen")) {
+                    println("error[E_GHOR_FROZEN_001]: --frozen forbids lock updates");
+                    return 2;
+                }
+                resolve >> int <- resolveModel(handle);
+                guard resolve != 0 else return 2;
+                if (jsonArrayLen(jsonObjectGet(resolve, "diagnostics")) > 0) return printModel(resolve);
+                lock >> int <- lockModel(resolve);
+                root >> int <- jsonObjectGet(resolve, "manifest");
+                path >> str <- lockPath(root, handle);
+                metadataPath >> str <- path + ".meta.json";
+                lockText >> str <- jsonGetStringOr(jsonObjectGet(lock, "cargo_lock_toml"), "");
+                written >> bool <- fswrite(path, lockText) && jsonSaveFile(lock, metadataPath, 2);
+                result >> int <- jsonNewObject();
+                generated >> bool <- argsAt(handle, 1) == "generate-lockfile";
+                jsonObjectSet(result, "schema", jsonNewString(
+                    generated ? "ghor.generate-lockfile.v1" : "ghor.lock.result.v1"));
+                jsonObjectSet(result, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(result, "status", jsonNewString(
+                    written ? (generated ? "generated" : "locked") : "error"));
+                jsonObjectSet(result, "path", jsonNewString(path));
+                jsonObjectSet(result, "metadata_path", jsonNewString(metadataPath));
+                jsonObjectSet(result, "lock_format", jsonNewString("cargo_lock_toml_primary"));
+                jsonObjectSet(result, "lock_hash", jsonClone(jsonObjectGet(lock, "material_fingerprint")));
+                jsonObjectSet(result, "metadata_hash", jsonClone(jsonObjectGet(lock, "material_fingerprint")));
+                jsonObjectSet(result, "cargo_lock_format_version", jsonNewInt(CARGO_LOCK_VERSION));
+                jsonObjectSet(result, "cargo_lock_hash", jsonNewString(
+                    "fnv1a32:" + renderInt(fingerprint(lockText))));
+                diagnostics >> int <- jsonNewArray();
+                if (!written) addDiagnostic(diagnostics, "E_GHOR_LOCK_WRITE_001", "lock artifacts could not be written");
+                jsonObjectSet(result, "diagnostics", diagnostics);
+                jsonRelease(lock);
+                jsonRelease(resolve);
+                return printModel(result);
+            }
+
+            verifyModel(handle >> addr) -> int {
+                resolve >> int <- resolveModel(handle);
+                guard resolve != 0 else return 0;
+                root >> int <- jsonObjectGet(resolve, "manifest");
+                path >> str <- lockPath(root, handle);
+                metadataPath >> str <- path + ".meta.json";
+                expected >> int <- lockModel(resolve);
+                actual >> int <- exists(metadataPath) ? jsonParseFile(metadataPath) : 0;
+                diagnostics >> int <- jsonNewArray();
+                if (!exists(path)) addDiagnostic(diagnostics, "E_GHOR_LOCK_DRIFT_001", "ghor.lock is missing");
+                else if (actual == 0) addDiagnostic(diagnostics, "E_GHOR_LOCK_DRIFT_001", "ghor.lock.meta.json is missing or invalid");
+                else if (!jsonEquals(expected, actual)) addDiagnostic(diagnostics,
+                    "E_GHOR_LOCK_DRIFT_001", "ghor.lock does not match manifest resolution");
+                report >> int <- jsonNewObject();
+                jsonObjectSet(report, "schema", jsonNewString("ghor.verify-lock.v1"));
+                jsonObjectSet(report, "executor", jsonNewString("nc-stage1"));
+                jsonObjectSet(report, "status", jsonNewString(
+                    jsonArrayLen(diagnostics) == 0 ? "ok" : "error"));
+                jsonObjectSet(report, "path", jsonNewString(path));
+                jsonObjectSet(report, "metadata_path", jsonNewString(metadataPath));
+                jsonObjectSet(report, "diagnostics", diagnostics);
+                if (actual != 0) jsonRelease(actual);
+                jsonRelease(expected);
+                jsonRelease(resolve);
+                return report;
+            }
+
+            executeVerify(handle >> addr) -> int {
+                return printModel(verifyModel(handle));
+            }
+
+        public:
+            verifyReport(handle >> addr) -> int {
+                return verifyModel(handle);
+            }
+
+            selectPackage(index >> int, name >> str, requirement >> str) -> int {
+                return selectIndexPackage(index, name, requirement == "" ? "*" : requirement);
+            }
+
+            model(handle >> addr) -> int {
+                return resolveModel(handle);
+            }
+
+            lock(resolve >> int) -> int {
+                return lockModel(resolve);
+            }
+
+            lockFile(handle >> addr, resolve >> int) -> str {
+                return lockPath(jsonObjectGet(resolve, "manifest"), handle);
+            }
+
+            lockCurrent(handle >> addr) -> bool {
+                resolve >> int <- resolveModel(handle);
+                guard resolve != 0 else return false;
+                path >> str <- lockPath(jsonObjectGet(resolve, "manifest"), handle);
+                metadataPath >> str <- path + ".meta.json";
+                expected >> int <- lockModel(resolve);
+                actual >> int <- exists(metadataPath) ? jsonParseFile(metadataPath) : 0;
+                current >> bool <- exists(path) && actual != 0 && jsonEquals(expected, actual);
+                if (actual != 0) jsonRelease(actual);
+                jsonRelease(expected);
+                jsonRelease(resolve);
+                return current;
+            }
+
+            versionOrder(
+                leftMajor >> int,
+                leftMinor >> int,
+                leftPatch >> int,
+                rightMajor >> int,
+                rightMinor >> int,
+                rightPatch >> int
+            ) -> int {
+                if (leftMajor != rightMajor) return leftMajor - rightMajor;
+                if (leftMinor != rightMinor) return leftMinor - rightMinor;
+                return leftPatch - rightPatch;
+            }
+
+            supports(handle >> addr) -> bool {
+                guard argsCount(handle) > 1 else return false;
+                command >> str <- argsAt(handle, 1);
+                return command == "resolve" || command == "lock" ||
+                    command == "generate-lockfile" || command == "verify-lock";
+            }
+
+            execute(handle >> addr) -> int {
+                command >> str <- argsAt(handle, 1);
+                if (command == "resolve") return executeResolve(handle);
+                if (command == "lock" || command == "generate-lockfile") return executeLock(handle);
+                return executeVerify(handle);
+            }
+
+            selfTestCode() -> int {
+                if (versionOrder(2, 0, 1, 1, 9, 9) <= 0) return 1;
+                if (versionOrder(1, 2, 3, 1, 2, 3) != 0) return 2;
+                if (versionOrder(0, 9, 9, 1, 0, 0) >= 0) return 3;
+                return 0;
+            }
+
+            selfTest() -> bool {
+                return selfTestCode() == 0;
+            }
+
+    fa:
+        return true;
+}

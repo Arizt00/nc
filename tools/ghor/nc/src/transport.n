@@ -1,0 +1,691 @@
+use <collections:result>;
+use <data:json>;
+use <fs:dir>;
+use <process:args, spawn, wait>;
+use <project:text, manifest, cargo_config, sha256>;
+
+transport[@runtime] {
+    fn:
+        private:
+            same(left >> str, right >> str) -> bool {
+                return text.ghorText.same(left, right);
+            }
+
+            starts(value >> str, prefix >> str) -> bool {
+                source >> p<byte> <- cast(value);
+                wanted >> p<byte> <- cast(prefix);
+                at >> int <- 0;
+                while (rd(off(wanted, at)) != 0) {
+                    if (rd(off(source, at)) != rd(off(wanted, at))) return false;
+                    at += 1;
+                }
+                return true;
+            }
+
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            length(value >> p<byte>) -> int {
+                count >> int <- 0;
+                while (rd(off(value, count)) != 0) { count += 1; }
+                return count;
+            }
+
+            after(value >> str, bytes >> int) -> str {
+                source >> p<byte> <- cast(value);
+                return cast(off(source, bytes));
+            }
+
+            directory(path >> str) -> str {
+                source >> p<byte> <- cast(path);
+                at >> int <- length(source) - 1;
+                while (at >= 0 && !separator(rd(off(source, at)))) { at -= 1; }
+                if (at < 0) return ".";
+                output >> p<byte> <- cast(alloc(at + 2));
+                guard output != null else return ".";
+                copyAt >> int <- 0;
+                while (copyAt < at) {
+                    wr(off(output, copyAt), rd(off(source, copyAt)));
+                    copyAt += 1;
+                }
+                if (copyAt == 0) { wr(output, 46); copyAt <- 1; }
+                wr(off(output, copyAt), 0);
+                return cast(output);
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && separator(rd(off(source, width - 1)))) return left + right;
+                if (width >= 2 && rd(off(source, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            urlJoin(left >> str, right >> str) -> str {
+                source >> p<byte> <- cast(left);
+                width >> int <- length(source);
+                if (width > 0 && rd(off(source, width - 1)) == 47) return left + right;
+                return left + "/" + right;
+            }
+
+            option(handle >> addr, name >> str) -> str {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at + 1 < count) {
+                    if (same(argsAt(handle, at), name)) return argsAt(handle, at + 1);
+                    at += 1;
+                }
+                return "";
+            }
+
+            hasFlag(handle >> addr, name >> str) -> bool {
+                count >> int <- argsCount(handle);
+                at >> int <- 2;
+                while (at < count) {
+                    if (same(argsAt(handle, at), name)) return true;
+                    at += 1;
+                }
+                return false;
+            }
+
+            addDiagnostic(diagnostics >> int, code >> str, message >> str) -> bool {
+                item >> int <- jsonNewObject();
+                jsonObjectSet(item, "code", jsonNewString(code));
+                jsonObjectSet(item, "severity", jsonNewString("error"));
+                jsonObjectSet(item, "message", jsonNewString(message));
+                return jsonArrayPush(diagnostics, item);
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != "" && parent != "." && parent != path) {
+                    guard ensureDirectory(parent) else return false;
+                }
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            workspaceRoot(handle >> addr) -> str {
+                selected >> str <- manifest.manifest.select(handle);
+                if (selected == "") return ".";
+                return directory(selected);
+            }
+
+            waitOk(process >> Result<ProcessHandle, ProcessError>) -> bool {
+                status >> Result<int, ProcessError> <- wait(process);
+                return isOk(status) && unwrap(status) == 0;
+            }
+
+            materialPath(path >> str) -> str {
+                if (starts(path, "\\\\?\\")) return path;
+                source >> p<byte> <- cast(path);
+                width >> int <- length(source);
+                if (width < 248 || width < 3 || rd(off(source, 1)) != 58) return path;
+                output >> p<byte> <- cast(alloc(width + 5));
+                guard output != null else return path;
+                wr(off(output, 0), 92);
+                wr(off(output, 1), 92);
+                wr(off(output, 2), 63);
+                wr(off(output, 3), 92);
+                at >> int <- 0;
+                while (at < width) {
+                    value >> byte <- rd(off(source, at));
+                    wr(off(output, at + 4), value == 47 ? 92 : value);
+                    at += 1;
+                }
+                wr(off(output, width + 4), 0);
+                return cast(output);
+            }
+
+            finishDownload(temporary >> str, destination >> str) -> bool {
+                source >> str <- materialPath(temporary);
+                target >> str <- materialPath(destination);
+                guard exists(source) else return false;
+                if (exists(target)) delete_file(target);
+                expected >> int <- fsSize(source);
+                guard expected >= 0 else return false;
+                attempt >> int <- 0;
+                while (attempt < 50) {
+                    if (rename_file(source, target)) return true;
+                    copied >> int <- fsCopy(source, target);
+                    if (copied == expected && fsSize(target) == expected) {
+                        delete_file(source);
+                        return true;
+                    }
+                    if (exists(target)) delete_file(target);
+                    sleepMs(10);
+                    attempt += 1;
+                }
+                return false;
+            }
+
+            curlDownloadAuthorized(
+                handle >> addr,
+                url >> str,
+                destination >> str,
+                suppliedToken >> str
+            ) -> bool {
+                parent >> str <- directory(destination);
+                guard ensureDirectory(parent) else return false;
+                temporary >> str <- destination + ".download";
+                etag >> str <- destination + ".etag";
+                if (exists(temporary)) delete_file(temporary);
+                token >> str <- suppliedToken;
+                if (token == "") token <- option(handle, "--token");
+                process >> Result<ProcessHandle, ProcessError>;
+                if (exists(etag)) {
+                    if (token == "") process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--etag-compare", etag, "--etag-save", etag,
+                        "--output", temporary, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--header", "Authorization: Bearer " + token,
+                        "--etag-compare", etag, "--etag-save", etag,
+                        "--output", temporary, url
+                    ]);
+                }
+                else {
+                    if (token == "") process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--etag-save", etag, "--output", temporary, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--header", "Authorization: Bearer " + token,
+                        "--etag-save", etag, "--output", temporary, url
+                    ]);
+                }
+                guard waitOk(process) else {
+                    if (exists(temporary)) delete_file(temporary);
+                    return false;
+                }
+                if (exists(destination) && (!exists(temporary) || fsSize(temporary) == 0)) {
+                    if (exists(temporary)) delete_file(temporary);
+                    return true;
+                }
+                return finishDownload(temporary, destination);
+            }
+
+            curlDownload(handle >> addr, url >> str, destination >> str) -> bool {
+                parent >> str <- directory(destination);
+                guard ensureDirectory(parent) else return false;
+                temporary >> str <- destination + ".download";
+                etag >> str <- destination + ".etag";
+                if (exists(temporary)) delete_file(temporary);
+                token >> str <- option(handle, "--token");
+                process >> Result<ProcessHandle, ProcessError>;
+                if (exists(etag)) {
+                    if (token == "") process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--etag-compare", etag, "--etag-save", etag,
+                        "--output", temporary, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--header", "Authorization: Bearer " + token,
+                        "--etag-compare", etag, "--etag-save", etag,
+                        "--output", temporary, url
+                    ]);
+                }
+                else {
+                    if (token == "") process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--etag-save", etag, "--output", temporary, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--header", "Authorization: Bearer " + token,
+                        "--etag-save", etag, "--output", temporary, url
+                    ]);
+                }
+                guard waitOk(process) else {
+                    if (exists(temporary)) delete_file(temporary);
+                    return false;
+                }
+                if (exists(destination) && (!exists(temporary) || fsSize(temporary) == 0)) {
+                    if (exists(temporary)) delete_file(temporary);
+                    return true;
+                }
+                return finishDownload(temporary, destination);
+            }
+
+            curlUploadAuthorized(
+                handle >> addr,
+                method >> str,
+                url >> str,
+                source >> str,
+                suppliedToken >> str,
+                contentType >> str
+            ) -> bool {
+                guard exists(source) else return false;
+                token >> str <- suppliedToken;
+                if (token == "") token <- option(handle, "--token");
+                response >> str <- source + ".response";
+                if (exists(response)) delete_file(response);
+                process >> Result<ProcessHandle, ProcessError>;
+                if (token == "") process <- spawn("curl", [
+                    "--fail-with-body", "--location", "--silent", "--show-error",
+                    "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                    "--request", method, "--header", "Content-Type: " + contentType,
+                    "--upload-file", source, "--output", response, url
+                ]);
+                else process <- spawn("curl", [
+                    "--fail-with-body", "--location", "--silent", "--show-error",
+                    "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                    "--request", method, "--header", "Authorization: Bearer " + token,
+                    "--header", "Content-Type: " + contentType,
+                    "--upload-file", source, "--output", response, url
+                ]);
+                ok >> bool <- waitOk(process);
+                if (exists(response)) delete_file(response);
+                return ok;
+            }
+
+            curlRequestAuthorized(
+                handle >> addr,
+                method >> str,
+                url >> str,
+                body >> str,
+                suppliedToken >> str,
+                contentType >> str,
+                response >> str
+            ) -> bool {
+                token >> str <- suppliedToken;
+                if (token == "") token <- option(handle, "--token");
+                if (exists(response)) delete_file(response);
+                process >> Result<ProcessHandle, ProcessError>;
+                if (body == "") {
+                    if (token == "") process <- spawn("curl", [
+                        "--fail-with-body", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--request", method, "--output", response, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail-with-body", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--request", method, "--header", "Authorization: Bearer " + token,
+                        "--output", response, url
+                    ]);
+                }
+                else {
+                    guard exists(body) else return false;
+                    if (token == "") process <- spawn("curl", [
+                        "--fail-with-body", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--request", method, "--header", "Content-Type: " + contentType,
+                        "--data-binary", "@" + body, "--output", response, url
+                    ]);
+                    else process <- spawn("curl", [
+                        "--fail-with-body", "--location", "--silent", "--show-error",
+                        "--config", cargo_config.cargoConfig.curlPolicy(handle),
+                        "--request", method, "--header", "Authorization: Bearer " + token,
+                        "--header", "Content-Type: " + contentType,
+                        "--data-binary", "@" + body, "--output", response, url
+                    ]);
+                }
+                return waitOk(process);
+            }
+
+            gitClone(handle >> addr, url >> str, destination >> str) -> bool {
+                return waitOk(spawn("git", [
+                    "-c", "include.path=" + cargo_config.cargoConfig.gitPolicy(handle),
+                    "clone", "--no-tags", url, destination
+                ]));
+            }
+
+            gitFetch(handle >> addr, destination >> str) -> bool {
+                return waitOk(spawn("git", [
+                    "-c", "include.path=" + cargo_config.cargoConfig.gitPolicy(handle),
+                    "-C", destination, "fetch", "--all", "--tags", "--prune"
+                ]));
+            }
+
+            gitPull(handle >> addr, destination >> str) -> bool {
+                return waitOk(spawn("git", [
+                    "-c", "include.path=" + cargo_config.cargoConfig.gitPolicy(handle),
+                    "-C", destination, "pull", "--ff-only"
+                ]));
+            }
+
+            gitCheckout(handle >> addr, destination >> str, reference >> str) -> bool {
+                return waitOk(spawn("git", [
+                    "-c", "include.path=" + cargo_config.cargoConfig.gitPolicy(handle),
+                    "-C", destination, "checkout", "--detach", reference
+                ]));
+            }
+
+            readTrimmed(path >> str) -> str {
+                bytes >> int <- fsSize(path);
+                guard bytes > 0 else return "";
+                data >> p<byte> <- cast(alloc(bytes + 1));
+                guard data != null else return "";
+                read >> int <- fsReadInto(path, data, bytes);
+                guard read >= 0 else { free(data); return ""; }
+                while (read > 0 && (rd(off(data, read - 1)) == 10 ||
+                    rd(off(data, read - 1)) == 13 || rd(off(data, read - 1)) == 32)) { read -= 1; }
+                wr(off(data, read), 0);
+                return cast(data);
+            }
+
+            gitHead(destination >> str) -> str {
+                return readTrimmed(join(join(destination, ".git"), "HEAD"));
+            }
+
+            registryBase(registryRef >> str) -> str {
+                if (starts(registryRef, "sparse+")) return after(registryRef, 7);
+                if (starts(registryRef, "git+")) return after(registryRef, 4);
+                return registryRef;
+            }
+
+            registryCache(handle >> addr, registryRef >> str) -> str {
+                hash >> str <- sha256.sha256.bytes(cast(registryRef), length(cast(registryRef)));
+                return join(join(workspaceRoot(handle), "target/ghor/transport-cache"), hash);
+            }
+
+            materializeHttpRegistry(
+                handle >> addr,
+                registryRef >> str,
+                diagnostics >> int
+            ) -> str {
+                root >> str <- registryCache(handle, registryRef);
+                guard ensureDirectory(root) else {
+                    addDiagnostic(diagnostics, "E_GHOR_NETWORK_001",
+                        "HTTP registry cache directory could not be created");
+                    return "";
+                }
+                index >> str <- join(root, "index.json");
+                if (cargo_config.cargoConfig.offline(handle)) {
+                    if (exists(index)) return root;
+                    addDiagnostic(diagnostics, "E_GHOR_NET_OFFLINE_001",
+                        "offline registry index is not cached for '" + registryRef + "'");
+                    return "";
+                }
+                if (!curlDownload(handle, urlJoin(registryBase(registryRef), "index.json"), index)) {
+                    addDiagnostic(diagnostics, "E_GHOR_NETWORK_001",
+                        "HTTP registry index download failed for '" + registryRef + "'");
+                    return "";
+                }
+                return root;
+            }
+
+            materializeGitRegistry(
+                handle >> addr,
+                registryRef >> str,
+                diagnostics >> int
+            ) -> str {
+                root >> str <- registryCache(handle, registryRef);
+                present >> bool <- exists(join(root, ".git"));
+                if (!present && cargo_config.cargoConfig.offline(handle)) {
+                    addDiagnostic(diagnostics, "E_GHOR_NET_OFFLINE_001",
+                        "offline git registry is not cached for '" + registryRef + "'");
+                    return "";
+                }
+                if (!present) {
+                    ensureDirectory(directory(root));
+                    if (!gitClone(handle, registryBase(registryRef), root)) {
+                        addDiagnostic(diagnostics, "E_GHOR_REGISTRY_GIT_001",
+                            "git registry clone failed for '" + registryRef + "'");
+                        return "";
+                    }
+                }
+                else if (!cargo_config.cargoConfig.offline(handle) &&
+                    (!gitFetch(handle, root) || !gitPull(handle, root))) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_GIT_001",
+                        "git registry refresh failed for '" + registryRef + "'");
+                    return "";
+                }
+                if (!exists(join(root, "index.json"))) {
+                    addDiagnostic(diagnostics, "E_GHOR_REGISTRY_GIT_001",
+                        "git registry has no index.json at '" + registryRef + "'");
+                    return "";
+                }
+                return root;
+            }
+
+            allDependencies(root >> int) -> int {
+                result >> int <- jsonNewArray();
+                names >> array<str> <- ["dependencies", "build_dependencies", "target_dependencies",
+                    "rust_dependencies", "c_dependencies", "cpp_dependencies", "asm_dependencies"];
+                listAt >> int <- 0;
+                while (listAt < 7) {
+                    source >> int <- jsonObjectGet(root, names[listAt]);
+                    at >> int <- 0;
+                    while (at < jsonArrayLen(source)) {
+                        jsonArrayPush(result, jsonClone(jsonArrayGet(source, at)));
+                        at += 1;
+                    }
+                    listAt += 1;
+                }
+                return result;
+            }
+
+            gitRefKind(dep >> int) -> str {
+                if (jsonGetStringOr(jsonObjectGet(dep, "rev"), "") != "") return "rev";
+                if (jsonGetStringOr(jsonObjectGet(dep, "tag"), "") != "") return "tag";
+                if (jsonGetStringOr(jsonObjectGet(dep, "branch"), "") != "") return "branch";
+                return "head";
+            }
+
+            gitRef(dep >> int) -> str {
+                selected >> str <- jsonGetStringOr(jsonObjectGet(dep, "rev"), "");
+                if (selected != "") return selected;
+                selected <- jsonGetStringOr(jsonObjectGet(dep, "tag"), "");
+                if (selected != "") return selected;
+                selected <- jsonGetStringOr(jsonObjectGet(dep, "branch"), "");
+                if (selected != "") return selected;
+                return "HEAD";
+            }
+
+            kindCode(registryRef >> str) -> int {
+                if (starts(registryRef, "sparse+http://") ||
+                    starts(registryRef, "sparse+https://")) return 3;
+                if (starts(registryRef, "http://") ||
+                    starts(registryRef, "https://")) return 2;
+                if (starts(registryRef, "git+")) return 1;
+                return 0;
+            }
+
+        public:
+            kind(registryRef >> str) -> str {
+                selected >> int <- kindCode(registryRef);
+                if (selected == 3) return "sparse-http";
+                if (selected == 2) return "http";
+                if (selected == 1) return "git";
+                return "filesystem";
+            }
+
+            registryRoot(handle >> addr, registryRef >> str, diagnostics >> int) -> str {
+                selected >> str <- kind(registryRef);
+                if (selected == "http" || selected == "sparse-http") {
+                    return materializeHttpRegistry(handle, registryRef, diagnostics);
+                }
+                if (selected == "git") return materializeGitRegistry(handle, registryRef, diagnostics);
+                return registryRef;
+            }
+
+            registryRootAuthorized(
+                handle >> addr,
+                registryRef >> str,
+                token >> str,
+                diagnostics >> int
+            ) -> str {
+                selected >> str <- kind(registryRef);
+                if (selected == "http" || selected == "sparse-http") {
+                    root >> str <- registryCache(handle, registryRef);
+                    guard ensureDirectory(root) else {
+                        addDiagnostic(diagnostics, "E_GHOR_NETWORK_001",
+                            "HTTP registry cache directory could not be created");
+                        return "";
+                    }
+                    index >> str <- join(root, "index.json");
+                    if (cargo_config.cargoConfig.offline(handle)) {
+                        if (exists(index)) return root;
+                        addDiagnostic(diagnostics, "E_GHOR_NET_OFFLINE_001",
+                            "offline registry index is not cached for '" + registryRef + "'");
+                        return "";
+                    }
+                    if (!curlDownloadAuthorized(handle,
+                        urlJoin(registryBase(registryRef), "index.json"), index, token)) {
+                        addDiagnostic(diagnostics, "E_GHOR_NETWORK_001",
+                            "HTTP registry index download failed for '" + registryRef + "'");
+                        return "";
+                    }
+                    return root;
+                }
+                if (selected == "git") return materializeGitRegistry(handle, registryRef, diagnostics);
+                return registryRef;
+            }
+
+            downloadAuthorized(
+                handle >> addr,
+                url >> str,
+                destination >> str,
+                token >> str
+            ) -> bool {
+                return curlDownloadAuthorized(handle, url, destination, token);
+            }
+
+            uploadAuthorized(
+                handle >> addr,
+                method >> str,
+                url >> str,
+                source >> str,
+                token >> str,
+                contentType >> str
+            ) -> bool {
+                return curlUploadAuthorized(
+                    handle, method, url, source, token, contentType);
+            }
+
+            requestAuthorized(
+                handle >> addr,
+                method >> str,
+                url >> str,
+                body >> str,
+                token >> str,
+                contentType >> str,
+                response >> str
+            ) -> bool {
+                return curlRequestAuthorized(
+                    handle, method, url, body, token, contentType, response);
+            }
+
+            ensureRegistryFile(
+                handle >> addr,
+                registryRef >> str,
+                root >> str,
+                relative >> str,
+                diagnostics >> int
+            ) -> bool {
+                destination >> str <- join(root, relative);
+                selected >> str <- kind(registryRef);
+                if (selected == "filesystem" || selected == "git") {
+                    if (exists(destination)) return true;
+                    return addDiagnostic(diagnostics, "E_GHOR_FETCH_001",
+                        "registry material is missing at '" + destination + "'") && false;
+                }
+                if (cargo_config.cargoConfig.offline(handle)) {
+                    if (exists(destination)) return true;
+                    return addDiagnostic(diagnostics, "E_GHOR_NET_OFFLINE_001",
+                        "offline registry material is not cached at '" + relative + "'") && false;
+                }
+                if (curlDownload(handle,
+                    urlJoin(registryBase(registryRef), relative), destination)) return true;
+                return addDiagnostic(diagnostics, "E_GHOR_NETWORK_001",
+                    "registry material download failed for '" + relative + "'") && false;
+            }
+
+            gitDependency(handle >> addr, dep >> int, diagnostics >> int) -> int {
+                url >> str <- jsonGetStringOr(jsonObjectGet(dep, "git"), "");
+                guard url != "" else return 0;
+                reference >> str <- gitRef(dep);
+                key >> str <- url + "\n" + gitRefKind(dep) + "\n" + reference;
+                hash >> str <- sha256.sha256.bytes(cast(key), length(cast(key)));
+                root >> str <- join(join(workspaceRoot(handle), "target/ghor/git-deps-cache"), hash);
+                present >> bool <- exists(join(root, ".git"));
+                if (!present && cargo_config.cargoConfig.offline(handle)) {
+                    addDiagnostic(diagnostics, "E_GHOR_NET_OFFLINE_001",
+                        "offline git dependency is not cached for '" + url + "'");
+                    return 0;
+                }
+                if (!present) {
+                    ensureDirectory(directory(root));
+                    guard gitClone(handle, url, root) else {
+                        addDiagnostic(diagnostics, "E_GHOR_GIT_DEP_001",
+                            "git dependency clone failed for '" + url + "'");
+                        return 0;
+                    }
+                }
+                else if (!cargo_config.cargoConfig.offline(handle) && !gitFetch(handle, root)) {
+                    addDiagnostic(diagnostics, "E_GHOR_GIT_DEP_001",
+                        "git dependency fetch failed for '" + url + "'");
+                    return 0;
+                }
+                checked >> bool <- gitCheckout(handle, root, reference);
+                if (!checked && gitRefKind(dep) == "branch") {
+                    checked <- gitCheckout(handle, root, "origin/" + reference);
+                }
+                guard checked else {
+                    addDiagnostic(diagnostics, "E_GHOR_GIT_DEP_001",
+                        "git dependency reference '" + reference + "' could not be checked out");
+                    return 0;
+                }
+                head >> str <- gitHead(root);
+                guard head != "" else {
+                    addDiagnostic(diagnostics, "E_GHOR_GIT_DEP_001",
+                        "git dependency HEAD could not be read");
+                    return 0;
+                }
+                manifestPath >> str <- join(root, "ghor.toml");
+                if (!exists(manifestPath)) manifestPath <- join(root, "nc.toml");
+                if (!exists(manifestPath)) manifestPath <- join(root, "Cargo.toml");
+                nested >> int <- exists(manifestPath) ? manifest.manifest.load(manifestPath) : 0;
+                version >> str <- nested == 0 ? "0.0.0" : jsonGetStringOr(
+                    jsonObjectGet(jsonObjectGet(nested, "package"), "version"), "0.0.0");
+                dependencies >> int <- nested == 0 ? jsonNewArray() : allDependencies(nested);
+                source >> int <- jsonNewObject();
+                jsonObjectSet(source, "url", jsonNewString(url));
+                jsonObjectSet(source, "source", jsonNewString(
+                    "git+" + url + "?" + gitRefKind(dep) + "=" + reference + "#" + head));
+                jsonObjectSet(source, "requested_ref_kind", jsonNewString(gitRefKind(dep)));
+                jsonObjectSet(source, "requested_ref", jsonNewString(reference));
+                jsonObjectSet(source, "resolved_head", jsonNewString(head));
+                jsonObjectSet(source, "cache_path", jsonNewString(root));
+                jsonObjectSet(source, "manifest_hash", jsonNewString(
+                    nested == 0 ? "" : sha256.sha256.file(manifestPath)));
+                entry >> int <- jsonNewObject();
+                jsonObjectSet(entry, "name", jsonClone(jsonObjectGet(dep, "name")));
+                jsonObjectSet(entry, "version", jsonNewString(version));
+                jsonObjectSet(entry, "status", jsonNewString("resolved_git"));
+                jsonObjectSet(entry, "source", source);
+                jsonObjectSet(entry, "kind", jsonClone(jsonObjectGet(dep, "kind")));
+                jsonObjectSet(entry, "target", jsonClone(jsonObjectGet(dep, "target")));
+                jsonObjectSet(entry, "features", jsonClone(jsonObjectGet(dep, "features")));
+                jsonObjectSet(entry, "default_features", jsonClone(jsonObjectGet(dep, "default_features")));
+                jsonObjectSet(entry, "override", jsonClone(jsonObjectGet(dep, "override")));
+                jsonObjectSet(entry, "dependencies", dependencies);
+                if (nested != 0) jsonRelease(nested);
+                return entry;
+            }
+
+            selfTest() -> bool {
+                return length(cast("transport")) == 9 &&
+                    separator(47) && separator(92) && !separator(45);
+            }
+
+    fa:
+        return true;
+}

@@ -1,0 +1,640 @@
+use <io:output, render>;
+use <project:ir, mct, sema, diagnostics>;
+
+nccMctNativeUnwind {
+    const:
+        UNWIND_MAGIC >> int <- 0x574E554E;
+        UNWIND_VERSION >> int <- 1;
+        HEADER_BYTES >> int <- 80;
+        RELOCATION_BYTES >> int <- 16;
+        COMPACT_ENTRY_BYTES >> int <- 32;
+        MAX_BUNDLE_BYTES >> int <- 131072;
+
+        FORMAT_DWARF_CFI >> int <- 1;
+        FORMAT_WIN64 >> int <- 2;
+        FORMAT_WASM_STACK >> int <- 3;
+        FORMAT_MACH_COMPACT >> int <- 4;
+
+        MACH_X86_64_RBP_FRAME >> int <- 0x01000000;
+        MACH_ARM64_FRAME >> int <- 0x04000000;
+
+        RELOC_TEXT_ABSOLUTE >> int <- 1;
+        RELOC_XDATA_RVA >> int <- 2;
+        RELOC_TEXT_PCREL32 >> int <- 3;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_TARGET >> int <- 8;
+        H_FORMAT >> int <- 12;
+        H_RELOC_AT >> int <- 16;
+        H_RELOCATIONS >> int <- 20;
+        H_EH_AT >> int <- 24;
+        H_EH_BYTES >> int <- 28;
+        H_PDATA_AT >> int <- 32;
+        H_PDATA_BYTES >> int <- 36;
+        H_XDATA_AT >> int <- 40;
+        H_XDATA_BYTES >> int <- 44;
+        H_BYTES >> int <- 48;
+        H_HASH >> int <- 52;
+        H_FUNCTIONS >> int <- 56;
+        H_POINTER_BYTES >> int <- 60;
+        H_CIE_BYTES >> int <- 64;
+        H_PROLOG_BYTES >> int <- 68;
+        H_FLAGS >> int <- 72;
+        H_RESERVED >> int <- 76;
+
+        R_SECTION_OFFSET >> int <- 0;
+        R_ADDEND >> int <- 4;
+        R_KIND >> int <- 8;
+        R_WIDTH >> int <- 12;
+
+        IR_FUNCTION >> int <- 2;
+
+        DW_CFA_NOP >> int <- 0x00;
+        DW_CFA_ADVANCE_LOC >> int <- 0x40;
+        DW_CFA_OFFSET >> int <- 0x80;
+        DW_CFA_DEF_CFA >> int <- 0x0C;
+        DW_CFA_DEF_CFA_REGISTER >> int <- 0x0D;
+        DW_CFA_DEF_CFA_OFFSET >> int <- 0x0E;
+
+        FLAG_RELOCATABLE >> int <- 1;
+        FLAG_CALL_FRAME >> int <- 2;
+        FLAG_PLATFORM_NATIVE >> int <- 4;
+        FLAG_WASM_STACK_MACHINE >> int <- 8;
+        FLAG_COMPACT_UNWIND >> int <- 16;
+
+    type:
+        NativeUnwindContract {
+            public:
+                target >> int;
+                format >> int;
+                functions >> int;
+                relocations >> int;
+                ehBytes >> int;
+                pdataBytes >> int;
+                xdataBytes >> int;
+                bytes >> int;
+                hash >> int;
+        }
+
+        RegisterContract {
+            public:
+                stack >> int;
+                frame >> int;
+                result >> int;
+                pointerBytes >> int;
+                dataAlignment >> int;
+                prologBytes >> int;
+        }
+
+    stc:
+        materializations >> u64 <- 0;
+        materialBytes >> u64 <- 0;
+
+    local:
+        lastTarget >> int <- 0;
+        lastFormat >> int <- 0;
+        lastFunctions >> int <- 0;
+        lastBytes >> int <- 0;
+        lastHash >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putU8(out >> p<byte>, at >> int, value >> int) -> void {
+                wr<byte>(off(out, at), value & 255);
+            }
+
+            putU16(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+            }
+
+            putU32(out >> p<byte>, at >> int, value >> int) -> void {
+                putU8(out, at, value);
+                putU8(out, at + 1, value >>> 8);
+                putU8(out, at + 2, value >>> 16);
+                putU8(out, at + 3, value >>> 24);
+            }
+
+            putAddress(out >> p<byte>, at >> int, value >> int, width >> int) -> int {
+                putU32(out, at, value);
+                if (width == 8) putU32(out, at + 4, 0);
+                return at + width;
+            }
+
+            zero(out >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) { putU8(out, at, 0); at += 1; }
+            }
+
+            alignUp(value >> int, boundary >> int) -> int {
+                remainder >> int <- value % boundary;
+                return remainder == 0 ? value : value + boundary - remainder;
+            }
+
+            unsignedByte(value >> int) -> int {
+                return value < 0 ? value + 256 : value;
+            }
+
+            hash(base >> p<byte>, bytes >> int) -> int {
+                value >> int <- 49979687;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value <- (value + unsignedByte(rd<byte>(off(base, at))) *
+                        ((at % 239) + 1) + at * 37) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            putUleb(out >> p<byte>, at >> int, value >> int) -> int {
+                cursor >> int <- at;
+                rest >> int <- value;
+                while (rest >= 128) {
+                    putU8(out, cursor, (rest & 127) | 128);
+                    rest <- rest >>> 7;
+                    cursor += 1;
+                }
+                putU8(out, cursor, rest);
+                return cursor + 1;
+            }
+
+            putSleb(out >> p<byte>, at >> int, value >> int) -> int {
+                cursor >> int <- at;
+                rest >> int <- value;
+                running >> bool <- true;
+                while (running) {
+                    item >> int <- rest & 127;
+                    rest <- rest >> 7;
+                    sign >> bool <- (item & 64) != 0;
+                    running <- !((rest == 0 && !sign) || (rest == -1 && sign));
+                    putU8(out, cursor, running ? item | 128 : item);
+                    cursor += 1;
+                }
+                return cursor;
+            }
+
+            targetFormat(target >> int) -> int {
+                if (target == 2) return FORMAT_WIN64;
+                if (target == 10) return FORMAT_WASM_STACK;
+                if (target == 3 || target == 6) return FORMAT_MACH_COMPACT;
+                return FORMAT_DWARF_CFI;
+            }
+
+            compactEncoding(target >> int) -> int {
+                if (target == 3) return MACH_X86_64_RBP_FRAME;
+                if (target == 6) return MACH_ARM64_FRAME;
+                return 0;
+            }
+
+            registers(target >> int) -> RegisterContract {
+                if (target == 1 || target == 2 || target == 3)
+                    return RegisterContract(stack: 7, frame: 6, result: 16,
+                        pointerBytes: 8, dataAlignment: -8, prologBytes: 4);
+                if (target == 4)
+                    return RegisterContract(stack: 4, frame: 5, result: 8,
+                        pointerBytes: 4, dataAlignment: -4, prologBytes: 3);
+                if (target == 5 || target == 6)
+                    return RegisterContract(stack: 31, frame: 29, result: 30,
+                        pointerBytes: 8, dataAlignment: -8, prologBytes: 8);
+                if (target == 7)
+                    return RegisterContract(stack: 13, frame: 11, result: 14,
+                        pointerBytes: 4, dataAlignment: -4, prologBytes: 8);
+                if (target == 8)
+                    return RegisterContract(stack: 2, frame: 8, result: 1,
+                        pointerBytes: 4, dataAlignment: -4, prologBytes: 4);
+                if (target == 9)
+                    return RegisterContract(stack: 2, frame: 8, result: 1,
+                        pointerBytes: 8, dataAlignment: -8, prologBytes: 4);
+                return RegisterContract(stack: 0, frame: 0, result: 0,
+                    pointerBytes: 4, dataAlignment: -4, prologBytes: 0);
+            }
+
+            functionRecords(material >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION)
+                        count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+
+            functionNode(material >> p<byte>, ordinal >> int) -> int {
+                seen >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION) {
+                        if (seen == ordinal) return node;
+                        seen += 1;
+                    }
+                    node += 1;
+                }
+                return -1;
+            }
+
+            functionEnd(material >> p<byte>, node >> int, start >> int) -> int {
+                next >> int <- node + 1;
+                while (next < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, next) == IR_FUNCTION) {
+                        candidate >> int <- mct.nccMct.artifactRecordTextOffset(material, next);
+                        if (candidate > start) return candidate;
+                    }
+                    next += 1;
+                }
+                return mct.nccMct.artifactTextBytes(material);
+            }
+
+            writeRelocation(blob >> p<byte>, index >> int, sectionOffset >> int,
+                addend >> int, kind >> int, width >> int) -> void {
+                at >> int <- integer(blob, H_RELOC_AT) + index * RELOCATION_BYTES;
+                putU32(blob, at + R_SECTION_OFFSET, sectionOffset);
+                putU32(blob, at + R_ADDEND, addend);
+                putU32(blob, at + R_KIND, kind);
+                putU32(blob, at + R_WIDTH, width);
+            }
+
+            writeCie(out >> p<byte>, at >> int, target >> int) -> int {
+                contract >> RegisterContract <- registers(target);
+                start >> int <- at;
+                cursor >> int <- at + 4;
+                putU32(out, cursor, 0); cursor += 4;
+                putU8(out, cursor, 1); cursor += 1;
+                if (target == 1) {
+                    putU8(out,cursor,122); putU8(out,cursor+1,82); cursor += 2;
+                }
+                putU8(out, cursor, 0); cursor += 1;
+                cursor <- putUleb(out, cursor, 1);
+                cursor <- putSleb(out, cursor, contract.dataAlignment);
+                cursor <- putUleb(out, cursor, contract.result);
+                if (target == 1) {
+                    cursor <- putUleb(out,cursor,1);
+                    putU8(out,cursor,0x1B); cursor += 1;
+                }
+                putU8(out, cursor, DW_CFA_DEF_CFA); cursor += 1;
+                cursor <- putUleb(out, cursor, contract.stack);
+                cursor <- putUleb(out, cursor,
+                    target == 1 || target == 3 || target == 4 ? contract.pointerBytes : 0);
+                if (target == 1 || target == 3 || target == 4) {
+                    putU8(out, cursor, DW_CFA_OFFSET | contract.result); cursor += 1;
+                    cursor <- putUleb(out, cursor, 1);
+                }
+                while ((cursor - start) % 4 != 0) {
+                    putU8(out, cursor, DW_CFA_NOP); cursor += 1;
+                }
+                putU32(out, start, cursor - start - 4);
+                return cursor;
+            }
+
+            writeFdeInstructions(out >> p<byte>, at >> int, target >> int) -> int {
+                cursor >> int <- at;
+                if (target == 1 || target == 3) {
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 1); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_OFFSET); cursor += 1;
+                    cursor <- putUleb(out, cursor, 16);
+                    putU8(out, cursor, DW_CFA_OFFSET | 6); cursor += 1;
+                    cursor <- putUleb(out, cursor, 2);
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 3); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_REGISTER); cursor += 1;
+                    cursor <- putUleb(out, cursor, 6);
+                    return cursor;
+                }
+                if (target == 4) {
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 1); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_OFFSET); cursor += 1;
+                    cursor <- putUleb(out, cursor, 8);
+                    putU8(out, cursor, DW_CFA_OFFSET | 5); cursor += 1;
+                    cursor <- putUleb(out, cursor, 2);
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 2); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_REGISTER); cursor += 1;
+                    cursor <- putUleb(out, cursor, 5);
+                    return cursor;
+                }
+                if (target == 5 || target == 6) {
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 4); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_OFFSET); cursor += 1;
+                    cursor <- putUleb(out, cursor, 16);
+                    putU8(out, cursor, DW_CFA_OFFSET | 29); cursor += 1;
+                    cursor <- putUleb(out, cursor, 2);
+                    putU8(out, cursor, DW_CFA_OFFSET | 30); cursor += 1;
+                    cursor <- putUleb(out, cursor, 1);
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 4); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_REGISTER); cursor += 1;
+                    cursor <- putUleb(out, cursor, 29);
+                    return cursor;
+                }
+                if (target == 7) {
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 4); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_OFFSET); cursor += 1;
+                    cursor <- putUleb(out, cursor, 8);
+                    putU8(out, cursor, DW_CFA_OFFSET | 11); cursor += 1;
+                    cursor <- putUleb(out, cursor, 2);
+                    putU8(out, cursor, DW_CFA_OFFSET | 14); cursor += 1;
+                    cursor <- putUleb(out, cursor, 1);
+                    putU8(out, cursor, DW_CFA_ADVANCE_LOC | 4); cursor += 1;
+                    putU8(out, cursor, DW_CFA_DEF_CFA_REGISTER); cursor += 1;
+                    cursor <- putUleb(out, cursor, 11);
+                }
+                return cursor;
+            }
+
+            writeEhFrame(material >> p<byte>, blob >> p<byte>, at >> int) -> int {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                contract >> RegisterContract <- registers(target);
+                start >> int <- at;
+                cursor >> int <- writeCie(blob, at, target);
+                putU32(blob, H_CIE_BYTES, cursor - start);
+                ordinal >> int <- 0;
+                while (ordinal < functionRecords(material)) {
+                    node >> int <- functionNode(material, ordinal);
+                    functionStart >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                    end >> int <- functionEnd(material, node, functionStart);
+                    fde >> int <- cursor;
+                    cursor += 4;
+                    putU32(blob, cursor, cursor - start); cursor += 4;
+                    location >> int <- cursor - start;
+                    addressBytes >> int <- target == 1 ? 4 : contract.pointerBytes;
+                    cursor <- putAddress(blob, cursor, 0, addressBytes);
+                    cursor <- putAddress(blob, cursor, end - functionStart,
+                        addressBytes);
+                    if (target == 1) { cursor <- putUleb(blob,cursor,0); }
+                    cursor <- writeFdeInstructions(blob, cursor, target);
+                    while ((cursor - fde) % 4 != 0) {
+                        putU8(blob, cursor, DW_CFA_NOP); cursor += 1;
+                    }
+                    putU32(blob, fde, cursor - fde - 4);
+                    writeRelocation(blob, ordinal, location, functionStart,
+                        target == 1 ? RELOC_TEXT_PCREL32 : RELOC_TEXT_ABSOLUTE, addressBytes);
+                    ordinal += 1;
+                }
+                putU32(blob, cursor, 0);
+                return cursor + 4;
+            }
+
+            writeWin64(material >> p<byte>, blob >> p<byte>, at >> int) -> int {
+                functions >> int <- functionRecords(material);
+                pdataAt >> int <- at;
+                xdataAt >> int <- alignUp(pdataAt + functions * 12, 4);
+                ordinal >> int <- 0;
+                while (ordinal < functions) {
+                    node >> int <- functionNode(material, ordinal);
+                    start >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                    end >> int <- functionEnd(material, node, start);
+                    row >> int <- pdataAt + ordinal * 12;
+                    writeRelocation(blob, ordinal * 3, row - pdataAt, start,
+                        RELOC_TEXT_ABSOLUTE, 4);
+                    writeRelocation(blob, ordinal * 3 + 1, row - pdataAt + 4, end,
+                        RELOC_TEXT_ABSOLUTE, 4);
+                    writeRelocation(blob, ordinal * 3 + 2, row - pdataAt + 8, 0,
+                        RELOC_XDATA_RVA, 4);
+                    ordinal += 1;
+                }
+                if (functions > 0) {
+                    putU8(blob, xdataAt, 1);
+                    putU8(blob, xdataAt + 1, 4);
+                    putU8(blob, xdataAt + 2, 2);
+                    putU8(blob, xdataAt + 3, 5);
+                    putU8(blob, xdataAt + 4, 4);
+                    putU8(blob, xdataAt + 5, 3);
+                    putU8(blob, xdataAt + 6, 1);
+                    putU8(blob, xdataAt + 7, 0x50);
+                }
+                putU32(blob, H_PDATA_AT, pdataAt);
+                putU32(blob, H_PDATA_BYTES, functions * 12);
+                putU32(blob, H_XDATA_AT, xdataAt);
+                putU32(blob, H_XDATA_BYTES, functions > 0 ? 8 : 0);
+                return xdataAt + (functions > 0 ? 8 : 0);
+            }
+
+            writeCompactUnwind(material >> p<byte>, blob >> p<byte>, at >> int) -> int {
+                target >> int <- mct.nccMct.artifactTarget(material);
+                ordinal >> int <- 0;
+                while (ordinal < functionRecords(material)) {
+                    node >> int <- functionNode(material, ordinal);
+                    start >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                    end >> int <- functionEnd(material, node, start);
+                    row >> int <- at + ordinal * COMPACT_ENTRY_BYTES;
+                    putAddress(blob, row, 0, 8);
+                    putU32(blob, row + 8, end - start);
+                    putU32(blob, row + 12, compactEncoding(target));
+                    putAddress(blob, row + 16, 0, 8);
+                    putAddress(blob, row + 24, 0, 8);
+                    ordinal += 1;
+                }
+                return at + functionRecords(material) * COMPACT_ENTRY_BYTES;
+            }
+
+            valid(blob >> p<byte>) -> bool {
+                guard blob != null else return false;
+                total >> int <- integer(blob, H_BYTES);
+                saved >> int <- integer(blob, H_HASH);
+                putU32(blob, H_HASH, 0);
+                computed >> int <- hash(blob, total);
+                putU32(blob, H_HASH, saved);
+                format >> int <- integer(blob, H_FORMAT);
+                return integer(blob, H_MAGIC) == UNWIND_MAGIC &&
+                    integer(blob, H_VERSION) == UNWIND_VERSION && saved == computed &&
+                    ((format == FORMAT_DWARF_CFI && integer(blob, H_EH_BYTES) > 0 &&
+                        integer(blob, H_RELOCATIONS) == integer(blob, H_FUNCTIONS)) ||
+                    (format == FORMAT_WIN64 && integer(blob, H_PDATA_BYTES) ==
+                        integer(blob, H_FUNCTIONS) * 12 && integer(blob, H_RELOCATIONS) ==
+                        integer(blob, H_FUNCTIONS) * 3) ||
+                    (format == FORMAT_MACH_COMPACT && integer(blob, H_EH_BYTES) > 0 &&
+                        integer(blob, H_RELOCATIONS) == integer(blob, H_FUNCTIONS) &&
+                        compactBytes(blob) == integer(blob, H_FUNCTIONS) *
+                            COMPACT_ENTRY_BYTES) ||
+                    (format == FORMAT_WASM_STACK && integer(blob, H_RELOCATIONS) == 0));
+            }
+
+            emitReport(blob >> p<byte>, json >> bool) -> bool {
+                if (!json) {
+                    print("native-unwind target=");
+                    println(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                    print("format="); print(renderInt(integer(blob, H_FORMAT)));
+                    print(" functions="); println(renderInt(integer(blob, H_FUNCTIONS)));
+                    print("bytes="); print(renderInt(integer(blob, H_BYTES)));
+                    print(" hash="); println(renderInt(integer(blob, H_HASH)));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.native-unwind.v2\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                print("\",\"format\":"); print(renderInt(integer(blob, H_FORMAT)));
+                print(",\"functions\":"); print(renderInt(integer(blob, H_FUNCTIONS)));
+                print(",\"relocations\":"); print(renderInt(integer(blob, H_RELOCATIONS)));
+                print(",\"eh_frame_bytes\":"); print(renderInt(integer(blob, H_EH_BYTES)));
+                print(",\"pdata_bytes\":"); print(renderInt(integer(blob, H_PDATA_BYTES)));
+                print(",\"xdata_bytes\":"); print(renderInt(integer(blob, H_XDATA_BYTES)));
+                print(",\"compact_unwind_bytes\":"); print(renderInt(compactBytes(blob)));
+                print(",\"compact_unwind_relocations\":");
+                print(renderInt(compactRelocations(blob)));
+                print(",\"bytes\":"); print(renderInt(integer(blob, H_BYTES)));
+                print(",\"hash\":"); print(renderInt(integer(blob, H_HASH)));
+                println("}");
+                return true;
+            }
+
+        public:
+            build(material >> p<byte>) -> p<byte> {
+                guard material != null else return null;
+                blob >> p<byte> <- cast<byte>(alloc(MAX_BUNDLE_BYTES));
+                guard blob != null else return null;
+                zero(blob, MAX_BUNDLE_BYTES);
+                target >> int <- mct.nccMct.artifactTarget(material);
+                format >> int <- targetFormat(target);
+                functions >> int <- functionRecords(material);
+                relocations >> int <-
+                    (format == FORMAT_DWARF_CFI || format == FORMAT_MACH_COMPACT) ? functions :
+                    (format == FORMAT_WIN64 ? functions * 3 : 0);
+                relocAt >> int <- HEADER_BYTES;
+                dataAt >> int <- alignUp(relocAt + relocations * RELOCATION_BYTES, 8);
+                putU32(blob, H_RELOC_AT, relocAt);
+                putU32(blob, H_RELOCATIONS, relocations);
+                cursor >> int <- dataAt;
+                if (format == FORMAT_DWARF_CFI || format == FORMAT_MACH_COMPACT) {
+                    putU32(blob, H_EH_AT, dataAt);
+                    cursor <- writeEhFrame(material, blob, dataAt);
+                    putU32(blob, H_EH_BYTES, cursor - dataAt);
+                    if (format == FORMAT_MACH_COMPACT) {
+                        cursor <- alignUp(cursor, 8);
+                        cursor <- writeCompactUnwind(material, blob, cursor);
+                    }
+                } else if (format == FORMAT_WIN64) {
+                    cursor <- writeWin64(material, blob, dataAt);
+                }
+                total >> int <- alignUp(cursor, 4);
+                contract >> RegisterContract <- registers(target);
+                putU32(blob, H_MAGIC, UNWIND_MAGIC);
+                putU32(blob, H_VERSION, UNWIND_VERSION);
+                putU32(blob, H_TARGET, target);
+                putU32(blob, H_FORMAT, format);
+                putU32(blob, H_BYTES, total);
+                putU32(blob, H_FUNCTIONS, functions);
+                putU32(blob, H_POINTER_BYTES, contract.pointerBytes);
+                putU32(blob, H_PROLOG_BYTES, contract.prologBytes);
+                putU32(blob, H_FLAGS, FLAG_RELOCATABLE | FLAG_CALL_FRAME |
+                    (format == FORMAT_WASM_STACK ? FLAG_WASM_STACK_MACHINE :
+                    FLAG_PLATFORM_NATIVE) |
+                    (format == FORMAT_MACH_COMPACT ? FLAG_COMPACT_UNWIND : 0));
+                putU32(blob, H_HASH, hash(blob, total));
+                materializations += 1;
+                materialBytes += total;
+                lastTarget <- target;
+                lastFormat <- format;
+                lastFunctions <- functions;
+                lastBytes <- total;
+                lastHash <- integer(blob, H_HASH);
+                return blob;
+            }
+
+            format(blob >> p<byte>) -> int { return integer(blob, H_FORMAT); }
+            bytes(blob >> p<byte>) -> int { return integer(blob, H_BYTES); }
+            checksum(blob >> p<byte>) -> int { return integer(blob, H_HASH); }
+            functions(blob >> p<byte>) -> int { return integer(blob, H_FUNCTIONS); }
+            relocations(blob >> p<byte>) -> int { return integer(blob, H_RELOCATIONS); }
+            relocationOffset(blob >> p<byte>, index >> int) -> int {
+                return integer(blob, integer(blob, H_RELOC_AT) +
+                    index * RELOCATION_BYTES + R_SECTION_OFFSET);
+            }
+            relocationAddend(blob >> p<byte>, index >> int) -> int {
+                return integer(blob, integer(blob, H_RELOC_AT) +
+                    index * RELOCATION_BYTES + R_ADDEND);
+            }
+            relocationKind(blob >> p<byte>, index >> int) -> int {
+                return integer(blob, integer(blob, H_RELOC_AT) +
+                    index * RELOCATION_BYTES + R_KIND);
+            }
+            relocationWidth(blob >> p<byte>, index >> int) -> int {
+                return integer(blob, integer(blob, H_RELOC_AT) +
+                    index * RELOCATION_BYTES + R_WIDTH);
+            }
+            ehData(blob >> p<byte>) -> p<byte> { return off(blob, integer(blob, H_EH_AT)); }
+            ehBytes(blob >> p<byte>) -> int { return integer(blob, H_EH_BYTES); }
+            pdataData(blob >> p<byte>) -> p<byte> { return off(blob, integer(blob, H_PDATA_AT)); }
+            pdataBytes(blob >> p<byte>) -> int { return integer(blob, H_PDATA_BYTES); }
+            xdataData(blob >> p<byte>) -> p<byte> { return off(blob, integer(blob, H_XDATA_AT)); }
+            xdataBytes(blob >> p<byte>) -> int { return integer(blob, H_XDATA_BYTES); }
+            compactData(blob >> p<byte>) -> p<byte> {
+                return off(blob, alignUp(integer(blob, H_EH_AT) + integer(blob, H_EH_BYTES), 8));
+            }
+            compactBytes(blob >> p<byte>) -> int {
+                return integer(blob, H_FORMAT) == FORMAT_MACH_COMPACT ?
+                    integer(blob, H_FUNCTIONS) * COMPACT_ENTRY_BYTES : 0;
+            }
+            compactRelocations(blob >> p<byte>) -> int {
+                return integer(blob, H_FORMAT) == FORMAT_MACH_COMPACT ?
+                    integer(blob, H_FUNCTIONS) : 0;
+            }
+            compactRelocationOffset(blob >> p<byte>, index >> int) -> int {
+                return index * COMPACT_ENTRY_BYTES;
+            }
+            compactRelocationAddend(material >> p<byte>, index >> int) -> int {
+                node >> int <- functionNode(material, index);
+                return node < 0 ? 0 : mct.nccMct.artifactRecordTextOffset(material, node);
+            }
+            release(blob >> p<byte>) -> void { if (blob != null) free(blob); }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                if (output != "" && fsWriteFrom(output, blob, bytes(blob), false) != bytes(blob)) {
+                    release(blob); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitReport(blob, json);
+                code >> int <- valid(blob) ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return code;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                ok >> bool <- valid(blob) && checksum(blob) == expectedHash;
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                x64 >> RegisterContract <- registers(1);
+                arm >> RegisterContract <- registers(5);
+                rv >> RegisterContract <- registers(9);
+                return UNWIND_MAGIC == 0x574E554E && HEADER_BYTES == 80 &&
+                    RELOCATION_BYTES == 16 && targetFormat(2) == FORMAT_WIN64 &&
+                    targetFormat(10) == FORMAT_WASM_STACK && x64.stack == 7 &&
+                    targetFormat(3) == FORMAT_MACH_COMPACT &&
+                    targetFormat(6) == FORMAT_MACH_COMPACT &&
+                    compactEncoding(3) == MACH_X86_64_RBP_FRAME &&
+                    compactEncoding(6) == MACH_ARM64_FRAME &&
+                    x64.frame == 6 && arm.stack == 31 && arm.result == 30 &&
+                    rv.stack == 2 && rv.pointerBytes == 8;
+            }
+
+    fa:
+        return true;
+}

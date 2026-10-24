@@ -1,0 +1,373 @@
+use <data:json>;
+use <fs:dir>;
+use <io:render>;
+use <project:sha256>;
+
+nccContentCache[@runtime] {
+    const:
+        SCHEMA >> str <- "nc.bootstrap.content-cache.v1";
+        COMPILER_IDENTITY >> str <- "ncc-stage2-v81-r1-native-overalignment-frame-probes-storage-sha256";
+        ROOT_NAME >> str <- "c2";
+
+    type:
+        CacheContract {
+            public:
+                enabled >> bool;
+                probes >> u64;
+                hits >> u64;
+                stores >> u64;
+                restoredBytes >> u64;
+        }
+
+    stc:
+        cacheEnabled >> bool <- true;
+        explicitRoot >> str <- "";
+        probes >> u64 <- 0;
+        hits >> u64 <- 0;
+        stores >> u64 <- 0;
+        restoredBytes >> u64 <- 0;
+
+    fn:
+        private:
+            separator(value >> byte) -> bool {
+                return value == 47 || value == 92;
+            }
+
+            join(left >> str, right >> str) -> str {
+                if (left == "" || left == ".") return right;
+                bytes >> int <- strByteLen(left);
+                data >> p<byte> <- cast<byte>(left);
+                if (bytes > 0 && separator(rd<byte>(off(data, bytes - 1)))) return left + right;
+                if (bytes >= 2 && rd<byte>(off(data, 1)) == 58) return left + "\\" + right;
+                return left + "/" + right;
+            }
+
+            directory(path >> str) -> str {
+                data >> p<byte> <- cast<byte>(path);
+                at >> int <- strByteLen(path) - 1;
+                while (at >= 0 && !separator(rd<byte>(off(data, at)))) { at -= 1; }
+                return at < 0 ? "." : strSubstring(path, 0, at);
+            }
+
+            ensureDirectory(path >> str) -> bool {
+                if (path == "" || path == "." || exists(path)) return true;
+                parent >> str <- directory(path);
+                if (parent != path && !ensureDirectory(parent)) return false;
+                created >> Result<bool, FsError> <- createDir(path);
+                return isOk(created) && exists(path);
+            }
+
+            root(projectRoot >> str) -> str {
+                if (explicitRoot != "") return join(explicitRoot, ROOT_NAME);
+                return join(projectRoot, ".ncc/cache/" + ROOT_NAME);
+            }
+
+            namespaceRoot(projectRoot >> str, namespace >> str) -> str {
+                physical >> str <- namespace == "frontend-ast" ? "a" : "m";
+                return join(root(projectRoot), physical);
+            }
+
+            storageKey(key >> str) -> str {
+                return strByteLen(key) <= 20 ? key : strSubstring(key, 0, 20);
+            }
+
+            entryRoot(projectRoot >> str, namespace >> str, key >> str) -> str {
+                return join(namespaceRoot(projectRoot, namespace), storageKey(key));
+            }
+
+            digest(value >> str) -> str {
+                return sha256.nccSha256.bytes(cast<byte>(value), strByteLen(value));
+            }
+
+            lockEntry(projectRoot >> str, namespace >> str, key >> str) -> str {
+                parent >> str <- namespaceRoot(projectRoot, namespace);
+                guard ensureDirectory(parent) else return "";
+                path >> str <- join(parent, storageKey(key) + ".lock");
+                attempt >> int <- 0;
+                while (attempt < 200) {
+                    created >> Result<bool, FsError> <- createDir(path);
+                    if (isOk(created)) return path;
+                    sleepMs(5);
+                    attempt += 1;
+                }
+                return "";
+            }
+
+            unlockEntry(path >> str) -> bool {
+                if (path == "") return false;
+                removed >> Result<bool, FsError> <- removeDir(path);
+                return isOk(removed) && !exists(path);
+            }
+
+            validFile(path >> str, bytes >> int, hash >> str) -> bool {
+                return bytes >= 0 && hash != "" && exists(path) && fsSize(path) == bytes &&
+                    sha256.nccSha256.file(path) == hash;
+            }
+
+            removeIfPresent(path >> str) -> bool {
+                return !exists(path) || delete_file(path);
+            }
+
+            publishCopy(source >> str, destination >> str) -> bool {
+                bytes >> int <- fsSize(source);
+                guard bytes >= 0 && ensureDirectory(directory(destination)) else return false;
+                temporary >> str <- destination + ".tmp";
+                removeIfPresent(temporary);
+                guard fsCopy(source, temporary) == bytes && fsSize(temporary) == bytes &&
+                    sha256.nccSha256.file(temporary) == sha256.nccSha256.file(source) else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                guard removeIfPresent(destination) && rename_file(temporary, destination) else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                return true;
+            }
+
+            publishJson(value >> int, destination >> str) -> bool {
+                guard ensureDirectory(directory(destination)) else return false;
+                temporary >> str <- destination + ".tmp";
+                removeIfPresent(temporary);
+                guard jsonSaveFile(value, temporary, 2) && fsSize(temporary) > 0 else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                guard removeIfPresent(destination) && rename_file(temporary, destination) else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                return true;
+            }
+
+            restoreFile(source >> str, destination >> str, bytes >> int, hash >> str) -> bool {
+                guard ensureDirectory(directory(destination)) else return false;
+                if (validFile(destination, bytes, hash)) {
+                    restoredBytes += bytes;
+                    return true;
+                }
+                temporary >> str <- destination + ".cache.tmp";
+                removeIfPresent(temporary);
+                guard fsCopy(source, temporary) == bytes && validFile(temporary, bytes, hash) else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                guard removeIfPresent(destination) && rename_file(temporary, destination) else {
+                    removeIfPresent(temporary);
+                    return false;
+                }
+                restoredBytes += bytes;
+                return true;
+            }
+
+            artifactValid(manifest >> int, entry >> str, name >> str) -> bool {
+                return validFile(
+                    join(entry, name),
+                    jsonGetIntOr(jsonObjectGet(manifest, name + "_bytes"), -1),
+                    jsonGetStringOr(jsonObjectGet(manifest, name + "_sha256"), "")
+                );
+            }
+
+            manifestValid(manifest >> int, namespace >> str, key >> str) -> bool {
+                return manifest != 0 &&
+                    jsonGetStringOr(jsonObjectGet(manifest, "schema"), "") == SCHEMA &&
+                    jsonGetStringOr(jsonObjectGet(manifest, "compiler_identity"), "") ==
+                        COMPILER_IDENTITY &&
+                    jsonGetStringOr(jsonObjectGet(manifest, "namespace"), "") == namespace &&
+                    jsonGetStringOr(jsonObjectGet(manifest, "key"), "") == key;
+            }
+
+        public:
+            configure(enabled >> bool, cacheRoot >> str) -> bool {
+                cacheEnabled <- enabled;
+                explicitRoot <- cacheRoot;
+                return true;
+            }
+
+            resetCounters() -> bool {
+                probes <- 0;
+                hits <- 0;
+                stores <- 0;
+                restoredBytes <- 0;
+                return true;
+            }
+
+            astKey(sourceHash >> str, sourcePath >> str) -> str {
+                extension >> str <- strEndsWith(sourcePath, ".nc") ? ".nc" : ".n";
+                return digest(SCHEMA + "|frontend-ast|" + COMPILER_IDENTITY + "|" +
+                    extension + "|" + sourceHash);
+            }
+
+            materialKey(
+                sourceHash >> str,
+                sourcePath >> str,
+                target >> str,
+                unit >> str,
+                bindingFingerprint >> int
+            ) -> str {
+                return digest(SCHEMA + "|project-ir-mct-object|" + COMPILER_IDENTITY + "|" +
+                    sourceHash + "|" + sourcePath + "|" + target + "|" + unit + "|" +
+                    renderInt(bindingFingerprint));
+            }
+
+            probeAst(projectRoot >> str, key >> str) -> int {
+                if (!cacheEnabled) return 0;
+                probes += 1;
+                lock >> str <- lockEntry(projectRoot, "frontend-ast", key);
+                guard lock != "" else return 0;
+                path >> str <- join(entryRoot(projectRoot, "frontend-ast", key), "manifest.json");
+                manifest >> int <- exists(path) ? jsonParseFile(path) : 0;
+                valid >> bool <- manifestValid(manifest, "frontend-ast", key) &&
+                    jsonObjectGet(manifest, "unit") != 0;
+                unit >> int <- valid ? jsonClone(jsonObjectGet(manifest, "unit")) : 0;
+                if (valid) hits += 1;
+                if (manifest != 0) jsonRelease(manifest);
+                unlockEntry(lock);
+                return unit;
+            }
+
+            storeAst(projectRoot >> str, key >> str, unit >> int) -> bool {
+                if (!cacheEnabled) return false;
+                lock >> str <- lockEntry(projectRoot, "frontend-ast", key);
+                guard lock != "" else return false;
+                entry >> str <- entryRoot(projectRoot, "frontend-ast", key);
+                manifest >> int <- jsonNewObject();
+                jsonObjectSet(manifest, "schema", jsonNewString(SCHEMA));
+                jsonObjectSet(manifest, "compiler_identity", jsonNewString(COMPILER_IDENTITY));
+                jsonObjectSet(manifest, "namespace", jsonNewString("frontend-ast"));
+                jsonObjectSet(manifest, "key", jsonNewString(key));
+                jsonObjectSet(manifest, "unit", jsonClone(unit));
+                stored >> bool <- publishJson(manifest, join(entry, "manifest.json"));
+                if (stored) stores += 1;
+                jsonRelease(manifest);
+                unlockEntry(lock);
+                return stored;
+            }
+
+            probeMaterial(
+                projectRoot >> str,
+                key >> str,
+                irDestination >> str,
+                mctDestination >> str,
+                objectDestination >> str
+            ) -> int {
+                if (!cacheEnabled) return 0;
+                probes += 1;
+                lock >> str <- lockEntry(projectRoot, "project-ir-mct-object", key);
+                guard lock != "" else return 0;
+                entry >> str <- entryRoot(projectRoot, "project-ir-mct-object", key);
+                manifestPath >> str <- join(entry, "manifest.json");
+                manifest >> int <- exists(manifestPath) ? jsonParseFile(manifestPath) : 0;
+                valid >> bool <- manifestValid(manifest, "project-ir-mct-object", key) &&
+                    artifactValid(manifest, entry, "ir.ncir") &&
+                    artifactValid(manifest, entry, "mct.ncmct") &&
+                    artifactValid(manifest, entry, "object.bin");
+                if (valid) valid <- restoreFile(join(entry, "ir.ncir"), irDestination,
+                    jsonGetIntOr(jsonObjectGet(manifest, "ir.ncir_bytes"), -1),
+                    jsonGetStringOr(jsonObjectGet(manifest, "ir.ncir_sha256"), ""));
+                if (valid) valid <- restoreFile(join(entry, "mct.ncmct"), mctDestination,
+                    jsonGetIntOr(jsonObjectGet(manifest, "mct.ncmct_bytes"), -1),
+                    jsonGetStringOr(jsonObjectGet(manifest, "mct.ncmct_sha256"), ""));
+                if (valid) valid <- restoreFile(join(entry, "object.bin"), objectDestination,
+                    jsonGetIntOr(jsonObjectGet(manifest, "object.bin_bytes"), -1),
+                    jsonGetStringOr(jsonObjectGet(manifest, "object.bin_sha256"), ""));
+                if (valid) hits += 1;
+                if (!valid && manifest != 0) { jsonRelease(manifest); manifest <- 0; }
+                unlockEntry(lock);
+                return manifest;
+            }
+
+            storeMaterial(
+                projectRoot >> str,
+                key >> str,
+                irSource >> str,
+                mctSource >> str,
+                objectSource >> str,
+                irFingerprint >> int,
+                mctFingerprint >> int,
+                objectHash32 >> int,
+                inlinedCalls >> int,
+                gvnReuses >> int,
+                callEdges >> int,
+                linkedUnits >> int,
+                materialRelocations >> int
+            ) -> bool {
+                if (!cacheEnabled) return false;
+                lock >> str <- lockEntry(projectRoot, "project-ir-mct-object", key);
+                guard lock != "" else return false;
+                entry >> str <- entryRoot(projectRoot, "project-ir-mct-object", key);
+                guard ensureDirectory(entry) else { unlockEntry(lock); return false; }
+                irTarget >> str <- join(entry, "ir.ncir");
+                mctTarget >> str <- join(entry, "mct.ncmct");
+                objectTarget >> str <- join(entry, "object.bin");
+                stored >> bool <- publishCopy(irSource, irTarget) &&
+                    publishCopy(mctSource, mctTarget) && publishCopy(objectSource, objectTarget);
+                if (stored) {
+                    manifest >> int <- jsonNewObject();
+                    jsonObjectSet(manifest, "schema", jsonNewString(SCHEMA));
+                    jsonObjectSet(manifest, "compiler_identity", jsonNewString(COMPILER_IDENTITY));
+                    jsonObjectSet(manifest, "namespace", jsonNewString("project-ir-mct-object"));
+                    jsonObjectSet(manifest, "key", jsonNewString(key));
+                    jsonObjectSet(manifest, "ir_fingerprint", jsonNewInt(irFingerprint));
+                    jsonObjectSet(manifest, "mct_fingerprint", jsonNewInt(mctFingerprint));
+                    jsonObjectSet(manifest, "object_hash32", jsonNewInt(objectHash32));
+                    jsonObjectSet(manifest, "inlined_calls", jsonNewInt(inlinedCalls));
+                    jsonObjectSet(manifest, "gvn_reuses", jsonNewInt(gvnReuses));
+                    jsonObjectSet(manifest, "call_edges", jsonNewInt(callEdges));
+                    jsonObjectSet(manifest, "linked_units", jsonNewInt(linkedUnits));
+                    jsonObjectSet(manifest, "material_relocations",
+                        jsonNewInt(materialRelocations));
+                    jsonObjectSet(manifest, "ir.ncir_bytes", jsonNewInt(fsSize(irTarget)));
+                    jsonObjectSet(manifest, "ir.ncir_sha256",
+                        jsonNewString(sha256.nccSha256.file(irTarget)));
+                    jsonObjectSet(manifest, "mct.ncmct_bytes", jsonNewInt(fsSize(mctTarget)));
+                    jsonObjectSet(manifest, "mct.ncmct_sha256",
+                        jsonNewString(sha256.nccSha256.file(mctTarget)));
+                    jsonObjectSet(manifest, "object.bin_bytes", jsonNewInt(fsSize(objectTarget)));
+                    jsonObjectSet(manifest, "object.bin_sha256",
+                        jsonNewString(sha256.nccSha256.file(objectTarget)));
+                    stored <- publishJson(manifest, join(entry, "manifest.json"));
+                    jsonRelease(manifest);
+                }
+                if (stored) stores += 1;
+                unlockEntry(lock);
+                return stored;
+            }
+
+            enabled() -> bool { return cacheEnabled; }
+            probeCount() -> int { return probes; }
+            hitCount() -> int { return hits; }
+            storeCount() -> int { return stores; }
+            restoredByteCount() -> int { return restoredBytes; }
+
+            contract() -> CacheContract {
+                return CacheContract(enabled: cacheEnabled, probes: probes, hits: hits,
+                    stores: stores, restoredBytes: restoredBytes);
+            }
+
+            selfTest() -> bool {
+                a >> str <- astKey("sha256:abc", "main.n");
+                b >> str <- materialKey("sha256:abc", "main.n",
+                    "x86_64-unknown-linux-gnu", "main", 17);
+                return strByteLen(a) == 64 && strByteLen(b) == 64 && a != b;
+            }
+
+            ioCheck(projectRoot >> str) -> int {
+                key >> str <- astKey("sha256:content-cache-io-check", "self-test.n");
+                unit >> int <- jsonNewObject();
+                jsonObjectSet(unit, "name", jsonNewString("content_cache_self_test"));
+                guard storeAst(projectRoot, key, unit) else {
+                    jsonRelease(unit);
+                    return 1;
+                }
+                restored >> int <- probeAst(projectRoot, key);
+                valid >> bool <- restored != 0 && jsonGetStringOr(
+                    jsonObjectGet(restored, "name"), "") == "content_cache_self_test";
+                if (restored != 0) jsonRelease(restored);
+                jsonRelease(unit);
+                return valid ? 0 : 2;
+            }
+
+    fa:
+        return true;
+}

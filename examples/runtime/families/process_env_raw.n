@@ -1,0 +1,64 @@
+use <io:output>;
+use <memory:stack>;
+use <process:env>;
+
+rawProcessEnv :: runtime {
+    fn:
+        run() -> bool {
+            mark >> p<byte> <- stackMark();
+            value >> p<byte> <- stackAlloc(64, 8);
+            expanded >> p<byte> <- stackAlloc(64, 8);
+            noDestination >> addr <- null;
+
+            set >> bool <- envSet("NCC_NC_RAW_ENV", "manual-env");
+            required >> int <- envGet("NCC_NC_RAW_ENV", noDestination, 0);
+            written >> int <- envGet("NCC_NC_RAW_ENV", adr(value), 64);
+            expandRequired >> int <- envExpand("%NCC_NC_RAW_ENV%/tail", noDestination, 0);
+            expandWritten >> int <- envExpand("%NCC_NC_RAW_ENV%/tail", adr(expanded), 64);
+
+            block >> addr <- envOpen();
+            count >> int <- envCount(block);
+            first >> str <- envAt(block, 0);
+            data >> addr <- envData(block);
+            bytes >> int <- envBytes(block);
+            blockError >> int <- envError(block);
+
+            present >> bool <- envHas("NCC_NC_RAW_ENV");
+            removed >> bool <- envRemove("NCC_NC_RAW_ENV");
+            absent >> bool <- !envHas("NCC_NC_RAW_ENV");
+
+            ok >> bool <-
+                set &&
+                required == 11 &&
+                written == 10 &&
+                expandRequired == 16 &&
+                expandWritten == 15 &&
+                rd(off(value, 0)) == 109 &&
+                rd(off(value, 6)) == 45 &&
+                rd(off(value, 9)) == 118 &&
+                rd(off(expanded, 10)) == 47 &&
+                rd(off(expanded, 14)) == 108 &&
+                block != null &&
+                count > 0 &&
+                first != "" &&
+                data != null &&
+                bytes > count &&
+                blockError == 0 &&
+                present &&
+                removed &&
+                absent;
+
+            envRelease(block);
+            stackRestore(mark);
+
+            print("manual nC process env backend: ");
+            if (ok) { println("true"); }
+            else { println("false"); }
+            return ok;
+        }
+
+    ref main ->> run;
+
+    fa:
+        return true;
+}

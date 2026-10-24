@@ -1,0 +1,122 @@
+use <data:json>;
+use <io:output, render>;
+use <process:args>;
+use <project:closure43_core, release_io, tool_cli>;
+
+closure43Primitive {
+    fn:
+        private:
+            value(record >> int) -> int {
+                if (jsonObjectHas(record,"json")) return jsonObjectGet(record,"json");
+                return jsonClone(record);
+            }
+            jsonDocument(output >> int, key >> str, relative >> str, heading >> str) -> void {
+                record >> int <- jsonObjectGet(output,key); model >> int <- value(record);
+                closure43_core.closure43Core.save(relative+".json",model);
+                if (heading != "") closure43_core.closure43Core.write(relative+".md",heading+"\n\n```json\n"+closure43_core.closure43Core.pretty(model)+"\n```\n");
+                jsonRelease(record); jsonRelease(model);
+            }
+            industrial() -> int {
+                result >> int <- jsonNewObject(); paths >> int <- closure43_core.closure43Core.files("examples/primitive/industrial",".ncp");
+                index >> int <- 0;
+                while (index < jsonArrayLen(paths) && closure43_core.closure43Core.ok()) {
+                    entry >> int <- jsonArrayGet(paths,index); path >> str <- jsonGetString(entry);
+                    stem >> str <- strSubstring(path,30,strByteLen(path)-34);
+                    extra >> int <- jsonNewArray();
+                    if (stem == "portio_permission_fail") extra <- jsonParse("[\"--target\",\"x86_64-linux-portio\",\"--environment\",\"privileged_host\"]");
+                    if (stem == "mmio_read_guard" || stem == "unsafe_mmio_write_fail") extra <- jsonParse("[\"--target\",\"generic-mmio-lab\",\"--environment\",\"gated-mmio-lab\"]");
+                    operations >> int <- jsonParse("[\"check\",\"witness\",\"map\",\"lower\"]"); family >> int <- jsonNewObject(); op >> int <- 0;
+                    while (op < 4) {
+                        nameValue >> int <- jsonArrayGet(operations,op); name >> str <- jsonGetString(nameValue);
+                        words >> int <- jsonParse("[\"cargo\",\"run\",\"-q\",\"-p\",\"ncc-cli\",\"--\",\"primitive\"]");
+                        closure43_core.closure43Core.push(words,jsonNewString(name)); closure43_core.closure43Core.push(words,jsonNewString(path));
+                        cursor >> int <- 0;
+                        while (cursor < jsonArrayLen(extra)) { closure43_core.closure43Core.push(words,jsonArrayGet(extra,cursor)); cursor += 1; }
+                        if (op != 0) closure43_core.closure43Core.push(words,jsonNewString("--json"));
+                        record >> int <- closure43_core.closure43Core.command(words,false,false,true);
+                        closure43_core.closure43Core.put(family,name,record); jsonRelease(words); jsonRelease(nameValue); op += 1;
+                    }
+                    closure43_core.closure43Core.put(result,stem,family); jsonRelease(extra); jsonRelease(operations); jsonRelease(entry); index += 1;
+                }
+                jsonRelease(paths); return result;
+            }
+        public:
+            execute(arguments >> addr) -> int {
+                // The original has no argparse parser and ignores positional arguments.
+                closure43_core.closure43Core.init();
+                data >> int <- closure43_core.closure43Core.load("primitive");
+                if (!closure43_core.closure43Core.ok()) { jsonRelease(data); return 1; }
+                targets >> int <- jsonObjectGet(data,"targets"); matrix >> int <- jsonNewObject();
+                jsonObjectSet(matrix,"targets",targets);
+                closure43_core.closure43Core.save("reports/primitive_real/primitive_target_matrix.json",matrix);
+                markdown >> str <- "# primitive target matrix\n\n| Target | Environment | Execution | Max Evidence | Safety |\n|---|---|---|---|---|";
+                index >> int <- 0;
+                while (index < jsonArrayLen(targets)) {
+                    row >> int <- jsonArrayGet(targets,index);
+                    markdown <- markdown+"\n| "+closure43_core.closure43Core.field(row,"target")+" | "+closure43_core.closure43Core.field(row,"environment")+" | "+closure43_core.closure43Core.field(row,"execution_mode")+" | "+closure43_core.closure43Core.field(row,"evidence_level_possible")+" | "+closure43_core.closure43Core.field(row,"safety_notes")+" |";
+                    jsonRelease(row); index += 1;
+                }
+                closure43_core.closure43Core.write("reports/primitive_real/primitive_target_matrix.md",markdown+"\n");
+                files >> int <- jsonObjectGet(data,"files"); index <- 0;
+                while (index < jsonObjectLen(files)) {
+                    name >> str <- jsonObjectKeyAt(files,index);
+                    if (!strStartsWith(name,"docs/status/")) closure43_core.closure43Core.write(name,closure43_core.closure43Core.field(files,name));
+                    index += 1;
+                }
+                subdirs >> int <- jsonParse("[\"evidence\",\"artifacts\",\"witness\",\"map\",\"lower\",\"run\",\"capture\"]"); index <- 0;
+                while (index < 7) {
+                    sub >> int <- jsonArrayGet(subdirs,index);
+                    if (!release_io.releaseIo.makeDirectories(closure43_core.closure43Core.path("reports/primitive_real/"+jsonGetString(sub)))) closure43_core.closure43Core.fail("cannot create primitive report directory");
+                    jsonRelease(sub); index += 1;
+                }
+                outputs >> int <- jsonNewObject(); commands >> int <- jsonObjectGet(data,"commands"); index <- 0;
+                while (index < jsonObjectLen(commands) && closure43_core.closure43Core.ok()) {
+                    key >> str <- jsonObjectKeyAt(commands,index); words >> int <- jsonObjectGet(commands,key);
+                    record >> int <- closure43_core.closure43Core.command(words,false,false,true);
+                    closure43_core.closure43Core.put(outputs,key,record); jsonRelease(words); index += 1;
+                }
+                if (!closure43_core.closure43Core.ok()) return 1;
+                jsonDocument(outputs,"doctor_real","reports/primitive_real/primitive_doctor_real","# primitive doctor real");
+                stems >> int <- jsonParse("[\"real\",\"qemu\"]"); kinds >> int <- jsonParse("[\"witness\",\"map\",\"lower\"]"); index <- 0;
+                while (index < 2) {
+                    stemValue >> int <- jsonArrayGet(stems,index); stem >> str <- jsonGetString(stemValue); kindIndex >> int <- 0;
+                    while (kindIndex < 3) {
+                        kindValue >> int <- jsonArrayGet(kinds,kindIndex); kind >> str <- jsonGetString(kindValue);
+                        jsonDocument(outputs,kind+"_"+stem,"reports/primitive_real/"+kind+"/uart_identity_"+stem,"# primitive "+kind+": uart_identity_"+stem);
+                        jsonRelease(kindValue); kindIndex += 1;
+                    }
+                    jsonRelease(stemValue); index += 1;
+                }
+                jsonDocument(outputs,"run_real","reports/primitive_real/run/uart_identity_real","");
+                jsonDocument(outputs,"capture_real","reports/primitive_real/capture/uart_identity_real","");
+                jsonDocument(outputs,"build_freestanding","reports/primitive_real/artifacts/uart_identity_freestanding.build","");
+                verify >> int <- closure43_core.closure43Core.run("[\"cargo\",\"run\",\"-q\",\"-p\",\"ncc-cli\",\"--\",\"primitive\",\"verify\",\"examples/primitive/real/uart_identity_real.ncp\",\"--evidence\",\"reports/primitive_real/run/uart_identity_real.json\",\"--json\"]",false,false,true);
+                verifyValue >> int <- value(verify); closure43_core.closure43Core.save("reports/primitive_real/evidence/uart_identity_real_verify.json",verifyValue);
+                examples >> int <- industrial(); closure43_core.closure43Core.save("reports/primitive_real/evidence/industrial_examples.json",examples);
+                evidence >> int <- jsonObjectGet(data,"evidence_matrix");
+                closure43_core.closure43Core.set(evidence,"generated_at","unix:"+renderInt(closure43_core.closure43Core.epoch()));
+                closure43_core.closure43Core.set(evidence,"host",closure43_core.closure43Core.hostName());
+                doctorRecord >> int <- jsonObjectGet(outputs,"doctor_real"); doctor >> int <- jsonObjectGet(doctorRecord,"json");
+                closure43_core.closure43Core.put(evidence,"doctor_status",jsonObjectGet(doctor,"status"));
+                closure43_core.closure43Core.put(evidence,"real_hardware_available",jsonObjectGet(doctor,"real_hardware_available"));
+                digest >> str <- closure43_core.closure43Core.stamp(evidence,"hash");
+                closure43_core.closure43Core.save("reports/primitive_real/primitive_real_evidence_matrix.json",evidence);
+                closure43_core.closure43Core.write("reports/primitive_real/primitive_real_evidence_matrix.md","# primitive real evidence matrix\n\n"+closure43_core.closure43Core.table(evidence,"Field","Value","evidence")+"\n");
+                summary >> int <- jsonObjectGet(data,"summary"); closure43_core.closure43Core.put(summary,"targets",jsonNewInt(jsonArrayLen(targets)));
+                closure43_core.closure43Core.set(summary,"hash",digest);
+                closure43_core.closure43Core.save("reports/primitive_real/primitive_real_closure_summary.json",summary);
+                closure43_core.closure43Core.write("reports/primitive_real/primitive_real_closure_summary.md","# primitive real closure summary\n\n"+closure43_core.closure43Core.table(summary,"Key","Value","")+"\n");
+                index <- 0;
+                while (index < jsonObjectLen(files)) {
+                    name >> str <- jsonObjectKeyAt(files,index);
+                    if (strStartsWith(name,"docs/status/")) closure43_core.closure43Core.write(name,closure43_core.closure43Core.field(files,name));
+                    index += 1;
+                }
+                println("primitive real closure generated: "+closure43_core.closure43Core.path("reports/primitive_real"));
+                jsonRelease(data); jsonRelease(targets); jsonRelease(matrix); jsonRelease(files); jsonRelease(subdirs); jsonRelease(outputs);
+                jsonRelease(commands); jsonRelease(stems); jsonRelease(kinds); jsonRelease(verify); jsonRelease(verifyValue); jsonRelease(examples);
+                jsonRelease(evidence); jsonRelease(doctorRecord); jsonRelease(doctor); jsonRelease(summary);
+                return closure43_core.closure43Core.ok() ? 0 : 1;
+            }
+    fa: return true;
+}

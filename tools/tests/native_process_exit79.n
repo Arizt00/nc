@@ -1,0 +1,40 @@
+use <io:output, std>;
+use <data:json>;
+use <process:args, command>;
+
+nativeProcessExit79 {
+    run() -> int {
+        arguments >> addr <- argsOpen();
+        if (arguments == null || argsCount(arguments) != 3) return 64;
+        cases >> int <- jsonParseFile(argsAt(arguments,1));
+        count >> int <- jsonArrayLen(cases);
+        if (count < 1) return 65;
+        rows >> int <- jsonNewArray(); valid >> bool <- true; at >> int <- 0;
+        while (at < 256 && valid) {
+            item >> int <- jsonArrayBorrow(cases,at % count);
+            value >> int <- jsonObjectBorrow(item,"image"); image >> str <- jsonStringView(value,"");
+            expected >> int <- jsonObjectBorrow(item,"exit"); codeExpected >> int <- jsonGetIntOr(expected,-999);
+            if (image == "" || strContains(image,"\"")) return 66;
+            line >> str <- "\""+image+"\"";
+            child >> addr <- commandOpen(line,".",stdIn(),stdOut(),stdErr(),0);
+            started >> bool <- child != null && commandStarted(child);
+            wait >> int <- started ? commandWait(child,3000) : -1;
+            if (started && wait != 0) { commandTerminate(child,15); commandWait(child,3000); }
+            code >> int <- child == null ? -1 : commandExitCode(child);
+            valid <- started && wait == 0 && code == codeExpected;
+            row >> int <- jsonNewObject();
+            jsonObjectSet(row,"index",jsonNewInt(at)); jsonObjectSet(row,"wait",jsonNewInt(wait));
+            jsonObjectSet(row,"exit",jsonNewInt(code)); jsonObjectSet(row,"expected",jsonNewInt(codeExpected));
+            jsonArrayPush(rows,row); jsonRelease(row); jsonRelease(expected); jsonRelease(value); jsonRelease(item);
+            if (child != null) commandRelease(child);
+            strRelease(line); at += 1;
+        }
+        report >> int <- jsonNewObject(); jsonObjectSet(report,"passed",jsonNewBool(valid));
+        jsonObjectSet(report,"deadline_ms",jsonNewInt(3000)); jsonObjectSet(report,"commands",rows);
+        valid <- jsonSaveFile(report,argsAt(arguments,2),2) && valid;
+        jsonRelease(rows); jsonRelease(report); jsonRelease(cases); argsRelease(arguments);
+        println(valid ? "native-process-exit-ok" : "native-process-exit-failed"); return valid ? 0 : 1;
+    }
+    ref main ->> run;
+    fa: return true;
+}

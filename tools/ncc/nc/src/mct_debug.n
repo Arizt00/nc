@@ -1,0 +1,356 @@
+use <io:output, render>;
+use <project:ir, mct, sema, diagnostics>;
+
+nccMctDebug {
+    const:
+        DEBUG_MAGIC >> int <- 0x5544434E;
+        DEBUG_VERSION >> int <- 1;
+        HEADER_BYTES >> int <- 64;
+        LINE_RECORD_BYTES >> int <- 20;
+        FUNCTION_RECORD_BYTES >> int <- 32;
+
+        H_MAGIC >> int <- 0;
+        H_VERSION >> int <- 4;
+        H_TARGET >> int <- 8;
+        H_FAMILY >> int <- 12;
+        H_POINTER_BITS >> int <- 16;
+        H_LINES >> int <- 20;
+        H_FUNCTIONS >> int <- 24;
+        H_LINES_OFFSET >> int <- 28;
+        H_FUNCTIONS_OFFSET >> int <- 32;
+        H_BYTES >> int <- 36;
+        H_HASH >> int <- 40;
+        H_TEXT_BYTES >> int <- 44;
+        H_STACK_ALIGNMENT >> int <- 48;
+        H_CFA_REGISTER >> int <- 52;
+        H_FLAGS >> int <- 56;
+        H_RECORD_VERSION >> int <- 60;
+
+        L_IR_INDEX >> int <- 0;
+        L_TEXT_OFFSET >> int <- 4;
+        L_BYTE_LENGTH >> int <- 8;
+        L_LINE >> int <- 12;
+        L_COLUMN >> int <- 16;
+
+        F_IR_INDEX >> int <- 0;
+        F_TEXT_START >> int <- 4;
+        F_TEXT_END >> int <- 8;
+        F_LINE >> int <- 12;
+        F_COLUMN >> int <- 16;
+        F_CFA_REGISTER >> int <- 20;
+        F_RETURN_REGISTER >> int <- 24;
+        F_FLAGS >> int <- 28;
+
+        IR_FUNCTION >> int <- 2;
+        FLAG_SOURCE_LINES >> int <- 1;
+        FLAG_FUNCTION_INTERVALS >> int <- 2;
+        FLAG_LITTLE_ENDIAN >> int <- 4;
+        FLAG_EXPLICIT_UNWIND >> int <- 8;
+
+    type:
+        DebugContract {
+            public:
+                target >> int;
+                family >> int;
+                pointerBits >> int;
+                lines >> int;
+                functions >> int;
+                bytes >> int;
+                hash >> int;
+        }
+
+        UnwindRegisters {
+            public:
+                cfa >> int;
+                result >> int;
+                stackAlignment >> int;
+        }
+
+    stc:
+        materializations >> u64 <- 0;
+        materialBytes >> u64 <- 0;
+
+    local:
+        lastTarget >> int <- 0;
+        lastLines >> int <- 0;
+        lastFunctions >> int <- 0;
+        lastBytes >> int <- 0;
+        lastHash >> int <- 0;
+
+    fn:
+        private:
+            integer(base >> p<byte>, at >> int) -> int {
+                return rd<int>(off(base, at));
+            }
+
+            putInteger(base >> p<byte>, at >> int, value >> int) -> void {
+                wr<int>(off(base, at), value);
+            }
+
+            unsignedByte(value >> int) -> int {
+                return value < 0 ? value + 256 : value;
+            }
+
+            zero(base >> p<byte>, bytes >> int) -> void {
+                at >> int <- 0;
+                while (at < bytes) {
+                    wr<byte>(off(base, at), 0);
+                    at += 1;
+                }
+            }
+
+            hash(base >> p<byte>, bytes >> int) -> int {
+                value >> int <- 32452843;
+                at >> int <- 0;
+                while (at < bytes) {
+                    value <- (value + unsignedByte(rd<byte>(off(base, at))) *
+                        ((at % 251) + 1) + at * 29) % 1000000007;
+                    at += 1;
+                }
+                return value;
+            }
+
+            lineRecords(material >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordSection(material,node) == 1 && mct.nccMct.artifactRecordByteLength(material, node) > 0 &&
+                        mct.nccMct.artifactRecordLine(material, node) > 0) count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+
+            functionRecords(material >> p<byte>) -> int {
+                count >> int <- 0;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION)
+                        count += 1;
+                    node += 1;
+                }
+                return count;
+            }
+
+            registers(target >> int) -> UnwindRegisters {
+                if (target == 1 || target == 2 || target == 3)
+                    return UnwindRegisters(cfa: 7, result: 16, stackAlignment: 16);
+                if (target == 4)
+                    return UnwindRegisters(cfa: 4, result: 8, stackAlignment: 16);
+                if (target == 5 || target == 6)
+                    return UnwindRegisters(cfa: 31, result: 30, stackAlignment: 16);
+                if (target == 7)
+                    return UnwindRegisters(cfa: 13, result: 14, stackAlignment: 8);
+                if (target == 8 || target == 9)
+                    return UnwindRegisters(cfa: 2, result: 1, stackAlignment: 16);
+                return UnwindRegisters(cfa: 0, result: 0, stackAlignment: 1);
+            }
+
+            functionEnd(material >> p<byte>, node >> int, start >> int) -> int {
+                next >> int <- node + 1;
+                while (next < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, next) == IR_FUNCTION) {
+                        candidate >> int <- mct.nccMct.artifactRecordTextOffset(material, next);
+                        if (candidate > start) return candidate;
+                    }
+                    next += 1;
+                }
+                return mct.nccMct.artifactTextBytes(material);
+            }
+
+            writeLines(material >> p<byte>, out >> p<byte>, at >> int) -> int {
+                cursor >> int <- at;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    length >> int <- mct.nccMct.artifactRecordByteLength(material, node);
+                    line >> int <- mct.nccMct.artifactRecordLine(material, node);
+                    if (mct.nccMct.artifactRecordSection(material,node) == 1 && length > 0 && line > 0) {
+                        putInteger(out, cursor + L_IR_INDEX, node);
+                        putInteger(out, cursor + L_TEXT_OFFSET,
+                            mct.nccMct.artifactRecordTextOffset(material, node));
+                        putInteger(out, cursor + L_BYTE_LENGTH, length);
+                        putInteger(out, cursor + L_LINE, line);
+                        putInteger(out, cursor + L_COLUMN,
+                            mct.nccMct.artifactRecordColumn(material, node));
+                        cursor += LINE_RECORD_BYTES;
+                    }
+                    node += 1;
+                }
+                return cursor;
+            }
+
+            writeFunctions(material >> p<byte>, out >> p<byte>, at >> int,
+                unwind >> UnwindRegisters) -> int {
+                cursor >> int <- at;
+                node >> int <- 0;
+                while (node < mct.nccMct.artifactNodeCount(material)) {
+                    if (mct.nccMct.artifactRecordOpcode(material, node) == IR_FUNCTION) {
+                        start >> int <- mct.nccMct.artifactRecordTextOffset(material, node);
+                        putInteger(out, cursor + F_IR_INDEX, node);
+                        putInteger(out, cursor + F_TEXT_START, start);
+                        putInteger(out, cursor + F_TEXT_END,
+                            functionEnd(material, node, start));
+                        putInteger(out, cursor + F_LINE,
+                            mct.nccMct.artifactRecordLine(material, node));
+                        putInteger(out, cursor + F_COLUMN,
+                            mct.nccMct.artifactRecordColumn(material, node));
+                        putInteger(out, cursor + F_CFA_REGISTER, unwind.cfa);
+                        putInteger(out, cursor + F_RETURN_REGISTER, unwind.result);
+                        putInteger(out, cursor + F_FLAGS,
+                            mct.nccMct.artifactRecordFlags(material, node));
+                        cursor += FUNCTION_RECORD_BYTES;
+                    }
+                    node += 1;
+                }
+                return cursor;
+            }
+
+            valid(blob >> p<byte>) -> bool {
+                guard blob != null else return false;
+                bytes >> int <- integer(blob, H_BYTES);
+                saved >> int <- integer(blob, H_HASH);
+                putInteger(blob, H_HASH, 0);
+                computed >> int <- hash(blob, bytes);
+                putInteger(blob, H_HASH, saved);
+                return integer(blob, H_MAGIC) == DEBUG_MAGIC &&
+                    integer(blob, H_VERSION) == DEBUG_VERSION &&
+                    integer(blob, H_LINES_OFFSET) == HEADER_BYTES &&
+                    integer(blob, H_FUNCTIONS_OFFSET) == HEADER_BYTES +
+                        integer(blob, H_LINES) * LINE_RECORD_BYTES &&
+                    saved == computed;
+            }
+
+            emitReport(blob >> p<byte>, json >> bool) -> bool {
+                if (!json) {
+                    print("debug-unwind target=");
+                    println(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                    print("lines="); print(renderInt(integer(blob, H_LINES)));
+                    print(" functions="); println(renderInt(integer(blob, H_FUNCTIONS)));
+                    print("bytes="); print(renderInt(integer(blob, H_BYTES)));
+                    print(" hash="); println(renderInt(integer(blob, H_HASH)));
+                    return true;
+                }
+                print("{\"schema\":\"nc.bootstrap.mct.debug-unwind.v1\"");
+                print(",\"target\":\""); print(ir.nccIr.targetName(integer(blob, H_TARGET)));
+                print("\",\"target_id\":"); print(renderInt(integer(blob, H_TARGET)));
+                print(",\"family\":"); print(renderInt(integer(blob, H_FAMILY)));
+                print(",\"pointer_bits\":"); print(renderInt(integer(blob, H_POINTER_BITS)));
+                print(",\"line_records\":"); print(renderInt(integer(blob, H_LINES)));
+                print(",\"function_records\":"); print(renderInt(integer(blob, H_FUNCTIONS)));
+                print(",\"line_record_bytes\":"); print(renderInt(LINE_RECORD_BYTES));
+                print(",\"function_record_bytes\":"); print(renderInt(FUNCTION_RECORD_BYTES));
+                print(",\"stack_alignment\":"); print(renderInt(integer(blob, H_STACK_ALIGNMENT)));
+                print(",\"cfa_register\":"); print(renderInt(integer(blob, H_CFA_REGISTER)));
+                print(",\"text_bytes\":"); print(renderInt(integer(blob, H_TEXT_BYTES)));
+                print(",\"bytes\":"); print(renderInt(integer(blob, H_BYTES)));
+                print(",\"hash\":"); print(renderInt(integer(blob, H_HASH)));
+                println("}");
+                return true;
+            }
+
+        public:
+            build(material >> p<byte>) -> p<byte> {
+                guard material != null else return null;
+                lines >> int <- lineRecords(material);
+                functions >> int <- functionRecords(material);
+                functionsAt >> int <- HEADER_BYTES + lines * LINE_RECORD_BYTES;
+                bytes >> int <- functionsAt + functions * FUNCTION_RECORD_BYTES;
+                blob >> p<byte> <- cast<byte>(alloc(bytes));
+                guard blob != null else return null;
+                zero(blob, bytes);
+                target >> int <- mct.nccMct.artifactTarget(material);
+                unwind >> UnwindRegisters <- registers(target);
+                putInteger(blob, H_MAGIC, DEBUG_MAGIC);
+                putInteger(blob, H_VERSION, DEBUG_VERSION);
+                putInteger(blob, H_TARGET, target);
+                putInteger(blob, H_FAMILY, mct.nccMct.artifactFamily(material));
+                putInteger(blob, H_POINTER_BITS, mct.nccMct.artifactPointerBits(material));
+                putInteger(blob, H_LINES, lines);
+                putInteger(blob, H_FUNCTIONS, functions);
+                putInteger(blob, H_LINES_OFFSET, HEADER_BYTES);
+                putInteger(blob, H_FUNCTIONS_OFFSET, functionsAt);
+                putInteger(blob, H_BYTES, bytes);
+                putInteger(blob, H_TEXT_BYTES, mct.nccMct.artifactTextBytes(material));
+                putInteger(blob, H_STACK_ALIGNMENT, unwind.stackAlignment);
+                putInteger(blob, H_CFA_REGISTER, unwind.cfa);
+                putInteger(blob, H_FLAGS, FLAG_SOURCE_LINES | FLAG_FUNCTION_INTERVALS |
+                    FLAG_LITTLE_ENDIAN | FLAG_EXPLICIT_UNWIND);
+                putInteger(blob, H_RECORD_VERSION, 1);
+                writeLines(material, blob, HEADER_BYTES);
+                writeFunctions(material, blob, functionsAt, unwind);
+                putInteger(blob, H_HASH, hash(blob, bytes));
+                materializations += 1;
+                materialBytes += bytes;
+                lastTarget <- target;
+                lastLines <- lines;
+                lastFunctions <- functions;
+                lastBytes <- bytes;
+                lastHash <- integer(blob, H_HASH);
+                return blob;
+            }
+
+            data(blob >> p<byte>) -> p<byte> { return blob; }
+            bytes(blob >> p<byte>) -> int { return integer(blob, H_BYTES); }
+            lines(blob >> p<byte>) -> int { return integer(blob, H_LINES); }
+            functions(blob >> p<byte>) -> int { return integer(blob, H_FUNCTIONS); }
+            checksum(blob >> p<byte>) -> int { return integer(blob, H_HASH); }
+            release(blob >> p<byte>) -> void { if (blob != null) free(blob); }
+
+            emitFile(path >> str, targetName >> str, output >> str,
+                json >> bool, quiet >> bool) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                if (output != "" && fsWriteFrom(output, blob, bytes(blob), false) != bytes(blob)) {
+                    release(blob); mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectWrite(output);
+                }
+                if (!quiet) emitReport(blob, json);
+                code >> int <- valid(blob) ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return code;
+            }
+
+            checkFile(path >> str, targetName >> str, expectedLines >> int,
+                expectedFunctions >> int, expectedBytes >> int, expectedHash >> int) -> int {
+                target >> int <- ir.nccIr.targetCode(targetName);
+                if (target == 0) return diagnostics.nccDiagnostics.emitIrTarget(path, targetName);
+                semaCode >> int <- sema.nccSema.analyzeFile(path, false, true);
+                if (semaCode != 0) return semaCode;
+                material >> p<byte> <- mct.nccMct.artifactFor(path, targetName);
+                guard material != null else return diagnostics.nccDiagnostics.emitMctMaterial(path);
+                blob >> p<byte> <- build(material);
+                guard blob != null else {
+                    mct.nccMct.releaseArtifact(material);
+                    return diagnostics.nccDiagnostics.emitMctObjectMaterial(path);
+                }
+                ok >> bool <- valid(blob) && lines(blob) == expectedLines &&
+                    functions(blob) == expectedFunctions && bytes(blob) == expectedBytes &&
+                    checksum(blob) == expectedHash;
+                release(blob);
+                mct.nccMct.releaseArtifact(material);
+                return ok ? 0 : diagnostics.nccDiagnostics.emitMctObjectContract(path);
+            }
+
+            selfTest() -> bool {
+                x64 >> UnwindRegisters <- registers(1);
+                arm >> UnwindRegisters <- registers(5);
+                riscv >> UnwindRegisters <- registers(9);
+                return DEBUG_MAGIC == 0x5544434E && HEADER_BYTES == 64 &&
+                    LINE_RECORD_BYTES == 20 && FUNCTION_RECORD_BYTES == 32 &&
+                    x64.cfa == 7 && x64.result == 16 && arm.cfa == 31 &&
+                    arm.result == 30 && riscv.cfa == 2 && riscv.result == 1;
+            }
+
+    fa:
+        return true;
+}

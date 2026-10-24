@@ -1,0 +1,92 @@
+primitive[@]:
+    type boot_banner = "nC primitive alive";
+
+    capability boot_serial_io:
+        allow port.read;
+        allow port.write;
+        allow signal.sample;
+        deny control_register.write;
+        deny dma.map;
+        deny paging.modify;
+
+    bus legacy_io8:
+        width 8;
+        volatile true;
+        route stable;
+
+    port uart0.data:
+        bus legacy_io8;
+        addr ioaddr(0x03F8);
+        width 8;
+        write rw;
+
+    port uart0.status:
+        bus legacy_io8;
+        addr ioaddr(0x03FD);
+        width 8;
+        read r;
+
+    signal uart0.tx_ready:
+        valid line_valid;
+        ready line_ready;
+        ack line_ack;
+        sample volatile;
+
+    operation uart0.emit_byte(value: byte):
+        capability boot_serial_io;
+        reads uart0.status;
+        writes uart0.data;
+        faults UartTimeout, PrimitiveAccessDenied;
+        await uart0.tx_ready == high timeout 100000 cycles;
+        write uart0.data <- value;
+        barrier io;
+
+    operation kernelEntry():
+        capability boot_serial_io;
+        writes uart0.data;
+        write uart0.data <- 0x6E;
+        write uart0.data <- 0x43;
+        write uart0.data <- 0x20;
+        write uart0.data <- 0x70;
+        write uart0.data <- 0x72;
+        write uart0.data <- 0x69;
+        write uart0.data <- 0x6D;
+        write uart0.data <- 0x69;
+        write uart0.data <- 0x74;
+        write uart0.data <- 0x69;
+        write uart0.data <- 0x76;
+        write uart0.data <- 0x65;
+        write uart0.data <- 0x20;
+        write uart0.data <- 0x61;
+        write uart0.data <- 0x6C;
+        write uart0.data <- 0x69;
+        write uart0.data <- 0x76;
+        write uart0.data <- 0x65;
+        barrier io;
+
+    anchor boot0:
+        addr physaddr(0x0000_7C00);
+        width 512;
+
+    window boot_sector:
+        addr physaddr(0x0000_7C00);
+        width 512;
+
+    signature boot_magic:
+        width 16;
+        value 0x55AA;
+
+    entry kernelEntry:
+        anchor boot0;
+        offset 0;
+        mode real16;
+        requires boot_magic;
+
+    bridge:
+        root.policy.bind;
+        root.policy.guard;
+        root.memory.resolve;
+        machine.machineCore;
+
+    seal:
+        primitiveClosed;
