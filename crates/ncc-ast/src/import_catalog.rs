@@ -7666,7 +7666,25 @@ mod import_catalog_tests {
         assert_eq!(entry.closure_status, "closed_real_backing_bytes");
         assert!(entry.closed_real_backing_bytes);
         assert!(entry.can_run_without_runtime_import_failure);
-        assert_eq!(entry.runtime_symbols.len(), 26);
+        let family = runtime_api_find_family_by_import_path(&[
+            "nC".to_string(),
+            "runtime".to_string(),
+            "string".to_string(),
+        ])
+        .expect("string runtime family must exist");
+        let expected_symbols: std::collections::BTreeSet<_> = family
+            .functions
+            .iter()
+            .map(|function| format!("nC.runtime.string.{}", function.name))
+            .collect();
+        let actual_symbols: std::collections::BTreeSet<_> =
+            entry.runtime_symbols.iter().cloned().collect();
+
+        // Check both independently maintained catalogs, including charFromCode.
+        // A symbol count alone misses substitutions and becomes stale on API additions.
+        assert_eq!(entry.runtime_symbols.len(), actual_symbols.len());
+        assert_eq!(actual_symbols, expected_symbols);
+        assert!(actual_symbols.contains("nC.runtime.string.charFromCode"));
         assert!(entry
             .runtime_symbols
             .iter()
