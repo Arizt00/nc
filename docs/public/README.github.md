@@ -1,15 +1,15 @@
 <p align="center"><img src="sites/nc-language/dist/mark.svg" width="82" alt="nC"></p>
 
-# nC
+# nC Programming Language and ncc Compiler
 
 **Typed continuity between the program, memory and machine.**
 
-nC is an experimental language that integrates functions, foundational contracts, machine instructions and material primitives. Its compiler, **ncc**, is in native bootstrap. The design requires types, control flow and representation decisions to remain coherent through analysis, lowering and linking.
+nC is an experimental programming language that integrates functions, foundational contracts, machine instructions and material primitives. Its compiler, **ncc**, is in native bootstrap. The design requires types, control flow and representation decisions to remain coherent through analysis, lowering and linking.
 
 [![Status: bootstrap V81](https://img.shields.io/badge/status-bootstrap_V81-244c3b)](docs/public/estado.md)
 [![License: MIT or Apache 2.0](https://img.shields.io/badge/license-MIT_or_Apache_2.0-e4edb1)](LICENSE)
 
-[**Website and library**](https://ncc-lenguage.org) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
+[**nC language**](https://ncc-lenguage.org/nc-programming-language) · [**ncc compiler**](https://ncc-lenguage.org/ncc-compiler) · [**Documentation**](https://ncc-lenguage.org/library) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
 
 ## Why it exists
 
