@@ -28,7 +28,7 @@ Expected output: `Hello, nC public beta`. Exit code: `0`. Linux was tested on Ub
 
 ## Documentation
 
-- [Website and library](https://nc-language-arizt00.rarepanda1024.chatgpt.site).
+- [Website and library](https://ncc-lenguage.org).
 - Language Guide PDF: 9 pages.
 - Compiler Architecture and Bootstrap PDF: 9 pages.
 - [Installation and source builds](https://github.com/Arizt00/nc/blob/main/docs/install.md).

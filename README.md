@@ -9,7 +9,7 @@ nC is an experimental language that integrates functions, foundational contracts
 [![Status: bootstrap V81](https://img.shields.io/badge/status-bootstrap_V81-244c3b)](docs/public/estado.md)
 [![License: MIT or Apache 2.0](https://img.shields.io/badge/license-MIT_or_Apache_2.0-e4edb1)](LICENSE)
 
-[**Website and library**](https://nc-language-arizt00.rarepanda1024.chatgpt.site) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
+[**Website and library**](https://ncc-lenguage.org) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
 
 ## Why it exists
 

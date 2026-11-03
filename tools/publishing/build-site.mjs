@@ -6,7 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const out = path.join(root, 'sites/nc-language/dist');
 const repo = 'https://github.com/Arizt00/nc';
 const release = `${repo}/releases/tag/v0.1.0-bootstrap.81`;
-const origin = 'https://nc-language-arizt00.rarepanda1024.chatgpt.site';
+const origin = 'https://ncc-lenguage.org';
 fs.mkdirSync(path.join(out, 'library'), {recursive:true});
 fs.mkdirSync(path.join(out, 'downloads'), {recursive:true});
 const esc = s => s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
@@ -77,9 +77,18 @@ fs.writeFileSync(path.join(out,'social.svg'),'<svg xmlns="http://www.w3.org/2000
 for(const file of ['style.css','app.js'])fs.copyFileSync(path.join(root,'tools/publishing',file),path.join(out,file));
 for(const b of books){const p=path.join(root,`docs/public/${b.file}.pdf`);if(fs.existsSync(p))fs.copyFileSync(p,path.join(out,`downloads/${b.file}.pdf`));}
 const urls=['index.html','library.html','downloads.html',...articles.map(a=>articleUrl(a))];
-fs.writeFileSync(path.join(out,'sitemap.xml'),`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map(u=>`<url><loc>${origin}/${u}</loc></url>`).join('')}</urlset>`);
+const publicUrl=file=>`${origin}/${file==='index.html'?'':file}`;
+fs.writeFileSync(path.join(out,'sitemap.xml'),`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map(u=>`<url><loc>${publicUrl(u)}</loc></url>`).join('')}</urlset>`);
 fs.writeFileSync(path.join(out,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 fs.writeFileSync(path.join(out,'404.html'),layout('Page not found','<main id="main" class="wrap library"><p class="eyebrow">404</p><h1>This page does not exist.</h1><p>Find the topic in the library or return home.</p><a class="button primary" href="/library.html">Open library</a></main>','/'));
+// Keep generated metadata aligned with the published custom-domain site.
+for(const file of [...urls,'404.html']){
+ const filename=path.join(out,file),html=fs.readFileSync(filename,'utf8');
+ const metadata=file==='404.html'
+  ? '<meta name="robots" content="noindex">'
+  : `<link rel="canonical" href="${publicUrl(file)}"><meta property="og:url" content="${publicUrl(file)}">`;
+ fs.writeFileSync(filename,html.replace('</head>',`${metadata}</head>`));
+}
 console.log(JSON.stringify({pages:urls.length,chapters:articles.length,output:out}));
 export {markdown, books};
 

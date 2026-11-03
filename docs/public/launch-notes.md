@@ -4,7 +4,7 @@
 
 nC is an experimental language connecting functions, explicit memory and machine instructions through typed contracts. Its compiler is in native bootstrap. The first public kit targets Windows and Linux x86-64 and compiles a program without a Rust or LLVM installation. Source, executable examples and two short manuals are available. Reproducible failures and feedback on the first-use workflow are welcome.
 
-Website: https://nc-language-arizt00.rarepanda1024.chatgpt.site
+Website: https://ncc-lenguage.org
 Source: https://github.com/Arizt00/nc
 Downloads: https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81
 
