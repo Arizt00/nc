@@ -3,15 +3,17 @@
   const canvas=document.querySelector('#continuity-canvas');
   const atmosphere=document.querySelector('#page-particles');
   const toggle=document.querySelector('#motion-toggle');
-  if(!canvas||!atmosphere||!toggle)return;
-  const ctx=canvas.getContext('2d'),sky=atmosphere.getContext('2d');
-  if(!ctx||!sky)return;
-  const figure=canvas.closest('figure'),dock=toggle.closest('.motion-controls');
+  if(!atmosphere||!toggle)return;
+  const ctx=canvas?.getContext('2d')||null,sky=atmosphere.getContext('2d');
+  if(!sky)return;
+  const figure=canvas?.closest('figure')||null,dock=toggle.closest('.motion-controls');
+  const mode=document.body.dataset.atmosphere||(canvas?'hero':'browse');
+  const settings=({hero:{count:460,opacity:1,drift:1,scroll:.09,radius:150,strength:1.7,parallax:1,glow:true},browse:{count:300,opacity:.7,drift:.45,scroll:.035,radius:125,strength:.9,parallax:.6,glow:true},reading:{count:170,opacity:.48,drift:.16,scroll:0,radius:95,strength:.4,parallax:.3,glow:false}})[mode];
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');
   const fine=matchMedia('(hover: hover) and (pointer: fine)');
   let savedPause=false;
   try{savedPause=localStorage.getItem('nc-motion')==='paused';}catch{}
-  let paused=reduced.matches||savedPause,heroVisible=true,frame=0,last=0,time=0;
+  let paused=reduced.matches||savedPause,heroVisible=!!figure,frame=0,last=0,time=0;
   let width=0,height=0,vw=0,vh=0,scroll=window.scrollY,compact=false;
   let rect={left:0,top:0,width:1,height:1};
   let seed=12801;
@@ -21,9 +23,9 @@
   const pointer={x:0,y:0,nx:0,ny:0,active:false};
   const camera={x:0,y:0,light:0};
   const makeSpring=()=>({dx:0,dy:0,vx:0,vy:0});
-  const ring=Array.from({length:2900},()=>({u:random()*Math.PI*2,v:random()*Math.PI*2,spread:random(),size:random(),phase:random()*Math.PI*2,...makeSpring()}));
-  const dust=Array.from({length:700},()=>({x:random(),z:random(),size:random(),phase:random()*6.28}));
-  const orbit=Array.from({length:85},()=>({angle:random()*Math.PI*2,r:205+random()*100,z:random()*240-120,size:random(),phase:random()*6.28}));
+  const ring=canvas?Array.from({length:2900},()=>({u:random()*Math.PI*2,v:random()*Math.PI*2,spread:random(),size:random(),phase:random()*Math.PI*2,...makeSpring()})):[];
+  const dust=canvas?Array.from({length:700},()=>({x:random(),z:random(),size:random(),phase:random()*6.28})):[];
+  const orbit=canvas?Array.from({length:85},()=>({angle:random()*Math.PI*2,r:205+random()*100,z:random()*240-120,size:random(),phase:random()*6.28})):[];
   const stars=Array.from({length:460},()=>({u:random(),v:random(),depth:.18+random()*.82,size:random(),phase:random()*6.28,...makeSpring()}));
   let palette={rgb:'222,227,217',warm:'212,170,129',light:false};
   function setPalette(){
@@ -51,21 +53,21 @@
     sky.clearRect(0,0,vw,vh);
     const neighbors=[];
     const stride=compact?2:1;
-    for(let i=0;i<stars.length;i+=stride){
+    for(let i=0;i<settings.count;i+=stride){
       const p=stars[i],depth=p.depth;
-      const x=wrap(p.u*(vw+80)+camera.x*depth*24+Math.sin(time*.06+p.phase)*8,vw+80)-40;
-      const y=wrap(p.v*(vh+80)-(paused?0:scroll)*depth*.09+time*(.6+depth*1.1),vh+80)-40;
-      spring(p,x,y,pointer.x,pointer.y,150,1.7,step,pointer.active&&fine.matches&&!paused);
+      const x=wrap(p.u*(vw+80)+camera.x*depth*24*settings.parallax+Math.sin(time*.06+p.phase)*8,vw+80)-40;
+      const y=wrap(p.v*(vh+80)-(paused?0:scroll)*depth*settings.scroll+time*(.6+depth*1.1)*settings.drift,vh+80)-40;
+      spring(p,x,y,pointer.x,pointer.y,settings.radius,settings.strength,step,pointer.active&&fine.matches&&!paused);
       const px=x+p.dx,py=y+p.dy;
       const distance=pointer.active?Math.hypot(px-pointer.x,py-pointer.y):1000;
       const proximity=clamp(1-distance/175,0,1)*camera.light;
-      const alpha=(.065+depth*.15+p.size*.07+proximity*.22)*(palette.light ? .72 : 1);
+      const alpha=(.065+depth*.15+p.size*.07+proximity*.22)*(palette.light ? .72 : 1)*settings.opacity;
       const radius=.25+p.size*(.6+depth*.75);
       sky.fillStyle=`rgba(${i%6===0?palette.warm:palette.rgb},${alpha})`;
       sky.beginPath();sky.arc(px,py,radius,0,Math.PI*2);sky.fill();
       if(distance<145&&neighbors.length<10)neighbors.push({x:px,y:py});
     }
-    if(camera.light>.01){
+    if(settings.glow&&camera.light>.01){
       const aura=sky.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,180);
       aura.addColorStop(0,`rgba(${palette.warm},${camera.light*(palette.light ? .025 : .045)})`);
       aura.addColorStop(1,`rgba(${palette.warm},0)`);
@@ -80,7 +82,7 @@
     }
   }
   function paintHero(step){
-    if(!heroVisible||!width||!height)return;
+    if(!ctx||!figure||!heroVisible||!width||!height)return;
     ctx.clearRect(0,0,width,height);
     const scale=Math.min(width/620,height/610),cx=width*.51,cy=height*.43;
     const mx=(pointer.x-rect.left-cx)/scale,my=(pointer.y-rect.top-cy)/scale;
@@ -162,7 +164,7 @@
     toggle.querySelector('.motion-icon').textContent=paused?'▷':'Ⅱ';
     if(!paused&&!document.hidden)frame=requestAnimationFrame(tick);
   }
-  function measureHero(){rect=figure.getBoundingClientRect();}
+  function measureHero(){if(figure)rect=figure.getBoundingClientRect();}
   function resize(){
     vw=document.documentElement.clientWidth;vh=window.innerHeight;
     compact=vw<700||!fine.matches;
@@ -170,8 +172,8 @@
     atmosphere.width=Math.round(vw*ratio);atmosphere.height=Math.round(vh*ratio);
     sky.setTransform(ratio,0,0,ratio,0,0);
     measureHero();width=rect.width;height=rect.height;
-    canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
-    ctx.setTransform(ratio,0,0,ratio,0,0);paint(0);
+    if(canvas&&ctx){canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);}
+    paint(0);
   }
   function leave(){pointer.active=false;pointer.nx=0;pointer.ny=0;}
   window.addEventListener('pointermove',event=>{
@@ -192,9 +194,13 @@
   reduced.addEventListener('change',()=>{paused=reduced.matches;leave();paint(0);sync();});
   fine.addEventListener('change',()=>{leave();resize();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)leave();sync();});
-  new ResizeObserver(resize).observe(figure);
-  new IntersectionObserver(entries=>{heroVisible=entries[0].isIntersecting;if(heroVisible)paint(0);},{threshold:.01}).observe(figure);
+  if(figure){new ResizeObserver(resize).observe(figure);
+    new IntersectionObserver(entries=>{heroVisible=entries[0].isIntersecting;if(heroVisible)paint(0);},{threshold:.01}).observe(figure);
+  }
   new MutationObserver(setPalette).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-  document.body.classList.add('has-atmosphere');figure.classList.add('scene-ready');dock.hidden=false;
+  document.body.classList.add('has-atmosphere');if(figure&&ctx)figure.classList.add('scene-ready');dock.hidden=false;
+  function restoreMotion(){try{paused=reduced.matches||localStorage.getItem('nc-motion')==='paused';}catch{}leave();sync();}
+  window.addEventListener('pageshow',restoreMotion);
+  window.addEventListener('storage',event=>{if(event.key==='nc-motion')restoreMotion();});
   setPalette();resize();sync();
 })();
