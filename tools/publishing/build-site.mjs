@@ -77,7 +77,7 @@ fs.writeFileSync(path.join(out,'social.svg'),'<svg xmlns="http://www.w3.org/2000
 for(const file of ['style.css','app.js'])fs.copyFileSync(path.join(root,'tools/publishing',file),path.join(out,file));
 for(const b of books){const p=path.join(root,`docs/public/${b.file}.pdf`);if(fs.existsSync(p))fs.copyFileSync(p,path.join(out,`downloads/${b.file}.pdf`));}
 const urls=['index.html','library.html','downloads.html',...articles.map(a=>articleUrl(a))];
-const publicUrl=file=>`${origin}/${file==='index.html'?'':file}`;
+const publicUrl=file=>`${origin}/${file==='index.html'?'':file.replace(/\.html$/,'')}`;
 fs.writeFileSync(path.join(out,'sitemap.xml'),`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map(u=>`<url><loc>${publicUrl(u)}</loc></url>`).join('')}</urlset>`);
 fs.writeFileSync(path.join(out,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 fs.writeFileSync(path.join(out,'404.html'),layout('Page not found','<main id="main" class="wrap library"><p class="eyebrow">404</p><h1>This page does not exist.</h1><p>Find the topic in the library or return home.</p><a class="button primary" href="/library.html">Open library</a></main>','/'));
@@ -94,5 +94,5 @@ export {markdown, books};
 
 // Preserve URLs published before the English edition.
 const legacyChapters=["por-que-nace-nc","como-leer-el-proyecto","preparar-las-herramientas","el-primer-programa","lugares-y-funciones","memoria-y-servicios","leer-la-capa-de-maquina","trabajar-durante-el-bootstrap","el-contrato-entre-niveles","parser-ast-semantica-e-ir","maquina-y-control-de-flujo","memoria-y-representacion","materializacion-abi-y-enlace","que-demuestra-el-bootstrap-v81","reproducir-y-revisar-evidencia","publicacion-y-contribuciones"];
-function redirectPage(file,target){fs.mkdirSync(path.dirname(path.join(out,file)),{recursive:true});fs.writeFileSync(path.join(out,file),`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url=${target}"><title>Page moved · nC</title><link rel="canonical" href="${new URL(target,origin+"/"+file).href}"></head><body><h1>Page moved</h1><p><a href="${target}">Open the English documentation</a></p></body></html>`);}
+function redirectPage(file,target){fs.mkdirSync(path.dirname(path.join(out,file)),{recursive:true});fs.writeFileSync(path.join(out,file),`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="0;url=${target}"><title>Page moved · nC</title><link rel="canonical" href="${new URL(target,origin+"/"+file).href.replace(/\.html$/,'')}"></head><body><h1>Page moved</h1><p><a href="${target}">Open the English documentation</a></p></body></html>`);}
 redirectPage("biblioteca.html","library.html");redirectPage("descargas.html","downloads.html");legacyChapters.forEach((old,i)=>redirectPage("biblioteca/"+old+".html","../library/"+articles[i].id+".html"));
