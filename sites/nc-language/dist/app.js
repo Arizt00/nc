@@ -1,10 +1,10 @@
 const base=document.body.dataset.base||'';
 const toast=document.querySelector('.toast');let toastTimer;
 function notify(text){toast.textContent=text;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),2400);}
-function applyTheme(theme){document.documentElement.dataset.theme=theme;document.querySelector('#theme').setAttribute('aria-label',theme==='dark'?'Switch to light theme':'Switch to dark theme');}
-try{applyTheme(localStorage.getItem('nc-theme')||'light');}catch{}
+function applyTheme(theme){document.documentElement.dataset.theme=theme;document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='dark'?'#0c0d0d':'#eeeee8');document.querySelector('#theme').setAttribute('aria-label',theme==='dark'?'Switch to light theme':'Switch to dark theme');}
+try{applyTheme(localStorage.getItem('nc-theme')||'dark');}catch{}
 document.querySelector('#theme').onclick=()=>{const theme=document.documentElement.dataset.theme==='dark'?'light':'dark';applyTheme(theme);try{localStorage.setItem('nc-theme',theme);}catch{}};
-document.querySelector('#menu').onclick=()=>{const button=document.querySelector('#menu');const open=button.getAttribute('aria-expanded')!=='true';button.setAttribute('aria-expanded',String(open));document.querySelector('#nav').classList.toggle('open',open);};
+document.querySelector('#menu').onclick=()=>{const button=document.querySelector('#menu');const open=button.getAttribute('aria-expanded')!=='true';button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'Close navigation':'Open navigation');button.textContent=open?'×':'☰';document.querySelector('#nav').classList.toggle('open',open);};
 async function copy(text){try{await navigator.clipboard.writeText(text);notify('Code copied');}catch{notify('Copy failed. Select the code and copy it manually.');}}
 document.querySelectorAll('.copy').forEach(b=>b.onclick=()=>copy(b.closest('.code').querySelector('pre').textContent));
 document.querySelector('.copy-hero')?.addEventListener('click',async()=>{try{const r=await fetch(base+'examples.json');if(!r.ok)throw Error();await copy((await r.json()).hello);}catch{notify('Could not load the example');}});
@@ -34,3 +34,8 @@ document.querySelector('#copy-commands')?.addEventListener('click',()=>copy(comm
 document.querySelectorAll('[role="tablist"]').forEach(list=>list.addEventListener('keydown',e=>{if(!['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(e.key))return;const tabs=[...list.querySelectorAll('[role="tab"]')],i=tabs.indexOf(document.activeElement);if(i<0)return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(i+(['ArrowRight','ArrowDown'].includes(e.key)?1:tabs.length-1))%tabs.length;tabs[next].focus();tabs[next].click();}));
 const article=document.querySelector('[data-article-title]');if(article){try{localStorage.setItem('nc-reading',JSON.stringify({title:article.dataset.articleTitle,url:article.dataset.articleUrl}));}catch{}const progress=()=>{const available=document.documentElement.scrollHeight-innerHeight;document.querySelector('.reading-progress span').style.width=(available>0?Math.min(100,Math.max(0,scrollY/available*100)):100)+'%';};window.addEventListener('scroll',progress,{passive:true});progress();}
 const resume=document.querySelector('#continue-reading');if(resume){try{const previous=JSON.parse(localStorage.getItem('nc-reading'));if(previous&&/^library\/[a-z0-9-]+(?:\.html)?$/.test(previous.url)){resume.href=previous.url.replace(/\.html$/,'');resume.querySelector('strong').textContent=previous.title;resume.hidden=false;}}catch{}}
+
+const mainMenu=document.querySelector('#menu');
+function closeMenu(){mainMenu.setAttribute('aria-expanded','false');mainMenu.setAttribute('aria-label','Open navigation');mainMenu.textContent='☰';document.querySelector('#nav').classList.remove('open');}
+document.querySelector('#nav').addEventListener('click',event=>{if(event.target.closest('a'))closeMenu();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&mainMenu.getAttribute('aria-expanded')==='true'){closeMenu();mainMenu.focus();}});
