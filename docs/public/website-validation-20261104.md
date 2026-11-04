@@ -56,6 +56,8 @@ The copy result verifies the browser application's successful write and
 feedback; it does not certify paste behavior in every operating-system editor.
 All production source examples are inspected and hashed; this website task
 does not constitute a new compiler execution certification for those fixtures.
+The final reflow correction preserves a word separator when the headline's
+desktop line break is hidden on tablets.
 
 ## Observed scene measurements
 

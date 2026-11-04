@@ -9,7 +9,7 @@ const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
 if(ids.length!==new Set(ids).size)errors.push('Duplicate landing IDs');
 for(const match of html.matchAll(/href="#([^"]+)"/g))if(!ids.includes(match[1]))errors.push('Missing anchor: '+match[1]);
 for(const id of ['main','nav','hero-title','source-explorer','copy-active-surface','architecture','evidence','language-levels','continuity-canvas','scene-status','motion-toggle','search-dialog','phase-panel','terminal-panel'])if(!ids.includes(id))errors.push('Missing interactive surface: '+id);
-if(!html.includes('Control at<br>every level.'))errors.push('Missing source-first headline');
+if(!html.includes('Control at<br> every level.'))errors.push('Missing source-first headline or reflow word separator');
 if(html.indexOf('id="source-explorer"')>html.indexOf('id="language-levels"'))errors.push('The source explorer must precede the project symbol');
 if(/<script[^>]+src="hero-scene\.js/.test(html)||/rel="preload" as="image"/.test(html))errors.push('Secondary scene assets must not block the first screen');
 const surfaces=JSON.parse(fs.readFileSync(path.join(dist,'surfaces.json'),'utf8'));
