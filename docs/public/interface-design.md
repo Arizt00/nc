@@ -1,24 +1,26 @@
 # Website interface
 
-The November 2026 interface uses graphite surfaces, warm white typography, restrained copper accents and an abstract particle study. The design references light, depth and continuous forms while keeping the nC language and ncc compiler as the subject. All visible website content remains in English.
+The November 2026 interface uses graphite surfaces, warm white typography and restrained copper accents. Its cinematic landing places an original photographic hand beneath a luminous sphere, surrounded by an orbital particle halo and a GPU-driven copper tide. The nC language and ncc compiler remain the subject. All visible website content is in English.
 
 ## Page structure
 
 The homepage introduces the language, links its four levels, presents the repository's complete `hello.n` source and native compiler commands, then explains the compiler pipeline, documentation and public bootstrap scope. Language and compiler entry points, the library, downloads and the 16 documentation chapters share the navigation, theme and typography.
 
-`tools/publishing/home.mjs` renders the homepage. `style.css` defines the shared interface. `app.js` provides search, library filtering, code copying, keyboard tab navigation, themes and the mobile menu. `scene.js` runs on all website pages and initializes the hero only where its canvas exists. `build-site.mjs` owns the common background and motion controls, selects each page's atmosphere profile, and hashes CSS and JavaScript URLs so an updated publication does not reuse an earlier interface from the browser cache.
+`tools/publishing/home.mjs` renders the homepage. `style.css` defines the shared interface and `landing.css` defines the approved central composition. `app.js` provides search, library filtering, code copying, keyboard tab navigation, themes and the mobile menu. `scene.js` owns the quiet background and shared motion preference on all pages. The homepage alone loads `hero-scene.js`, `hero-shaders.js`, `visual-state.js` and the vendored Three.js engine. `build-site.mjs` hashes entry assets and their local module imports to avoid reusing earlier code from the browser cache.
 
 ## Motion and reading
 
-The particle canvases are decorative; links, headings and technical explanations are ordinary HTML. The canvases have no role in compiler execution. The homepage retains a static CSS silhouette if its hero canvas is unavailable. Each page respects `prefers-reduced-motion`, has a fixed pause/play control, and suspends its frame loop when the document is hidden. The control stays hidden if the background canvas cannot initialize. Drawing scale is capped at 1.5 device pixels per CSS pixel and animation is limited to approximately 30 frames per second.
+The particle canvases are decorative; links, headings and technical explanations are ordinary HTML. The canvases have no role in compiler execution. The homepage retains its hand photograph, CSS sphere, orbital arc and SVG tide if WebGL is unavailable. Each page respects `prefers-reduced-motion`, has a fixed pause/play control, and suspends its frame loop when hidden. Drawing scale is capped at 1.5 device pixels per CSS pixel. The hero targets 60 FPS in high/medium quality and 30 FPS in low quality; the quiet page background is capped at approximately 30 FPS.
 
-The homepage hero projects and sorts a torus by depth, with separate orbital dust, a foreground light and perspective changes driven by an eased cursor position. Nearby particles respond through repulsion and damped springs. A background canvas is fixed to the viewport on every page, including the library, downloads, language/compiler overviews and all 16 chapters. The pause state is saved under `nc-motion` and restored across navigation, browser history and same-origin tabs. Hero drawing is skipped offscreen and its particle arrays are not allocated on other pages. Smaller viewports draw fewer particles. Touch input preserves normal scrolling and does not activate mouse repulsion.
+The hero creates static GPU buffers once and moves its tidal terrain and orbital dust in GLSL. A single clock and normalized `orbPulse` synchronize sphere luminance, palm lighting and the halo's delayed light wave. High quality can add half-resolution selective bloom after a GPU timing probe. Separate landscape, tablet and mobile framing preserve the hand/sphere relationship. Cursor parallax stays small and is disabled on coarse pointers. See `cinematic-landing.md` for the rendering contract, quality budgets and measured validation.
+
+A background canvas is fixed to the viewport on every page, including the library, downloads, language/compiler overviews and all 16 chapters. The pause state is saved under `nc-motion` and restored across navigation, browser history and same-origin tabs. Hero rendering stops offscreen; its buffers and engine are not loaded by documentation pages. Pausing finishes any remaining entrance animations and freezes the shared simulation, so resuming does not replay the entrance. Touch input preserves ordinary scrolling.
 
 The background layer has `pointer-events: none`; text and controls remain above it. The pointer-move listener is passive. When motion is paused, cursor input does not update the camera or particle simulation. The light theme uses a darker atmospheric palette.
 
 | Profile | Pages | Reading behavior |
 | --- | --- | --- |
-| Hero | Homepage | Full volume, cursor response and scroll parallax |
+| Hero | Homepage | Hand, sphere, GPU halo and tidal depth, with restrained pointer parallax |
 | Browse | Library, downloads and 404 | Fewer, dimmer particles with slower drift and gentler cursor response |
 | Reading | nC/ncc overviews and 16 chapters | Lowest density, opacity and drift; no cursor glow, connecting lines or scroll parallax |
 
@@ -28,6 +30,6 @@ Dark is the default appearance. A reader's saved light/dark preference is retain
 
 ## Validation
 
-Run `node tools/publishing/check-public.mjs` and `node tools/publishing/check-seo.mjs` after building. The publication checker also verifies one background, one motion control, a versioned scene script and the expected profile on every non-redirect page. Browser checks cover pause/play across navigation, cursor response, coverage below the hero, Windows/Linux commands, compiler phase selection, chapter filtering, search and Escape, source copying, theme switching, and navigation between pages. Reading surfaces, code and tables were inspected in both themes; mobile pages were checked at 390 CSS pixels with no horizontal document overflow. The temporary viewport is reset after verification.
+Run `node tools/publishing/check-public.mjs`, `node tools/publishing/check-seo.mjs`, `node tools/publishing/check-landing.mjs` and `node --test tools/publishing/tests/visual-state.test.mjs` after building. The publication checker verifies one background, one motion control, versioned scripts and the expected profile on every non-redirect page. Browser checks cover pause/play across navigation, compiler phases, Windows/Linux commands, filtering, search and Escape, source copying, theme switching, valid CTAs and navigation. Desktop, tablet and mobile layouts are reviewed against the approved composition. Reading surfaces remain stable in both themes. The detailed report records measured results and hardware verification limits; temporary viewport overrides are reset after verification.
 
 The canonical URLs, sitemap membership, page titles, descriptions and structured page identities remain owned by `seo.mjs`. This is a presentation change to the public V81 edition and does not promote a compiler milestone or change its contracts.
