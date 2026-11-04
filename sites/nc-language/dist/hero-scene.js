@@ -1,9 +1,10 @@
 import * as THREE from './vendor/three/0.187.0/three.module.min.js';
 import {qualityProfiles, tideParameters, createVisualState, advanceVisualState, orbPulseAt, initialQuality, lowerQuality} from './visual-state.js?v=1717859e3622';
-import {haloVertex, haloFragment, tideVertex, tideFragment, orbVertex, orbFragment, glowVertex, glowFragment, bloomVertex, bloomFragment} from './hero-shaders.js?v=5b74a32f5617';
+import {haloVertex, haloFragment, tideVertex, tideFragment, orbVertex, orbFragment, glowVertex, glowFragment, bloomVertex, bloomFragment} from './hero-shaders.js?v=02d60e2206fc';
 
 const stage = document.querySelector('.cinematic-hero');
 const canvas = document.querySelector('#continuity-canvas');
+const visual = canvas?.closest('figure');
 const diagnostic = document.querySelector('#scene-status');
 const params = new URLSearchParams(location.search);
 const finePointer = matchMedia('(hover:hover) and (pointer:fine)');
@@ -135,18 +136,18 @@ function initialize() {
     if(width) renderer.setSize(width,height,false);
   }
   function resize() {
-    const box=stage.getBoundingClientRect(); width=box.width; height=box.height;
+    const box=visual.getBoundingClientRect(); width=box.width; height=box.height;
     seaHeight=Math.round(height*(width<600?.36:.41));
     camera.left=-width/2;camera.right=width/2;camera.top=height/2;camera.bottom=-height/2;camera.updateProjectionMatrix();
     seaCamera.aspect=width/seaHeight;seaCamera.updateProjectionMatrix();
     renderer.setSize(width,height,false);uniforms.uResolution.value.set(width,height);
     resizeBloom();
-    const compact=width<600,portrait=width<900&&height>width*.95;
-    orbRadius=compact?Math.min(63,width*.16):portrait?Math.min(86,width*.108):Math.min(102,width*.052);
-    const orbY=compact?.5-.19:.5-.205;
-    state.orbWorldPosition.set(0,height*orbY,0);
-    uniforms.uRadius.value=compact?width*.425:portrait?width*.39:Math.min(width*.23,height*.405);
-    uniforms.uHaloY.value=height*(compact?.22:portrait?.14:.035);
+    const compact=width<600;
+    // Coordinates belong to the figure, independently of the surrounding copy.
+    orbRadius=Math.min(85,Math.max(55,width*.11));
+    state.orbWorldPosition.set(0,height*.295,0);
+    uniforms.uRadius.value=Math.min(width*.42,height*.38);
+    uniforms.uHaloY.value=height*.05;
     orbit.scale.setScalar(uniforms.uRadius.value*1.08);orbit.position.y=uniforms.uHaloY.value;
     satellite.scale.setScalar(compact?2.2:3.1);
     if(state.paused||!visible) paint();
@@ -225,13 +226,13 @@ function initialize() {
     if(!visible||document.hidden||lost||disposed) {diagnostic.dataset.visible='false';return;}
     paint();if(!state.paused)frame=requestAnimationFrame(tick);
   }
-  const resizeObserver=new ResizeObserver(resize);resizeObserver.observe(stage);
+  const resizeObserver=new ResizeObserver(resize);resizeObserver.observe(visual);
   const visibilityObserver=new IntersectionObserver(entries=>{visible=entries[0].isIntersecting;reconcile();},{threshold:0.01});
   visibilityObserver.observe(stage);
   const abort=new AbortController(),options={signal:abort.signal};
   stage.addEventListener('pointermove',event=>{
     if(!finePointer.matches||state.paused)return;
-    const box=stage.getBoundingClientRect();pointer.x=(event.clientX-box.left)/box.width*2-1;pointer.y=(event.clientY-box.top)/box.height*2-1;
+    const box=visual.getBoundingClientRect();pointer.x=Math.max(-1,Math.min(1,(event.clientX-box.left)/box.width*2-1));pointer.y=Math.max(-1,Math.min(1,(event.clientY-box.top)/box.height*2-1));
   },{...options,passive:true});
   stage.addEventListener('pointerleave',()=>{pointer.x=pointer.y=0;},options);
   addEventListener('nc:motion',event=>{state.paused=event.detail.paused;reconcile();},options);

@@ -17,6 +17,8 @@ Layout, alignment, address validity and calling conventions affect observable pr
 
 Memory is manual/raw. Type checking does not add ownership, automatic release or implicit pointer validation. The [language guide](docs/public/origen-y-guia.md#why-nc-exists) explains the design.
 
+Programmers coming from C can inspect the [four source surfaces](https://ncc-lenguage.org/#source-explorer), follow the [compiler pipeline](https://ncc-lenguage.org/#architecture) and review the [published evidence](https://ncc-lenguage.org/#evidence). The [website design contract](tools/publishing/DESIGN.md) and [positioning notes](docs/public/website-positioning.md) explain how those routes present the language.
+
 ## Run a program
 
 Download your platform's kit from [Releases](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81), verify its SHA-256 digest and extract it. The kit includes the compiler, runtime and `hello.n`. This workflow requires no Rust, Cargo or LLVM installation.

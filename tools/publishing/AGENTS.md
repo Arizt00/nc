@@ -4,8 +4,11 @@ This directory builds the English public website. Compiler work has separate
 contracts in the repository root; website tasks must not change the compiler,
 runtime, bootstrap seed, published compiler evidence, or support claims.
 
-For the cinematic landing, use `docs/public/cinematic-landing.md` as the
-maintained implementation contract. The local design brief is
+Use `tools/publishing/DESIGN.md` and `docs/public/website-positioning.md` for
+the current source-first visual and content contract. The hand and sphere
+are a secondary symbol; code, architecture and evidence lead the homepage.
+For that secondary scene, `docs/public/cinematic-landing.md` records its
+layered implementation. The earlier local design brief is
 `MASTER_PROMPT_CODEX.md`, supported by the nine `nc-*` project skills and
 `references/approved-landing.png`. Those supplied design materials may be
 absent from the curated public export. Reference
@@ -26,6 +29,6 @@ hidden or off screen and release graphics resources when leaving the page.
 
 Before publication, run the generator, publication checks, SEO checks and
 visual-state tests. Review desktop, mobile and tablet captures against the
-approved reference, correct observed differences, and document real metrics
+current design contract, correct observed differences, and document real metrics
 and remaining verification limits. Do not claim a frame rate or field Core
 Web Vitals result without the corresponding evidence.

@@ -1,5 +1,9 @@
 # nC cinematic landing — implementation and validation
 
+Historical composition report. The later source-first direction is documented
+in [Website interface](interface-design.md) and [Website positioning](website-positioning.md).
+The layered graphics contracts below still apply to the secondary project symbol.
+
 Date: 4 November 2026. Website: https://ncc-lenguage.org/.
 
 The landing follows the supplied approved composition: a centered hand and
