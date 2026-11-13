@@ -11,6 +11,8 @@ nC is an experimental programming language that integrates functions, foundation
 
 [**nC language**](https://ncc-lenguage.org/nc-programming-language) · [**ncc compiler**](https://ncc-lenguage.org/ncc-compiler) · [**Documentation**](https://ncc-lenguage.org/library) · [**Native downloads**](https://github.com/Arizt00/nc/releases/tag/v0.1.0-bootstrap.81) · [**Language guide**](docs/public/origen-y-guia.md) · [**Architecture**](docs/public/arquitectura-y-bootstrap.md) · [**Contribute**](CONTRIBUTING.md)
 
+Watch the [20-second nC overview](https://ncc-lenguage.org/#overview-film): four language surfaces, the compiler pipeline and a native build, with original music and mechanical sound effects.
+
 ## Why it exists
 
 Layout, alignment, address validity and calling conventions affect observable program behavior. nC addresses these decisions within one semantic model. The root `[@]`, `[@machine]`, `primitive[@]`, runtime and linker participate in that contract.

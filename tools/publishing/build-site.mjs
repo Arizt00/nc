@@ -18,7 +18,7 @@ function fingerprintAsset(file){
  if(buildingAssets.has(file))throw Error('Cyclic asset dependency: '+file);
  buildingAssets.add(file);
  const raw=fs.readFileSync(path.join(root,'tools/publishing',file),'utf8');
- assetSources[file]=raw.replace(/(['"])\.\/(hero-scene|hero-shaders|visual-state)\.js\1/g,(_,quote,name)=>{
+ assetSources[file]=raw.replace(/(['"])\.\/(hero-scene|hero-shaders|visual-state|film-player)\.js\1/g,(_,quote,name)=>{
   const version=fingerprintAsset(name+'.js');
   return quote+'./'+name+'.js?v='+version+quote;
  });

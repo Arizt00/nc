@@ -1,14 +1,38 @@
 import {renderSurfaceExplorer} from './surfaces.mjs';
 const escape=value=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 export function renderHome({repo,release,hello,surfaces}) {
+  const film={video:'assets/media/nc-overview-02253c64e0eb.mp4',poster:'assets/media/nc-overview-poster-b076bf10f2c8.webp',captions:'assets/media/nc-overview-en-01b8ce0208d4.vtt'};
   const phases=[['Source','.n','Declarations and imports'],['Analysis','AST','Symbols, types and flow'],['Representation','IR','Lowering and transformations'],['Materialization','ABI','Objects and linking'],['Execution','PE / ELF','Runtime and observable effects']];
   const recipe=['.\\ncc.exe self-test','.\\ncc.exe compiler emit-executable hello.n `','  --target x86_64-pc-windows-msvc --out hello.exe','.\\hello.exe'].join('\n');
 return `<main id="main">
   <section class="workbench-hero wrap" aria-labelledby="hero-title">
-    <div class="workbench-intro"><p class="product-line"><span class="product-rule" aria-hidden="true"></span>The nC systems programming language</p><h1 id="hero-title">Control at<br> every level.</h1><p class="workbench-lead">Functions, explicit memory and typed machine instructions. nC brings them into one continuous language.</p><p class="workbench-purpose">Keep the program's meaning in view as you work with its types, representation, control flow and linkage.</p><div class="actions"><a class="button primary" href="nc-programming-language.html">Read the language</a><a class="button secondary" href="downloads.html">Get ncc</a></div><p class="release-line"><a href="#evidence">Native bootstrap V81</a><span>Windows and Linux x86-64</span></p><a class="coming-from-c" href="#from-c">Coming from C? Start with the design choices.<span aria-hidden="true">↗</span></a></div>
+    <div class="workbench-intro"><p class="product-line"><span class="product-rule" aria-hidden="true"></span>The nC systems programming language</p><h1 id="hero-title">Control at<br> every level.</h1><p class="workbench-lead">Functions, explicit memory and typed machine instructions. nC brings them into one continuous language.</p><p class="workbench-purpose">Keep the program's meaning in view as you work with its types, representation, control flow and linkage.</p><div class="actions"><a class="button primary" href="nc-programming-language.html">Read the language</a><a class="button secondary" href="downloads.html">Get ncc</a><a class="text-link film-jump" href="#overview-film"><span aria-hidden="true">▷</span> Watch the film</a></div><p class="release-line"><a href="#evidence">Native bootstrap V81</a><span>Windows and Linux x86-64</span></p><a class="coming-from-c" href="#from-c">Coming from C? Start with the design choices.<span aria-hidden="true">↗</span></a></div>
     ${renderSurfaceExplorer(surfaces,repo)}
   </section>
   <section class="contract-summary wrap" aria-label="The nC programming model"><p><code translate="no">[@]</code><span>Foundations stay explicit.</span></p><p><code translate="no">[@machine]</code><span>Machine control stays typed.</span></p><p><code translate="no">primitive[@]</code><span>Representation stays part of the model.</span></p></section>
+  <section id="overview-film" class="overview-film wrap section-space" aria-labelledby="film-title">
+    <div class="section-top"><div><p class="eyebrow">Language overview</p><h2 id="film-title">See nC in 20 seconds.</h2></div><p id="film-description" class="section-description">Four language surfaces. One compiler pipeline. A native build, from source to execution.</p></div>
+    <figure class="film-player">
+      <div class="film-screen"><video id="nc-overview-video" controls playsinline preload="none" poster="${film.poster}" width="1920" height="1080" tabindex="0" aria-label="nC overview — 20-second video" aria-describedby="film-description film-caption">
+        <source src="${film.video}" type="video/mp4">
+        <track kind="captions" src="${film.captions}" srclang="en" label="English">
+        <p><a href="${film.video}">Download the nC overview video</a> or read the transcript below.</p>
+      </video><button id="film-play" class="film-play" type="button" aria-controls="nc-overview-video" hidden><span aria-hidden="true">▶</span> Play with sound</button></div>
+      <p id="film-play-status" class="film-play-status" role="status" hidden></p>
+      <figcaption><span id="film-caption">20 seconds · English · Music and sound effects</span><a href="${film.video}" download="nc-overview.mp4">Download video <span aria-hidden="true">↓</span></a></figcaption>
+    </figure>
+    <details id="film-transcript" class="film-transcript"><summary>Read the video transcript</summary><div class="film-transcript-body">
+      <p>Original electronic instrumental music plays throughout. Dry mechanical clicks mark scene and tab changes; the compiler signal travels from left to right.</p>
+      <ol>
+        <li><span class="film-time">0:00–0:03</span><div><h3>Control at every level.</h3><p>The nC systems programming language.</p></div></li>
+        <li><span class="film-time">0:03–0:08</span><div><h3>Four surfaces. One continuous language.</h3><p>Functions: <code>ref main -&gt;&gt; run</code>. Root <code>[@]</code>: <code>rootCore[@]</code>. Machine <code>[@machine]</code>: <code>add rax, rbx</code> and <code>jmp.ov overflow</code>. Primitive: <code>portWrite uart0.data &lt;- 0x41</code>.</p><a href="#source-explorer">Inspect the source examples</a></div></li>
+        <li><span class="film-time">0:08–0:14</span><div><h3>From source to execution.</h3><p>The ncc pipeline: Source (.n) → Analysis (AST) → Representation (IR) → Materialization (ABI) → Execution (PE/ELF).</p><a href="#architecture">Explore the compiler phases</a></div></li>
+        <li><span class="film-time">0:14–0:18</span><div><h3>Build and run.</h3><p>The terminal sequence reproduces a verified run of the public V81 Windows kit.</p><pre><code>.\\ncc.exe compiler emit-executable hello.n --target x86_64-pc-windows-msvc --out hello.exe
+.\\hello.exe</code></pre><p>Output: <code>Hello, nC public beta</code>. Exit code 0.</p><a href="library/the-first-program.html">Build your first program</a></div></li>
+        <li><span class="film-time">0:18–0:20</span><div><h3>ncc-lenguage.org</h3><p>Native bootstrap V81 · Open source. The music fades out.</p></div></li>
+      </ol>
+    </div></details>
+  </section>
   <section id="from-c" class="design-choices wrap section-space" aria-labelledby="choices-title"><div class="section-top"><div><p class="eyebrow">For systems programmers</p><h2 id="choices-title">More of the contract<br>belongs in the language.</h2></div><p class="section-description">The goal is C-class control with a wider, continuous model. These are the design choices behind that goal.</p></div>
     <div class="design-ledger"><article><div><span class="ledger-symbol" translate="no">[@machine]</span><h3>A typed machine boundary</h3></div><div><p>GNU extended asm describes instructions through a template and operand constraints. nC's machine layer represents instructions, labels and control transfers in the language model, with contracts carried through semantic analysis and IR.</p><a href="library/the-machine-layer.html">Read the machine-layer contract</a><a class="context-reference" href="https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html">C context: GCC extended asm</a></div></article>
     <article><div><span class="ledger-symbol" translate="no">size / align / ABI</span><h3>Representation you can inspect</h3></div><div><p>Layout, alignment and calling conventions change what a program does. nC treats representation and linkage as part of its continuous model. Memory remains manual/raw: allocation, valid addresses and release stay under program control.</p><a href="library/memory-and-representation.html">Read about memory and representation</a></div></article>

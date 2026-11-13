@@ -16,7 +16,7 @@ const surfaces=JSON.parse(fs.readFileSync(path.join(dist,'surfaces.json'),'utf8'
 for(const surface of surfaces){if(!ids.includes('surface-panel-'+surface.id))errors.push('Missing source panel: '+surface.id);const data=fs.readFileSync(path.join(root,surface.path));if(createHash('sha256').update(data).digest('hex')!==surface.sourceSha256)errors.push('Source provenance mismatch: '+surface.path);}
 if(/approved-landing|reference_[12]\.(?:jpg|png)/.test(html))errors.push('Reference capture used as a production asset');
 let modules=0;
-for(const file of ['symbol-loader.js','hero-scene.js','hero-shaders.js','visual-state.js']){
+for(const file of ['app.js','symbol-loader.js','hero-scene.js','hero-shaders.js','visual-state.js','film-player.js']){
   const source=fs.readFileSync(path.join(dist,file),'utf8');modules++;
   for(const match of source.matchAll(/(?:from\s+|import\()['"]([^'"]+)['"]/g)){
     if(!match[1].startsWith('./')){errors.push('Non-local module: '+match[1]);continue;}
@@ -31,5 +31,18 @@ for(const file of ['symbol-loader.js','hero-scene.js','hero-shaders.js','visual-
 for(const file of ['assets/hand-hero-v1.webp','vendor/three/0.187.0/LICENSE','assets/fonts/LICENSE.txt','assets/fonts/IBMPlexSans-Regular.woff2','assets/fonts/IBMPlexSans-SemiBold.woff2','assets/fonts/IBMPlexMono-Regular.woff2'])if(!fs.existsSync(path.join(dist,file)))errors.push('Missing production asset: '+file);
 const handBytes=fs.statSync(path.join(dist,'assets/hand-hero-v1.webp')).size;
 if(handBytes>250000)errors.push('Hand asset exceeds the 250 KB budget');
+const videoTag=html.match(/<video\b[^>]*id="nc-overview-video"[^>]*>/)?.[0]||'';
+if(!videoTag||!videoTag.includes('controls')||!videoTag.includes('playsinline')||!videoTag.includes('preload="none"'))errors.push('Overview video must have inline native controls and defer loading');
+if(/\b(?:autoplay|muted|loop)\b/.test(videoTag))errors.push('Overview video must start with sound only after a visitor chooses to play');
+if(!html.includes('id="film-transcript"')||!html.includes('kind="captions"')||!html.includes('srclang="en"'))errors.push('Overview video needs English captions and a readable transcript');
+if(!html.includes('id="film-play"')||!html.includes('id="film-play-status"'))errors.push('Overview video needs its on-demand playback and loading state');
+const film=JSON.parse(fs.readFileSync(path.join(dist,'assets/media/nc-overview.json'),'utf8'));
+for(const name of [film.video,film.poster,film.captions]){
+  const data=fs.readFileSync(path.join(dist,'assets/media',name));
+  const hash=createHash('sha256').update(data).digest('hex');
+  if(!name.includes(hash.slice(0,12))||!html.includes('assets/media/'+name))errors.push('Missing or stale overview media: '+name);
+  if(name===film.video&&hash!==film.sha256)errors.push('Overview video differs from its verified soundtrack edition');
+}
+if(film.bytes>2000000||film.posterBytes>40000)errors.push('Overview media exceeds its loading budget');
 if(errors.length){console.error(errors.join('\n'));process.exitCode=1;}
-else console.log(JSON.stringify({ok:true,uniqueIds:ids.length,modules,handBytes,localGraphicsEngine:true}));
+else console.log(JSON.stringify({ok:true,uniqueIds:ids.length,modules,handBytes,videoBytes:film.bytes,posterBytes:film.posterBytes,localGraphicsEngine:true}));

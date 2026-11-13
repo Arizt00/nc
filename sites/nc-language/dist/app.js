@@ -1,4 +1,5 @@
 const base=document.body.dataset.base||'';
+if(document.querySelector('#nc-overview-video'))import('./film-player.js?v=18c07b74f24a').then(module=>module.initFilmPlayer()).catch(()=>{});
 const toast=document.querySelector('.toast');let toastTimer;
 function notify(text){toast.textContent=text;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),2400);}
 function applyTheme(theme){document.documentElement.dataset.theme=theme;document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='dark'?'#101418':'#f4f6f7');document.querySelector('#theme').setAttribute('aria-label',theme==='dark'?'Switch to light theme':'Switch to dark theme');}
